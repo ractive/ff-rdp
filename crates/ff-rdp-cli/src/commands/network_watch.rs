@@ -146,14 +146,11 @@ impl PlaybookNetworkWatch {
 
     /// Drop the oldest requests, and their updates, once over the cap.
     fn evict_overflow(&mut self) {
-        let excess = self.resources.len().saturating_sub(MAX_BUFFERED_REQUESTS);
-        if excess == 0 {
-            return;
-        }
-        for dropped in self.resources.drain(..excess) {
-            self.update_map.remove(&dropped.resource_id);
-        }
-        self.evicted += excess;
+        self.evicted += evict_overflow_from(
+            &mut self.resources,
+            &mut self.update_map,
+            MAX_BUFFERED_REQUESTS,
+        );
     }
 
     /// The accumulated buffer as `assert_network`-shaped JSON entries.
@@ -168,6 +165,28 @@ impl PlaybookNetworkWatch {
     pub(crate) fn evicted(&self) -> usize {
         self.evicted
     }
+}
+
+/// Drop the oldest `resources.len() - cap` entries (and their folded updates),
+/// returning how many were dropped.
+///
+/// Pulled out of [`PlaybookNetworkWatch::evict_overflow`] so the eviction
+/// policy is unit-testable on plain `Vec`/`HashMap` values — the struct it
+/// lives on otherwise needs a live Firefox connection to construct via
+/// [`PlaybookNetworkWatch::arm`].
+fn evict_overflow_from(
+    resources: &mut Vec<NetworkResource>,
+    update_map: &mut HashMap<u64, NetworkResourceUpdate>,
+    cap: usize,
+) -> usize {
+    let excess = resources.len().saturating_sub(cap);
+    if excess == 0 {
+        return 0;
+    }
+    for dropped in resources.drain(..excess) {
+        update_map.remove(&dropped.resource_id);
+    }
+    excess
 }
 
 impl Drop for PlaybookNetworkWatch {
@@ -206,5 +225,75 @@ pub(crate) fn wait_for_match(
         }
         let budget = (deadline - now).min(POLL_SLICE);
         watch.poll(budget)?;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A minimal [`NetworkResource`] distinguished only by `resource_id`,
+    /// which is all [`evict_overflow_from`] looks at.
+    fn resource(resource_id: u64) -> NetworkResource {
+        NetworkResource {
+            actor: ActorId::from("net0"),
+            method: "GET".to_owned(),
+            url: format!("https://example.com/{resource_id}"),
+            is_xhr: false,
+            cause_type: "fetch".to_owned(),
+            started_date_time: String::new(),
+            timestamp: 0.0,
+            resource_id,
+        }
+    }
+
+    /// Under the cap, nothing is dropped and the reported count is zero.
+    #[test]
+    fn unit_181_evict_overflow_under_cap_drops_nothing() {
+        let mut resources: Vec<NetworkResource> = (0..5).map(resource).collect();
+        let mut updates = HashMap::new();
+        let dropped = evict_overflow_from(&mut resources, &mut updates, 10);
+        assert_eq!(dropped, 0);
+        assert_eq!(resources.len(), 5);
+    }
+
+    /// Over the cap, the **oldest** entries go — `assert_network` asks about
+    /// what just happened, never about the first request of a long run — and
+    /// their folded updates go with them so `update_map` cannot outlive the
+    /// resource it describes.
+    #[test]
+    fn unit_181_evict_overflow_drops_oldest_first_with_their_updates() {
+        let mut resources: Vec<NetworkResource> = (0..10).map(resource).collect();
+        let mut updates: HashMap<u64, NetworkResourceUpdate> = (0..10)
+            .map(|id| (id, NetworkResourceUpdate::default()))
+            .collect();
+
+        let dropped = evict_overflow_from(&mut resources, &mut updates, 4);
+
+        assert_eq!(dropped, 6);
+        assert_eq!(resources.len(), 4);
+        // The four newest (ids 6..10) survive, oldest-first order preserved.
+        let remaining_ids: Vec<u64> = resources.iter().map(|r| r.resource_id).collect();
+        assert_eq!(remaining_ids, vec![6, 7, 8, 9]);
+        // Updates for evicted resources are gone; updates for survivors are not.
+        for id in 0..6 {
+            assert!(
+                !updates.contains_key(&id),
+                "resource {id} should be evicted"
+            );
+        }
+        for id in 6..10 {
+            assert!(updates.contains_key(&id), "resource {id} should survive");
+        }
+    }
+
+    /// A cap of zero is a degenerate but legal input: everything goes.
+    #[test]
+    fn unit_181_evict_overflow_cap_zero_drops_everything() {
+        let mut resources: Vec<NetworkResource> = (0..3).map(resource).collect();
+        let mut updates = HashMap::new();
+        let dropped = evict_overflow_from(&mut resources, &mut updates, 0);
+        assert_eq!(dropped, 3);
+        assert!(resources.is_empty());
     }
 }
