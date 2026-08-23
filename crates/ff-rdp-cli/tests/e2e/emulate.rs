@@ -5,6 +5,8 @@
 //! actor → updateConfiguration) and the applied-config probes are covered by
 //! the live suite `tests/live/live_103_emulate.rs`.
 
+use super::support;
+
 fn ff_rdp_bin() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_ff-rdp"))
 }

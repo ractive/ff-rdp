@@ -354,6 +354,20 @@ fn f() {
     );
 }
 
+/// Per-tier floors, not just a global one. A single combined floor (the
+/// iter-179 original: `scanned >= 1200`) can hide a per-tier regression: one
+/// tree could lose most of its invocations to a lexer desync while another
+/// tree's volume papers over it in the sum. Measured on this branch
+/// (iteration 182, after widening [`scanned_roots`] to include e2e): live
+/// 1290, e2e 1258, core 168 — each floor sits ~10% below its measured count,
+/// tight enough that a desync swallowing a meaningful fraction of a tree's
+/// invocations still trips its own assertion, not just the global total.
+const MIN_PER_ROOT: [(&str, usize); 3] = [
+    ("ff-rdp-cli/tests/live", 1150),
+    ("ff-rdp-cli/tests/e2e", 1120),
+    ("ff-rdp-core/tests", 150),
+];
+
 /// AC `unit_179_no_assertion_reports_stderr_without_stdout`: every panic
 /// message that names `stderr` also names `stdout`.
 #[test]
@@ -387,20 +401,6 @@ fn unit_179_no_assertion_reports_stderr_without_stdout() {
         per_root.push((root.display().to_string(), root_scanned));
     }
 
-    // Per-tier floors, not just a global one. A single combined floor (the
-    // iter-179 original: `scanned >= 1200`) can hide a per-tier regression:
-    // one tree could lose most of its invocations to a lexer desync while
-    // another tree's volume papers over it in the sum. Measured on this
-    // branch (iteration 182, after widening scanned_roots to include e2e):
-    // live 1290, e2e 1258, core 168 — each floor sits ~10% below its
-    // measured count, tight enough that a desync swallowing a meaningful
-    // fraction of a tree's invocations still trips its own assertion, not
-    // just the global total.
-    const MIN_PER_ROOT: [(&str, usize); 3] = [
-        ("ff-rdp-cli/tests/live", 1150),
-        ("ff-rdp-cli/tests/e2e", 1120),
-        ("ff-rdp-core/tests", 150),
-    ];
     for (label, min) in MIN_PER_ROOT {
         let found = per_root
             .iter()

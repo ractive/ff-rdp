@@ -9,6 +9,8 @@ use std::path::PathBuf;
 
 use tempfile::TempDir;
 
+use super::support;
+
 fn ff_rdp_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_ff-rdp"))
 }

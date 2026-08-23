@@ -8,6 +8,8 @@
 //! A live-Firefox integration test is left for local developer use and is
 //! gated behind the `live_firefox` env-var pattern to avoid CI noise.
 
+use super::support;
+
 fn ff_rdp_bin() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_ff-rdp"))
 }
