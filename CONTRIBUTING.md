@@ -200,6 +200,15 @@ This validates:
 - If the plan body mentions `pub fn/struct/enum/trait/mod`, `first_call_sites` must be non-empty
   with `primitive` and `site` keys per entry
 - A `dogfood_path` frontmatter key or a `## Dogfood path` body section is present
+- **No other plan claims the same iteration number.** The check scans the plan's own
+  directory *and* `kb/iterations/`, and fails naming both files — so a duplicate is caught
+  while the plan is being filed, not after a renumber has to chase every `[[wikilink]]`,
+  carry-over row and PR-body reference that already cited the old number. This is not a new
+  gate or a new step: it is one more answer from the check CLAUDE.md already requires.
+  Letter-suffixed siblings (`iteration-162a-`, `iteration-162b-`) are distinct numbers and
+  are not flagged; `.dogfood.sh` sidecars are not counted as plans. The two historical
+  collisions — 44 and 73, all four plans terminal — are exempt by exact file-name pair, so a
+  *third* plan claiming 44 still fails.
 
 ### Validate firefox_refs in an iteration plan
 
@@ -338,7 +347,8 @@ Then edit the frontmatter:
 - `first_call_sites`: list any new `pub` items with their first call site
 - `dogfood_path`: describe how to manually exercise the iteration's output
 
-The plan linter (`cargo xtask check-iteration-plan`) enforces these fields.
+The plan linter (`cargo xtask check-iteration-plan`) enforces these fields, and also that
+`NN` is not already taken by another plan.
 
 ### Pre-PR discipline gates
 

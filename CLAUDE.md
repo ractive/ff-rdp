@@ -73,8 +73,10 @@ Always-on rules:
 - Every `TODO`/`FIXME`/`XXX` needs an issue link or `// allow-todo: <reason>` (review rule).
 - Every spec method change needs a live Firefox test, not just a unit test.
 - Commit-message claims (`adds Foo::Bar`) must be backed by the branch diff (review rule).
-- Iteration plans include `dogfood_path`, and `first_call_sites` if they add pub items. Validate:
-  `cargo run -p xtask -- check-iteration-plan <plan>`
+- Iteration plans include `dogfood_path`, and `first_call_sites` if they add pub items, and an
+  iteration number no other plan already claims. Validate:
+  `cargo run -p xtask -- check-iteration-plan <plan>` — it fails naming both files when two
+  plans share a number (five collisions before iter-187 taught it to look).
 - Plan `status:` is `planned | in-progress | in-review | done | obsolete` — `done`, never
   `completed`.
 - The ralph-loop and new-ralph-loop skill scripts are mirrored from `~/.claude/skills/*/scripts/`

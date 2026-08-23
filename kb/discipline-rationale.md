@@ -112,6 +112,32 @@ never `completed` — the latter was a synonym the merge workflow wrote, and the
 it were normalized on 2026-08-12. (`kb/research/` documents still use `completed`; the validator
 does not govern them.)
 
+## Why iteration-number uniqueness lives inside `check-iteration-plan`
+
+Five plans were filed on a number another plan already held (44, 73, 171, 178, 183 — three of
+them in the week of 2026-08-17). The cost was never the collision itself: it was that the second
+author had already written the plan before anyone noticed, and the renumber then had to chase
+every `[[wikilink]]`, carry-over row and PR-body reference that cited the old number. Iteration
+179's merged PR body still carries a stale `iteration-184-dogfood-sentinel-shared-tmp-path` link
+from exactly this churn.
+
+[[iteration-162]]a deleted discipline gates on the reasoning that a gate nobody reads is worse
+than a documented rule, and that decision stands. iter-187 is deliberately **not** a reversal:
+it added no xtask subcommand and no required step. `check-iteration-plan` is already the thing
+CLAUDE.md requires before a plan is filed; it simply stopped validating the file in isolation and
+started looking at the directory it belongs to. Nobody has to remember anything new.
+
+Two shapes are explicitly not collisions, because a loose regex gets each of them wrong:
+letter-suffixed siblings (`iteration-162a-`, `iteration-162b-`) are distinct numbers, and
+`.dogfood.sh` sidecars share a plan's stem without being plans. The check matches on a numeric
+boundary and on `*.md` only.
+
+The two pre-existing collisions (44 and 73, all four plans terminal) are exempt by **exact
+file-name pair**, recorded in `LEGACY_COLLISIONS` in `crates/xtask/src/check_iteration_plan.rs`.
+Renumbering terminal plans would break inbound links in merged PR bodies to no benefit; keying
+the exemption on the pair rather than the number means a third plan claiming 44 still fails, so
+the check is grandfathered rather than weakened.
+
 ## Why spec drift is annotated rather than blocked
 
 When ff-rdp must send a field or call a method that is **not** declared in the published Firefox

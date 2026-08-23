@@ -4,6 +4,8 @@ type: iteration
 date: YYYY-MM-DD
 status: planned
 branch: iter-NN/short-description
+# NN must be free: `ls kb/iterations/` before filing. check-iteration-plan fails when
+# another plan already claims it. Letter suffixes (61b, 162a) are distinct numbers.
 depends_on: []
 # If this iteration introduces new pub items, list each one with its first call site.
 # Leave empty ([]) if no new pub items are introduced.
