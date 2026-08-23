@@ -1176,8 +1176,8 @@ fn stop_daemon_and_build_result_with(
     // token — every registry written by a pre-iter-191 daemon — keeps the
     // old behaviour rather than stranding a running daemon that `daemon stop`
     // would then be unable to stop.
-    let daemon_pid_recycled =
-        process::pid_identity(info.pid, info.start_token.as_deref()) == process::PidIdentity::Recycled;
+    let daemon_pid_recycled = process::pid_identity(info.pid, info.start_token.as_deref())
+        == process::PidIdentity::Recycled;
     if daemon_pid_recycled {
         tracing::warn!(
             "daemon stop: registry for port {firefox_port} names pid {} but that PID has since \
@@ -1217,7 +1217,18 @@ fn stop_daemon_and_build_result_with(
         }
         None => (
             (deps.hooks.wait_port_closed)(firefox_port, PORT_FREE_WAIT_BOUND),
-            port_still_listening_msg(info.pid, firefox_port),
+            // Not `port_still_listening_msg`: that one opens with "stopped
+            // Firefox (pid N)", and nothing was stopped here. Saying so is
+            // the whole point — the pre-iter-191 defect was a message that
+            // claimed a stop had happened on a path where ff-rdp had only
+            // signalled a stranger.
+            format!(
+                "port {firefox_port} is still in use, and ff-rdp did not launch the process \
+                 holding it: the daemon registry names pid {} but that PID has since been \
+                 reused. Refusing to stop a process ff-rdp does not own — run \
+                 `lsof -i :{firefox_port}` to see what is there.",
+                info.pid
+            ),
         ),
     };
 
