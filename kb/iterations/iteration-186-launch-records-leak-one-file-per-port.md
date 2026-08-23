@@ -194,6 +194,36 @@ end of the cycles).
   `live_186_launch_record_growth_bounded`, both under an isolated `FF_RDP_HOME` so they never touch
   the real `~/.ff-rdp/`.
 
+### Live sweep
+
+Two runs, both `FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1`, both with a browser on port 6000
+so the `preexisting` tier executed.
+
+```text
+run 1  LIVE_SWEEP_SUMMARY executed=286 skipped=0 preexisting=0 vanished=0 launch_timeout=0 total=286
+       ff-rdp-cli --test live: 276 passed / 1 failed; all four ff-rdp-core live targets green
+run 2  LIVE_SWEEP_SUMMARY executed=286 skipped=0 preexisting=0 vanished=0 launch_timeout=0 total=286
+       ff-rdp-cli --test live: 276 passed / 1 failed; all four ff-rdp-core live targets green
+```
+
+`live_186_launch_record_gc_collects_dead_spares_live` and `live_186_launch_record_growth_bounded`
+both `ok` in **both** runs.
+
+The two runs failed on *different* tests, and neither failure is this iteration's code:
+
+- run 1 — `live_96_profile_cleanup::live_profiles_prune_removes_all_when_no_firefox_running`,
+  "precondition violated — 1 ff-rdp-managed profile dir ... still owned by a live process (pid
+  95896)". Self-inflicted: the port-6000 browser had been started with `ff-rdp launch`, which
+  creates a *managed* profile, and this test requires no managed profile to have a live owner.
+  Re-run 2 started port 6000 as a raw `firefox -profile … --start-debugger-server 6000` with
+  hand-written devtools prefs; `live_96` then passed.
+- run 2 — `live_137_daemon_mode_parity::live_137_consent_accept_via_daemon`, "daemon never reported
+  live frame targets" with `target_count: 1, live_target_count: 0`. Passed in run 1 and passes in
+  **6.6 s in isolation**; load-sensitive.
+
+Both are filed as watch conditions 8 and 9 on
+[[iteration-192-live-sweep-watch-conditions-carried-forward]] — see Carry-over below.
+
 ### Out-of-scope check-in
 
 Orphaned Firefox processes between sessions are untouched by this change: the sweep only ever
@@ -202,6 +232,20 @@ unlinks `launch-record.*.json`, never signals a process, and `prune_orphan_profi
 effect worth stating rather than leaving implicit: removing a stale record removes what `daemon
 stop --port <p>` would have read, but a record whose pid is dead already returned `None` from
 `read_in`, so no reachable behaviour changes.
+
+## Carry-over
+
+Every non-green line from both sweeps, plus everything else this iteration produced.
+
+| Row | Source | Disposition |
+|---|---|---|
+| `live_96_..._prune_removes_all_when_no_firefox_running` FAILED (run 1) | sweep run 1 | **folded** into [[iteration-192-live-sweep-watch-conditions-carried-forward]] as watch condition 9. Diagnosed as my own setup, not a product defect — but "environmental" is a diagnosis, not a disposition, and the collision between the `preexisting` tier's requirement and `live_96`'s precondition is real and will bite the next runner |
+| `live_137_..._consent_accept_via_daemon` FAILED (run 2), passed run 1, passes isolated in 6.6 s | sweep run 2 | **folded** into [[iteration-192-live-sweep-watch-conditions-carried-forward]] as watch condition 8, with the captured status envelope. Not forked into its own plan: one load-sensitive observation with no second data point is exactly what 192 exists to hold until it fires again |
+| `live_62_page_map_index` passed both runs | run-wide note that it fails under load on purpose until iteration 181 lands | **no plan needed here** — already owned by iteration 181. Recorded because one green run is not evidence a load-sensitive defect is fixed; it must not be read as 181 being unnecessary |
+| Two ff-rdp-managed profile dirs left behind by dead owners, seen while checking preconditions | manual inspection during setup | **no plan, stated reason** — `prune_orphan_profiles` already owns this and `live_96` already asserts it; both dirs had dead owners and were reclaimable. If a profile with a *live* owner is ever found orphaned, that needs its own plan |
+| iteration 191 (`launch --replace` kills a recycled pid off a stale record) is narrowed but not closed by this PR | this iteration's own analysis | **no plan needed** — 191 already exists and already `depends_on` 186. Recorded so nobody reads "4803 → 13 records" as 191 being fixed: a record is still stale for the whole window between its Firefox dying and the next launch sweeping |
+| The plan's `dogfood_path` step 2 predicted "no live pids" among the leaked records; 13 had live pids, mostly recycled | this iteration's measurement | **closed in this PR** — the prediction is corrected in the Outcome section above and the asymmetry is written into `daemon_record.rs`'s GC section comment |
+| Unticked acceptance criteria | — | none. All 3 ACs and all 7 task boxes ticked, each against a measured result recorded above |
 
 ## Out of scope
 
