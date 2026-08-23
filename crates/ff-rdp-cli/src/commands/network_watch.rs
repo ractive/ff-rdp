@@ -27,6 +27,18 @@
 //! buffer instead of arming its own: a request triggered by step N is still
 //! visible at step N+1, however long the intervening steps take.
 //!
+//! # Between steps, events queue in the kernel
+//!
+//! Nothing reads the subscription socket while an ordinary step runs, so events
+//! accumulate in the receive buffer and are picked up by the next
+//! [`PlaybookNetworkWatch::poll`]. They are not lost — but a very long playbook
+//! against a very chatty page can fill that buffer, after which Firefox queues
+//! the frames on its side instead. Draining between steps was considered and
+//! rejected: it needs a read timeout short enough to be free (single-digit ms),
+//! and [`ff_rdp_core::transport::recv_from`] reads a frame with `read_exact`,
+//! so a timeout landing mid-frame desyncs the stream. A queue is better than a
+//! desync.
+//!
 //! # What it deliberately does not do
 //!
 //! It does not touch the **daemon** route. The daemon already holds a standing
