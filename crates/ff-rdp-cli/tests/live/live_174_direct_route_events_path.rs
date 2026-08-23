@@ -69,6 +69,10 @@ const MAX_COMMIT_MS: u64 = 2_000;
 /// hiding it.
 const TIMEOUT_MS: &str = "30000";
 
+/// A host that cannot resolve, for the neterror leg. `.invalid` is reserved by
+/// RFC 2606 precisely so it never resolves.
+const BAD_HOST: &str = "https://this-domain-totally-does-not-exist-174-zzz.invalid";
+
 fn daemon_args(port: u16) -> Vec<String> {
     vec![
         "--host".to_owned(),
@@ -250,13 +254,12 @@ fn live_174_dns_failure_exits_nav_dns_fail_both_routes() {
          not start for Firefox on port {port}"
     );
 
-    const BAD: &str = "https://this-domain-totally-does-not-exist-174-zzz.invalid";
     for (route, global) in [("direct", direct_args(port)), ("daemon", daemon_args(port))] {
         let out = Command::new(ff_rdp_bin())
             .args(&global)
-            .args(["navigate", BAD])
+            .args(["navigate", BAD_HOST])
             .output()
-            .unwrap_or_else(|e| panic!("{route}: spawn ff-rdp navigate {BAD}: {e}"));
+            .unwrap_or_else(|e| panic!("{route}: spawn ff-rdp navigate {BAD_HOST}: {e}"));
         let all = combined(&out);
         assert!(
             !out.status.success(),
