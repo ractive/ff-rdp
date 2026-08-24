@@ -216,7 +216,11 @@ pub fn max_frame_bytes() -> usize {
 /// Split out from [`max_frame_bytes`] so the `0` → default rule can be tested
 /// without touching the process-global cell.
 const fn resolve_frame_cap(raw: usize) -> usize {
-    if raw == 0 { DEFAULT_MAX_FRAME_BYTES } else { raw }
+    if raw == 0 {
+        DEFAULT_MAX_FRAME_BYTES
+    } else {
+        raw
+    }
 }
 
 /// Legacy alias for the default frame-size cap.  Prefer
@@ -686,7 +690,7 @@ const BULK_CHUNK_SIZE: usize = 8 * 1024; // 8 KiB
 
 /// Discard exactly `length` bytes from `reader` in 8 KiB chunks.
 ///
-/// Used by [`recv_bulk_with_handler_from`] and [`drain_bulk_frame`] to consume
+/// Used by [`recv_bulk_with_handler_from`] and [`drain_bulk_frame_with_cap`] to consume
 /// a mismatched or unsupported bulk frame body so the stream stays aligned.
 fn drain_bulk_body<R: Read>(reader: &mut R, length: u64) -> Result<(), ProtocolError> {
     let mut remaining = length;
@@ -707,33 +711,25 @@ fn drain_bulk_body<R: Read>(reader: &mut R, length: u64) -> Result<(), ProtocolE
 /// already been consumed by the caller.
 ///
 /// Reads the rest of the header (`ulk <actor> <kind> <length>:`), validates it,
-/// applies the `max_frame_bytes()` cap, then reads-and-discards exactly `length`
-/// bytes from the body.  Returns `Ok((actor, kind, length))` when the frame has
-/// been fully consumed so the caller can continue reading the next frame.
+/// applies the `cap`, then reads-and-discards exactly `length` bytes from the
+/// body.  Returns `Ok((actor, kind, length))` when the frame has been fully
+/// consumed so the caller can continue reading the next frame.
 ///
-/// This is the low-level drain shared by [`recv_bulk_frame`] (which returns
-/// [`ProtocolError::BulkPacketUnsupported`]) and the daemon reader loop (which
-/// may encounter unexpected bulk frames mid-stream and must drain them to keep
-/// the TCP stream aligned).
+/// This is the low-level drain behind [`recv_bulk_frame`] (which returns
+/// [`ProtocolError::BulkPacketUnsupported`]); a reader loop that meets an
+/// unexpected bulk frame mid-stream must drain it the same way to keep the TCP
+/// stream aligned.
+///
+/// The cap is a parameter rather than a read of the process-global cell so a
+/// caller — in practice a test — can exercise it without mutating shared state
+/// that every other frame parse in the process reads; see [`RaisedFrameCap`].
+/// Callers wanting the configured cap pass [`max_frame_bytes()`].
 ///
 /// Errors:
 /// - `InvalidPacket` — malformed header.
-/// - `BulkFrameTooLarge` — announced length exceeds `max_frame_bytes()` (body
-///   is NOT read in this case, so the stream is unrecoverable).
+/// - `BulkFrameTooLarge` — announced length exceeds `cap` (body is NOT read in
+///   this case, so the stream is unrecoverable).
 /// - `RecvFailed` — I/O error while reading.
-pub(crate) fn drain_bulk_frame<R: BufRead>(
-    reader: &mut R,
-    first_byte: u8,
-) -> Result<(String, String, u64), ProtocolError> {
-    drain_bulk_frame_with_cap(reader, first_byte, max_frame_bytes())
-}
-
-/// [`drain_bulk_frame`] with the frame-size cap supplied by the caller instead
-/// of read from the process-global cell.
-///
-/// Exists so a caller — in practice a test — can exercise the cap without
-/// mutating shared state that every other frame parse in the process reads.
-/// See [`RaisedFrameCap`] for why that matters.
 pub(crate) fn drain_bulk_frame_with_cap<R: BufRead>(
     reader: &mut R,
     first_byte: u8,
@@ -1100,7 +1096,7 @@ pub(crate) fn recv_from_with_cap(
     reader.read_exact(&mut first).map_err(map_recv_io_error)?;
 
     if first[0] == b'b' {
-        // Delegate to drain_bulk_frame which shares the discard logic with
+        // Delegate to drain_bulk_frame_with_cap which shares the discard logic with
         // recv_bulk_with_handler_from.  recv_bulk_frame returns
         // BulkPacketUnsupported after draining; we map that back from the
         // existing helper.
@@ -1204,7 +1200,7 @@ pub(crate) fn check_outbound_bulk_size(length: u64, cap: usize) -> Result<(), Pr
 /// Parse and discard a Firefox bulk frame.
 ///
 /// Called when `recv_from` sees a leading `b` (already consumed).  Delegates
-/// to [`drain_bulk_frame`] for the shared drain logic, then maps the result to
+/// to [`drain_bulk_frame_with_cap`] for the shared drain logic, then maps the result to
 /// [`ProtocolError::BulkPacketUnsupported`] so the caller can log and skip.
 ///
 /// Returns [`ProtocolError::BulkPacketUnsupported`] on success (body skipped)
@@ -1550,8 +1546,8 @@ mod tests {
         assert_eq!(max_frame_bytes(), raised, "the knob must round-trip");
 
         let announced = DEFAULT_MAX_FRAME_BYTES as u64 + 1;
-        let mut cursor = Cursor::new(format!("ulk a1 k1 {announced}:").into_bytes());
-        let err = drain_bulk_frame(&mut cursor, b'b').unwrap_err();
+        let mut cursor = Cursor::new(format!("bulk a1 k1 {announced}:").into_bytes());
+        let err = recv_from(&mut cursor).unwrap_err();
         assert!(
             !matches!(err, ProtocolError::BulkFrameTooLarge { .. }),
             "a length under the raised global cap must pass the cap check, got {err:?}"
@@ -2404,7 +2400,7 @@ mod tests {
         // exceeds it without shrinking the process-global cell.
         let cap = 100;
 
-        // `drain_bulk_frame` receives first_byte = b'b' (already consumed by
+        // `drain_bulk_frame_with_cap` receives first_byte = b'b' (already consumed by
         // the caller).  The cursor starts with the rest of the header.
         // "ulk actor1 kind1 1000:" (22 bytes after 'b') + ':' terminator is
         // included in the string literal below; body bytes follow.
