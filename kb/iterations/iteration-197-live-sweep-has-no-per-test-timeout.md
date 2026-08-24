@@ -2,7 +2,7 @@
 title: "Iteration 197: a single hung live test hangs the whole sweep, forever"
 type: iteration
 date: 2026-08-23
-status: in-review
+status: done
 branch: iter-197/live-sweep-per-test-timeout
 depends_on:
   - kb/iterations/iteration-188-live-sweep-cost-and-parallelism.md
