@@ -2,7 +2,7 @@
 title: "Iteration 196: FRAME_CAP_LOCK has writers but no readers, so cargo test --workspace is randomly red"
 type: iteration
 date: 2026-08-23
-status: in-review
+status: done
 branch: iter-196/frame-cap-lock-no-readers
 depends_on: []
 first_call_sites: []
@@ -19,18 +19,23 @@ dogfood_path: |
   #        called `Result::unwrap()` on an `Err` value:
   #        BulkFrameTooLarge { announced: 20000, max: 1024 }
   #    expected AFTER: no output across 200 runs
-
+  
   # 2. See the asymmetry that causes it — five write-lockers, zero read-lockers
   #    among the tests that build frames larger than the caps those writers set:
   grep -n "FRAME_CAP_LOCK" crates/ff-rdp-core/src/transport.rs
   #    expected TODAY: .write() at 5 call sites, .read() only inside the
   #                    self-test that asserts the lock excludes (1471-1493)
   #    expected AFTER: every test whose frame exceeds 1024 bytes holds a read guard
-
+  
   # 3. The whole suite, repeatedly, is the real acceptance signal:
   for i in $(seq 1 20); do cargo test --workspace -q >/dev/null || echo "RED on run $i"; done
   #    expected AFTER: no output
-tags: [iteration, testing, flaky, ff-rdp-core, carry-over]
+tags:
+  - iteration
+  - testing
+  - flaky
+  - ff-rdp-core
+  - carry-over
 ---
 
 # Iteration 196: the frame-cap lock protects writers from each other and nobody else
