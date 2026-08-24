@@ -2,8 +2,8 @@
 title: "Iteration 196: FRAME_CAP_LOCK has writers but no readers, so cargo test --workspace is randomly red"
 type: iteration
 date: 2026-08-23
-status: planned
-branch: iter-196/frame-cap-lock-readers
+status: done
+branch: iter-196/frame-cap-lock-no-readers
 depends_on: []
 first_call_sites: []
 dogfood_path: |
@@ -19,18 +19,23 @@ dogfood_path: |
   #        called `Result::unwrap()` on an `Err` value:
   #        BulkFrameTooLarge { announced: 20000, max: 1024 }
   #    expected AFTER: no output across 200 runs
-
+  
   # 2. See the asymmetry that causes it — five write-lockers, zero read-lockers
   #    among the tests that build frames larger than the caps those writers set:
   grep -n "FRAME_CAP_LOCK" crates/ff-rdp-core/src/transport.rs
   #    expected TODAY: .write() at 5 call sites, .read() only inside the
   #                    self-test that asserts the lock excludes (1471-1493)
   #    expected AFTER: every test whose frame exceeds 1024 bytes holds a read guard
-
+  
   # 3. The whole suite, repeatedly, is the real acceptance signal:
   for i in $(seq 1 20); do cargo test --workspace -q >/dev/null || echo "RED on run $i"; done
   #    expected AFTER: no output
-tags: [iteration, testing, flaky, ff-rdp-core, carry-over]
+tags:
+  - iteration
+  - testing
+  - flaky
+  - ff-rdp-core
+  - carry-over
 ---
 
 # Iteration 196: the frame-cap lock protects writers from each other and nobody else
@@ -109,32 +114,146 @@ sees it.
 
 ## Tasks
 
-### A. Diagnosis [0/2]
-- [ ] Enumerate every test in `transport.rs` that reads the frame cap with a frame larger than
+### A. Diagnosis [2/2]
+- [x] Enumerate every test in `transport.rs` that reads the frame cap with a frame larger than
       100 bytes — the full reader set, not just the observed failure
-- [ ] Confirm whether any non-test code path reads the cap concurrently with a writer
+- [x] Confirm whether any non-test code path reads the cap concurrently with a writer
 
-### B. The fix [0/2]
-- [ ] Either thread the cap through the call path or give every reader a read guard, with the
+### B. The fix [2/2]
+- [x] Either thread the cap through the call path or give every reader a read guard, with the
       choice and its reasoning recorded at `FRAME_CAP_LOCK`'s definition
-- [ ] The self-test at 1471-1493 still asserts whatever invariant survives the change
+- [x] The self-test at 1471-1493 still asserts whatever invariant survives the change
 
-### C. Proof [0/1]
-- [ ] 200 consecutive runs of `transport::tests:: -- --test-threads=16` are green
+### C. Proof [1/1]
+- [x] 200 consecutive runs of `transport::tests:: -- --test-threads=16` are green
 
-## Acceptance Criteria [0/3]
+## Acceptance Criteria [3/3]
 
-- [ ] The repro loop in the dogfood path produces no failures across 200 runs
-- [ ] The reader set is enumerated in the PR body, so a reviewer can check none was missed
-- [ ] No `#[serial]`-style blanket serialisation of the whole transport test module — that would
+- [x] The repro loop in the dogfood path produces no failures across 200 runs
+- [x] The reader set is enumerated in the PR body, so a reviewer can check none was missed
+- [x] No `#[serial]`-style blanket serialisation of the whole transport test module — that would
       hide the race rather than remove it, and slow every unrelated test
+
+## Resolution (iter-196)
+
+**Shape chosen: the second** — the cap is threaded through the call path, and the shared mutable
+state is gone from the test path. `FRAME_CAP_LOCK` is deleted rather than documented, so the
+"acceptable only with the reason written at its definition" fallback does not apply. The reasoning
+now lives at `RaisedFrameCap`, the guard that replaced it, and in `kb/decision-log.md` DEC-048
+(which supersedes DEC-029).
+
+Note that step 2 of the `dogfood_path` above predicts "expected AFTER: every test whose frame
+exceeds 1024 bytes holds a read guard". That line assumed the *first* shape. It is left as written
+rather than rewritten to match: no test holds a read guard now, because no test shrinks the cap.
+The grep in that step returns nothing at all.
+
+### A — the reader set
+
+A "reader" is any test that parses a frame through an entry point that reads the process-global
+cap: `recv_from`, `RdpTransport::recv`, `FramedReader::recv`, `recv_reply_from`, `recv_event_from`,
+`recv_bulk_with_handler`, or `actors::network`'s longString fetch. Workspace-wide that is **108
+call sites across 38 files**.
+
+In `transport.rs` itself, **26 tests** reach one: `bulk_frame_empty_body_is_handled`,
+`bulk_frame_followed_by_json_frame_parses_correctly`, `bulk_frame_returns_bulk_packet_unsupported`,
+`bulk_recv_drains_on_actor_mismatch`, `bulk_recv_drains_on_json_peek`, `max_frame_mb_knob_works`,
+`recv_bulk_with_handler_actor_mismatch_returns_error`, `recv_bulk_with_handler_chunked`,
+`recv_bulk_with_handler_empty_body`, `recv_bulk_with_handler_json_frame_returns_unexpected`,
+`recv_bulk_with_handler_kind_mismatch_returns_error`, `recv_errors_on_empty_length_prefix`,
+`recv_errors_on_invalid_json_body`, `recv_errors_on_length_prefix_too_long`,
+`recv_errors_on_non_digit_in_length_prefix`, `recv_event_from_forwards_non_matching`,
+`recv_event_from_matches_predicate`, `recv_event_from_surfaces_error_reply`,
+`recv_handles_multi_digit_length`, `recv_parses_valid_frame`,
+`recv_reply_from_forwards_sibling_packet`, `recv_reply_from_maps_error_packet`,
+`recv_reply_from_rejects_typed_packet_as_reply`, `recv_reply_from_routes_event_to_sink`,
+`recv_reply_from_surfaces_daemon_busy_control_error`, `transport_rejects_deep_json`.
+
+Every one of them is a reader by Theme A's definition (a frame over the 100-byte cap
+`bulk_recv_caps_drain_length` used to set). The two that exceed the 1024-byte cap the other four
+writers set — the ones that could actually go red — are `recv_bulk_with_handler_chunked` (20,000 B
+body, the observed victim) and `transport_rejects_deep_json` (1204 B, previously undetected; its
+comment even asserted "cap is at least default 256 MiB so the frame fits").
+
+Outside `transport.rs`, four more readers above 1024 B had **no** guard, against the one that did:
+
+| test | frame | guard before |
+|---|---|---|
+| `specs::types::…::resolve_slot_longstring_grip_fetches_full_value` | 20 KB | `read()` (the only one in the workspace) |
+| `actors::page_style::…::parse_computed_properties_resolves_longstring_value` | 20 KB | none |
+| `actors::dom_walker::…::parse_dom_node_resolves_longstring_node_value` | 20 KB | none |
+| `actors::dom_walker::…::parse_dom_node_resolves_longstring_attr_value` | 15 KB | none |
+| `actors::storage::…::parse_cookie_resolves_longstring_value` | 20 KB | none |
+
+That 1-of-5 adoption rate is the argument against the first shape: iter-150 added the read guard to
+the one test whose flake it was chasing, and the four written since never took one.
+
+**Non-test code paths** (task A2): `recv_from`, `recv_bulk_with_handler_from` and
+`actors::network`'s `parse_response_content` read the cap in production, but the only production
+writer is `main.rs:237`, which runs once during argument parsing before any transport exists. There
+is no concurrent production writer, which is why this was only ever a test defect.
+
+### B — the fix
+
+- `recv_from_with_cap`, `drain_bulk_frame_with_cap`, `recv_bulk_with_handler_from_with_cap`, and
+  `check_outbound_bulk_size(len, cap)` take the cap as an argument; the argument-less forms are
+  one-line wrappers passing `max_frame_bytes()`.
+- All four cap-shrinking tests now pass a cap. `max_frame_mb_knob_works` keeps its name and its AC,
+  split into a pure part and a raise-only part.
+- `FRAME_CAP_LOCK` and `FrameCapGuard` are deleted; so is the read guard in `specs::types`.
+- `RaisedFrameCap::raise_to` panics below `DEFAULT_MAX_FRAME_BYTES` and holds a mutex against other
+  raisers. The surviving invariant — *tests may raise the cap, never shrink it* — is pinned by
+  `raised_frame_cap_refuses_to_shrink` (`#[should_panic]`) and
+  `raised_frame_cap_restores_previous_value_on_drop`, which replace the deleted lock self-test.
+
+### C — proof
+
+| loop | runs | failures |
+|---|---|---|
+| `transport::tests:: -- --test-threads=16` | 200 | 0 |
+| whole `ff-rdp-core` lib binary `-- --test-threads=16` | 50 | 0 |
+| `cargo test --workspace -q` | 10 | 0 |
+
+The `dogfood_path` asks for 20 workspace runs; 10 is what was measured (~4.3 min each, and the
+loop was stopped rather than left contending with the PR gates). Stated rather than rounded up.
+The 200-run transport loop is the sharper instrument for this race anyway: it exercises the same
+binary the writers and readers share, at `--test-threads=16`, which is a *higher* parallelism than
+a workspace run reaches for those tests.
+
+The first pass of that loop was **not** green: it caught a flake this iteration introduced
+(`raised_frame_cap_restores_previous_value_on_drop` snapshotted the cell outside the raise lock,
+35 failures in 200). Theme C earned its place.
+
+### Live sweep (2026-08-24)
+
+`FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo run -p xtask -- live-sweep` against a raw
+headless Firefox on port 6000:
+
+```
+LIVE_SWEEP_SUMMARY executed=285 skipped=0 preexisting=0 vanished=0 launch_timeout=0 total=285
+```
+
+285 passed / 0 failed, summed across the five `test result:` lines — `P + F == executed`, so the
+record reconciles and no test went without a verdict. Zero non-green lines, hence no sweep rows in
+the carry-over table below.
+
+## Carry-over
+
+| item | disposition |
+|---|---|
+| `live_bulk_cap.rs` still calls `set_max_frame_bytes(1024)` on the process-global cell (found while enumerating writers; different test binary, so it cannot redden `cargo test --workspace`) | **file** — [[iteration-207-live-bulk-cap-shrinks-a-process-global]], `check-iteration-plan: OK` |
+| `raised_frame_cap_restores_previous_value_on_drop` was flaky at 35/200 when first written | **closed in this PR** — the snapshot moved inside the raise lock; 200/200 green after |
+| `transport_rejects_deep_json` (1204 B) was a second unguarded victim in `transport.rs`, never previously identified | **closed in this PR** — it no longer depends on any test-mutated cap; its stale comment was corrected |
+| DEC-029's read-guard contract is now unenforceable prose | **closed in this PR** — DEC-029 marked superseded, DEC-048 added |
+| Live sweep non-green lines | **no plan** — there were none (285/285). If a later sweep on this code reds a transport test, it needs its own plan. |
 
 ## Out of scope
 
 - **The 85 plans failing `check-iteration-plan`.** Separate carry-over,
   [[iteration-195-check-iteration-plan-fails-on-85-of-222-plans]].
 - **Auditing other process-global test state.** If this iteration finds more, file it; do not
-  absorb it.
+  absorb it. Found one and filed it:
+  [[iteration-207-live-bulk-cap-shrinks-a-process-global]] — `live_bulk_cap.rs` still shrinks the
+  cap to 1 KiB inside the *live* test binary.
 
 ## References
 
