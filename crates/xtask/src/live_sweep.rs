@@ -118,6 +118,97 @@ pub struct Args {
     /// box underneath is meaningfully bigger than the one that set the cap.
     #[arg(long, default_value_t = default_jobs())]
     pub jobs: usize,
+
+    /// Watchdog bound (seconds) on how long one phase's stdout may stay
+    /// **silent after libtest has started reporting results** before the
+    /// sweep declares the phase hung, kills it, and moves on (iter-197).
+    ///
+    /// `0` disables the watchdog entirely and restores the pre-197
+    /// wait-forever behaviour — useful when attaching a debugger to a hung
+    /// test, never appropriate for an unattended run.
+    ///
+    /// See [`DEFAULT_PHASE_STALL_SECS`] for why the default is what it is.
+    #[arg(long, default_value_t = DEFAULT_PHASE_STALL_SECS)]
+    pub phase_stall_secs: u64,
+
+    /// Watchdog bound (seconds) on the silence *before* a phase's first
+    /// libtest line — the window in which `cargo` is compiling and stdout is
+    /// legitimately empty (cargo's progress goes to stderr, which this tool
+    /// inherits and never reads).
+    ///
+    /// Deliberately much larger than `--phase-stall-secs`: a cold
+    /// `cargo test --test live` build of this workspace is minutes of silence
+    /// that must not be mistaken for a hang. `0` disables it.
+    #[arg(long, default_value_t = DEFAULT_PHASE_BUILD_SECS)]
+    pub phase_build_secs: u64,
+}
+
+/// Default stall bound (seconds): the longest silence between two libtest
+/// result lines that is still treated as progress.
+///
+/// Justified against iteration 188's per-test timing census of this exact
+/// corpus (n=277, nextest `-j4`): mean 8.83 s, median 7.68 s, p90 12.40 s,
+/// **p99 38.20 s, max 43.43 s**. The stall clock is reset by *every* line
+/// libtest prints, so in the worst case — a serial phase, one test in flight —
+/// the gap between two lines is one test's wall time. 300 s is **7.9× the
+/// measured p99 and 6.9× the measured max**, which is the margin the "a bound
+/// that fires every run is worse than no bound" rule asks for: a test would
+/// have to become seven times slower than the slowest one ever measured here
+/// before the watchdog produced a false positive.
+///
+/// It is also small enough to matter. The hang this bound exists for
+/// (iteration 188's third sweep) burned the remainder of a 60-minute harness
+/// timeout; at 300 s the same sweep loses five minutes and still prints a
+/// `LIVE_SWEEP_SUMMARY`.
+pub const DEFAULT_PHASE_STALL_SECS: u64 = 300;
+
+/// Default bound (seconds) on the silence before a phase's *first* stdout
+/// line, i.e. the `cargo` build.
+///
+/// Separate from [`DEFAULT_PHASE_STALL_SECS`] because the two windows measure
+/// different things: nothing is running yet, so the p99 test time says
+/// nothing about how long this may legitimately take. 15 minutes covers a
+/// cold-cache debug build of the whole workspace plus the live test target on
+/// a slow machine, and still bounds the one genuine hang mode here (a `cargo`
+/// blocked forever on the target-directory lock held by another build).
+pub const DEFAULT_PHASE_BUILD_SECS: u64 = 900;
+
+/// The two watchdog bounds a phase runs under, resolved from [`Args`].
+///
+/// `Duration::ZERO` on either field means "unbounded" — see the flag docs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PhaseBounds {
+    /// Max silence before the first libtest line (the build window).
+    pub build: std::time::Duration,
+    /// Max silence between libtest lines once results have started arriving.
+    pub stall: std::time::Duration,
+}
+
+impl PhaseBounds {
+    /// Read the bounds off the parsed CLI arguments.
+    pub fn from_args(args: &Args) -> Self {
+        Self {
+            build: std::time::Duration::from_secs(args.phase_build_secs),
+            stall: std::time::Duration::from_secs(args.phase_stall_secs),
+        }
+    }
+
+    /// The bound that applies right now: the build window until libtest has
+    /// printed something, the stall window afterwards. `None` means the
+    /// applicable bound is disabled and the wait is unbounded.
+    fn current(&self, seen_output: bool) -> Option<std::time::Duration> {
+        let d = if seen_output { self.stall } else { self.build };
+        (!d.is_zero()).then_some(d)
+    }
+}
+
+impl Default for PhaseBounds {
+    fn default() -> Self {
+        Self {
+            build: std::time::Duration::from_secs(DEFAULT_PHASE_BUILD_SECS),
+            stall: std::time::Duration::from_secs(DEFAULT_PHASE_STALL_SECS),
+        }
+    }
 }
 
 /// Concurrency ceiling for phase 1 (iter-188 Theme C).
@@ -800,24 +891,112 @@ pub fn phase_command(
     Some(cmd)
 }
 
+/// Why the watchdog stopped a phase (iter-197).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PhaseTimeout {
+    /// The bound that was exceeded — whichever of [`PhaseBounds`]' two
+    /// windows applied at the time.
+    pub bound: std::time::Duration,
+    /// `true` when libtest had not printed a single line yet, i.e. the phase
+    /// died in `cargo`'s build window rather than mid-tier.
+    pub before_first_output: bool,
+}
+
 /// One `cargo test` phase's result: libtest's exit status plus its stdout,
 /// which has already been echoed through to ours line by line.
 struct PhaseOutcome {
     success: bool,
     stdout: String,
+    /// `Some` when the watchdog killed the phase instead of libtest finishing
+    /// it. `success` is always `false` then.
+    timed_out: Option<PhaseTimeout>,
+}
+
+/// Put the phase's `cargo` in a process group of its own so the watchdog has
+/// something to kill that includes the test binary.
+///
+/// **This is the whole reason a group exists here.** Killing the `cargo test`
+/// process alone accomplishes nothing: the hung party is the *test binary*
+/// cargo spawned, which cargo does not reap on its own death — it would keep
+/// running, keep holding whatever it had launched, and keep the sweep's
+/// problem exactly where it was.
+///
+/// Trade-off, stated because it is real: a `cargo` in its own group is no
+/// longer in the terminal's foreground group, so an operator's Ctrl-C reaches
+/// `xtask` but not `cargo`. That is the same hazard the run-wide rule "never
+/// kill a sweep mid-run" already warns about, and the watchdog is precisely
+/// what makes reaching for Ctrl-C unnecessary. If you do interrupt a sweep by
+/// hand, sweep up after it with `pgrep -f ff-rdp-profile-` (the same signal
+/// [`managed_firefox_pids`] uses).
+#[cfg(unix)]
+fn own_process_group(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt as _;
+    cmd.process_group(0);
+}
+
+/// No-op on non-Unix: Windows has no process groups in this sense, and
+/// [`kill_phase_tree`] uses `taskkill /T` there instead.
+#[cfg(not(unix))]
+fn own_process_group(_cmd: &mut Command) {}
+
+/// Kill a timed-out phase and everything `cargo` started under it.
+///
+/// Unix: signal the negative pgid, which is the group [`own_process_group`]
+/// created (pgid == the child's pid), so `cargo` *and* the test binary go
+/// together. `kill(1)` is used rather than `libc::kill` because the workspace
+/// forbids `unsafe` and one process spawn on the timeout path costs nothing.
+///
+/// Note what this deliberately does **not** reach: a Firefox `ff-rdp launch`
+/// started is put into a process group of *its own*
+/// (`commands::launch::build_command`, iter-95 Theme A), specifically so that
+/// group signals do not travel between them. Reaping those is
+/// [`reap_managed_firefox`]'s job, and the caller must run it.
+fn kill_phase_tree(child: &mut std::process::Child) {
+    let pid = child.id();
+    #[cfg(unix)]
+    let mut killer = {
+        let mut c = Command::new("kill");
+        c.args(["-KILL", &format!("-{pid}")]);
+        c
+    };
+    #[cfg(not(unix))]
+    let mut killer = {
+        let mut c = Command::new("taskkill");
+        c.args(["/F", "/T", "/PID", &pid.to_string()]);
+        c
+    };
+    let _ = killer
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    // Belt and braces: if the group signal did not land (no `kill` on PATH, a
+    // platform without groups), at least the direct child goes away.
+    let _ = child.kill();
 }
 
 /// Run one phase, streaming its stdout to ours as it arrives **and** keeping a
-/// copy for [`classify_failures`].
+/// copy for [`classify_failures`], under the watchdog `bounds` describe.
 ///
 /// Streaming matters: the CLI tier runs for 35-40 minutes and a plain
 /// `output()` would show the operator nothing until it finished. stderr is
 /// inherited untouched (cargo's build progress lives there); libtest reprints
 /// each failing test's captured output on stdout, which is the part we parse.
-fn run_phase(cmd: &mut Command, what: &str) -> Result<PhaseOutcome> {
+///
+/// iter-197: the read loop used to be a plain blocking `read_line`, which is
+/// why a single hung test hung the sweep forever — libtest has no per-test
+/// timeout of any kind, so nothing anywhere in the pipeline had a bound. The
+/// read now happens on a helper thread feeding a channel, and the main thread
+/// waits on it with `recv_timeout`, so *silence* is what the bound is measured
+/// against. That choice matters: a wall-clock bound on the whole phase would
+/// have to be sized for a 40-minute tier and would therefore be useless, while
+/// silence between libtest result lines is bounded by one test's duration no
+/// matter how long the tier is. See [`DEFAULT_PHASE_STALL_SECS`].
+fn run_phase(cmd: &mut Command, what: &str, bounds: PhaseBounds) -> Result<PhaseOutcome> {
     use std::io::{BufRead, BufReader, Write};
+    use std::sync::mpsc::{RecvTimeoutError, channel};
 
     cmd.stdout(std::process::Stdio::piped());
+    own_process_group(cmd);
     let mut child = cmd
         .spawn()
         .with_context(|| format!("failed to spawn {what}"))?;
@@ -826,29 +1005,283 @@ fn run_phase(cmd: &mut Command, what: &str) -> Result<PhaseOutcome> {
         .take()
         .ok_or_else(|| anyhow!("no stdout pipe for {what}"))?;
 
-    let mut captured = String::new();
-    let mut reader = BufReader::new(stdout);
-    let mut line = String::new();
-    loop {
-        line.clear();
-        let n = reader
-            .read_line(&mut line)
-            .with_context(|| format!("reading stdout of {what}"))?;
-        if n == 0 {
-            break;
+    let (tx, rx) = channel::<String>();
+    let pump = std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            // A read error is treated as EOF: the phase is over either way,
+            // and the exit status below is the authority on how it ended.
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    if tx.send(std::mem::take(&mut line)).is_err() {
+                        break;
+                    }
+                }
+            }
         }
+    });
+
+    let mut captured = String::new();
+    let mut seen_output = false;
+    let mut timed_out: Option<PhaseTimeout> = None;
+
+    let mut absorb = |line: &str, captured: &mut String| {
         print!("{line}");
         let _ = std::io::stdout().flush();
-        captured.push_str(&line);
+        captured.push_str(line);
+    };
+
+    loop {
+        let Some(bound) = bounds.current(seen_output) else {
+            // Watchdog disabled for this window — block exactly as pre-197.
+            match rx.recv() {
+                Ok(line) => {
+                    seen_output = true;
+                    absorb(&line, &mut captured);
+                    continue;
+                }
+                Err(_) => break,
+            }
+        };
+        match rx.recv_timeout(bound) {
+            Ok(line) => {
+                seen_output = true;
+                absorb(&line, &mut captured);
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
+            Err(RecvTimeoutError::Timeout) => {
+                eprintln!(
+                    "live-sweep: WATCHDOG — {what} produced no output for {}s ({}); killing its \
+                     process group. libtest has no per-test timeout, so without this the sweep \
+                     would wait forever (iter-197).",
+                    bound.as_secs(),
+                    if seen_output {
+                        "--phase-stall-secs, measured between libtest result lines"
+                    } else {
+                        "--phase-build-secs, measured before libtest's first line"
+                    }
+                );
+                timed_out = Some(PhaseTimeout {
+                    bound,
+                    before_first_output: !seen_output,
+                });
+                kill_phase_tree(&mut child);
+                break;
+            }
+        }
     }
 
     let status = child
         .wait()
         .with_context(|| format!("waiting for {what}"))?;
+    // The pump exits on EOF, which the kill above guarantees.
+    let _ = pump.join();
+    // Anything the pump had already queued when we stopped listening is still
+    // part of this phase's output, and `unreported_tests` reads it.
+    while let Ok(line) = rx.try_recv() {
+        absorb(&line, &mut captured);
+    }
+
     Ok(PhaseOutcome {
-        success: status.success(),
+        success: timed_out.is_none() && status.success(),
         stdout: captured,
+        timed_out,
     })
+}
+
+// ---------------------------------------------------------------------------
+// iter-197 — naming what hung, and reaping what it left behind
+// ---------------------------------------------------------------------------
+
+/// The names libtest has already reported a verdict for, restricted to
+/// `known` — the exact list this phase was handed via `--exact`.
+///
+/// Restricting to `known` is what makes this safe to run over raw libtest
+/// output: a failing test's *captured* stdout is reprinted verbatim in the
+/// `failures:` section and may itself contain lines that begin with `test `,
+/// so an unrestricted parser would invent names. Only names the sweep itself
+/// asked for are ever accepted.
+fn reported_test_names<'a>(stdout: &str, known: &'a [String]) -> Vec<&'a str> {
+    let mut out = Vec::new();
+    for line in stdout.lines() {
+        let Some(rest) = line.strip_prefix("test ") else {
+            continue;
+        };
+        // `test <name> ... ok` / `... FAILED` / `... ignored, <reason>`.
+        // `rfind` rather than `find`: nothing in a libtest name contains
+        // " ... ", but a trailing ignore reason may.
+        let Some(idx) = rest.rfind(" ... ") else {
+            continue;
+        };
+        let name = &rest[..idx];
+        if let Some(hit) = known.iter().find(|k| k.as_str() == name) {
+            out.push(hit.as_str());
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// The tests this phase was asked to run that libtest never reported a verdict
+/// for — i.e. the ones the watchdog's kill cut short.
+///
+/// This is how a timed-out phase names the culprit without inventing one.
+/// libtest prints a result line only when a test *finishes*, so with `--jobs
+/// N` up to N names can be in flight; the observed hang left exactly one (276
+/// of 277 CLI-tier tests had reported). The set is exact — it is derived from
+/// the `--exact` list the phase was given, not from prose.
+pub fn unreported_tests(qualified: &[String], stdout: &str) -> Vec<String> {
+    let reported = reported_test_names(stdout, qualified);
+    qualified
+        .iter()
+        .filter(|n| !reported.contains(&n.as_str()))
+        .cloned()
+        .collect()
+}
+
+/// Names libtest itself flagged with `test <name> has been running for over N
+/// seconds`, restricted to `known` for the same reason as
+/// [`reported_test_names`].
+///
+/// libtest's own 60-second notice is the strongest available hint about *which*
+/// of the in-flight tests is the stuck one — it is the only line the hung sweep
+/// of 2026-08-23 produced. It is a hint, not the verdict: a legitimately slow
+/// test triggers it too, which is why the reported failure names the unreported
+/// set and mentions these separately.
+pub fn slow_flagged_tests(stdout: &str, known: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in stdout.lines() {
+        let Some(rest) = line.strip_prefix("test ") else {
+            continue;
+        };
+        let Some(idx) = rest.find(" has been running for over ") else {
+            continue;
+        };
+        let name = &rest[..idx];
+        if let Some(hit) = known.iter().find(|k| k.as_str() == name) {
+            out.push(hit.clone());
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Substring that identifies a Firefox `ff-rdp` started for itself: every
+/// managed profile directory is named `ff-rdp-profile-<16 chars>` and is
+/// passed to Firefox as `--profile <dir>` (`commands::launch::build_command`).
+///
+/// Matching the command line rather than a marker file on disk is deliberate:
+/// several live tests point `$FF_RDP_HOME` at a per-test temp directory, so
+/// their profiles are not under the default root at all and a root scan would
+/// miss exactly the instances a hang is most likely to strand.
+const MANAGED_PROFILE_ARG_MARKER: &str = "ff-rdp-profile-";
+
+/// Pick the ff-rdp-managed Firefox processes out of a `<pid> <command line>`
+/// process listing.
+///
+/// Pure so the matching rules are testable without a browser anywhere. Both
+/// conditions are required: the command line must name a managed profile
+/// **and** be a Firefox. `self_pid` is excluded so the sweep can never kill
+/// itself — the failure mode the iteration plan calls out as "the checker that
+/// matches itself", which is real here because `xtask`'s own command line is
+/// in the same listing.
+pub fn managed_firefox_pids(listing: &str, self_pid: u32) -> Vec<u32> {
+    let mut out = Vec::new();
+    for line in listing.lines() {
+        let Some((pid_text, cmdline)) = line.trim_start().split_once(char::is_whitespace) else {
+            continue;
+        };
+        let Ok(pid) = pid_text.parse::<u32>() else {
+            continue;
+        };
+        if pid == self_pid {
+            continue;
+        }
+        if !cmdline.contains(MANAGED_PROFILE_ARG_MARKER) {
+            continue;
+        }
+        if !cmdline.to_ascii_lowercase().contains("firefox") {
+            continue;
+        }
+        out.push(pid);
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// Snapshot every process as `<pid> <command line>` lines, or `None` if the
+/// platform's process lister could not be run.
+fn process_listing() -> Option<String> {
+    #[cfg(unix)]
+    let mut cmd = {
+        let mut c = Command::new("ps");
+        c.args(["-eo", "pid=,args="]);
+        c
+    };
+    #[cfg(not(unix))]
+    let mut cmd = {
+        let mut c = Command::new("powershell");
+        c.args([
+            "-NoProfile",
+            "-Command",
+            "Get-CimInstance Win32_Process | ForEach-Object { \
+             \"$($_.ProcessId) $($_.CommandLine)\" }",
+        ]);
+        c
+    };
+    let out = cmd.stderr(std::process::Stdio::null()).output().ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// SIGKILL (or `taskkill /F`) one pid, ignoring the outcome.
+fn kill_pid_hard(pid: u32) {
+    #[cfg(unix)]
+    let mut cmd = {
+        let mut c = Command::new("kill");
+        c.args(["-KILL", &pid.to_string()]);
+        c
+    };
+    #[cfg(not(unix))]
+    let mut cmd = {
+        let mut c = Command::new("taskkill");
+        c.args(["/F", "/PID", &pid.to_string()]);
+        c
+    };
+    let _ = cmd
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+/// Kill every ff-rdp-managed Firefox still running, and return the pids.
+///
+/// Called only after the watchdog has killed a phase. The kill signal that
+/// stops the phase cannot reach these: `ff-rdp launch` puts each Firefox in a
+/// process group of its own on purpose (iter-95 Theme A), so they survive the
+/// group kill and — because their parent `ff-rdp` is long gone — are reparented
+/// to init and outlive the sweep entirely. That is the "four Firefox processes
+/// still open" half of the 2026-08-23 hang, and this is what closes it.
+///
+/// Only ff-rdp's *own* ephemeral profiles are matched, so a browser the
+/// operator started by hand (including the port-6000 instance the
+/// `preexisting` tier depends on) is never touched.
+pub fn reap_managed_firefox() -> Vec<u32> {
+    let Some(listing) = process_listing() else {
+        return Vec::new();
+    };
+    let pids = managed_firefox_pids(&listing, std::process::id());
+    for pid in &pids {
+        kill_pid_hard(*pid);
+    }
+    pids
 }
 
 // ---------------------------------------------------------------------------
