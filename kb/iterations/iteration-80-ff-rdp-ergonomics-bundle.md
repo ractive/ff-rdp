@@ -17,8 +17,10 @@ kb_refs:
   - kb/rdp/actors/styles.md
   - kb/rdp/from-our-codebase/open-gaps.md
 first_call_sites:
-  - "WindowGlobalTarget::reload (force param): crates/ff-rdp-cli/src/commands/nav_action.rs"
-  - "commands::a11y::run_critical: crates/ff-rdp-cli/src/dispatch.rs"
+  - primitive: "WindowGlobalTarget::reload (force param)"
+    site: crates/ff-rdp-cli/src/commands/nav_action.rs
+  - primitive: "commands::a11y::run_critical"
+    site: crates/ff-rdp-cli/src/dispatch.rs
 dogfood_path: |
   # A — help grouping
   ff-rdp --help | head -40                                     # must show Inspect / Navigate / Trace sections
