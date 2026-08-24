@@ -206,7 +206,13 @@ is no concurrent production writer, which is why this was only ever a test defec
 |---|---|---|
 | `transport::tests:: -- --test-threads=16` | 200 | 0 |
 | whole `ff-rdp-core` lib binary `-- --test-threads=16` | 50 | 0 |
-| `cargo test --workspace -q` | 20 | 0 |
+| `cargo test --workspace -q` | 10 | 0 |
+
+The `dogfood_path` asks for 20 workspace runs; 10 is what was measured (~4.3 min each, and the
+loop was stopped rather than left contending with the PR gates). Stated rather than rounded up.
+The 200-run transport loop is the sharper instrument for this race anyway: it exercises the same
+binary the writers and readers share, at `--test-threads=16`, which is a *higher* parallelism than
+a workspace run reaches for those tests.
 
 The first pass of that loop was **not** green: it caught a flake this iteration introduced
 (`raised_frame_cap_restores_previous_value_on_drop` snapshotted the cell outside the raise lock,
