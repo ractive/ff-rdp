@@ -1282,15 +1282,46 @@ pub fn format_name_list(names: &[String]) -> String {
 /// miss exactly the instances a hang is most likely to strand.
 const MANAGED_PROFILE_ARG_MARKER: &str = "ff-rdp-profile-";
 
+/// The executable a command line runs, i.e. its `argv[0]`.
+///
+/// A leading `"` quotes the whole path (how Windows renders
+/// `"C:\\Program Files\\Mozilla Firefox\\firefox.exe" --profile …`); otherwise
+/// the executable ends at the first whitespace. Unquoted paths containing
+/// spaces are therefore not handled — no Firefox install path on macOS or
+/// Linux has one, and Windows quotes.
+fn argv0(cmdline: &str) -> &str {
+    let cmdline = cmdline.trim_start();
+    match cmdline.strip_prefix('"') {
+        Some(rest) => rest.split('"').next().unwrap_or(rest),
+        None => cmdline.split_whitespace().next().unwrap_or(cmdline),
+    }
+}
+
+/// Does this command line *run* a Firefox, as opposed to merely mentioning
+/// one?
+///
+/// The distinction is the whole point. Testing `cmdline.contains("firefox")`
+/// looks equivalent and is not: a shell invoked with a one-liner that greps
+/// for orphaned browsers has both `firefox` and an `ff-rdp-profile-` path in
+/// its own arguments, so it matches its own query. That is exactly the trap
+/// iteration 197's plan named ("not with the checker that matches itself"),
+/// and it was observed for real on 2026-08-24 — three `zsh -c …` processes
+/// reported as orphans by a shell pipeline written to count them. Only
+/// `argv[0]` is consulted, so a process is a Firefox only if it *is* one.
+fn is_firefox_executable(cmdline: &str) -> bool {
+    let exe = argv0(cmdline);
+    let base = exe.rsplit(['/', '\\']).next().unwrap_or(exe);
+    base.to_ascii_lowercase().starts_with("firefox")
+}
+
 /// Pick the ff-rdp-managed Firefox processes out of a `<pid> <command line>`
 /// process listing.
 ///
-/// Pure so the matching rules are testable without a browser anywhere. Both
-/// conditions are required: the command line must name a managed profile
-/// **and** be a Firefox. `self_pid` is excluded so the sweep can never kill
-/// itself — the failure mode the iteration plan calls out as "the checker that
-/// matches itself", which is real here because `xtask`'s own command line is
-/// in the same listing.
+/// Pure so the matching rules are testable without a browser anywhere. Two
+/// conditions are required: the process must *be* a Firefox
+/// ([`is_firefox_executable`]) **and** have been handed a managed profile.
+/// `self_pid` is excluded on top of that, so the sweep can never kill itself
+/// even if its own arguments name one.
 pub fn managed_firefox_pids(listing: &str, self_pid: u32) -> Vec<u32> {
     let mut out = Vec::new();
     for line in listing.lines() {
@@ -1306,7 +1337,7 @@ pub fn managed_firefox_pids(listing: &str, self_pid: u32) -> Vec<u32> {
         if !cmdline.contains(MANAGED_PROFILE_ARG_MARKER) {
             continue;
         }
-        if !cmdline.to_ascii_lowercase().contains("firefox") {
+        if !is_firefox_executable(cmdline) {
             continue;
         }
         out.push(pid);
@@ -2753,6 +2784,35 @@ not-a-process-line
             vec![501, 505],
             "a managed profile *and* a firefox binary are both required"
         );
+    }
+
+    /// The trap the plan named, reproduced from life. On 2026-08-24 a shell
+    /// pipeline written to *count* orphans
+    /// (`ps -eo pid=,args= | grep -F ff-rdp-profile- | grep -ci firefox`)
+    /// reported three, all of which were `zsh -c …` processes running that very
+    /// query: their own arguments contain both the profile marker and the word
+    /// `firefox`. A `contains("firefox")` rule cannot tell those apart from a
+    /// browser; `argv[0]` can.
+    #[test]
+    fn iter_197_managed_firefox_pids_ignores_a_shell_running_the_query() {
+        let listing = "\
+ 65880 /opt/homebrew/bin/zsh -c ps -eo pid=,args= | grep -F 'ff-rdp-profile-' | grep -i firefox
+ 65881 /usr/bin/pgrep -fl ff-rdp-profile-
+ 65882 /Applications/Firefox.app/Contents/MacOS/firefox --profile /tmp/ff-rdp-profile-aaaaaaaaaaaaaaaa
+";
+        assert_eq!(
+            managed_firefox_pids(listing, 1),
+            vec![65882],
+            "only the process whose argv[0] IS a firefox counts"
+        );
+    }
+
+    /// Windows renders a spaced install path quoted; `argv0` must not stop at
+    /// the space inside it.
+    #[test]
+    fn iter_197_argv0_handles_a_quoted_windows_path() {
+        let listing = "  42 \"C:\\Program Files\\Mozilla Firefox\\firefox.exe\" --profile              C:\\t\\ff-rdp-profile-aaaaaaaaaaaaaaaa\n";
+        assert_eq!(managed_firefox_pids(listing, 1), vec![42]);
     }
 
     /// The sweep must never be able to kill itself, even if its own command

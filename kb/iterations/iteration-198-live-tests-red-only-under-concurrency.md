@@ -47,9 +47,17 @@ open plan:
 | 6 | 6 | `live_160_envelope_honesty::live_160_click_reachable_fires_handler` | click handler assertion |
 | iter-191 sweep, 2026-08-23 | default | `live_174_direct_route_events_path::live_174_nav_verbs_resolve_from_events_daemon` | `navigate: page did not fire dom-complete within the timeout`; **passes alone** — re-ran `--test-threads=1` immediately after: `1 passed` in 5.41 s |
 | iter-191 sweep (contaminated run, see note), 2026-08-23 | default | `live_137_…consent_accept_via_daemon`, `live_140_frame_error_bounded`, `live_140_frame_filter_count_accurate`, `live_111_daemon_follow_cross_process::live_daemon_follow_survives_cross_process_nav`, `live_navigate_default_fast::live_navigate_elapsed_matches_wall` | five failures in one run; the same run also failed `live_158_launch_reports_effective_wait_bound` on a **fixed port 7105 held by an orphaned Firefox** from an aborted earlier sweep, so that run's load was not representative. The clean re-run left only the `live_174` row above |
+| iter-197 sweep (contaminated: overlapped `cargo fmt`/`clippy`/`cargo test -p xtask` on the same box), 2026-08-24 | default (6) | `live_137_…consent_accept_via_daemon` | `daemon never reported live frame targets` — status showed `target_count: 1, live_target_count: 0` after 17 s uptime |
+| iter-197 sweep (same contaminated run), 2026-08-24 | default (6) | `live_165_eval_call_scope::live_165_repeated_const_matches_help` | **a second signature**: `daemon did not respond within the timeout after auth — the daemon may be overloaded or the connection is stale` (`error_type: Timeout`). Not a frame-target assertion at all — the daemon stopped answering after a successful auth. The clean re-run of the same sweep was **276 passed / 0 failed**, so both are load-sensitive, not deterministic |
 
 **No test failed twice in the same way in consecutive runs, and no run repeated another's failure
 set** — but three of the seven failures carry the *same* message, which is the thread to pull.
+
+iter-197 adds a **second** signature to pull on alongside it: `live_165_repeated_const_matches_help`
+failed with `daemon did not respond within the timeout after auth`, which is the daemon going quiet
+*after* a successful handshake rather than a frame-target wait expiring. If both signatures share a
+cause — a daemon that cannot keep up under concurrent load — that is one defect, not two; if they do
+not, `live_165` needs its own row in whatever this iteration concludes. Do not assume.
 
 ## The shared signature
 

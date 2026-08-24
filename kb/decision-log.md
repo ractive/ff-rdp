@@ -1807,10 +1807,21 @@ them by command line — a process that is a Firefox **and** was given an
 `ff-rdp-profile-*` directory — rather than by scanning the profile root,
 because several live tests point `$FF_RDP_HOME` at a per-test temp directory
 and a root scan would miss exactly the instances a hang is most likely to
-strand. The caller's own PID is excluded, so the checker can never match
-itself. A browser the operator started by hand (including the port-6000
+strand. A browser the operator started by hand (including the port-6000
 instance the `preexisting` tier needs) has no managed profile and is never
 touched.
+
+"Is a Firefox" means **`argv[0]` is a Firefox**, not "the command line mentions
+firefox". The distinction was not obvious and cost a wrong answer during this
+iteration's own verification: the shell one-liner counting survivors
+(`ps -eo pid=,args= | grep -F ff-rdp-profile- | grep -ci firefox`) reported 1,
+then 3, with no browser running — it was matching the `zsh -c …` processes
+running that very query, whose arguments contain both the marker and the word
+`firefox`. The reaper's first rule had the identical hole. That is precisely
+the trap iteration 197's plan named ("not with the checker that matches
+itself"), and it is now pinned by
+`iter_197_managed_firefox_pids_ignores_a_shell_running_the_query` using the
+observed `zsh` line. The caller's own PID is excluded on top of that.
 
 **Cost, stated**: a `cargo` in its own process group is no longer in the
 terminal's foreground group, so an operator's Ctrl-C reaches `xtask` but not
@@ -1825,6 +1836,13 @@ reproduce it. The hang is a rare, load-dependent event seen once in three
 whole-tier sweeps, which is itself the argument for bounding the sweep rather
 than fixing one test: the bound is correct no matter which test hangs next.
 Left open in the iteration plan's task A rather than ticked.
+
+**Verification** (2026-08-24): four forced trips against the real tier
+(`live-sweep --jobs 1 --phase-stall-secs 3`) — 4/4 killed at the bound with
+`total` conserved and exit 1, 3/4 had a live browser to reap and reaped it, 4/4
+left zero survivors by `pgrep -fl 'ff-rdp-profile-'`. The bound does **not**
+fire on a healthy sweep: a whole tier at default bounds with both env gates ran
+`276 passed / 0 failed` in 239.9 s, `timed_out=0`, exit 0.
 
 **Applies to**: `crates/xtask/src/live_sweep.rs`, `crates/xtask/src/main.rs`,
 `CONTRIBUTING.md`, `.claude/skills/iteration-close/SKILL.md`, iter-197.

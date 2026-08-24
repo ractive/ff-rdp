@@ -149,9 +149,8 @@ sweep is interrupted by hand anyway.
 
 ### Verification (2026-08-24)
 
-A real sweep with the bound forced small enough to trip mid-tier —
-`FF_RDP_LIVE_TESTS=1 cargo run -p xtask -- live-sweep --jobs 1 --phase-stall-secs 3`, which is
-guaranteed to fire because a serial live test takes ~7-8 s:
+**Forced trip against the real tier.** `FF_RDP_LIVE_TESTS=1 cargo run -p xtask -- live-sweep
+--jobs 1 --phase-stall-secs 3` is guaranteed to fire, because a serial live test takes ~7-8 s:
 
 ```
 live-sweep: WATCHDOG — `cargo test -p ff-rdp-cli --test live` (phase 1: real run,
@@ -159,21 +158,48 @@ live-sweep: WATCHDOG — `cargo test -p ff-rdp-cli --test live` (phase 1: real r
   result lines); killing its process group.
 live-sweep: -p ff-rdp-cli --test live was KILLED after 3s of silence (mid-tier). 243 test(s)
   never reported a verdict and are counted `timed_out`, not `executed`: …
-live-sweep: reaped 1 orphaned ff-rdp-managed Firefox process(es): 3526
+live-sweep: reaped 1 orphaned ff-rdp-managed Firefox process(es): 70112
 LIVE_SWEEP_SUMMARY executed=1 skipped=33 preexisting=8 vanished=0 launch_timeout=0
   timed_out=243 total=285
 Error: live-sweep: a phase had to be killed by the watchdog — 243 qualified live test(s) never
   reported a verdict (named above) …
-EXIT=1 ELAPSED=113s
+EXIT=1
 ```
 
-`1 + 33 + 8 + 243 = 285` — `total` conserved. Exit 1. Orphan check afterwards
-(`ps -eo pid=,args= | grep -F ff-rdp-profile- | grep -i firefox`, which cannot match itself the
-way a `pgrep` pipeline can): **0**.
+`1 + 33 + 8 + 243 = 285` — `total` conserved, exit 1. Repeated four times after the argv[0]
+hardening below: **4/4 killed at the bound, 3/4 had a live browser to reap and reaped it, 4/4 left
+0 orphans** by `pgrep -fl 'ff-rdp-profile-'`. (The fourth tripped between two tests, when no
+browser was running — "no ff-rdp-managed Firefox was left behind" is the correct report there,
+not a miss.)
 
-That run also produced the one review finding worth recording: 243 names on a single ~20 KB log
-line is technically complete and operationally useless, so the printed form is now capped at 20
-names plus a count. The accounting still uses the full set.
+**The checker really does match itself, and so did the first version of the reaper.** The plan's
+warning was not theoretical. The shell one-liner used to *count* survivors —
+`ps -eo pid=,args= | grep -F ff-rdp-profile- | grep -ci firefox` — reported 1, then 3, with no
+browser running at all: what it matched was the `zsh -c …` processes running that very query,
+whose own arguments contain both the profile marker and the word `firefox`. The reaper's first
+rule (`cmdline.contains("firefox")`) had the identical hole. It now consults **`argv[0]` only**, so
+a process is a Firefox if it *is* one rather than if it mentions one, with the observed `zsh -c`
+line pinned as `iter_197_managed_firefox_pids_ignores_a_shell_running_the_query`. Every orphan
+number quoted here is from `pgrep -fl 'ff-rdp-profile-'`, which does not have the hole.
+
+**The watchdog does not fire on a healthy sweep.** Whole tier at default bounds, both env gates:
+
+```
+FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo run -p xtask -- live-sweep
+LIVE_SWEEP_SUMMARY executed=276 skipped=0 preexisting=9 vanished=0 launch_timeout=0
+  timed_out=0 total=285
+test result: ok. 276 passed; 0 failed  (239.9 s, --test-threads=6)   SWEEP_EXIT=0, 248 s
+```
+
+`276 passed + 0 failed == executed=276` reconciles. `preexisting=9` because the port-6000 browser
+could not be started on this machine at all — a raw `firefox -no-remote -profile <dir>
+--start-debugger-server 6000 --headless` died with `Exiting due to channel error` (a macOS
+headless GFX failure, nothing to do with ff-rdp), so those nine `ff-rdp-core` tests were reported
+`ignored` rather than executed. Stated rather than papered over.
+
+**One review finding, from the forced run**: 243 names on a single ~20 KB log line is technically
+complete and operationally useless. The printed form is now capped at 20 names plus a count
+(`format_name_list`); the accounting still uses the full set.
 
 ## Tasks
 
@@ -215,7 +241,17 @@ names plus a count. The accounting still uses the full set.
 - [x] The runner choice (watchdog vs nextest) is argued in this plan against the accounting
       guarantees, not only against wall clock — "The runner choice" above; repeated in
       `live_sweep.rs`' module doc and `kb/decision-log.md` DEC-049
-- [x] No orphaned `ff-rdp`-managed Firefox survives a timed-out sweep — 1 reaped, 0 survivors
+- [x] No orphaned `ff-rdp`-managed Firefox survives a timed-out sweep — 4 forced timeouts,
+      3 reaps, 0 survivors by `pgrep -fl 'ff-rdp-profile-'` every time
+
+## Carry-over
+
+| # | item | disposition |
+|---|---|---|
+| 1 | Why `live_158_launch_survives_contended_bind` hangs — task A, unreproduced in 12 attempts | **no plan, reason stated.** There is nothing measured left to act on: no stack, no blocked call, no failing run. What would change that is now built — a recurrence produces `timed_out=N` naming the test instead of an unbounded freeze. **If a sweep reports `timed_out` naming this test again, it needs its own plan**, with the captured `sample`/`lldb` stack of the test binary the watchdog killed. |
+| 2 | `live_137_daemon_mode_parity::live_137_consent_accept_via_daemon` and `live_165_eval_call_scope::live_165_repeated_const_matches_help` failed the first sweep of this iteration (`daemon never reported live frame targets`; `daemon did not respond within the timeout after auth`) | **contaminated run, re-run clean, still a row.** That sweep overlapped `cargo fmt`/`clippy`/`cargo test -p xtask` on the same machine — load I added. The clean re-run was 276/276. `live_137_consent_accept_via_daemon` is one of the four tests [[iteration-188-live-sweep-cost-and-parallelism]] measured as contention artifacts at `-j8`; seeing it at `-j6` under extra load is the same phenomenon. **Folded into [[iteration-198-live-tests-red-only-under-concurrency]]**, which is the plan for exactly this question — `live_165_repeated_const_matches_help` added to it as a second daemon-timeout data point. |
+| 3 | The Windows branches of `kill_phase_tree` (`taskkill /F /T`), `process_listing` (PowerShell `Get-CimInstance Win32_Process`) and `kill_pid_hard` compile but have never been executed | **no plan, reason stated.** `live-sweep` is not run on Windows by CI or by anyone today, and the parsing half — the part with real logic — *is* covered on every platform by `iter_197_argv0_handles_a_quoted_windows_path`. **If anyone runs `live-sweep` on Windows, the PowerShell listing format is the first thing to check** and that warrants its own plan. |
+| 4 | A completed sweep's real-root orphan guarantee is still unasserted | **already filed**, [[iteration-202-live-sweep-lost-its-real-root-orphan-guarantee]]. This iteration's reaper only runs on the timeout path, by design — it does not close 202. |
 
 ## Out of scope
 
