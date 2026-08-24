@@ -1585,3 +1585,88 @@ reached fourteen files by copy-paste and would again.
 `kb/iterations/*.dogfood.sh`, `tools/lint-dogfood-script.sh`,
 `tools/tests/lint-dogfood-script/`,
 `crates/xtask/tests/lint_dogfood_script.rs`.
+
+---
+
+## DEC-047: the 82 pre-requirement plans are grandfathered by exact file name, not backfilled
+
+**Date**: 2026-08-24 (iter-195)
+
+**Decision**: `check-iteration-plan` recognises 82 named plans in
+`kb/iterations/` as predating the `dogfood_path` and `first_call_sites`
+requirements, and downgrades those two findings to warnings for them. The
+whole-directory sweep now reports zero failures over all 232 plans. The
+requirement is unchanged for every other plan.
+
+**Why**: iteration 187 needed to prove it introduced no regression, so it ran
+the linter over the whole directory — and found 85 of 222 plans failing, on
+`origin/main` and on its own branch alike. That number had never been measured.
+Two of 187's boxes ("All existing plans still pass", "Every plan currently in
+`kb/iterations/` still validates") had been written on the assumption the sweep
+was green. It never had been.
+
+A sweep that always prints 85 failures is not a check. Nobody can distinguish a
+plan filed today without a `dogfood_path` from the historical baseline, which is
+exactly how 187 came to assert a green sweep it had not run. Either the number
+goes to zero or the sweep is worthless.
+
+**What the 85 were**: 3 plans (80, 82, 83) wrote `first_call_sites` entries as
+`"Primitive: crates/…/file.rs"` strings where the schema wants
+`{primitive, site}` maps — fixed directly, in place, without changing their
+meaning. The remaining 82 all carry an iteration id of 61 or lower, all are
+terminal (`done`/`obsolete`), and all are missing `dogfood_path`; 5 of them are
+also missing `first_call_sites`. The requirements arrived with iteration 62 and
+were never backfilled.
+
+**Alternatives rejected**:
+
+*Backfill the 82.* A `dogfood_path` is a record of commands someone actually
+ran. Writing one in 2026-08 for work delivered in 2025 would be inventing
+evidence — the precise failure mode the requirement exists to prevent. Rejected
+outright, not on cost.
+
+*Declare the whole-directory sweep out of scope and document 82 as the expected
+count.* Cheapest, and the plan named it as arguably correct. Rejected because a
+non-zero expected count cannot be enforced by anything: no CI job, no reviewer
+and no agent can tell 82 from 83 without a stored baseline nobody will maintain.
+The green sweep is the only version of this that a machine can check.
+
+*Key the exemption on the iteration number (`id <= 61`).* Compact — the
+boundary is genuinely clean — but a newly filed `iteration-61z-*.md` would fall
+into it silently. Iteration 187 had already faced this choice for the duplicate
+44/73 pairs and keyed `LEGACY_COLLISIONS` on the exact file-name set for the
+same reason; keeping both exemptions the same shape means one rule to remember.
+
+*Weaken the `dogfood_path` requirement for new plans.* Explicitly out of scope in
+the plan, and correctly so — that requirement is what makes a new plan
+reviewable.
+
+**Mechanism**: `LEGACY_PRE_DISCIPLINE_PLANS` is a sorted `&[&str]` of the 82 file
+names. `validate_plan` collects the two content findings separately from the
+`status` finding, and when the file name is on the list it moves them to
+warnings prefixed `legacy plan (predates the requirement, grandfathered by
+iteration 195)`. Downgraded, not suppressed: a sweep still prints what each
+legacy plan is missing while exiting 0. `status` validation and duplicate-number
+detection apply to legacy plans in full.
+
+The list is a ratchet. It may shrink when a plan is genuinely backfilled; it must
+never grow. `every_legacy_entry_names_a_plan_that_still_exists` fails if a listed
+file is renamed or deleted, so a stale exemption cannot sit there exempting
+nothing.
+
+**A correction to the plan's premise**: iteration 195's plan stated that plans
+80, 82 and 83 were invisible to `hyalo` and to the ralph-loop preflight because
+their frontmatter "does not parse at all". That was wrong. Their YAML is valid;
+only xtask's typed view of it failed, and the error text —
+`failed to parse YAML frontmatter` — is what made it look like a syntax error.
+`parse_plan` now parses in two steps and distinguishes "not YAML" from "valid
+YAML, wrong shape". Exactly one plan in the tree is genuinely unreadable by
+`hyalo`: `iteration-84-dogfood-56-real-real-fixes.md`, whose `dogfood_path`
+block scalar is 9086 bytes and breaches hyalo's scalar budget. That is a
+separate defect, filed as iteration 205.
+
+**Applies to**: `crates/xtask/src/check_iteration_plan.rs`, `CONTRIBUTING.md`,
+`kb/iterations/iteration-80-ff-rdp-ergonomics-bundle.md`,
+`kb/iterations/iteration-82-dogfood-54-fixes.md`,
+`kb/iterations/iteration-83-dogfood-55-real-fixes.md`,
+`kb/iterations/iteration-187-nothing-detects-a-duplicate-iteration-number.md`.

@@ -45,7 +45,8 @@ kb_refs:
   - kb/rdp/actors/watcher.md
   - kb/rdp/from-our-codebase/open-gaps.md
 first_call_sites:
-  - "build_version_string (with git-sha): crates/ff-rdp-cli/src/cli/args.rs (Cli::version override)"
+  - primitive: "build_version_string (with git-sha)"
+    site: "crates/ff-rdp-cli/src/cli/args.rs (Cli::version override)"
 dogfood_path: |
   # Theme A — cascade inspector returns real rules on a real site.
   # Pre-iter-82: returns {"computed": null, "rules": []} for every selector.

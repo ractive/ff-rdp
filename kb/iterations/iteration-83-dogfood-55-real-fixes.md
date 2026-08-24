@@ -30,7 +30,8 @@ kb_refs:
   - kb/rdp/actors/watcher.md
   - kb/dogfooding/dogfooding-session-55.md
 first_call_sites:
-  - "Default `--wait-strategy` should be `both` (not `events`) once the budget bug is fixed: crates/ff-rdp-cli/src/commands/navigate.rs"
+  - primitive: "Default `--wait-strategy` should be `both` (not `events`) once the budget bug is fixed"
+    site: crates/ff-rdp-cli/src/commands/navigate.rs
 dogfood_path: |
   # === MANDATORY: rebuild and locally test every theme before ticking ACs ===
   # The AC live tests in iter-82 were ticked without actually being run

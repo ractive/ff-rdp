@@ -2,9 +2,10 @@
 title: "Iteration 195: check-iteration-plan fails on 85 of the 222 plans in the tree, so it can never be run as a sweep"
 type: iteration
 date: 2026-08-23
-status: planned
+status: done
 branch: iter-195/plan-linter-whole-directory-sweep
-depends_on: [187]
+depends_on:
+  - 187
 first_call_sites: []
 dogfood_path: |
   # 1. The measurement. 85 of 222 plans fail the check CLAUDE.md requires
@@ -15,7 +16,7 @@ dogfood_path: |
   done | wc -l
   #    expected TODAY: 85
   #    expected AFTER: 0
-
+  
   # 2. Three of them do not even parse — a different class from the other 82:
   for p in kb/iterations/iteration-80-*.md kb/iterations/iteration-82-*.md \
            kb/iterations/iteration-83-*.md; do
@@ -23,13 +24,18 @@ dogfood_path: |
   done
   #    expected TODAY: "Error: failed to parse YAML frontmatter" for each
   #    expected AFTER: OK
-
+  
   # 3. Iteration 187's dogfood step 3 claims this reports nothing. It does not,
   #    and its sed also strips letter suffixes (61b -> 61). Whatever this
   #    iteration decides, that step's expectation must end up true or be
   #    rewritten to something that is:
   ls kb/iterations/ | sed -E 's/^iteration-([0-9]+).*/\1/' | sort -n | uniq -d
-tags: [iteration, tooling, xtask, process, carry-over]
+tags:
+  - iteration
+  - tooling
+  - xtask
+  - process
+  - carry-over
 ---
 
 # Iteration 195: the plan linter has never been runnable over the whole directory
@@ -87,24 +93,37 @@ Pick one deliberately and write the reasoning down. Do not split the difference 
 
 ## Tasks
 
-### A. Unparseable frontmatter [0/2]
-- [ ] Identify what is malformed in plans 80, 82 and 83 and fix it without changing their meaning
-- [ ] `hyalo find --file` returns their `title` and `status` afterwards, not an error
+### A. Unparseable frontmatter [2/2]
+- [x] Identify what is malformed in plans 80, 82 and 83 and fix it without changing their meaning
+      — `first_call_sites` entries written as `"Primitive: crates/…/file.rs"` strings where the
+      schema wants `{primitive, site}` maps. Each string was split at its `: ` and rewritten as a
+      map; no wording changed.
+- [x] `hyalo find --file` returns their `title` and `status` afterwards, not an error
+      — but it did so **before** the fix too. See "A correction to this plan's premise" below.
 
-### B. The 82 legacy plans [0/2]
-- [ ] A written disposition — backfill, grandfather, or out-of-scope — with the reasoning
-- [ ] Whichever is chosen, `CONTRIBUTING.md`'s "Validate an iteration plan" section says what a
-      whole-directory run is expected to report
+### B. The 82 legacy plans [2/2]
+- [x] A written disposition — backfill, grandfather, or out-of-scope — with the reasoning
+      → `kb/decision-log.md` DEC-047: grandfathered by exact file name, findings downgraded to
+      warnings rather than suppressed. Backfill rejected as inventing evidence; out-of-scope
+      rejected because a non-zero expected count is unenforceable.
+- [x] Whichever is chosen, `CONTRIBUTING.md`'s "Validate an iteration plan" section says what a
+      whole-directory run is expected to report → new "Running it over the whole directory"
+      subsection: zero failures, any output is a regression.
 
-### C. Fix the stale expectations [0/1]
-- [ ] Iteration 187's dogfood steps 3 and 4 either pass as written or are corrected
+### C. Fix the stale expectations [1/1]
+- [x] Iteration 187's dogfood steps 3 and 4 either pass as written or are corrected
+      — step 3 rewritten (it also had to exclude `.dogfood.sh` sidecars, which the plan had not
+      spotted: uncorrected it printed 18 numbers, not 3); step 4 now passes as written.
 
-## Acceptance Criteria [0/3]
+## Acceptance Criteria [3/3]
 
-- [ ] Plans 80, 82 and 83 parse, shown by `check-iteration-plan` output for each
-- [ ] The whole-directory sweep's expected result is documented and matches what it actually
-      prints — whether that number is 0 or 82
-- [ ] No new xtask subcommand (iteration 162a's decision still stands)
+- [x] Plans 80, 82 and 83 parse, shown by `check-iteration-plan` output for each
+      — all three print `check-iteration-plan: OK`.
+- [x] The whole-directory sweep's expected result is documented and matches what it actually
+      prints — whether that number is 0 or 82 → documented as 0, and the sweep over all 232
+      plans prints nothing.
+- [x] No new xtask subcommand (iteration 162a's decision still stands) — `cargo run -p xtask --
+      --help` lists the same 9 commands as on `origin/main`.
 
 ## Out of scope
 
@@ -112,8 +131,50 @@ Pick one deliberately and write the reasoning down. Do not split the difference 
   requirement is what makes a new plan reviewable.
 - **Duplicate-number detection.** Delivered in iteration 187.
 
+## Outcome (2026-08-24)
+
+The sweep is green: 0 failures over all 232 plans (the tree had grown from 222 to 232 since the
+measurement in this plan's header; the failing count was still exactly 85).
+
+The 85 broke down as 3 schema violations + 82 pre-requirement plans. Every one of the 82 carries
+an iteration id of 61 or lower, all are terminal, all are missing `dogfood_path`, and 5 are also
+missing `first_call_sites` — a single clean class with a clean boundary, because the requirements
+arrived with iteration 62.
+
+**Disposition: grandfather, keyed on exact file name.** `LEGACY_PRE_DISCIPLINE_PLANS` in
+`crates/xtask/src/check_iteration_plan.rs` lists the 82; `validate_plan` downgrades their two
+content findings to warnings, so a sweep still prints what each is missing while exiting 0.
+`status` validation and duplicate-number detection still apply to them in full. Keyed on file name
+rather than on `id <= 61` for the same reason iteration 187 keyed `LEGACY_COLLISIONS` that way: a
+newly filed `iteration-61z-*.md` must not fall into the exemption. Full reasoning and the rejected
+alternatives are in `kb/decision-log.md` DEC-047.
+
+### A correction to this plan's premise
+
+This plan asserted that plans 80, 82 and 83 "have frontmatter that does not parse at all" and are
+therefore "invisible to every tool that walks the vault, not just to xtask". Both halves were
+wrong. Their YAML parses fine — `hyalo find --file` returned their `title` and `status` before any
+change here. What failed was xtask's *typed* view of it, and the error text
+(`failed to parse YAML frontmatter`) is what made it look like a syntax error. `parse_plan` now
+parses in two steps and distinguishes "not YAML" from "valid YAML, wrong shape".
+
+Checking the claim did turn up a real instance of it, in a file this plan never named:
+`iteration-84-dogfood-56-real-real-fixes.md` is the one plan `hyalo` genuinely cannot read
+(a 9086-byte block scalar over its `ScalarBytes` budget), and the skip is a stderr warning on an
+otherwise successful exit — so every scripted `hyalo find` in this repo has been silently
+answering from 231 plans. Filed as iteration 205.
+
+### Carry-over
+
+- **[[iteration-205-plan-84-is-invisible-to-hyalo]]** — the one genuinely hyalo-unreadable plan,
+  and whether a silent skip should be detectable without reading stderr.
+- **[[iteration-206-nothing-runs-the-plan-linter-sweep]]** — this iteration made the sweep green
+  because a green sweep is enforceable; wiring the enforcement was not in its tasks or ACs and is
+  not done here.
+
 ## References
 
 - `crates/xtask/src/check_iteration_plan.rs` — `validate_plan`, `parse_plan`
+- `kb/decision-log.md` DEC-047 — the disposition for the 82
 - `kb/iterations/iteration-187-nothing-detects-a-duplicate-iteration-number.md` — the measurement
   and the two deliberately-unticked boxes

@@ -59,20 +59,43 @@ pub fn parse_plan(content: &str) -> Result<ParsedPlan> {
         .trim_start_matches('\n')
         .to_owned();
 
-    let frontmatter: PlanFrontmatter =
+    // Two failures hide behind one message if this is a single `from_str`, and
+    // they call for different fixes: text that is not YAML at all, versus valid
+    // YAML whose shape does not match the plan schema. Plans 80, 82 and 83 were
+    // the second kind — `first_call_sites` written as `"primitive: site"`
+    // strings — and the "failed to parse YAML frontmatter" wording sent
+    // iteration 195's author looking for a syntax error that was not there, and
+    // led its plan to claim `hyalo` could not read those files either. It can:
+    // the YAML is fine, only xtask's typed view of it is not. So parse in two
+    // steps and say which one failed.
+    let raw: serde_norway::Value =
         serde_norway::from_str(yaml_text).context("failed to parse YAML frontmatter")?;
+    let frontmatter: PlanFrontmatter = serde_norway::from_value(raw).context(
+        "frontmatter is valid YAML but does not match the iteration-plan schema \
+         (first_call_sites must be a list of `- primitive: ...` / `  site: ...` maps, \
+         not a list of strings)",
+    )?;
 
     Ok(ParsedPlan { frontmatter, body })
 }
 
 /// Validate a parsed plan.
 ///
+/// `file_name` is the plan's file name, used only to recognise a plan that
+/// predates the `dogfood_path` / `first_call_sites` requirements (see
+/// [`LEGACY_PRE_DISCIPLINE_PLANS`]). Pass `None` when validating content that has
+/// no file behind it; nothing is then grandfathered.
+///
 /// Returns `(findings, warnings)`:
 /// - `findings` are hard failures — any non-empty list means the plan is invalid.
 /// - `warnings` are advisory messages that do not cause a hard failure.
-pub fn validate_plan(plan: &ParsedPlan) -> (Vec<String>, Vec<String>) {
+pub fn validate_plan(plan: &ParsedPlan, file_name: Option<&str>) -> (Vec<String>, Vec<String>) {
     let mut findings = Vec::new();
     let mut warnings = Vec::new();
+    // Findings the grandfather clause may downgrade. `status` and duplicate-number
+    // findings are never collected here: they apply to every plan regardless of
+    // age, and every legacy plan already satisfies them.
+    let mut content_findings: Vec<String> = Vec::new();
     // `obsolete` is a real terminal state distinct from `done` — a plan that was
     // superseded or abandoned rather than delivered (3 such plans exist). It is
     // NOT a synonym for `done`, so it is accepted here rather than normalized
@@ -102,14 +125,14 @@ pub fn validate_plan(plan: &ParsedPlan) -> (Vec<String>, Vec<String>) {
         // Validate first_call_sites.
         match &plan.frontmatter.first_call_sites {
             None => {
-                findings.push(
+                content_findings.push(
                     "plan body mentions pub symbols but first_call_sites is missing or empty; \
                      add first_call_sites: [{primitive: '...', site: '...'}] to frontmatter"
                         .to_owned(),
                 );
             }
             Some(v) if v.is_empty() => {
-                findings.push(
+                content_findings.push(
                     "plan body mentions pub symbols but first_call_sites is missing or empty; \
                      add first_call_sites: [{primitive: '...', site: '...'}] to frontmatter"
                         .to_owned(),
@@ -119,13 +142,13 @@ pub fn validate_plan(plan: &ParsedPlan) -> (Vec<String>, Vec<String>) {
                 // Validate each entry has `primitive` and `site` keys.
                 for (i, entry) in entries.iter().enumerate() {
                     if !entry.contains_key("primitive") {
-                        findings.push(format!(
+                        content_findings.push(format!(
                             "first_call_sites[{}] is missing required key: primitive",
                             i
                         ));
                     }
                     if !entry.contains_key("site") {
-                        findings.push(format!(
+                        content_findings.push(format!(
                             "first_call_sites[{}] is missing required key: site",
                             i
                         ));
@@ -159,7 +182,7 @@ pub fn validate_plan(plan: &ParsedPlan) -> (Vec<String>, Vec<String>) {
     let has_dogfood_path = has_dogfood_path_frontmatter || has_dogfood_section;
 
     if !has_dogfood_path && !has_dogfood_script {
-        findings.push(
+        content_findings.push(
             "missing dogfood_path: add a dogfood_path frontmatter key, a ## Dogfood path \
              section, or a dogfood_script frontmatter key pointing to a sibling .sh file"
                 .to_owned(),
@@ -173,6 +196,17 @@ pub fn validate_plan(plan: &ParsedPlan) -> (Vec<String>, Vec<String>) {
                 .to_owned(),
         );
     }
+
+    // Grandfather clause. A plan on the pre-discipline list keeps its findings —
+    // they are still printed, still true, and still say what is missing — but as
+    // warnings, so a whole-directory sweep exits 0 and any *new* failure stands
+    // out instead of drowning in 82 historical ones.
+    if is_legacy_pre_discipline(file_name) {
+        warnings.extend(content_findings.drain(..).map(|f| {
+            format!("legacy plan (predates the requirement, grandfathered by iteration 195): {f}")
+        }));
+    }
+    findings.extend(content_findings);
 
     (findings, warnings)
 }
@@ -247,6 +281,125 @@ fn is_legacy_collision(id: &str, names: &[String]) -> bool {
             names.iter().zip(expected).all(|(a, b)| a == b)
         }
     })
+}
+
+/// Iteration plans filed before the `dogfood_path` and `first_call_sites`
+/// requirements existed.
+///
+/// Disposition (iteration 195, 2026-08-24). 82 of the 232 plans in
+/// `kb/iterations/` fail the two content requirements, and every one of them
+/// carries an iteration id of 61 or lower: the requirements were introduced with
+/// iteration 62 and were never backfilled. All 82 are terminal (`done` or
+/// `obsolete`).
+///
+/// Backfilling was rejected. A `dogfood_path` is a record of commands someone
+/// actually ran; writing one today for work delivered a year ago would be
+/// inventing evidence, which is the exact failure mode the requirement exists to
+/// prevent. Declaring the whole-directory sweep out of scope was also rejected:
+/// a sweep that always prints 82 failures cannot distinguish a new regression
+/// from the historical baseline, and that is precisely how iteration 187 came to
+/// write "All existing plans still pass" as an acceptance criterion for a sweep
+/// that had never been green.
+///
+/// So the 82 are grandfathered, and — as with [`LEGACY_COLLISIONS`] — the
+/// exemption is keyed on the *exact file name*, not on the iteration number. A
+/// number-range rule (`id <= 61`) would silently exempt a newly filed
+/// `iteration-61z-*.md`; this list cannot grow by accident, only by an explicit
+/// edit here. The findings are downgraded to warnings rather than suppressed, so
+/// a sweep still prints what each legacy plan is missing while exiting 0.
+///
+/// The list is a ratchet: it may shrink when a legacy plan is genuinely
+/// backfilled, and nothing may be added to it.
+const LEGACY_PRE_DISCIPLINE_PLANS: &[&str] = &[
+    "iteration-01-scaffolding.md",
+    "iteration-02-connect-tabs.md",
+    "iteration-03-navigate-eval.md",
+    "iteration-04-console-network.md",
+    "iteration-05-dom-page-text.md",
+    "iteration-06-interaction.md",
+    "iteration-07-extras.md",
+    "iteration-08-perf-and-navigate-network.md",
+    "iteration-09-live-fixture-recording.md",
+    "iteration-10-object-inspect-and-native-actors.md",
+    "iteration-11-native-cookie-access.md",
+    "iteration-12-perf-command.md",
+    "iteration-13-connection-daemon.md",
+    "iteration-14-security-code-review.md",
+    "iteration-15-launch-reliability.md",
+    "iteration-16-command-fixes.md",
+    "iteration-17-llm-ergonomics.md",
+    "iteration-18-dogfooding-fixes.md",
+    "iteration-19-output-size-control.md",
+    "iteration-20-perf-fixes-and-audit.md",
+    "iteration-21-page-understanding.md",
+    "iteration-22-accessibility.md",
+    "iteration-23-dom-css-inspection.md",
+    "iteration-24-responsive-and-comparison.md",
+    "iteration-25-daemon-reliability.md",
+    "iteration-26-storage-and-network.md",
+    "iteration-27-watcher-streaming.md",
+    "iteration-29-code-review-simplification.md",
+    "iteration-30-auto-consent.md",
+    "iteration-31-dogfooding-fixes.md",
+    "iteration-32-dogfooding-fixes-2.md",
+    "iteration-33-dogfooding-fixes-3.md",
+    "iteration-34-cookies-fix.md",
+    "iteration-35-screenshot-fix.md",
+    "iteration-36-console-follow-fix.md",
+    "iteration-37-network-daemon-fix.md",
+    "iteration-38-daemon-client-timeout.md",
+    "iteration-39-llm-ergonomics.md",
+    "iteration-40-daemon-simplification.md",
+    "iteration-41-scroll-commands.md",
+    "iteration-42-site-audit-skill.md",
+    "iteration-43-dx-fixes.md",
+    "iteration-44-github-setup-guide.md",
+    "iteration-44-public-release.md",
+    "iteration-45-dogfood-fixes.md",
+    "iteration-46-e2e-test-consolidation.md",
+    "iteration-47-dogfood-bugfixes.md",
+    "iteration-48-ai-agent-ergonomics.md",
+    "iteration-49-scroll-reload-fixes.md",
+    "iteration-50-contextual-hints.md",
+    "iteration-51-onboarding-fixes.md",
+    "iteration-52-input-eval-ergonomics.md",
+    "iteration-53-stability-fixes.md",
+    "iteration-54-protocol-correctness.md",
+    "iteration-55-daemon-hardening-docs.md",
+    "iteration-56-dogfood-41-fixes.md",
+    "iteration-57-dogfood-42-fixes.md",
+    "iteration-58-ff-rdp-debug-skill.md",
+    "iteration-59-autowait-pointer-retry.md",
+    "iteration-60-compact-responses-refs.md",
+    "iteration-61-script-runner-recorder.md",
+    "iteration-61b-recorder-cli-wiring.md",
+    "iteration-61c-runner-secret-leak-fixes.md",
+    "iteration-61d-recorder-timeout-screenshot.md",
+    "iteration-61g-session-48-deferred.md",
+    "iteration-61i-dogfood-49-fixes.md",
+    "iteration-61j-dogfood-51-fixes.md",
+    "iteration-61k-dogfood-52-fixes.md",
+    "iteration-61l-dogfood-53-fixes.md",
+    "iteration-61m-wire-tracing-and-structured-errors.md",
+    "iteration-61n-daemon-quick-fixes.md",
+    "iteration-61o-live-verify-by-default.md",
+    "iteration-61p-actor-registry-and-front-lifecycle.md",
+    "iteration-61q-resource-command-bus.md",
+    "iteration-61r-multi-actor-commands.md",
+    "iteration-61s-typed-protocol-ides.md",
+    "iteration-61t-wire-the-foundations.md",
+    "iteration-61u-spec-and-front-correctness.md",
+    "iteration-61v-navigate-and-screenshot-completion.md",
+    "iteration-61w-security-hardening-and-cleanup.md",
+    "iteration-61x-honest-commits-and-cleanup.md",
+    "iteration-61y-iteration-discipline-tooling.md",
+];
+
+/// True when `file_name` names a plan that predates the `dogfood_path` /
+/// `first_call_sites` requirements. `None` (a path with no file name) is never
+/// legacy.
+fn is_legacy_pre_discipline(file_name: Option<&str>) -> bool {
+    file_name.is_some_and(|name| LEGACY_PRE_DISCIPLINE_PLANS.contains(&name))
 }
 
 /// Check that `target` is the only plan claiming its iteration id among
@@ -373,7 +526,8 @@ pub fn run(args: Args) -> Result<()> {
         .with_context(|| format!("failed to read {:?}", args.path))?;
 
     let plan = parse_plan(&content)?;
-    let (mut findings, warnings) = validate_plan(&plan);
+    let file_name = args.path.file_name().and_then(|n| n.to_str());
+    let (mut findings, warnings) = validate_plan(&plan, file_name);
 
     // Uniqueness is a property of the file, not of its contents, so it is checked
     // here rather than inside `validate_plan`.
@@ -431,7 +585,7 @@ mod tests {
     fn test_validate_plan_valid_minimal() {
         let content = "---\nstatus: planned\ndogfood_path: \"ff-rdp --help\"\n---\n\n# Body\n";
         let plan = parse_plan(content).unwrap();
-        let (findings, _warnings) = validate_plan(&plan);
+        let (findings, _warnings) = validate_plan(&plan, None);
         assert!(findings.is_empty(), "unexpected findings: {findings:?}");
     }
 
@@ -439,7 +593,7 @@ mod tests {
     fn test_validate_plan_missing_status() {
         let content = "---\ntitle: test\ndogfood_path: x\n---\n# Body\n";
         let plan = parse_plan(content).unwrap();
-        let (findings, _warnings) = validate_plan(&plan);
+        let (findings, _warnings) = validate_plan(&plan, None);
         assert!(
             findings.iter().any(|f| f.contains("status")),
             "expected status finding"
@@ -450,7 +604,7 @@ mod tests {
     fn test_validate_plan_invalid_status() {
         let content = "---\nstatus: in_progress\ndogfood_path: x\n---\n# Body\n";
         let plan = parse_plan(content).unwrap();
-        let (findings, _warnings) = validate_plan(&plan);
+        let (findings, _warnings) = validate_plan(&plan, None);
         assert!(
             findings.iter().any(|f| f.contains("in_progress")),
             "expected invalid status finding"
@@ -461,7 +615,7 @@ mod tests {
     fn test_validate_plan_pub_symbols_without_call_sites() {
         let content = "---\nstatus: planned\ndogfood_path: \"ff-rdp --help\"\n---\n\nThis plan adds `pub fn new_feature()` to the codebase.\n";
         let plan = parse_plan(content).unwrap();
-        let (findings, _warnings) = validate_plan(&plan);
+        let (findings, _warnings) = validate_plan(&plan, None);
         assert!(
             findings.iter().any(|f| f.contains("first_call_sites")),
             "expected first_call_sites finding, got: {findings:?}"
@@ -472,7 +626,7 @@ mod tests {
     fn test_validate_plan_pub_symbols_with_valid_call_sites() {
         let content = "---\nstatus: planned\ndogfood_path: \"ff-rdp --help\"\nfirst_call_sites:\n  - primitive: my_crate::NewFeature\n    site: crates/ff-rdp-cli/src/main.rs:42\n---\n\nThis plan adds `pub fn new_feature()` to the codebase.\n";
         let plan = parse_plan(content).unwrap();
-        let (findings, _warnings) = validate_plan(&plan);
+        let (findings, _warnings) = validate_plan(&plan, None);
         assert!(
             !findings.iter().any(|f| f.contains("first_call_sites")),
             "should not flag first_call_sites when valid: {findings:?}"
@@ -483,7 +637,7 @@ mod tests {
     fn test_validate_plan_missing_dogfood_path() {
         let content = "---\nstatus: planned\n---\n\n# Body without dogfood\n";
         let plan = parse_plan(content).unwrap();
-        let (findings, _warnings) = validate_plan(&plan);
+        let (findings, _warnings) = validate_plan(&plan, None);
         assert!(
             findings.iter().any(|f| f.contains("dogfood_path")),
             "expected dogfood_path finding"
@@ -494,7 +648,7 @@ mod tests {
     fn test_validate_plan_dogfood_section_in_body() {
         let content = "---\nstatus: planned\n---\n\n## Dogfood path\n\nff-rdp screenshot --url https://example.com\n";
         let plan = parse_plan(content).unwrap();
-        let (findings, _warnings) = validate_plan(&plan);
+        let (findings, _warnings) = validate_plan(&plan, None);
         assert!(
             !findings.iter().any(|f| f.contains("dogfood_path")),
             "should accept dogfood section in body"
@@ -505,7 +659,7 @@ mod tests {
     fn test_validate_plan_call_site_missing_keys() {
         let content = "---\nstatus: planned\ndogfood_path: x\nfirst_call_sites:\n  - primitive: foo::Bar\n---\n\nAdds `pub struct NewThing`.\n";
         let plan = parse_plan(content).unwrap();
-        let (findings, _warnings) = validate_plan(&plan);
+        let (findings, _warnings) = validate_plan(&plan, None);
         assert!(
             findings.iter().any(|f| f.contains("site")),
             "expected missing 'site' key finding"
@@ -518,7 +672,7 @@ mod tests {
         let content =
             "---\nstatus: planned\ndogfood_script: iteration-99-test.dogfood.sh\n---\n\n# Body\n";
         let plan = parse_plan(content).unwrap();
-        let (findings, warnings) = validate_plan(&plan);
+        let (findings, warnings) = validate_plan(&plan, None);
         assert!(
             !findings.iter().any(|f| f.contains("dogfood")),
             "dogfood_script alone should satisfy requirement, got findings: {findings:?}"
@@ -534,7 +688,7 @@ mod tests {
         // Both present: no hard finding, but a warning.
         let content = "---\nstatus: planned\ndogfood_path: \"ff-rdp --help\"\ndogfood_script: iter.dogfood.sh\n---\n\n# Body\n";
         let plan = parse_plan(content).unwrap();
-        let (findings, warnings) = validate_plan(&plan);
+        let (findings, warnings) = validate_plan(&plan, None);
         assert!(
             !findings.iter().any(|f| f.contains("dogfood")),
             "both present should not produce a hard finding: {findings:?}"
@@ -550,7 +704,7 @@ mod tests {
         // Neither dogfood_path nor dogfood_script → hard finding as before.
         let content = "---\nstatus: planned\n---\n\n# Body without dogfood\n";
         let plan = parse_plan(content).unwrap();
-        let (findings, _warnings) = validate_plan(&plan);
+        let (findings, _warnings) = validate_plan(&plan, None);
         assert!(
             findings.iter().any(|f| f.contains("dogfood")),
             "expected dogfood finding when neither field set: {findings:?}"
@@ -765,5 +919,137 @@ mod tests {
             failures.extend(duplicate_id_findings(plan, &entries));
         }
         assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    // --- pre-discipline grandfather clause (iteration 195) ---
+
+    #[test]
+    fn schema_mismatch_is_reported_as_a_schema_error_not_a_yaml_error() {
+        // The shape plans 80, 82 and 83 carried: valid YAML, wrong type. The old
+        // single-step parse called this "failed to parse YAML frontmatter",
+        // which reads as a syntax error and is not one.
+        let content = concat!(
+            "---\nstatus: done\n",
+            "first_call_sites:\n  - \"Foo::bar: crates/x/src/y.rs\"\n",
+            "dogfood_path: |\n  echo hi\n---\n\n# Body\n"
+        );
+        let err = parse_plan(content).unwrap_err();
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("does not match the iteration-plan schema"),
+            "expected a schema error, got: {chain}"
+        );
+        assert!(
+            !chain.contains("failed to parse YAML frontmatter"),
+            "valid YAML must not be reported as unparseable: {chain}"
+        );
+    }
+
+    #[test]
+    fn genuinely_broken_yaml_still_reports_a_parse_error() {
+        let content = "---\nstatus: done\n  bad: [unclosed\n---\n\n# Body\n";
+        let err = parse_plan(content).unwrap_err();
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("failed to parse YAML frontmatter"),
+            "expected a YAML parse error, got: {chain}"
+        );
+    }
+
+    #[test]
+    fn legacy_plan_downgrades_content_findings_to_warnings() {
+        let content = "---\nstatus: done\n---\n\n# Body with pub fn something\n";
+        let plan = parse_plan(content).unwrap();
+        let legacy = LEGACY_PRE_DISCIPLINE_PLANS[0];
+        let (findings, warnings) = validate_plan(&plan, Some(legacy));
+        assert!(
+            findings.is_empty(),
+            "a grandfathered plan must produce no hard findings: {findings:?}"
+        );
+        // Downgraded, not silenced: the sweep still says what is missing.
+        assert!(
+            warnings.iter().any(|w| w.contains("dogfood")),
+            "the dogfood finding must survive as a warning: {warnings:?}"
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains("first_call_sites")),
+            "the first_call_sites finding must survive as a warning: {warnings:?}"
+        );
+        assert!(
+            warnings
+                .iter()
+                .all(|w| !w.contains("dogfood") || w.contains("grandfathered by iteration 195")),
+            "downgraded warnings must say why they were downgraded: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn a_new_plan_is_never_grandfathered() {
+        let content = "---\nstatus: planned\n---\n\n# Body\n";
+        let plan = parse_plan(content).unwrap();
+        for name in [
+            // Not on the list at all.
+            "iteration-999-brand-new.md",
+            // A fresh letter suffix inside the legacy number range: a rule keyed
+            // on "id <= 61" would exempt this, an exact-name list must not.
+            "iteration-61z-brand-new.md",
+            // Same number as a listed plan, different slug.
+            "iteration-01-something-else.md",
+        ] {
+            let (findings, _warnings) = validate_plan(&plan, Some(name));
+            assert!(
+                findings.iter().any(|f| f.contains("dogfood")),
+                "{name} must not be grandfathered: {findings:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_plan_still_fails_on_a_bad_status() {
+        // The grandfather clause covers the two content requirements only.
+        let content = "---\nstatus: completed\n---\n\n# Body\n";
+        let plan = parse_plan(content).unwrap();
+        let (findings, _warnings) = validate_plan(&plan, Some(LEGACY_PRE_DISCIPLINE_PLANS[0]));
+        assert!(
+            findings.iter().any(|f| f.contains("status")),
+            "status is validated for legacy plans too: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn every_legacy_entry_names_a_plan_that_still_exists() {
+        // The list is a ratchet — it may shrink when a plan is backfilled, but a
+        // stale entry means a rename went unnoticed and the exemption is now
+        // exempting nothing. Skipped when the repo layout is not reachable (the
+        // check runs from the crate dir under `cargo test`).
+        let Some(dir) = repo_iterations_dir() else {
+            return;
+        };
+        let missing: Vec<&str> = LEGACY_PRE_DISCIPLINE_PLANS
+            .iter()
+            .copied()
+            .filter(|name| !dir.join(name).is_file())
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "grandfathered plans no longer in kb/iterations/: {missing:?}"
+        );
+    }
+
+    #[test]
+    fn legacy_list_is_sorted_and_free_of_duplicates() {
+        let mut sorted = LEGACY_PRE_DISCIPLINE_PLANS.to_vec();
+        sorted.sort_unstable();
+        assert_eq!(
+            sorted.as_slice(),
+            LEGACY_PRE_DISCIPLINE_PLANS,
+            "keep the list sorted so diffs to it are readable"
+        );
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            LEGACY_PRE_DISCIPLINE_PLANS.len(),
+            "duplicate entry in LEGACY_PRE_DISCIPLINE_PLANS"
+        );
     }
 }
