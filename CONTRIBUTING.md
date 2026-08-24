@@ -126,7 +126,7 @@ which dominates the iteration loop's wall-clock cost.
   `--include-ignored`, so libtest reports genuine `ok`/`FAILED`), and runs the rest *without*
   `--include-ignored` so libtest reports them `ignored` using its own vocabulary. It ends with a
   machine-readable
-  `LIVE_SWEEP_SUMMARY executed=N skipped=M preexisting=K vanished=V launch_timeout=L total=T` line — quote
+  `LIVE_SWEEP_SUMMARY executed=N skipped=M preexisting=K vanished=V launch_timeout=L timed_out=X total=T` line — quote
   `executed=N` in the PR body instead of the `cargo test` summary line. Add `--dry-run` to see the split without invoking `cargo test`.
 - **The sweep runs the self-launching tier in parallel** (iter-188). A headless Firefox cold start
   costs 5.64 s +/- 0.02 on an idle 10-core machine, the `ff-rdp-cli` tier performs ~200 of them,
@@ -188,6 +188,20 @@ which dominates the iteration loop's wall-clock cost.
     product is broken" from "the machine could not start a browser in time".
   - Both counts are carved *out* of `executed`, never added on top of it: `total=T` is conserved,
     so no reclassification can inflate `executed`.
+- **`timed_out=X` means the sweep killed a phase that stopped talking** (iter-197). libtest has no
+  per-test timeout of any kind, and until iter-197 neither had `live-sweep`, so a single hung test
+  hung the whole sweep *forever*: iteration 188's third sweep froze after 276 of 277 CLI-tier
+  tests, held four Firefox processes open, printed no `LIVE_SWEEP_SUMMARY` at all, and had to be
+  abandoned on its outer 60-minute harness timeout. For an unattended loop that is strictly worse
+  than a red. Each phase now runs under a watchdog that bounds *silence* rather than wall clock —
+  `--phase-stall-secs` (default 300 s, ~8x the p99 test time iter-188 measured) between libtest
+  result lines, and `--phase-build-secs` (default 900 s) before its first line, where `cargo` is
+  compiling and stdout is legitimately empty. On expiry the phase's process group is killed, every
+  qualified test that never reported a verdict is named and counted `timed_out` (carved out of
+  `executed`, so `total=T` stays conserved), every orphaned ff-rdp-managed Firefox is reaped by
+  command line, and the sweep exits non-zero *with* a summary. **`timed_out` always fails the
+  sweep.** Pass `--phase-stall-secs 0` to restore the pre-197 wait-forever behaviour when
+  attaching a debugger; never in an unattended run.
 - **A live test that cannot launch Firefox FAILS** (iter-158 Theme D). `LiveFirefox::
   headless_on_random_port` returns the launcher directly and panics with the launch exit status
   and its captured stdout *and* stderr; there is no `Option` to `else { return; }` on, and the

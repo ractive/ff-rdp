@@ -1254,6 +1254,33 @@ pub fn slow_flagged_tests(stdout: &str, known: &[String]) -> Vec<String> {
     out
 }
 
+/// How many test names a watchdog report prints before summarising the rest.
+///
+/// The set is normally tiny — libtest prints a result line as each test
+/// *finishes*, so at `--jobs N` at most N tests can be in flight, and the
+/// observed hang left exactly one. It is not bounded by that in the pathological
+/// case (a very small `--phase-stall-secs`, or a hang in the first seconds of a
+/// tier), and a 243-name single-line report is not a report — it is a wall.
+/// The full set is still what the accounting uses; only the printed form is
+/// capped.
+const REPORTED_NAME_CAP: usize = 20;
+
+/// Render a list of test names for an operator: all of them when there are few,
+/// the first [`REPORTED_NAME_CAP`] plus a count when there are many.
+pub fn format_name_list(names: &[String]) -> String {
+    if names.is_empty() {
+        return "<none>".to_owned();
+    }
+    if names.len() <= REPORTED_NAME_CAP {
+        return names.join(", ");
+    }
+    format!(
+        "{}, … and {} more",
+        names[..REPORTED_NAME_CAP].join(", "),
+        names.len() - REPORTED_NAME_CAP
+    )
+}
+
 /// Substring that identifies a Firefox `ff-rdp` started for itself: every
 /// managed profile directory is named `ff-rdp-profile-<16 chars>` and is
 /// passed to Firefox as `--profile <dir>` (`commands::launch::build_command`).
@@ -1489,13 +1516,13 @@ pub fn run(args: Args) -> Result<()> {
                     if unreported.is_empty() {
                         "<none — every test reported; the phase hung after the last one>".to_owned()
                     } else {
-                        unreported.join(", ")
+                        format_name_list(&unreported)
                     }
                 );
                 if !flagged.is_empty() {
                     eprintln!(
                         "live-sweep: libtest's own slow-test notice named: {}",
-                        flagged.join(", ")
+                        format_name_list(&flagged)
                     );
                 }
 
@@ -2537,8 +2564,8 @@ failures:
     #[test]
     fn iter_197_watchdog_leaves_a_finishing_phase_alone() {
         let mut cmd = prints_and_exits("test result: ok. 1 passed");
-        let outcome = run_phase(&mut cmd, "normal phase", PhaseBounds::default())
-            .expect("run_phase");
+        let outcome =
+            run_phase(&mut cmd, "normal phase", PhaseBounds::default()).expect("run_phase");
         assert!(outcome.timed_out.is_none());
         assert!(outcome.success);
         assert!(outcome.stdout.contains("test result: ok. 1 passed"));
@@ -2602,7 +2629,10 @@ failures:
             stall: Duration::from_secs(1),
         };
         let outcome = run_phase(&mut cmd, "grandchild phase", bounds).expect("run_phase");
-        assert!(outcome.timed_out.is_some(), "the phase must have been killed");
+        assert!(
+            outcome.timed_out.is_some(),
+            "the phase must have been killed"
+        );
 
         let recorded = std::fs::read_to_string(&pidfile).expect("grandchild wrote its pid");
         let pid: u32 = recorded.trim().parse().expect("a pid");
@@ -2733,6 +2763,30 @@ not-a-process-line
         assert!(
             managed_firefox_pids(listing, 777).is_empty(),
             "excluding self is what stops the checker matching itself"
+        );
+    }
+
+    /// A watchdog report must stay readable. Forcing the bound to 3 s against
+    /// the real tier on 2026-08-24 left 243 names unreported and printed them
+    /// as one ~20 KB line — technically complete, operationally useless.
+    #[test]
+    fn iter_197_name_list_is_capped_for_an_operator() {
+        assert_eq!(format_name_list(&[]), "<none>");
+
+        let few: Vec<String> = (0..3).map(|i| format!("live_x::t{i}")).collect();
+        assert_eq!(format_name_list(&few), "live_x::t0, live_x::t1, live_x::t2");
+
+        let many: Vec<String> = (0..243).map(|i| format!("live_x::t{i}")).collect();
+        let rendered = format_name_list(&many);
+        assert!(rendered.starts_with("live_x::t0, live_x::t1, "));
+        assert!(
+            rendered.ends_with("… and 223 more"),
+            "the remainder must be counted, not dropped: {rendered}"
+        );
+        assert_eq!(
+            rendered.matches(", ").count(),
+            REPORTED_NAME_CAP,
+            "exactly {REPORTED_NAME_CAP} names plus the summary tail"
         );
     }
 
