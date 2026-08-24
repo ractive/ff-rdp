@@ -1574,16 +1574,26 @@ mod tests {
     /// A raise is undone on drop, so the cap a later test observes is whatever
     /// it was before — the property that makes the raise invisible to
     /// concurrent readers once the guard is gone.
+    ///
+    /// Every observation of the cell here is taken *under* the raise lock, via
+    /// `RaisedFrameCap::prev`. A bare `MAX_FRAME_BYTES_CELL.load()` before the
+    /// guard is constructed races with a sibling raiser and made this very test
+    /// fail 35 times in 200 runs at `--test-threads=16` — the same shape of
+    /// mistake this iteration is removing, caught by the same stress loop.
     #[test]
     fn raised_frame_cap_restores_previous_value_on_drop() {
-        let before = MAX_FRAME_BYTES_CELL.load(Ordering::Relaxed);
-        {
-            let _raise = RaisedFrameCap::raise_to(DEFAULT_MAX_FRAME_BYTES * 3);
+        let before = {
+            let raise = RaisedFrameCap::raise_to(DEFAULT_MAX_FRAME_BYTES * 3);
             assert_eq!(max_frame_bytes(), DEFAULT_MAX_FRAME_BYTES * 3);
-        }
+            raise.prev
+        };
+
+        // The next raiser sees what the dropped guard put back. Any raiser that
+        // slipped in between restored the same value on its own drop, so this
+        // is a fact about the guard rather than a race.
+        let after = RaisedFrameCap::raise_to(DEFAULT_MAX_FRAME_BYTES * 4);
         assert_eq!(
-            MAX_FRAME_BYTES_CELL.load(Ordering::Relaxed),
-            before,
+            after.prev, before,
             "the raw cell value must be restored verbatim, unset included"
         );
     }
@@ -1873,7 +1883,11 @@ mod tests {
         for _ in 0..depth {
             payload.push('}');
         }
-        // Cap is at least default 256 MiB so the frame fits.
+        // This 1204-byte frame goes through the process-global cap, and until
+        // iter-196 that assumption was unfounded: four sibling tests shrank the
+        // cap to 1024 bytes, so this test could observe `FrameTooLarge` instead
+        // of `InvalidPacket`. Nothing shrinks the cap now — see
+        // [`RaisedFrameCap`] — so the default 256 MiB floor holds.
         let frame = encode_frame(&payload);
         let mut cursor = Cursor::new(frame.into_bytes());
 
