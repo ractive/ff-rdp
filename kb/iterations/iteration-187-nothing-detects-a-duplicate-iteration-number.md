@@ -27,15 +27,22 @@ dogfood_path: |
   #    expected AFTER: a failure naming both files and the number they share
   rm -f /tmp/iteration-186-something-else-entirely.md
   
-  # 3. Confirm the directory is currently clean, so the check lands green:
-  ls kb/iterations/ | sed -E 's/^iteration-([0-9]+).*/\1/' | sort -n | uniq -d
-  #    expected: no output
+  # 3. Enumerate the numbers more than one plan claims. Two corrections, both
+  #    made in iteration 195 — as written this step was wrong twice over:
+  #    `ls` also lists the `.dogfood.sh` sidecars that share a plan's stem, and a
+  #    bare `[0-9]+` capture folds `61b` into `61`, so it printed 18 numbers.
+  ls kb/iterations/ | grep -E '^iteration-[0-9]+[a-z]*-.+\.md$' \
+    | sed -E 's/^iteration-([0-9]+[a-z]*)-.*/\1/' | sort -V | uniq -d
+  #    expected: 44 and 73 — the two historical collisions this iteration
+  #    grandfathers in LEGACY_COLLISIONS. Anything else is a real duplicate.
   
   # 4. Every existing plan must still validate after the change:
   for p in kb/iterations/iteration-*.md; do
     cargo run -q -p xtask -- check-iteration-plan "$p" >/dev/null || echo "REGRESSED: $p"
   done
-  #    expected: no output
+  #    expected: no output — true since iteration 195. When this plan was written
+  #    the sweep reported 85 failures both before and after the change, which is
+  #    why Task B's "every plan still validates" box was left unticked here.
 tags:
   - iteration
   - tooling
@@ -132,12 +139,17 @@ Say so plainly if so.
 
 ### B. Non-regression [1/2]
 - [ ] Every plan currently in `kb/iterations/` still validates
+      <!-- Left unticked deliberately: 85 plans failed before this iteration and the same 85
+           failed after it. Iteration 195 made the sweep green; this box records what was true
+           on 2026-08-23 and is not being ticked retroactively. -->
 - [x] The ralph-loop preflight still passes on a range whose plans all exist
 
 ## Acceptance Criteria [2/3]
 
 - [x] A manufactured duplicate fails the check, shown with the command and its output
 - [ ] All existing plans still pass, shown by the loop in the dogfood path
+      <!-- Premise was wrong: the sweep had never been green. Fixed in iteration 195, which
+           grandfathered the 82 pre-requirement plans; the box stays unticked for 187. -->
 - [x] No new xtask command and no new required step — the command count in
       `cargo run -p xtask -- --help` is unchanged
 

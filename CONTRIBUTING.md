@@ -222,7 +222,7 @@ cargo run -p xtask -- check-iteration-plan kb/iterations/iteration-NN-slug.md
 ```
 
 This validates:
-- `status` is one of: `planned`, `in-progress`, `in-review`, `done`
+- `status` is one of: `planned`, `in-progress`, `in-review`, `done`, `obsolete`
 - If the plan body mentions `pub fn/struct/enum/trait/mod`, `first_call_sites` must be non-empty
   with `primitive` and `site` keys per entry
 - A `dogfood_path` frontmatter key or a `## Dogfood path` body section is present
@@ -235,6 +235,46 @@ This validates:
   are not flagged; `.dogfood.sh` sidecars are not counted as plans. The two historical
   collisions — 44 and 73, all four plans terminal — are exempt by exact file-name pair, so a
   *third* plan claiming 44 still fails.
+
+#### Running it over the whole directory
+
+The check is safe to run as a sweep, and a sweep is expected to report **zero failures**:
+
+```sh
+cargo build -q -p xtask
+for p in kb/iterations/iteration-*.md; do
+  ./target/debug/xtask check-iteration-plan "$p" >/dev/null 2>&1 || echo "FAILED: $p"
+done
+# expected: no output
+```
+
+Any output at all is a real regression — either a plan that was filed without a
+`dogfood_path`, or one whose frontmatter stopped matching the schema.
+
+This was not true until iteration 195. 82 of the plans in `kb/iterations/` were filed
+before the `dogfood_path` and `first_call_sites` requirements existed — every one of them
+numbered 61 or lower, all terminal — and the sweep reported 85 failures, so nobody could
+tell a new failure from the background. They are **not** backfilled: a `dogfood_path` is a
+record of commands someone actually ran, and writing one today for work delivered a year
+ago would be inventing evidence. Instead they are grandfathered by exact file name in
+`LEGACY_PRE_DISCIPLINE_PLANS` (`crates/xtask/src/check_iteration_plan.rs`), which downgrades
+their two content findings to warnings — the sweep still *prints* what each one is missing,
+it just exits 0. The exemption is keyed on the file name rather than on the number so that a
+newly filed `iteration-61z-*.md` cannot fall into it; the list is a ratchet that may shrink
+and must never grow.
+
+The requirement itself is unchanged for new plans. A plan filed today without a
+`dogfood_path` fails, as it should.
+
+The duplicate-number one-liner that iteration 187 documented has the same "expect zero"
+trap and needs the same care — `ls` also lists `.dogfood.sh` sidecars, and a naive `[0-9]+`
+capture folds `61b` into `61`:
+
+```sh
+ls kb/iterations/ | grep -E '^iteration-[0-9]+[a-z]*-.+\.md$' \
+  | sed -E 's/^iteration-([0-9]+[a-z]*)-.*/\1/' | sort -V | uniq -d
+# expected: 44 and 73 — the two collisions grandfathered by LEGACY_COLLISIONS
+```
 
 ### Validate firefox_refs in an iteration plan
 
