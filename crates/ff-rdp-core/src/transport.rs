@@ -725,6 +725,20 @@ pub(crate) fn drain_bulk_frame<R: BufRead>(
     reader: &mut R,
     first_byte: u8,
 ) -> Result<(String, String, u64), ProtocolError> {
+    drain_bulk_frame_with_cap(reader, first_byte, max_frame_bytes())
+}
+
+/// [`drain_bulk_frame`] with the frame-size cap supplied by the caller instead
+/// of read from the process-global cell.
+///
+/// Exists so a caller — in practice a test — can exercise the cap without
+/// mutating shared state that every other frame parse in the process reads.
+/// See [`RaisedFrameCap`] for why that matters.
+pub(crate) fn drain_bulk_frame_with_cap<R: BufRead>(
+    reader: &mut R,
+    first_byte: u8,
+    cap: usize,
+) -> Result<(String, String, u64), ProtocolError> {
     // Re-assemble the header starting from the already-consumed first byte.
     let mut header_buf: Vec<u8> = vec![first_byte];
     loop {
@@ -758,7 +772,7 @@ pub(crate) fn drain_bulk_frame<R: BufRead>(
         .map_err(|e| ProtocolError::InvalidPacket(format!("bulk length parse error: {e}")))?;
 
     // Cap check before entering the discard loop.
-    let cap = max_frame_bytes() as u64;
+    let cap = cap as u64;
     if length > cap {
         return Err(ProtocolError::BulkFrameTooLarge {
             announced: length,
@@ -793,6 +807,19 @@ fn recv_bulk_with_handler_from<W: Write, R: BufRead>(
     actor: &str,
     kind: &str,
     out: &mut W,
+) -> Result<u64, ProtocolError> {
+    recv_bulk_with_handler_from_with_cap(reader, actor, kind, out, max_frame_bytes())
+}
+
+/// [`recv_bulk_with_handler_from`] with the frame-size cap supplied by the
+/// caller instead of read from the process-global cell.  See
+/// [`drain_bulk_frame_with_cap`] for why this form exists.
+fn recv_bulk_with_handler_from_with_cap<W: Write, R: BufRead>(
+    reader: &mut R,
+    actor: &str,
+    kind: &str,
+    out: &mut W,
+    cap: usize,
 ) -> Result<u64, ProtocolError> {
     // Peek the first byte WITHOUT consuming it.
     {
@@ -847,7 +874,7 @@ fn recv_bulk_with_handler_from<W: Write, R: BufRead>(
         .map_err(|e| ProtocolError::InvalidPacket(format!("bulk length parse error: {e}")))?;
 
     // Validate cap before any I/O.
-    let cap = max_frame_bytes() as u64;
+    let cap = cap as u64;
     if length > cap {
         return Err(ProtocolError::BulkFrameTooLarge {
             announced: length,
@@ -1054,6 +1081,20 @@ pub fn encode_frame(json: &str) -> String {
 ///    [`ProtocolError::BulkPacketUnsupported`] is returned.  The stream remains
 ///    valid; the caller can log the error once and continue reading.
 pub fn recv_from(reader: &mut impl BufRead) -> Result<Value, ProtocolError> {
+    recv_from_with_cap(reader, max_frame_bytes())
+}
+
+/// [`recv_from`] with the frame-size cap supplied by the caller instead of read
+/// from the process-global cell.
+///
+/// The process-global cap is set once at startup from `--max-frame-mb`; this
+/// form exists for callers — in practice tests — that need a different cap for
+/// one parse without mutating state every other parse in the process reads.
+/// See [`RaisedFrameCap`].
+pub(crate) fn recv_from_with_cap(
+    reader: &mut impl BufRead,
+    cap: usize,
+) -> Result<Value, ProtocolError> {
     // Read the first byte to distinguish JSON vs bulk frames.
     let mut first = [0u8; 1];
     reader.read_exact(&mut first).map_err(map_recv_io_error)?;
@@ -1063,7 +1104,7 @@ pub fn recv_from(reader: &mut impl BufRead) -> Result<Value, ProtocolError> {
         // recv_bulk_with_handler_from.  recv_bulk_frame returns
         // BulkPacketUnsupported after draining; we map that back from the
         // existing helper.
-        return recv_bulk_frame(reader, first[0]);
+        return recv_bulk_frame(reader, first[0], cap);
     }
 
     // Normal JSON frame: read remaining bytes of the length prefix.
@@ -1118,7 +1159,6 @@ pub fn recv_from(reader: &mut impl BufRead) -> Result<Value, ProtocolError> {
 
     // Reject oversized frames before allocating.  A peer that announces more
     // than the configured cap is either corrupted or malicious.
-    let cap = max_frame_bytes();
     if length > cap {
         return Err(ProtocolError::FrameTooLarge {
             declared: length,
@@ -1144,11 +1184,13 @@ pub fn recv_from(reader: &mut impl BufRead) -> Result<Value, ProtocolError> {
 /// "the largest frame ff-rdp will ship" the same number on the wire and in
 /// memory profiles.
 ///
-/// Returns [`ProtocolError::BulkFrameTooLarge`] when `length` exceeds
-/// [`max_frame_bytes`]; otherwise `Ok(())`.
+/// Returns [`ProtocolError::BulkFrameTooLarge`] when `length` exceeds `cap`;
+/// otherwise `Ok(())`.  The cap is a parameter rather than a read of the
+/// process-global cell so the caller can exercise it without mutating shared
+/// state — see [`RaisedFrameCap`].
 #[cfg(test)]
-pub(crate) fn check_outbound_bulk_size(length: u64) -> Result<(), ProtocolError> {
-    let cap = max_frame_bytes() as u64;
+pub(crate) fn check_outbound_bulk_size(length: u64, cap: usize) -> Result<(), ProtocolError> {
+    let cap = cap as u64;
     if length > cap {
         Err(ProtocolError::BulkFrameTooLarge {
             announced: length,
@@ -1167,8 +1209,12 @@ pub(crate) fn check_outbound_bulk_size(length: u64) -> Result<(), ProtocolError>
 ///
 /// Returns [`ProtocolError::BulkPacketUnsupported`] on success (body skipped)
 /// or a parse/IO error if the stream is malformed.
-fn recv_bulk_frame<R: BufRead>(reader: &mut R, first_byte: u8) -> Result<Value, ProtocolError> {
-    let (actor, kind, length) = drain_bulk_frame(reader, first_byte)?;
+fn recv_bulk_frame<R: BufRead>(
+    reader: &mut R,
+    first_byte: u8,
+    cap: usize,
+) -> Result<Value, ProtocolError> {
+    let (actor, kind, length) = drain_bulk_frame_with_cap(reader, first_byte, cap)?;
     Err(ProtocolError::BulkPacketUnsupported {
         actor,
         kind,
@@ -1196,36 +1242,97 @@ fn map_send_io_error(e: std::io::Error) -> ProtocolError {
     }
 }
 
-/// Test-only lock guarding `MAX_FRAME_BYTES_CELL`, the process-global cap
-/// read by every [`recv_from`] call. This lock exists only in `#[cfg(test)]`
-/// builds — it does not run in, and does not guard, the release binary's
-/// production path, where the CLI's `--max-frame-mb` flag sets the cap once
-/// at startup (via [`set_max_frame_bytes`]) before any concurrent access is
-/// possible. Within test builds, the cap is mutated at runtime only by tests
-/// (also via [`set_max_frame_bytes`]).
+/// Test-only RAII guard for the **only** sanctioned mutation of
+/// `MAX_FRAME_BYTES_CELL` inside test builds: *raising* the cap.  Restores the
+/// previous raw cell value on drop, including on panic unwind.
+///
+/// # Why tests may not shrink the process-global cap
 ///
 /// `cargo test` runs every test in the crate's unit-test binary on a shared
-/// thread pool, so the cap is genuinely shared mutable state across
-/// `#[test]` fns in *different* modules, not just within `transport::tests`.
-/// A test that mutates the cap must take a [`write`](std::sync::RwLock::write)
-/// guard (excludes every other holder for the duration the cap is shrunk); a
-/// test that performs a real `recv_from` round-trip whose payload could
-/// exceed a shrunk cap, and therefore depends on the cap staying at its
-/// default, must take a [`read`](std::sync::RwLock::read) guard (many readers
-/// may run concurrently; only a writer excludes them). `RwLock` rather than
-/// `Mutex` so unrelated reader tests don't serialize against each other —
-/// only against the rare writer.
+/// thread pool, so the cap is genuinely shared mutable state across `#[test]`
+/// fns in *different* modules — a mutation by `transport::tests` is visible to
+/// a `specs::types` test parsing a 20 KB frame at that instant.
 ///
-/// iter-150: `specs::types::tests::resolve_slot_longstring_grip_fetches_full_value`
-/// performed a real 20 KB `recv_from` round-trip without taking any guard, so
-/// it could observe a transiently-shrunk 1024-byte cap set by
-/// `max_frame_mb_knob_works` et al. and fail with `FrameTooLarge` — this was
-/// an intermittent CI failure, reproduced deterministically by forcing the
-/// two to interleave (see the iteration plan). This lock used to be private
-/// to `transport::tests`, which is why the guard-vs-mutate contract could be
-/// silently violated by a test outside this module.
+/// iter-150 tried to police that with `FRAME_CAP_LOCK`, an `RwLock<()>` whose
+/// contract was "shrink the cap only under a `write` guard; parse a frame that
+/// could exceed a shrunk cap only under a `read` guard".  The write side was
+/// implemented at all five shrinking tests and the read side essentially never
+/// was: iter-196 found *one* `read()` call in the whole workspace, and four
+/// unguarded 15–20 KB readers besides
+/// (`actors::page_style::tests::parse_computed_properties_resolves_longstring_value`,
+/// `actors::dom_walker::tests::parse_dom_node_resolves_longstring_node_value`,
+/// `actors::dom_walker::tests::parse_dom_node_resolves_longstring_attr_value`,
+/// `actors::storage::tests::parse_cookie_resolves_longstring_value`).  A
+/// reader-less `RwLock` is indistinguishable from a `Mutex` between writers,
+/// which is exactly why the discipline looked complete while
+/// `transport::tests::recv_bulk_with_handler_chunked` (20 KB body) kept losing
+/// the race and failing with `BulkFrameTooLarge { announced: 20000, max: 1024 }`
+/// on branches that touch no transport code at all.
+///
+/// The fix is structural, not conventional: every frame parser now has a
+/// `*_with_cap` form ([`recv_from_with_cap`], [`drain_bulk_frame_with_cap`],
+/// [`check_outbound_bulk_size`]), so a test that wants a small cap passes one
+/// instead of shrinking the cell.  No test shrinks the cap, so no test needs a
+/// read guard, and the lock is gone.
+///
+/// Raising is still allowed — it is the one direction that cannot make a
+/// concurrent parse *stricter*, so no unsynchronised reader can be broken by
+/// it — and [`raise_to`](RaisedFrameCap::raise_to) panics on any attempt to go
+/// below [`DEFAULT_MAX_FRAME_BYTES`], which is what makes "tests do not shrink
+/// the cap" an enforced property rather than a comment.  Pinned by
+/// `transport::tests::raised_frame_cap_refuses_to_shrink`.
 #[cfg(test)]
-pub(crate) static FRAME_CAP_LOCK: std::sync::RwLock<()> = std::sync::RwLock::new(());
+pub(crate) struct RaisedFrameCap {
+    /// Raw cell value observed at construction — restored verbatim on drop, so
+    /// an unset (`0`) cell stays unset.
+    prev: usize,
+    /// Held for the guard's lifetime so two raisers cannot interleave their
+    /// snapshot/restore pairs and leak a raised cap.  Readers need no guard:
+    /// a raised cap cannot make any parse stricter.
+    _exclusive: std::sync::MutexGuard<'static, ()>,
+}
+
+/// Excludes concurrent [`RaisedFrameCap`] holders from each other.  Not a
+/// reader/writer lock — nothing reads under it — so there is no unimplemented
+/// half this time.
+#[cfg(test)]
+static FRAME_CAP_RAISE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+impl RaisedFrameCap {
+    /// Raise the process-global cap to `bytes`.
+    ///
+    /// # Panics
+    ///
+    /// If `bytes` is below [`DEFAULT_MAX_FRAME_BYTES`].  Shrinking the shared
+    /// cell is what made `cargo test --workspace` intermittently red; use the
+    /// `*_with_cap` parsers instead.
+    pub(crate) fn raise_to(bytes: usize) -> Self {
+        // Asserted *before* the lock is taken so the rejection path cannot
+        // poison it for well-behaved callers.
+        assert!(
+            bytes >= DEFAULT_MAX_FRAME_BYTES,
+            "tests must not shrink the process-global frame cap ({bytes} < {DEFAULT_MAX_FRAME_BYTES}); \
+             pass the cap explicitly via recv_from_with_cap / drain_bulk_frame_with_cap instead"
+        );
+        let exclusive = FRAME_CAP_RAISE_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let prev = MAX_FRAME_BYTES_CELL.load(Ordering::Relaxed);
+        MAX_FRAME_BYTES_CELL.store(bytes, Ordering::Relaxed);
+        Self {
+            prev,
+            _exclusive: exclusive,
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for RaisedFrameCap {
+    fn drop(&mut self) {
+        MAX_FRAME_BYTES_CELL.store(self.prev, Ordering::Relaxed);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -1245,26 +1352,6 @@ mod tests {
     /// `REDACT_THRESHOLD`.  Combined with [`RedactThresholdGuard`] this
     /// guarantees both serialization and panic-safe restoration.
     static REDACT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    /// RAII guard that snapshots the current frame-size cap on construction
-    /// and restores it on drop, even if the test panics mid-way.
-    struct FrameCapGuard {
-        prev: usize,
-    }
-
-    impl FrameCapGuard {
-        fn new() -> Self {
-            Self {
-                prev: MAX_FRAME_BYTES_CELL.load(Ordering::Relaxed),
-            }
-        }
-    }
-
-    impl Drop for FrameCapGuard {
-        fn drop(&mut self) {
-            MAX_FRAME_BYTES_CELL.store(self.prev, Ordering::Relaxed);
-        }
-    }
 
     /// RAII guard that snapshots the current redaction threshold on
     /// construction and restores it on drop, even if the test panics.
@@ -1392,39 +1479,47 @@ mod tests {
         // We only send the length prefix followed by a colon; the cursor has
         // no body bytes, so if recv_from tried to allocate and read we would
         // get a RecvFailed instead of FrameTooLarge.
+        //
+        // iter-196: the cap is passed explicitly rather than read from the
+        // process-global cell, so the `max` field can be asserted exactly (a
+        // sibling test raising the cell would otherwise change it) and so this
+        // test never depends on shared mutable state.
         let declared = 400_000_000usize;
         let prefix = format!("{declared}:");
         let mut cursor = Cursor::new(prefix.into_bytes());
 
-        let err = recv_from(&mut cursor).unwrap_err();
+        let err = recv_from_with_cap(&mut cursor, DEFAULT_MAX_FRAME_BYTES).unwrap_err();
         assert!(
             matches!(
                 err,
                 ProtocolError::FrameTooLarge {
                     declared: 400_000_000,
-                    max: _
+                    max: DEFAULT_MAX_FRAME_BYTES
                 }
             ),
             "expected FrameTooLarge, got {err:?}"
         );
     }
 
-    /// AC: `max_frame_mb_knob_works`.  Raising the runtime cap allows a frame
-    /// that the lower cap would reject.  Lowering the cap back rejects the
-    /// same frame.  We use a small declared length so the test allocates
-    /// nothing meaningful.
+    /// AC: `max_frame_mb_knob_works`.  A lower cap rejects a frame that a
+    /// higher cap admits, and the `--max-frame-mb` value the CLI stores is the
+    /// one `recv_from` actually enforces.
+    ///
+    /// iter-196: the first two thirds of this test used to shrink the
+    /// process-global cap to 1024 bytes under a `FRAME_CAP_LOCK` write guard,
+    /// which is what made unrelated 20 KB tests fail intermittently.  Both are
+    /// now expressed with an explicit cap, so nothing shared is mutated.  Only
+    /// the last third touches the global cell, and only to *raise* it — see
+    /// [`RaisedFrameCap`].
     #[test]
     fn max_frame_mb_knob_works() {
-        // Serialise so the tests don't fight over the global cap, and
-        // restore it on drop even if an assertion below panics.
-        let _g = FRAME_CAP_LOCK.write().unwrap();
-        let _restore = FrameCapGuard::new();
+        // The `0 means unset` rule, without touching the global cell.
+        assert_eq!(resolve_frame_cap(0), DEFAULT_MAX_FRAME_BYTES);
+        assert_eq!(resolve_frame_cap(1024), 1024);
 
-        // Lower the cap to 1024 bytes — 2000 bytes must be rejected.
-        set_max_frame_bytes(1024);
-        let prefix = b"2000:".to_vec();
-        let mut cursor = Cursor::new(prefix);
-        let err = recv_from(&mut cursor).unwrap_err();
+        // A 1024-byte cap rejects a 2000-byte frame …
+        let mut cursor = Cursor::new(b"2000:".to_vec());
+        let err = recv_from_with_cap(&mut cursor, 1024).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -1436,85 +1531,65 @@ mod tests {
             "expected FrameTooLarge {{declared:2000, max:1024}}, got {err:?}"
         );
 
-        // Raise the cap to 4096 bytes — same declared length is no longer
-        // rejected at the cap check (it then fails at body read since there
-        // is no body in the cursor, which is fine — we only care that the
-        // FrameTooLarge branch did NOT fire).
-        set_max_frame_bytes(4096);
-        let prefix = b"2000:".to_vec();
-        let mut cursor = Cursor::new(prefix);
-        let err = recv_from(&mut cursor).unwrap_err();
+        // … and a 4096-byte cap lets the same length past the size check (it
+        // then fails at body read since the cursor holds no body, which is
+        // fine — we only care that the FrameTooLarge branch did NOT fire).
+        let mut cursor = Cursor::new(b"2000:".to_vec());
+        let err = recv_from_with_cap(&mut cursor, 4096).unwrap_err();
         assert!(
             !matches!(err, ProtocolError::FrameTooLarge { .. }),
             "raising the cap must allow the frame past the size check, got {err:?}"
         );
 
-        // FrameCapGuard restores the previous value on drop.
+        // The knob itself: what `set_max_frame_bytes` stores is what the
+        // global-reading entry points enforce.  A bulk header is used rather
+        // than a JSON frame so passing the cap check costs no allocation —
+        // `drain_bulk_body` streams in 8 KiB chunks and hits EOF immediately.
+        let raised = DEFAULT_MAX_FRAME_BYTES * 2;
+        let _raise = RaisedFrameCap::raise_to(raised);
+        assert_eq!(max_frame_bytes(), raised, "the knob must round-trip");
+
+        let announced = DEFAULT_MAX_FRAME_BYTES as u64 + 1;
+        let mut cursor = Cursor::new(format!("ulk a1 k1 {announced}:").into_bytes());
+        let err = drain_bulk_frame(&mut cursor, b'b').unwrap_err();
+        assert!(
+            !matches!(err, ProtocolError::BulkFrameTooLarge { .. }),
+            "a length under the raised global cap must pass the cap check, got {err:?}"
+        );
+
+        // RaisedFrameCap restores the previous raw value on drop.
     }
 
-    /// AC (iter-150) `unit_150_regression_pinned`: proves the real,
-    /// process-global `FRAME_CAP_LOCK` actually excludes concurrent access —
-    /// not "usually excludes", which is what the pre-fix code gave when
-    /// `resolve_slot_longstring_grip_fetches_full_value` read the cap with no
-    /// guard at all.
+    /// AC (iter-196) `frame_cap_cannot_be_shrunk_by_tests`: the replacement for
+    /// iter-150's `FRAME_CAP_LOCK` self-test.
     ///
-    /// **Why the assertions below are the ones they are.** iter-150 review
-    /// caught a real flake in an earlier version of this test: it asserted
-    /// `FRAME_CAP_LOCK.try_read().is_ok()` (readers do not exclude readers)
-    /// and a final `try_write().is_ok()` while the five cap-mutating tests
-    /// (`max_frame_mb_knob_works` et al.) were running concurrently. Both are
-    /// genuinely racy against siblings: a writer-preferring `RwLock` can make
-    /// `try_read` fail while a writer is merely *queued*, and a concurrent
-    /// writer test can win the final `try_write` outright. Measured ~12%
-    /// (35/300) under elevated contention (`--test-threads=6`, filtered to
-    /// these tests).
-    ///
-    /// The fix is NOT to swap in a fresh test-local `RwLock` — that would
-    /// only re-assert `std`'s own documented semantics and would prove
-    /// nothing whatsoever about `FRAME_CAP_LOCK`, leaving this AC vacuous.
-    /// Instead this test asserts only the properties that hold *regardless*
-    /// of what sibling threads are doing, by first acquiring the lock with a
-    /// blocking call (which serializes against those siblings) and then
-    /// asserting exclusion from the same thread — `std`'s `RwLock` is not
-    /// reentrant, so those outcomes are facts, not races.
+    /// The invariant that survives the lock's removal is stronger and cheaper
+    /// to hold than "every cap reader remembers to take a read guard" (which
+    /// no reader outside `transport.rs` ever did): tests may raise the
+    /// process-global cap but never shrink it, so no unsynchronised reader can
+    /// observe a cap smaller than the default it was written against.  This
+    /// pins the enforcement — without it `raise_to` is just a comment.
     #[test]
-    fn frame_cap_lock_read_guard_excludes_writers() {
-        // Blocking acquire: serializes against the cap-mutating tests rather
-        // than racing them. Once held, everything below is deterministic.
-        let write_guard = FRAME_CAP_LOCK.write().unwrap();
+    #[should_panic(expected = "must not shrink the process-global frame cap")]
+    fn raised_frame_cap_refuses_to_shrink() {
+        let _guard = RaisedFrameCap::raise_to(1024);
+    }
 
-        // While a cap-mutating test holds the write lock, a cap-*reading*
-        // test (the longstring test) must be excluded — this is the exact
-        // exclusion whose absence made that test intermittently observe a
-        // transiently-shrunk 1024-byte cap.
-        assert!(
-            FRAME_CAP_LOCK.try_read().is_err(),
-            "a writer is held, so a concurrent cap-reader must be excluded"
+    /// A raise is undone on drop, so the cap a later test observes is whatever
+    /// it was before — the property that makes the raise invisible to
+    /// concurrent readers once the guard is gone.
+    #[test]
+    fn raised_frame_cap_restores_previous_value_on_drop() {
+        let before = MAX_FRAME_BYTES_CELL.load(Ordering::Relaxed);
+        {
+            let _raise = RaisedFrameCap::raise_to(DEFAULT_MAX_FRAME_BYTES * 3);
+            assert_eq!(max_frame_bytes(), DEFAULT_MAX_FRAME_BYTES * 3);
+        }
+        assert_eq!(
+            MAX_FRAME_BYTES_CELL.load(Ordering::Relaxed),
+            before,
+            "the raw cell value must be restored verbatim, unset included"
         );
-        assert!(
-            FRAME_CAP_LOCK.try_write().is_err(),
-            "a writer is held, so a second writer must be excluded"
-        );
-
-        drop(write_guard);
-
-        // Symmetrically: while a cap-reader holds the lock, no cap-mutator
-        // may proceed. Also deterministic — we hold the shared guard, so a
-        // writer cannot acquire regardless of sibling activity.
-        let read_guard = FRAME_CAP_LOCK.read().unwrap();
-        assert!(
-            FRAME_CAP_LOCK.try_write().is_err(),
-            "a reader is held, so a concurrent cap-mutator must be excluded"
-        );
-        drop(read_guard);
-
-        // NOTE: "readers do not exclude other readers" and "a writer can
-        // proceed once all readers drop" are deliberately NOT asserted here.
-        // Both depend on sibling threads holding no conflicting guard at that
-        // instant, which no amount of care makes true under `cargo test`'s
-        // default parallelism — they were the ~12% flake. They are `std`
-        // guarantees, not this crate's contract, and pinning them here would
-        // buy nothing.
     }
 
     /// AC: `redact_threshold_tunable`.  A long non-sensitive string passes
@@ -1746,17 +1821,13 @@ mod tests {
     /// `BulkFrameTooLarge`.
     #[test]
     fn bulk_frame_rejects_oversized_announcement() {
-        let _g = FRAME_CAP_LOCK.write().unwrap();
-        let _restore = FrameCapGuard::new();
-
-        set_max_frame_bytes(1024);
         // Header only — no body bytes — declared length way above the cap.
         // If `recv_bulk_frame` allocated/read the body we would observe an
         // EOF instead of `BulkFrameTooLarge`.
         let header = b"bulk conn0/actor1 heap 8000000:";
         let mut cursor = Cursor::new(header.to_vec());
 
-        let err = recv_from(&mut cursor).unwrap_err();
+        let err = recv_from_with_cap(&mut cursor, 1024).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -1774,11 +1845,7 @@ mod tests {
     /// before the wire commits.
     #[test]
     fn bulk_frame_cap_send_side() {
-        let _g = FRAME_CAP_LOCK.write().unwrap();
-        let _restore = FrameCapGuard::new();
-
-        set_max_frame_bytes(1024);
-        let err = check_outbound_bulk_size(2048).unwrap_err();
+        let err = check_outbound_bulk_size(2048, 1024).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -1791,8 +1858,8 @@ mod tests {
         );
 
         // At-cap is fine; below-cap is fine.
-        check_outbound_bulk_size(1024).unwrap();
-        check_outbound_bulk_size(0).unwrap();
+        check_outbound_bulk_size(1024, 1024).unwrap();
+        check_outbound_bulk_size(0, 1024).unwrap();
     }
 
     /// AC: `transport_rejects_deep_json` — a 200-level nested JSON object must
@@ -2254,16 +2321,13 @@ mod tests {
 
     #[test]
     fn recv_bulk_with_handler_oversized_rejected() {
-        let _g = FRAME_CAP_LOCK.write().unwrap();
-        let _restore = FrameCapGuard::new();
-        set_max_frame_bytes(1024);
-
         // Header only — body > cap.
         let header = b"bulk actor1 kind1 8000000:";
         let mut cursor = Cursor::new(header.to_vec());
         let mut out = Vec::new();
         let err =
-            recv_bulk_with_handler_from(&mut cursor, "actor1", "kind1", &mut out).unwrap_err();
+            recv_bulk_with_handler_from_with_cap(&mut cursor, "actor1", "kind1", &mut out, 1024)
+                .unwrap_err();
         assert!(
             matches!(err, ProtocolError::BulkFrameTooLarge { .. }),
             "expected BulkFrameTooLarge, got {err:?}"
@@ -2336,11 +2400,9 @@ mod tests {
     /// rejected before the discard loop (no body bytes read).
     #[test]
     fn bulk_recv_caps_drain_length() {
-        let _g = FRAME_CAP_LOCK.write().unwrap();
-        let _restore = FrameCapGuard::new();
-
-        // Set a very small cap so we can craft a frame that exceeds it.
-        set_max_frame_bytes(100);
+        // A very small cap, passed explicitly, so we can craft a frame that
+        // exceeds it without shrinking the process-global cell.
+        let cap = 100;
 
         // `drain_bulk_frame` receives first_byte = b'b' (already consumed by
         // the caller).  The cursor starts with the rest of the header.
@@ -2362,7 +2424,7 @@ mod tests {
 
         let mut cursor = Cursor::new(stream);
 
-        let res = drain_bulk_frame(&mut cursor, b'b');
+        let res = drain_bulk_frame_with_cap(&mut cursor, b'b', cap);
         assert!(
             matches!(
                 res,
