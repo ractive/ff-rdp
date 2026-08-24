@@ -73,6 +73,13 @@ Always-on rules:
 - Every `TODO`/`FIXME`/`XXX` needs an issue link or `// allow-todo: <reason>` (review rule).
 - Every spec method change needs a live Firefox test, not just a unit test.
 - Commit-message claims (`adds Foo::Bar`) must be backed by the branch diff (review rule).
+- Checked-in `kb/iterations/*.dogfood.sh` scripts source `kb/iterations/dogfood-lib.sh` and
+  call `dogfood_init`. Two rules that library exists to keep, both linted by
+  `tools/lint-dogfood-script.sh`: drive the CLI through its `ffrdp` helper (or
+  `cargo run -p ff-rdp-cli --`), **never a bare `ff-rdp` from PATH** — a stale PATH binary
+  certifies a build that is not the one under test; and **tear down only the browser this
+  run launched** — no `pkill`, which on a shared working tree kills a sibling agent's
+  Firefox. Details in `CONTRIBUTING.md`.
 - Iteration plans include `dogfood_path`, and `first_call_sites` if they add pub items, and an
   iteration number no other plan already claims. Validate:
   `cargo run -p xtask -- check-iteration-plan <plan>` — it fails naming both files when two

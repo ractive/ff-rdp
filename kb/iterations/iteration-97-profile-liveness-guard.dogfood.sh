@@ -14,36 +14,22 @@
 #   FF_RDP_LIVE_TESTS=1 bash kb/iterations/iteration-97-profile-liveness-guard.dogfood.sh
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-for candidate in "$REPO_ROOT/target/debug/ff-rdp" "$REPO_ROOT/target/release/ff-rdp"; do
-  if [ -x "$candidate" ]; then
-    CANDIDATE_DIR="$(dirname "$candidate")"
-    export PATH="$CANDIDATE_DIR:$PATH"
-    echo "using ff-rdp: $candidate"
-    break
-  fi
-done
-unset candidate SCRIPT_DIR
+# shellcheck source=kb/iterations/dogfood-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/dogfood-lib.sh"
 
 SENTINEL="${FF_RDP_DOGFOOD_SENTINEL:?set by check-dogfood-script; run this script via: cargo run -p xtask -- check-dogfood-script <plan.md>}"
 rm -f "$SENTINEL"
 
-PORT=6001
+dogfood_init
+PORT="$(dogfood_free_port)"
 MARKER=".ff-rdp-owner-pid"
 
-cleanup() {
-  ff-rdp --port "$PORT" daemon stop 2>/dev/null || true
-  pkill -f 'firefox.*ff-rdp-profile' 2>/dev/null || true
-}
-trap cleanup EXIT
-
-# Kill any stale Firefox.
-pkill -f 'firefox.*ff-rdp-profile' 2>/dev/null || true
-sleep 1
+# The prune sweeps below are destructive by design. `dogfood_init` scopes them
+# to a private per-run $FF_RDP_HOME, so the only live-owner profile they can
+# reach is the one this script launched (iter-193).
 
 # Resolve the profile root via `profiles list`.
-PROFILE_ROOT=$(ff-rdp profiles list | jq -r '.results.path')
+PROFILE_ROOT=$(ffrdp profiles list | jq -r '.results.path')
 if [ -z "$PROFILE_ROOT" ] || [ "$PROFILE_ROOT" = "null" ]; then
   echo "FAIL: profiles list did not report a profile root path"
   exit 1
@@ -56,7 +42,8 @@ echo "profile root: $PROFILE_ROOT"
 echo ""
 echo "=== Theme A — launch writes .ff-rdp-owner-pid marker ==="
 
-LAUNCH_JSON=$(ff-rdp launch --headless --port "$PORT")
+dogfood_launch "$PORT"
+LAUNCH_JSON="$DOGFOOD_LAUNCH_JSON"
 sleep 2
 PROFILE_PATH=$(echo "$LAUNCH_JSON" | jq -r '.results.profile_path')
 LAUNCH_PID=$(echo "$LAUNCH_JSON" | jq -r '.results.pid')
@@ -96,7 +83,7 @@ fi
 # An age-gated prune (1s threshold) would delete the profile on mtime alone;
 # the live-owner guard must keep it. `removed` must NOT contain its basename.
 LIVE_BASENAME=$(basename "$PROFILE_PATH")
-PRUNE_JSON=$(ff-rdp profiles prune --older-than 1s)
+PRUNE_JSON=$(ffrdp profiles prune --older-than 1s)
 if echo "$PRUNE_JSON" | jq -e --arg b "$LIVE_BASENAME" \
     '.results.removed | index($b)' >/dev/null; then
   echo "FAIL: Theme B — age-gated prune removed live-owner profile $LIVE_BASENAME"
@@ -114,7 +101,7 @@ echo "PASS: Theme B — live-owner profile survived age-gated prune"
 echo ""
 echo "=== Theme C — --all reports live-owner removals ==="
 
-ALL_JSON=$(ff-rdp profiles prune --all)
+ALL_JSON=$(ffrdp profiles prune --all)
 if ! echo "$ALL_JSON" | jq -e --arg b "$LIVE_BASENAME" \
     '.results.removed_live | index($b)' >/dev/null; then
   echo "FAIL: Theme C — --all did not report $LIVE_BASENAME in removed_live"
@@ -132,7 +119,7 @@ echo "PASS: Theme C — --all reclaimed live-owner dir and surfaced it in remove
 echo ""
 echo "=== reclamation after daemon stop ==="
 
-ff-rdp --port "$PORT" daemon stop >/dev/null 2>&1 || true
+ffrdp --port "$PORT" daemon stop >/dev/null 2>&1 || true
 sleep 1
 REMAINING=$(find "$PROFILE_ROOT" -maxdepth 1 -type d -name 'ff-rdp-profile-*' | wc -l | tr -d ' ')
 echo "PASS: reclamation — $REMAINING managed profile dir(s) remain after stop"

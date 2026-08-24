@@ -13,7 +13,11 @@ rm -f "$SENTINEL"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 CACHE_DIR="$(mktemp -d -t ff-rdp-iter91-cache-XXXX)"
 PLAN_DIR="$(mktemp -d -t ff-rdp-iter91-plan-XXXX)"
-trap 'rm -rf "$CACHE_DIR" "$PLAN_DIR"' EXIT
+# Per-run scratch dir for the captured xtask output. The fixed
+# /tmp/iter91-run*.out paths this used until iter-193 were shared state
+# between concurrent runs on the same machine.
+WORK="$(mktemp -d -t ff-rdp-iter91-work-XXXX)"
+trap 'rm -rf "$CACHE_DIR" "$PLAN_DIR" "$WORK"' EXIT
 
 FIXTURE_PLAN="$PLAN_DIR/fixture-plan.md"
 SHA_OVERRIDE="iter91-dogfood-sha-abcdef"
@@ -46,13 +50,13 @@ FF_RDP_PRE_FIX_REPRO_CACHE_DIR="$CACHE_DIR" \
   FF_RDP_PRE_FIX_REPRO_SHA_OVERRIDE="$SHA_OVERRIDE" \
   cargo run -q -p xtask -- check-pre-fix-repro \
     --plan "$FIXTURE_PLAN" \
-    --crate-name "$CRATE" > /tmp/iter91-run1.out 2>&1
+    --crate-name "$CRATE" > "$WORK/run1.out" 2>&1
 FIRST_END=$(date +%s)
 FIRST_ELAPSED=$(( FIRST_END - FIRST_START ))
 
-grep -q 'cache hit' /tmp/iter91-run1.out || {
+grep -q 'cache hit' "$WORK/run1.out" || {
   echo "FAIL: first run did not report cache hit" >&2
-  cat /tmp/iter91-run1.out >&2
+  cat "$WORK/run1.out" >&2
   exit 1
 }
 
@@ -63,13 +67,13 @@ FF_RDP_PRE_FIX_REPRO_CACHE_DIR="$CACHE_DIR" \
   FF_RDP_PRE_FIX_REPRO_SHA_OVERRIDE="$SHA_OVERRIDE" \
   cargo run -q -p xtask -- check-pre-fix-repro \
     --plan "$FIXTURE_PLAN" \
-    --crate-name "$CRATE" > /tmp/iter91-run2.out 2>&1
+    --crate-name "$CRATE" > "$WORK/run2.out" 2>&1
 SECOND_END=$(date +%s)
 SECOND_ELAPSED=$(( SECOND_END - SECOND_START ))
 
-grep -q 'cache hit' /tmp/iter91-run2.out || {
+grep -q 'cache hit' "$WORK/run2.out" || {
   echo "FAIL: second run did not report cache hit" >&2
-  cat /tmp/iter91-run2.out >&2
+  cat "$WORK/run2.out" >&2
   exit 1
 }
 
@@ -79,11 +83,11 @@ if [ "$SECOND_ELAPSED" -ge 5 ]; then
 fi
 
 # --- Verify output does not contain forbidden phrase ---
-if grep -q 'green on branch HEAD' /tmp/iter91-run1.out; then
+if grep -q 'green on branch HEAD' "$WORK/run1.out"; then
   echo "FAIL: output contains 'green on branch HEAD' in run1" >&2
   exit 1
 fi
-if grep -q 'green on branch HEAD' /tmp/iter91-run2.out; then
+if grep -q 'green on branch HEAD' "$WORK/run2.out"; then
   echo "FAIL: output contains 'green on branch HEAD' in run2" >&2
   exit 1
 fi

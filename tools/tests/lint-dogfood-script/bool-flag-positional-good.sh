@@ -7,7 +7,7 @@ rm -f "$SENTINEL"
 
 # Correct: --jq-strict is a boolean flag; --jq takes the expression
 set +e
-ERR=$(ff-rdp perf audit --jq-strict --jq '.results.does_not_exist_xyz' 2>&1 >/dev/null)
+ERR=$(cargo run --quiet -p ff-rdp-cli -- perf audit --jq-strict --jq '.results.does_not_exist_xyz' 2>&1 >/dev/null)
 EC=$?
 set -e
 

@@ -11,38 +11,18 @@
 #   FF_RDP_LIVE_TESTS=1 bash kb/iterations/iteration-94-session-59-polish-bundle.dogfood.sh
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-for candidate in "$REPO_ROOT/target/debug/ff-rdp" "$REPO_ROOT/target/release/ff-rdp"; do
-  if [ -x "$candidate" ]; then
-    CANDIDATE_DIR="$(dirname "$candidate")"
-    export PATH="$CANDIDATE_DIR:$PATH"
-    echo "using ff-rdp: $candidate"
-    break
-  fi
-done
-unset candidate SCRIPT_DIR
+# shellcheck source=kb/iterations/dogfood-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/dogfood-lib.sh"
 
 SENTINEL="${FF_RDP_DOGFOOD_SENTINEL:?set by check-dogfood-script; run this script via: cargo run -p xtask -- check-dogfood-script <plan.md>}"
 rm -f "$SENTINEL"
 
-PORT=6000
-
-cleanup() {
-  ff-rdp --port "$PORT" --no-daemon daemon stop 2>/dev/null || true
-  pkill -f 'firefox.*ff-rdp-profile' 2>/dev/null || true
-}
-trap cleanup EXIT
-
-# Kill any stale Firefox.
-pkill -f 'firefox.*ff-rdp-profile' 2>/dev/null || true
-sleep 1
+dogfood_init
+PORT="$(dogfood_free_port)"
 
 echo "=== Launching headless Firefox on port $PORT ==="
-ff-rdp launch --headless --port "$PORT"
+dogfood_launch "$PORT"
 sleep 2
-
-ARGS="--port $PORT --no-daemon --allow-unsafe-urls"
 
 # ---------------------------------------------------------------------------
 # Theme B — render-blocking parity on a local data: fixture
@@ -60,11 +40,11 @@ FIXTURE_HTML="data:text/html,<head><link rel='stylesheet' href='data:text/css,bo
 #   stylesheet (blocking), icon (not blocking), data: script (not blocking), async data: script (not blocking)
 # = 1 blocking total
 
-ff-rdp $ARGS navigate "$FIXTURE_HTML"
+ffrdp --port "$PORT" --no-daemon --allow-unsafe-urls navigate "$FIXTURE_HTML"
 sleep 1
 
-DOM_BLOCKING=$(ff-rdp $ARGS dom stats | jq '.results.render_blocking_count // 0')
-PERF_BLOCKING=$(ff-rdp $ARGS perf audit | jq '.results.dom_stats.render_blocking_count // 0')
+DOM_BLOCKING=$(ffrdp --port "$PORT" --no-daemon dom stats | jq '.results.render_blocking_count // 0')
+PERF_BLOCKING=$(ffrdp --port "$PORT" --no-daemon perf audit | jq '.results.dom_stats.render_blocking_count // 0')
 
 echo "  dom stats render_blocking_count:  $DOM_BLOCKING"
 echo "  perf audit render_blocking_count: $PERF_BLOCKING"
@@ -82,10 +62,10 @@ echo ""
 echo "=== Theme C — cascade inherited_or_default note ==="
 
 # Navigate to a page where h1 inherits color from body (no author rule on h1).
-ff-rdp $ARGS navigate "data:text/html,<body style='color:red'><h1>hello</h1></body>"
+ffrdp --port "$PORT" --no-daemon --allow-unsafe-urls navigate "data:text/html,<body style='color:red'><h1>hello</h1></body>"
 sleep 1
 
-CASCADE_JSON=$(ff-rdp $ARGS cascade h1 --prop color)
+CASCADE_JSON=$(ffrdp --port "$PORT" --no-daemon cascade h1 --prop color)
 INHERITED=$(echo "$CASCADE_JSON" | jq '.results[0].inherited_or_default // false')
 NOTE=$(echo "$CASCADE_JSON" | jq -r '.results[0].note // ""')
 
@@ -109,9 +89,9 @@ echo ""
 echo "=== Theme D — network text null-key suppression ==="
 
 # Navigate to a new page immediately (before network events complete streaming).
-ff-rdp $ARGS navigate "data:text/html,<h1>network-test</h1>"
+ffrdp --port "$PORT" --no-daemon --allow-unsafe-urls navigate "data:text/html,<h1>network-test</h1>"
 
-NETWORK_TEXT=$(ff-rdp $ARGS network --format text 2>/dev/null || true)
+NETWORK_TEXT=$(ffrdp --port "$PORT" --no-daemon network --format text 2>/dev/null || true)
 echo "  network text output (first 10 lines):"
 echo "$NETWORK_TEXT" | head -10
 
@@ -130,7 +110,7 @@ echo ""
 echo "=== Theme A — daemon stop bounded wait ==="
 
 START_TIME=$(date +%s)
-ff-rdp --port "$PORT" --no-daemon daemon stop 2>&1 || true
+ffrdp --port "$PORT" --no-daemon daemon stop 2>&1 || true
 END_TIME=$(date +%s)
 ELAPSED=$((END_TIME - START_TIME))
 

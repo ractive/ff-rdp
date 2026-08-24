@@ -1,56 +1,47 @@
 #!/usr/bin/env bash
 # iter-93 dogfood gate — eval survives strict Content Security Policy sites.
 #
-# Verifies that `ff-rdp eval 'document.title'` works on a page that sets a
-# strict CSP that would have blocked the old eval() isolation wrapper.
+# Verifies that `eval 'document.title'` works on a page that sets a strict CSP
+# that would have blocked the old eval() isolation wrapper.
 #
 # Run manually:
 #   FF_RDP_LIVE_TESTS=1 bash kb/iterations/iteration-93-eval-via-debugger-csp-bypass.dogfood.sh
 set -euo pipefail
 
-# Prefer the development build over any installed ff-rdp binary, so the
-# dogfood script exercises the actual branch code.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-for candidate in "$REPO_ROOT/target/debug/ff-rdp" "$REPO_ROOT/target/release/ff-rdp"; do
-  if [ -x "$candidate" ]; then
-    CANDIDATE_DIR="$(dirname "$candidate")"
-    export PATH="$CANDIDATE_DIR:$PATH"
-    echo "using ff-rdp: $candidate"
-    break
-  fi
-done
-unset candidate SCRIPT_DIR
+# shellcheck source=kb/iterations/dogfood-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/dogfood-lib.sh"
 
 SENTINEL="${FF_RDP_DOGFOOD_SENTINEL:?set by check-dogfood-script; run this script via: cargo run -p xtask -- check-dogfood-script <plan.md>}"
 rm -f "$SENTINEL"
 
-FIXTURE_PORT_FILE=/tmp/ff-rdp-iter93-port.txt
-SERVER_PID_FILE=/tmp/ff-rdp-iter93-server.pid
+dogfood_init
+WORK="$(dogfood_workdir)"
+PORT="$(dogfood_free_port)"
 
-cleanup() {
-  pkill -f 'firefox.*ff-rdp-profile' || true
+FIXTURE_PORT_FILE="$WORK/fixture-port.txt"
+SERVER_PID_FILE="$WORK/fixture-server.pid"
+
+# Extra cleanup for the fixture HTTP server. Registered with dogfood_on_exit
+# rather than a second `trap … EXIT`, which would silently replace the
+# teardown that stops this run's Firefox.
+stop_fixture_server() {
   if [ -f "$SERVER_PID_FILE" ]; then
     kill "$(cat "$SERVER_PID_FILE")" 2>/dev/null || true
   fi
 }
-trap cleanup EXIT
+dogfood_on_exit stop_fixture_server
 
-# Kill any stale Firefox launched by ff-rdp.
-pkill -f 'firefox.*ff-rdp-profile' || true
-sleep 1
-
-# Launch headless Firefox on the default port.
-ff-rdp launch --headless --port 6000
+dogfood_launch "$PORT"
 sleep 2
 
 # Spin up a minimal Python HTTP server that serves a strict-CSP page on a
 # random port.  We use a heredoc to pass the server script inline; this avoids
 # any dependency on axum/hyper and uses only the Python stdlib.
-rm -f "$FIXTURE_PORT_FILE" "$SERVER_PID_FILE"
-
+FF_RDP_ITER93_PORT_FILE="$FIXTURE_PORT_FILE" \
+FF_RDP_ITER93_PID_FILE="$SERVER_PID_FILE" \
 python3 - <<'PYEOF' &
 import http.server
+import os
 
 BODY = b"""<!DOCTYPE html>
 <html>
@@ -75,10 +66,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
 server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
 port = server.server_address[1]
 
-with open("/tmp/ff-rdp-iter93-port.txt", "w") as f:
+with open(os.environ["FF_RDP_ITER93_PID_FILE"], "w") as f:
+    f.write(str(os.getpid()))
+# Written last: the shell polls for this file as the readiness signal.
+with open(os.environ["FF_RDP_ITER93_PORT_FILE"], "w") as f:
     f.write(str(port))
-with open("/tmp/ff-rdp-iter93-server.pid", "w") as f:
-    import os; f.write(str(os.getpid()))
 
 server.serve_forever()
 PYEOF
@@ -95,11 +87,11 @@ FIXTURE_URL="http://127.0.0.1:${FIXTURE_PORT}/"
 echo "fixture server: $FIXTURE_URL"
 
 # Navigate to the CSP fixture.
-ff-rdp navigate "$FIXTURE_URL" \
+ffrdp --port "$PORT" navigate "$FIXTURE_URL" \
   || { echo "FAIL: navigate to CSP fixture failed" >&2; exit 1; }
 
 # Evaluate document.title — must exit 0 on this branch.
-EVAL_OUT=$(ff-rdp eval 'document.title') \
+EVAL_OUT=$(ffrdp --port "$PORT" eval 'document.title') \
   || { echo "FAIL: eval 'document.title' exited non-zero (CSP still blocking?): $EVAL_OUT" >&2; exit 1; }
 
 # Parse the result with Python (available everywhere; avoids a jq dep).
@@ -112,7 +104,7 @@ fi
 echo "Theme A OK: eval 'document.title' = '$RESULT' on strict-CSP page"
 
 # Verify scrollY eval also works.
-SCROLL_OUT=$(ff-rdp eval 'window.scrollTo(0, 100); window.scrollY') \
+SCROLL_OUT=$(ffrdp --port "$PORT" eval 'window.scrollTo(0, 100); window.scrollY') \
   || { echo "FAIL: scrollY eval exited non-zero" >&2; exit 1; }
 SCROLL_Y=$(python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print(d.get('results',0))" <<< "$SCROLL_OUT" 2>/dev/null || echo "0")
 if python3 -c "import sys; sys.exit(0 if float('$SCROLL_Y') >= 1 else 1)" 2>/dev/null; then
@@ -123,7 +115,7 @@ else
 fi
 
 # Verify script errors still surface.
-if ff-rdp eval 'throw new Error("boom")' 2>/dev/null; then
+if ffrdp --port "$PORT" eval 'throw new Error("boom")' 2>/dev/null; then
   echo "FAIL: eval of throw must exit non-zero" >&2
   exit 1
 fi

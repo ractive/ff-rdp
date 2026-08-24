@@ -10,13 +10,16 @@
 #   FF_RDP_LIVE_TESTS=1 bash kb/iterations/iteration-98-*.dogfood.sh
 set -euo pipefail
 
+# shellcheck source=kb/iterations/dogfood-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/dogfood-lib.sh"
+
 SENTINEL="${FF_RDP_DOGFOOD_SENTINEL:?set by check-dogfood-script; run this script via: cargo run -p xtask -- check-dogfood-script <plan.md>}"
 rm -f "$SENTINEL"
 
-# Fresh Firefox — avoid cross-run state pollution.
-pkill -f 'firefox.*ff-rdp-profile' || true
-sleep 1
-ff-rdp launch --headless --port 6000
+dogfood_init
+PORT="$(dogfood_free_port)"
+
+dogfood_launch "$PORT"
 sleep 2
 
 # A self-contained fixture: #probe is 390px by default and 980px inside
@@ -26,16 +29,16 @@ sleep 2
 # document). Decoded body:
 #   <style>#probe{width:390px}@media (min-width: 1024px){#probe{width:980px}}</style><div id="probe">x</div>
 FIXTURE='data:text/html,%3Cstyle%3E%23probe%7Bwidth%3A390px%7D%40media%20(min-width%3A%201024px)%7B%23probe%7Bwidth%3A980px%7D%7D%3C%2Fstyle%3E%3Cdiv%20id%3D%22probe%22%3Ex%3C%2Fdiv%3E'
-ff-rdp navigate --allow-unsafe-urls "$FIXTURE"
+ffrdp --port "$PORT" navigate --allow-unsafe-urls "$FIXTURE"
 
 # --- Theme A: responsive self-check present at 390 and 1280 ---
 # The media_query_check.requested must echo the requested width at each
 # breakpoint (the self-check ran). Over RDP the emulation is layout-only, so we
 # do not assert `matches` — only that the truthful self-check object is present.
-REQ_390=$(ff-rdp responsive '#probe' --widths 390 --jq '.results.breakpoints[0].media_query_check.requested')
+REQ_390=$(ffrdp --port "$PORT" responsive '#probe' --widths 390 --jq '.results.breakpoints[0].media_query_check.requested')
 test "$REQ_390" = "390" || { echo "FAIL Theme A: 390 media_query_check.requested=$REQ_390 (expected 390)" >&2; exit 1; }
 
-REQ_1280=$(ff-rdp responsive '#probe' --widths 1280 --jq '.results.breakpoints[0].media_query_check.requested')
+REQ_1280=$(ffrdp --port "$PORT" responsive '#probe' --widths 1280 --jq '.results.breakpoints[0].media_query_check.requested')
 test "$REQ_1280" = "1280" || { echo "FAIL Theme A: 1280 media_query_check.requested=$REQ_1280 (expected 1280)" >&2; exit 1; }
 
 # --- Theme B: cascade winner respects media context and equals computed ---
@@ -43,16 +46,14 @@ test "$REQ_1280" = "1280" || { echo "FAIL Theme A: 1280 media_query_check.reques
 # active, so computed width is 980px and the media-active override must win.
 # The jq filters below emit the literal `true`/`false` of each assertion so we
 # avoid quoting issues from string values in --jq output.
-COMPUTED_OK=$(ff-rdp cascade '#probe' --prop width --jq '.results[0].computed == "980px"')
-test "$COMPUTED_OK" = "true" || { echo "FAIL Theme B: computed width is not 980px (got $(ff-rdp cascade '#probe' --prop width --jq '.results[0].computed'))" >&2; exit 1; }
+COMPUTED_OK=$(ffrdp --port "$PORT" cascade '#probe' --prop width --jq '.results[0].computed == "980px"')
+test "$COMPUTED_OK" = "true" || { echo "FAIL Theme B: computed width is not 980px (got $(ffrdp --port "$PORT" cascade '#probe' --prop width --jq '.results[0].computed'))" >&2; exit 1; }
 
-WINNER_OK=$(ff-rdp cascade '#probe' --prop width --jq '[.results[0].rules[] | select(.winner == true) | .value] == ["980px"]')
+WINNER_OK=$(ffrdp --port "$PORT" cascade '#probe' --prop width --jq '[.results[0].rules[] | select(.winner == true) | .value] == ["980px"]')
 test "$WINNER_OK" = "true" || { echo "FAIL Theme B: winner value is not 980px == computed" >&2; exit 1; }
 
-VERIFIED=$(ff-rdp cascade '#probe' --prop width --jq '.results[0].winner_verified')
+VERIFIED=$(ffrdp --port "$PORT" cascade '#probe' --prop width --jq '.results[0].winner_verified')
 test "$VERIFIED" = "true" || { echo "FAIL Theme B: winner_verified=$VERIFIED (expected true)" >&2; exit 1; }
-
-pkill -f 'firefox.*ff-rdp-profile' || true
 
 date -u +%Y-%m-%dT%H:%M:%SZ > "$SENTINEL"
 echo "iter-98 dogfood: responsive self-check + media-aware cascade winner verified — $SENTINEL"

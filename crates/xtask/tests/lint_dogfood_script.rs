@@ -184,3 +184,119 @@ fn lint_flags_iter86_assertions_before_fix() {
         "bool-flag-positional fixture (iter-86 Theme D pattern) must FAIL linting"
     );
 }
+
+/// `unit_lint_dogfood_script_flags_unscoped_pkill`:
+/// The opening line every checked-in dogfood script carried until iter-193 —
+/// `pkill -f 'firefox.*ff-rdp-profile'` — must fail the linter, naming the rule.
+/// The pattern is not scoped to the run, so on a machine where several agents
+/// share one working tree it terminates a sibling's browser; that is precisely
+/// why iter-184 could not execute a single migrated script to prove its own
+/// migration.
+#[test]
+fn unit_lint_dogfood_script_flags_unscoped_pkill() {
+    let (ok, combined) = run_linter("unscoped-pkill-bad.sh");
+    assert!(
+        !ok,
+        "expected lint FAIL for unscoped-pkill-bad.sh, got success.\noutput: {combined}"
+    );
+    assert!(
+        combined.contains("[unscoped-pkill]"),
+        "expected [unscoped-pkill] tag in output.\noutput: {combined}"
+    );
+    assert!(
+        combined.contains("did not start"),
+        "diagnostic must say why the kill is unscoped.\noutput: {combined}"
+    );
+}
+
+/// The scoped-teardown form the rule points at must lint clean, so the rule is
+/// actionable rather than merely prohibitive.
+#[test]
+fn unit_lint_dogfood_script_scoped_teardown_passes() {
+    let (ok, combined) = run_linter("unscoped-pkill-good.sh");
+    assert!(
+        ok,
+        "expected lint PASS for unscoped-pkill-good.sh, got failure.\noutput: {combined}"
+    );
+}
+
+/// `unit_lint_dogfood_script_flags_path_binary`:
+/// A script invoking a bare `ff-rdp` must fail the linter, naming the rule. A
+/// PATH lookup can resolve a months-old install, letting the gate certify a
+/// build that is not the one on the branch.
+#[test]
+fn unit_lint_dogfood_script_flags_path_binary() {
+    let (ok, combined) = run_linter("path-binary-bad.sh");
+    assert!(
+        !ok,
+        "expected lint FAIL for path-binary-bad.sh, got success.\noutput: {combined}"
+    );
+    assert!(
+        combined.contains("[path-binary]"),
+        "expected [path-binary] tag in output.\noutput: {combined}"
+    );
+    assert!(
+        combined.contains("PATH"),
+        "diagnostic must name $PATH as the problem.\noutput: {combined}"
+    );
+}
+
+/// The `ffrdp` helper form must lint clean — and `cargo run -p ff-rdp-cli --`,
+/// which contains the substring `ff-rdp`, must not be mistaken for a PATH
+/// lookup (the `all-rules-good.sh` fixture uses exactly that spelling).
+#[test]
+fn unit_lint_dogfood_script_binary_under_test_passes() {
+    let (ok, combined) = run_linter("path-binary-good.sh");
+    assert!(
+        ok,
+        "expected lint PASS for path-binary-good.sh, got failure.\noutput: {combined}"
+    );
+    let (ok, combined) = run_linter("all-rules-good.sh");
+    assert!(
+        ok,
+        "`cargo run -p ff-rdp-cli --` must not trip path-binary.\noutput: {combined}"
+    );
+}
+
+/// Every checked-in `kb/iterations/*.dogfood.sh` must lint clean.
+///
+/// This is the regression guard for iteration 193's two headline claims — no
+/// remaining unscoped `pkill`, no remaining bare `ff-rdp` — and it is
+/// deliberately a sweep rather than a spot check: the defect was present in 14
+/// of 16 scripts because each new script was copied from the last one.
+#[test]
+#[cfg(unix)]
+fn unit_lint_dogfood_script_checked_in_scripts_stay_clean() {
+    let dir = repo_root().join("kb/iterations");
+    let mut scripts: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .expect("read kb/iterations")
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with(".dogfood.sh"))
+        })
+        .collect();
+    scripts.sort();
+    assert!(
+        !scripts.is_empty(),
+        "no .dogfood.sh scripts found in {dir:?}"
+    );
+
+    let out = Command::new("bash")
+        .arg(lint_script())
+        .args(&scripts)
+        .current_dir(repo_root())
+        .output()
+        .expect("run lint-dogfood-script.sh");
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.status.success(),
+        "{} checked-in dogfood script(s) failed the linter.\noutput: {combined}",
+        scripts.len()
+    );
+}

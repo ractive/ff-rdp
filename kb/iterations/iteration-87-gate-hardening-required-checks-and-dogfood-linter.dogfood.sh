@@ -10,6 +10,11 @@ SENTINEL="${FF_RDP_DOGFOOD_SENTINEL:?set by check-dogfood-script; run this scrip
 rm -f "$SENTINEL"
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
+# Per-run scratch dir. A fixed /tmp/iter87-* path is shared state between
+# concurrent runs on the same machine, the hazard iter-184 removed from the
+# sentinel and iter-193 removed from the rest of the dogfood scripts.
+WORK="$(mktemp -d -t ff-rdp-iter87-XXXXXX)"
+trap 'rm -rf "$WORK"' EXIT
 LINTER="$REPO_ROOT/tools/lint-dogfood-script.sh"
 SELF_SCRIPT="$REPO_ROOT/kb/iterations/iteration-87-gate-hardening-required-checks-and-dogfood-linter.dogfood.sh"
 
@@ -35,11 +40,11 @@ PLAN="$REPO_ROOT/kb/iterations/iteration-87-gate-hardening-required-checks-and-d
 set +e
 BRANCH_NAME=iter-99/fake-test \
   env -u FF_RDP_LIVE_TESTS \
-  cargo run -q -p xtask -- check-dogfood-script "$PLAN" >/tmp/iter87-gate.out 2>&1
+  cargo run -q -p xtask -- check-dogfood-script "$PLAN" >"$WORK/gate.out" 2>&1
 GATE_EC=$?
 set -e
-test "$GATE_EC" -ne 0 || { echo "FAIL Theme B: fail-by-default gate exited 0 on iter-* branch w/o FF_RDP_LIVE_TESTS" >&2; cat /tmp/iter87-gate.out >&2; exit 1; }
-grep -qi 'FF_RDP_LIVE_TESTS' /tmp/iter87-gate.out || { echo "FAIL Theme B: diagnostic missing FF_RDP_LIVE_TESTS hint" >&2; exit 1; }
+test "$GATE_EC" -ne 0 || { echo "FAIL Theme B: fail-by-default gate exited 0 on iter-* branch w/o FF_RDP_LIVE_TESTS" >&2; cat "$WORK/gate.out" >&2; exit 1; }
+grep -qi 'FF_RDP_LIVE_TESTS' "$WORK/gate.out" || { echo "FAIL Theme B: diagnostic missing FF_RDP_LIVE_TESTS hint" >&2; exit 1; }
 
 # --- Theme A check: branch-protection script asserts live-tests required ---
 # Uses a fake gh shim so the test is network-free.

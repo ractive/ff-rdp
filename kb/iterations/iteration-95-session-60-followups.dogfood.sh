@@ -10,37 +10,19 @@
 #   FF_RDP_LIVE_TESTS=1 bash kb/iterations/iteration-95-session-60-followups.dogfood.sh
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-for candidate in "$REPO_ROOT/target/debug/ff-rdp" "$REPO_ROOT/target/release/ff-rdp"; do
-  if [ -x "$candidate" ]; then
-    CANDIDATE_DIR="$(dirname "$candidate")"
-    export PATH="$CANDIDATE_DIR:$PATH"
-    echo "using ff-rdp: $candidate"
-    break
-  fi
-done
-unset candidate SCRIPT_DIR
+# shellcheck source=kb/iterations/dogfood-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/dogfood-lib.sh"
 
 SENTINEL="${FF_RDP_DOGFOOD_SENTINEL:?set by check-dogfood-script; run this script via: cargo run -p xtask -- check-dogfood-script <plan.md>}"
 rm -f "$SENTINEL"
 
-PORT=6000
-
-cleanup() {
-  ff-rdp --port "$PORT" daemon stop 2>/dev/null || true
-  pkill -f 'firefox.*ff-rdp-profile' 2>/dev/null || true
-}
-trap cleanup EXIT
-
-# Kill any stale Firefox.
-pkill -f 'firefox.*ff-rdp-profile' 2>/dev/null || true
+dogfood_init
+REPO_ROOT="$(dogfood_repo_root)"
+PORT="$(dogfood_free_port)"
 
 echo "=== Launching headless Firefox on port $PORT ==="
-ff-rdp launch --headless --port "$PORT"
+dogfood_launch "$PORT"
 sleep 2
-
-ARGS="--port $PORT --no-daemon --allow-unsafe-urls"
 
 # ---------------------------------------------------------------------------
 # Theme A — daemon stop process-group kill
@@ -53,7 +35,7 @@ echo ""
 echo "=== Theme A — daemon stop process-group kill ==="
 
 # Navigate to a page that triggers multi-process architecture.
-ff-rdp $ARGS navigate "data:text/html,<script>fetch('data:,').catch(()=>{})</script><h1>pgid test</h1>"
+ffrdp --port "$PORT" --no-daemon --allow-unsafe-urls navigate "data:text/html,<script>fetch('data:,').catch(()=>{})</script><h1>pgid test</h1>"
 sleep 2
 
 # Confirm port is open before stop.
@@ -63,7 +45,7 @@ if ! nc -z 127.0.0.1 "$PORT" 2>/dev/null; then
 fi
 
 START_TIME=$(date +%s)
-ff-rdp --port "$PORT" daemon stop
+ffrdp --port "$PORT" daemon stop
 END_TIME=$(date +%s)
 ELAPSED=$((END_TIME - START_TIME))
 
@@ -92,7 +74,7 @@ echo "PASS: Theme A — port $PORT freed after daemon stop in ${ELAPSED}s"
 
 # Relaunch for next theme.
 echo "=== Re-launching Firefox for Theme B ==="
-ff-rdp launch --headless --port "$PORT"
+dogfood_launch "$PORT"
 sleep 2
 
 # ---------------------------------------------------------------------------
@@ -105,13 +87,13 @@ sleep 2
 echo ""
 echo "=== Theme B — cascade --prop populates computed field ==="
 
-ff-rdp $ARGS navigate "data:text/html,<body style='color:red'><h1>cascade test</h1></body>"
+ffrdp --port "$PORT" --no-daemon --allow-unsafe-urls navigate "data:text/html,<body style='color:red'><h1>cascade test</h1></body>"
 sleep 1
 
-CASCADE_JSON=$(ff-rdp $ARGS cascade h1 --prop color)
+CASCADE_JSON=$(ffrdp --port "$PORT" --no-daemon cascade h1 --prop color)
 CASCADE_COMPUTED=$(echo "$CASCADE_JSON" | jq -r '.results[0].computed // "null"')
 
-COMPUTED_JSON=$(ff-rdp $ARGS computed h1 --prop color)
+COMPUTED_JSON=$(ffrdp --port "$PORT" --no-daemon computed h1 --prop color)
 COMPUTED_VALUE=$(echo "$COMPUTED_JSON" | jq -r '.results[0].computed.color // "null"')
 
 echo "  cascade computed: $CASCADE_COMPUTED"
@@ -139,10 +121,10 @@ echo ""
 echo "=== Theme C — doctor binary-staleness check ==="
 
 # Stop Firefox so doctor doesn't trip on an unexpected tab state.
-ff-rdp --port "$PORT" daemon stop 2>/dev/null || true
+ffrdp --port "$PORT" daemon stop 2>/dev/null || true
 
 # Run doctor from within the repo root (so git rev-parse HEAD works).
-DOCTOR_JSON=$(cd "$REPO_ROOT" && ff-rdp --port "$PORT" doctor 2>/dev/null || true)
+DOCTOR_JSON=$(cd "$REPO_ROOT" && ffrdp --port "$PORT" doctor 2>/dev/null || true)
 
 STALENESS_STATUS=$(echo "$DOCTOR_JSON" | jq -r '
   .results[] | select(.name == "binary_staleness") | .status

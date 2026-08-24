@@ -11,36 +11,24 @@
 #   FF_RDP_LIVE_TESTS=1 bash kb/iterations/iteration-96-profile-leak-cleanup.dogfood.sh
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-for candidate in "$REPO_ROOT/target/debug/ff-rdp" "$REPO_ROOT/target/release/ff-rdp"; do
-  if [ -x "$candidate" ]; then
-    CANDIDATE_DIR="$(dirname "$candidate")"
-    export PATH="$CANDIDATE_DIR:$PATH"
-    echo "using ff-rdp: $candidate"
-    break
-  fi
-done
-unset candidate SCRIPT_DIR
+# shellcheck source=kb/iterations/dogfood-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/dogfood-lib.sh"
 
 SENTINEL="${FF_RDP_DOGFOOD_SENTINEL:?set by check-dogfood-script; run this script via: cargo run -p xtask -- check-dogfood-script <plan.md>}"
 rm -f "$SENTINEL"
 
-PORT=6001
+dogfood_init
+PORT="$(dogfood_free_port)"
 
-cleanup() {
-  ff-rdp --port "$PORT" daemon stop 2>/dev/null || true
-  pkill -f 'firefox.*ff-rdp-profile' 2>/dev/null || true
-}
-trap cleanup EXIT
-
-# Kill any stale Firefox.
-pkill -f 'firefox.*ff-rdp-profile' 2>/dev/null || true
-sleep 1
+# `dogfood_init` points $FF_RDP_HOME at a private per-run directory, so the
+# profile root below — and every `profiles prune --all` this script runs
+# against it — can only ever reach profiles this run created. Before iter-193
+# the same commands swept the shared user-level root and deleted profiles
+# belonging to whatever Firefox another agent had running.
 
 # Resolve the profile root via `profiles list` (Theme C surface, also used
 # by Themes A/B assertions below).
-PROFILE_ROOT=$(ff-rdp profiles list | jq -r '.results.path')
+PROFILE_ROOT=$(ffrdp profiles list | jq -r '.results.path')
 if [ -z "$PROFILE_ROOT" ] || [ "$PROFILE_ROOT" = "null" ]; then
   echo "FAIL: profiles list did not report a profile root path"
   exit 1
@@ -75,7 +63,8 @@ seed_orphan "DOGFOODSTALEaaaa"
 seed_orphan "DOGFOODSTALEbbbb"
 seed_orphan "DOGFOODSTALEcccc"
 
-LAUNCH_JSON=$(ff-rdp launch --headless --port "$PORT")
+dogfood_launch "$PORT"
+LAUNCH_JSON="$DOGFOOD_LAUNCH_JSON"
 sleep 2
 PROFILE_PATH=$(echo "$LAUNCH_JSON" | jq -r '.results.profile_path')
 
@@ -98,7 +87,7 @@ echo "PASS: Theme B — 3 stale orphans pruned, fresh profile present ($PROFILE_
 echo ""
 echo "=== Theme A — daemon stop removes active profile ==="
 
-STOP_JSON=$(ff-rdp --port "$PORT" daemon stop)
+STOP_JSON=$(ffrdp --port "$PORT" daemon stop)
 REMOVED=$(echo "$STOP_JSON" | jq -r '.results.profile_removed')
 REMOVED_PATH=$(echo "$STOP_JSON" | jq -r '.results.profile_removed_path')
 
@@ -126,14 +115,14 @@ seed_orphan "DOGFOODPRUNEaaaa"
 seed_orphan "DOGFOODPRUNEbbbb"
 
 # list must count the seeded orphans.
-LIST_COUNT=$(ff-rdp profiles list | jq -r '.results.count')
+LIST_COUNT=$(ffrdp profiles list | jq -r '.results.count')
 if [ "$LIST_COUNT" -lt 2 ]; then
   echo "FAIL: Theme C — profiles list count ($LIST_COUNT) < 2 after seeding"
   exit 1
 fi
 
 # dry-run lists the orphans without deleting them.
-DRY_JSON=$(ff-rdp profiles prune --all --dry-run)
+DRY_JSON=$(ffrdp profiles prune --all --dry-run)
 for suffix in DOGFOODPRUNEaaaa DOGFOODPRUNEbbbb; do
   if ! echo "$DRY_JSON" | jq -e --arg b "ff-rdp-profile-$suffix" \
       '.results.would_remove | index($b)' >/dev/null; then
@@ -148,7 +137,7 @@ done
 echo "PASS: Theme C — prune --dry-run lists orphans without deleting"
 
 # doctor must expose the profile_disk_usage check (status pass/ok/warn, never fail).
-DOCTOR_JSON=$(ff-rdp --port "$PORT" doctor 2>/dev/null || true)
+DOCTOR_JSON=$(ffrdp --port "$PORT" doctor 2>/dev/null || true)
 DISK_STATUS=$(echo "$DOCTOR_JSON" | jq -r '
   .results[] | select(.name == "profile_disk_usage") | .status
 ' 2>/dev/null || echo "missing")
@@ -157,8 +146,9 @@ case "$DISK_STATUS" in
   *) echo "FAIL: Theme C — doctor profile_disk_usage status: $DISK_STATUS"; exit 1 ;;
 esac
 
-# prune --all with no Firefox running removes everything.
-ACTUAL_JSON=$(ff-rdp profiles prune --all)
+# prune --all with no Firefox running removes everything under this run's
+# private profile root.
+ffrdp profiles prune --all >/dev/null
 LEFT=$(find "$PROFILE_ROOT" -maxdepth 1 -type d -name 'ff-rdp-profile-*' | wc -l | tr -d ' ')
 if [ "$LEFT" != "0" ]; then
   echo "FAIL: Theme C — $LEFT ff-rdp-profile-* dirs remain after prune --all"
