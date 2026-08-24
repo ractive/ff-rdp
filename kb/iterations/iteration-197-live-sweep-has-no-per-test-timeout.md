@@ -201,6 +201,26 @@ headless GFX failure, nothing to do with ff-rdp), so those nine `ff-rdp-core` te
 complete and operationally useless. The printed form is now capped at 20 names plus a count
 (`format_name_list`); the accounting still uses the full set.
 
+**And one found by CI, which is the important one.** This PR's first run timed out
+`test (ubuntu-latest)` after 10 minutes on three of the new watchdog tests — the watchdog
+becoming the hang. Two defects, both real and both in the product path, not the tests:
+
+1. `kill -KILL -<pgid>` is the *obsolescent* form. BSD `kill` (macOS) accepts it; a GNU/procps
+   `kill` can parse the negative pid as an option instead, so the group signal never landed on
+   Linux. Now `kill -s KILL -- -<pgid>`, the POSIX spelling, with the old form as a fallback.
+2. Far worse: `run_phase` **joined** its reader thread after the kill. That thread blocks in
+   `read_line` on a pipe whose write end is held by *every* process that inherited the child's
+   stdout, so one surviving grandchild made the join wait forever. A bound that depends on a kill
+   succeeding is not a bound. The thread is now deliberately abandoned on the timeout path and the
+   channel drained with `try_recv` instead. Pinned by
+   `iter_197_watchdog_returns_even_when_the_kill_misses_a_grandchild`, which hands the phase a
+   `POSIX::setsid()`-detached sleeper the group kill provably cannot reach and asserts `run_phase`
+   returns anyway (1.01 s against a 120 s sleeper).
+
+macOS could not have found either one. That is the argument for reading `gh pr checks` rather than
+substituting a local green, which `CLAUDE.md` already makes about clippy and which turns out to
+apply to process semantics too.
+
 ## Tasks
 
 ### A. Diagnose [1/2]

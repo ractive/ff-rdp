@@ -1006,22 +1006,38 @@ fn own_process_group(_cmd: &mut Command) {}
 /// [`reap_managed_firefox`]'s job, and the caller must run it.
 fn kill_phase_tree(child: &mut std::process::Child) {
     let pid = child.id();
+
     #[cfg(unix)]
-    let mut killer = {
-        let mut c = Command::new("kill");
-        c.args(["-KILL", &format!("-{pid}")]);
-        c
-    };
+    {
+        // `kill -s KILL -- -<pgid>`: the POSIX spelling, and the only one that
+        // is portable. The obsolescent `kill -KILL -<pgid>` is accepted by BSD
+        // `kill` (macOS) but a GNU/procps `kill` can parse the negative pid as
+        // an option instead — which is how this landed on CI green locally and
+        // hung on `ubuntu-latest`. `--` ends option parsing on both.
+        let target = format!("-{pid}");
+        let forms: [&[&str]; 2] = [&["-s", "KILL", "--", &target], &["-KILL", &target]];
+        for args in forms {
+            let landed = Command::new("kill")
+                .args(args)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if landed {
+                break;
+            }
+        }
+    }
     #[cfg(not(unix))]
-    let mut killer = {
-        let mut c = Command::new("taskkill");
-        c.args(["/F", "/T", "/PID", &pid.to_string()]);
-        c
-    };
-    let _ = killer
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
+    {
+        let _ = Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+
     // Belt and braces: if the group signal did not land (no `kill` on PATH, a
     // platform without groups), at least the direct child goes away.
     let _ = child.kill();
@@ -1130,12 +1146,29 @@ fn run_phase(cmd: &mut Command, what: &str, bounds: PhaseBounds) -> Result<Phase
     let status = child
         .wait()
         .with_context(|| format!("waiting for {what}"))?;
-    // The pump exits on EOF, which the kill above guarantees.
-    let _ = pump.join();
-    // Anything the pump had already queued when we stopped listening is still
-    // part of this phase's output, and `unreported_tests` reads it.
-    while let Ok(line) = rx.try_recv() {
-        absorb(&line, &mut captured);
+
+    if timed_out.is_none() {
+        // The loop above ended on `Disconnected`, which means the pump already
+        // returned and the channel is already empty. Joining is free.
+        let _ = pump.join();
+    } else {
+        // **Never join after a kill.** The pump blocks in `read_line` on a pipe
+        // whose write end is held by every process that inherited the child's
+        // stdout — so if the process-group signal failed to land, one surviving
+        // grandchild keeps that pipe open and the join waits forever. That turns
+        // the watchdog into the exact unbounded hang it exists to prevent, and
+        // it is not hypothetical: it timed out `ubuntu-latest` at 10 minutes on
+        // this PR's first CI run, because the obsolescent `kill -KILL -<pgid>`
+        // form was being rejected there. The kill spelling is fixed too — but a
+        // bound that depends on a kill succeeding is not a bound, so the thread
+        // is deliberately abandoned instead. It is one blocked thread per
+        // timed-out phase, and a timed-out phase already means the sweep is red.
+        drop(pump);
+        // Whatever the pump had already queued is still this phase's output,
+        // and `unreported_tests` reads it.
+        while let Ok(line) = rx.try_recv() {
+            absorb(&line, &mut captured);
+        }
     }
 
     Ok(PhaseOutcome {
@@ -2691,6 +2724,39 @@ failures:
             !alive,
             "killing only the direct child would leave pid {pid} running — that is \
              the whole reason the phase gets a process group of its own"
+        );
+    }
+
+    /// The regression `ubuntu-latest` found on this PR's first CI run: when the
+    /// process-group kill does **not** land, a grandchild keeps the stdout pipe
+    /// open, and a `run_phase` that joins its reader thread waits forever — the
+    /// watchdog becoming the hang.
+    ///
+    /// Reproduced by handing the child a grandchild the group kill provably
+    /// cannot reach: `POSIX::setsid()` puts it in a session — and therefore a
+    /// process group — of its own, while it keeps the inherited stdout pipe
+    /// open. `run_phase` must still return. `perl` is used rather than
+    /// `setsid(1)`, which does not exist on macOS.
+    #[cfg(unix)]
+    #[test]
+    fn iter_197_watchdog_returns_even_when_the_kill_misses_a_grandchild() {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args([
+            "-c",
+            "perl -MPOSIX -e 'POSIX::setsid(); sleep 120' &              printf 'running 1 test\n'; wait",
+        ]);
+        let bounds = PhaseBounds {
+            build: Duration::from_secs(30),
+            stall: Duration::from_secs(1),
+        };
+        let started = std::time::Instant::now();
+        let outcome = run_phase(&mut cmd, "leaky phase", bounds).expect("run_phase");
+        let elapsed = started.elapsed();
+
+        assert!(outcome.timed_out.is_some());
+        assert!(
+            elapsed < Duration::from_secs(20),
+            "run_phase must not wait on a pipe a survivor is holding open; took {elapsed:?}"
         );
     }
 

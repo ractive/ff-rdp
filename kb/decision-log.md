@@ -1837,6 +1837,17 @@ whole-tier sweeps, which is itself the argument for bounding the sweep rather
 than fixing one test: the bound is correct no matter which test hangs next.
 Left open in the iteration plan's task A rather than ticked.
 
+**The kill must not be load-bearing for termination.** `run_phase` abandons
+its stdout-reader thread on the timeout path rather than joining it. That
+thread blocks in `read_line` on a pipe whose write end is held by every process
+that inherited the child's stdout, so a single grandchild the group signal
+missed makes a join wait forever — the watchdog becoming the hang it exists to
+prevent. This is not hypothetical: it timed out `test (ubuntu-latest)` at ten
+minutes on this iteration's first CI run, because `kill -KILL -<pgid>` (the
+obsolescent form, fine on BSD/macOS) is parsed as an option by GNU/procps
+`kill`. The spelling is now the POSIX `kill -s KILL -- -<pgid>`, *and* the join
+is gone, because a bound that depends on a kill succeeding is not a bound.
+
 **Verification** (2026-08-24): four forced trips against the real tier
 (`live-sweep --jobs 1 --phase-stall-secs 3`) — 4/4 killed at the bound with
 `total` conserved and exit 1, 3/4 had a live browser to reap and reaped it, 4/4
