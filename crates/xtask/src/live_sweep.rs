@@ -251,15 +251,6 @@ impl PhaseBounds {
     }
 }
 
-impl Default for PhaseBounds {
-    fn default() -> Self {
-        Self {
-            build: std::time::Duration::from_secs(DEFAULT_PHASE_BUILD_SECS),
-            stall: std::time::Duration::from_secs(DEFAULT_PHASE_STALL_SECS),
-        }
-    }
-}
-
 /// Concurrency ceiling for phase 1 (iter-188 Theme C).
 ///
 /// Chosen from repeated whole-tier runs on a 10-core / 32 GB machine, not
@@ -2474,6 +2465,17 @@ failures:
 
     use std::time::Duration;
 
+    /// The bounds a sweep runs under when no flag overrides them. Spelled out
+    /// here rather than behind a `Default` impl so the only construction path
+    /// in the product is [`PhaseBounds::from_args`] — a second one would be
+    /// dead weight outside these tests.
+    fn default_bounds() -> PhaseBounds {
+        PhaseBounds {
+            build: Duration::from_secs(DEFAULT_PHASE_BUILD_SECS),
+            stall: Duration::from_secs(DEFAULT_PHASE_STALL_SECS),
+        }
+    }
+
     /// A child that prints one line and then never says anything again — the
     /// shape of the 2026-08-23 hang (libtest reported 276 of 277 tests and
     /// then went silent forever).
@@ -2564,8 +2566,7 @@ failures:
     #[test]
     fn iter_197_watchdog_leaves_a_finishing_phase_alone() {
         let mut cmd = prints_and_exits("test result: ok. 1 passed");
-        let outcome =
-            run_phase(&mut cmd, "normal phase", PhaseBounds::default()).expect("run_phase");
+        let outcome = run_phase(&mut cmd, "normal phase", default_bounds()).expect("run_phase");
         assert!(outcome.timed_out.is_none());
         assert!(outcome.success);
         assert!(outcome.stdout.contains("test result: ok. 1 passed"));
@@ -2592,7 +2593,7 @@ failures:
     /// libtest says anything.
     #[test]
     fn iter_197_bounds_switch_window_on_first_output() {
-        let bounds = PhaseBounds::default();
+        let bounds = default_bounds();
         assert_eq!(
             bounds.current(false),
             Some(Duration::from_secs(DEFAULT_PHASE_BUILD_SECS))
