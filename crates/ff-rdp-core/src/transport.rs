@@ -201,9 +201,22 @@ pub fn set_max_frame_bytes(bytes: usize) {
 }
 
 /// Current cap on frame payload size in bytes.
+///
+/// This is the *default* cap, read from the process-global cell. Every frame
+/// parser in this module also has a `*_with_cap` form that takes the cap as an
+/// argument; prefer those anywhere the cap needs to be something other than
+/// the process-wide setting (notably in tests — see [`RaisedFrameCap`]).
 pub fn max_frame_bytes() -> usize {
-    let v = MAX_FRAME_BYTES_CELL.load(Ordering::Relaxed);
-    if v == 0 { DEFAULT_MAX_FRAME_BYTES } else { v }
+    resolve_frame_cap(MAX_FRAME_BYTES_CELL.load(Ordering::Relaxed))
+}
+
+/// Map a raw [`MAX_FRAME_BYTES_CELL`] value to the effective cap: `0` means
+/// "unset, use [`DEFAULT_MAX_FRAME_BYTES`]".
+///
+/// Split out from [`max_frame_bytes`] so the `0` → default rule can be tested
+/// without touching the process-global cell.
+const fn resolve_frame_cap(raw: usize) -> usize {
+    if raw == 0 { DEFAULT_MAX_FRAME_BYTES } else { raw }
 }
 
 /// Legacy alias for the default frame-size cap.  Prefer
