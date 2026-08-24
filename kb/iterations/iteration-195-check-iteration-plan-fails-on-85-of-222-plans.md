@@ -2,7 +2,7 @@
 title: "Iteration 195: check-iteration-plan fails on 85 of the 222 plans in the tree, so it can never be run as a sweep"
 type: iteration
 date: 2026-08-23
-status: in-review
+status: done
 branch: iter-195/plan-linter-whole-directory-sweep
 depends_on:
   - 187
