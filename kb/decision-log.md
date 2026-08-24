@@ -1733,3 +1733,127 @@ live test once (DEC-022, iter-114). Filed as iteration 207.
 
 **Applies to**: `crates/ff-rdp-core/src/transport.rs`,
 `crates/ff-rdp-core/src/specs/types.rs`, iter-196.
+
+---
+
+## DEC-049: `live-sweep` bounds *silence*, not wall clock, and reaps the browsers its kill cannot reach
+
+**Decision** (iter-197): every `cargo test` phase `xtask live-sweep` drives runs
+under a watchdog. The bound is on **silence** — how long the phase's stdout may
+produce nothing — not on the phase's total duration:
+
+- `--phase-stall-secs`, default **300 s**, applies between libtest result
+  lines, i.e. once results have started arriving.
+- `--phase-build-secs`, default **900 s**, applies before libtest's *first*
+  line, the window in which `cargo` is compiling and stdout is legitimately
+  empty (cargo's progress goes to stderr, which the sweep inherits and never
+  reads).
+- `0` on either disables that window and restores the pre-197 unbounded wait.
+
+On expiry the sweep kills the phase's **process group** — the phase's `cargo`
+is spawned into a group of its own precisely so the group kill reaches the test
+binary, which cargo does not reap on its own death — then names every qualified
+test that never got a verdict line, counts them in a new `timed_out` tier
+carved out of `executed`, reaps every orphaned ff-rdp-managed Firefox, and
+still prints `LIVE_SWEEP_SUMMARY … timed_out=X total=T` before exiting
+non-zero. `total` stays conserved (DEC-043's property, extended).
+
+**Why a bound at all**: libtest has no per-test timeout of any kind. Iteration
+188's third sweep printed `test live_158_launch_survives_contended_bind has
+been running for over 60 seconds` after 276 of 277 CLI-tier tests and then
+waited **forever** — the log was still frozen 50 minutes later, four Firefox
+processes were still open, no `LIVE_SWEEP_SUMMARY` was ever printed, and the
+run died on its outer 60-minute harness timeout. `new-ralph-loop` runs
+iterations unattended: a red sweep costs one iteration, a hung sweep costs the
+night and strands browsers that poison every later run.
+
+**Why silence and not wall clock**: a whole-phase deadline would have to be
+sized for a 35-40-minute tier, which makes it useless as a hang detector. The
+gap between two libtest result lines, by contrast, is bounded by one test's
+duration however long the tier is. Iteration 188's per-test census of this
+exact corpus (n=277) measured mean 8.83 s, median 7.68 s, p90 12.40 s, p99
+**38.20 s**, max **43.43 s**. 300 s is 7.9x that p99 and 6.9x that max — a test
+would have to become seven times slower than the slowest ever measured here
+before the bound produced a false positive, which is the margin the rule "a
+gate that fires every run is worse than no gate" demands.
+
+**Why a watchdog and not `cargo nextest`**: nextest gives process-per-test
+isolation and a true per-*test* bound (`slow-timeout` + `terminate-after`),
+which is strictly better at the thing being bounded. It was still refused, on
+the accounting rather than the wall clock, which is what iteration 197's plan
+asked for. Every tier `live_sweep.rs` reports is derived from libtest's exact
+output: `failure_blocks` parses `---- <name> stdout ----` headers,
+`classify_failures` matches panic prose inside them, and phase 2's whole design
+rests on libtest printing `ignored` for an `#[ignore]` test selected without
+`--include-ignored`. Adopting nextest means re-deriving `executed` / `skipped`
+/ `preexisting` / `vanished` / `launch_timeout` against a second failure format
+— exactly the change most likely to make the gate lie about what passed, which
+is the failure class the tool exists to prevent (DEC-039, iter-155). The
+watchdog needs none of it: the one new fact it reads is which of the names the
+sweep itself passed to `--exact` never got a verdict line, a set difference
+against the sweep's own input rather than prose. nextest would also become a
+required dev tool on every machine that closes an iteration. **The honest
+cost**: a per-test bound would kill only the hung test and let its ~275
+siblings finish; the watchdog kills the phase and books the rest `timed_out`.
+That is the right trade while a hang is a once-in-three-sweeps event, and it is
+the paragraph to revisit if hangs become routine.
+
+**Why the reaper is separate from the kill**: `ff-rdp launch` puts each Firefox
+into a process group **of its own** (iter-95 Theme A, so that `daemon stop`'s
+group signal cannot blast back up to the caller's shell). The phase's group
+kill therefore cannot reach them, and since their parent `ff-rdp` has long
+exited they are reparented and outlive the sweep. `reap_managed_firefox` finds
+them by command line — a process that is a Firefox **and** was given an
+`ff-rdp-profile-*` directory — rather than by scanning the profile root,
+because several live tests point `$FF_RDP_HOME` at a per-test temp directory
+and a root scan would miss exactly the instances a hang is most likely to
+strand. A browser the operator started by hand (including the port-6000
+instance the `preexisting` tier needs) has no managed profile and is never
+touched.
+
+"Is a Firefox" means **`argv[0]` is a Firefox**, not "the command line mentions
+firefox". The distinction was not obvious and cost a wrong answer during this
+iteration's own verification: the shell one-liner counting survivors
+(`ps -eo pid=,args= | grep -F ff-rdp-profile- | grep -ci firefox`) reported 1,
+then 3, with no browser running — it was matching the `zsh -c …` processes
+running that very query, whose arguments contain both the marker and the word
+`firefox`. The reaper's first rule had the identical hole. That is precisely
+the trap iteration 197's plan named ("not with the checker that matches
+itself"), and it is now pinned by
+`iter_197_managed_firefox_pids_ignores_a_shell_running_the_query` using the
+observed `zsh` line. The caller's own PID is excluded on top of that.
+
+**Cost, stated**: a `cargo` in its own process group is no longer in the
+terminal's foreground group, so an operator's Ctrl-C reaches `xtask` but not
+`cargo`. The watchdog is what makes reaching for Ctrl-C unnecessary; if a sweep
+is interrupted by hand anyway, clean up with `pgrep -f ff-rdp-profile-`.
+
+**Not established here**: *why* `live_158_launch_survives_contended_bind` hangs.
+Twelve reproduction attempts on 2026-08-24 — 8 runs of the test in isolation
+(2.05-3.29 s, 8/8 green) and 4 runs of the 21-test `launch` subset at
+`--test-threads=6` (10.30-12.52 s, 4/4 green, no orphaned Firefox) — did not
+reproduce it. The hang is a rare, load-dependent event seen once in three
+whole-tier sweeps, which is itself the argument for bounding the sweep rather
+than fixing one test: the bound is correct no matter which test hangs next.
+Left open in the iteration plan's task A rather than ticked.
+
+**The kill must not be load-bearing for termination.** `run_phase` abandons
+its stdout-reader thread on the timeout path rather than joining it. That
+thread blocks in `read_line` on a pipe whose write end is held by every process
+that inherited the child's stdout, so a single grandchild the group signal
+missed makes a join wait forever — the watchdog becoming the hang it exists to
+prevent. This is not hypothetical: it timed out `test (ubuntu-latest)` at ten
+minutes on this iteration's first CI run, because `kill -KILL -<pgid>` (the
+obsolescent form, fine on BSD/macOS) is parsed as an option by GNU/procps
+`kill`. The spelling is now the POSIX `kill -s KILL -- -<pgid>`, *and* the join
+is gone, because a bound that depends on a kill succeeding is not a bound.
+
+**Verification** (2026-08-24): four forced trips against the real tier
+(`live-sweep --jobs 1 --phase-stall-secs 3`) — 4/4 killed at the bound with
+`total` conserved and exit 1, 3/4 had a live browser to reap and reaped it, 4/4
+left zero survivors by `pgrep -fl 'ff-rdp-profile-'`. The bound does **not**
+fire on a healthy sweep: a whole tier at default bounds with both env gates ran
+`276 passed / 0 failed` in 239.9 s, `timed_out=0`, exit 0.
+
+**Applies to**: `crates/xtask/src/live_sweep.rs`, `crates/xtask/src/main.rs`,
+`CONTRIBUTING.md`, `.claude/skills/iteration-close/SKILL.md`, iter-197.

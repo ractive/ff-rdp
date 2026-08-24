@@ -27,6 +27,14 @@ of which would have broken every cross-origin frame click. An isolated `cargo te
 not a substitute: iter-153 shipped a broken feature certified by a *truthful* isolated run, which
 passes alone and fails under contention.
 
+**Do not interrupt a running sweep, and since iter-197 you should not need to.** A sweep that has
+stopped saying anything is killed by its own watchdog after `--phase-stall-secs` (default 300 s),
+reported as `timed_out=X` with the stuck test named, and followed by a reap of every orphaned
+ff-rdp-managed Firefox — so it still exits non-zero *with* a summary line. A hand Ctrl-C gets you
+none of that: the phase's `cargo` runs in its own process group and will not receive it, and the
+browsers it launched are in groups of their own again. If you do interrupt one, clean up with
+`pgrep -f ff-rdp-profile-` and kill what it lists.
+
 ### Why not `cargo test-live`
 
 `cargo test-live`'s `N passed; 0 failed` **does not mean N tests reached Firefox** (iter-155).
@@ -42,7 +50,7 @@ a silent early return.)
 ### Reading the summary
 
 ```
-LIVE_SWEEP_SUMMARY executed=N skipped=M preexisting=K vanished=V launch_timeout=L total=T
+LIVE_SWEEP_SUMMARY executed=N skipped=M preexisting=K vanished=V launch_timeout=L timed_out=X total=T
 ```
 
 - `executed=N` — the tests the sweep **intended** to run (`part.qualified.len()`, a partition
@@ -76,8 +84,18 @@ LIVE_SWEEP_SUMMARY executed=N skipped=M preexisting=K vanished=V launch_timeout=
   it is not a product defect; re-run the named test in isolation, or raise
   `FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS`.
 
-`vanished` and `launch_timeout` are carved out of `executed`, not added to it — `total=T` is
-conserved, so a reclassification can never inflate the number you quote.
+- `timed_out=X` (iter-197) — the phase these tests were in went silent for longer than
+  `--phase-stall-secs` (default 300 s) and the sweep **killed it**, so libtest never reported a
+  verdict for them. **Always fails the sweep.** Before iter-197 this case had no number because
+  it had no ending: libtest has no per-test timeout, so one hung test hung the whole sweep
+  forever — iteration 188's third sweep froze after 276 of 277 CLI-tier tests, held four Firefox
+  processes open, and printed no `LIVE_SWEEP_SUMMARY` at all. A non-zero `X` names the tests that
+  never reported (and libtest's own "running for over 60 seconds" notice, when it fired). Re-run
+  those in isolation; raise `--phase-stall-secs` only with evidence that the tier legitimately
+  went quiet for longer, and say so in the PR body if you do.
+
+`vanished`, `launch_timeout` and `timed_out` are carved out of `executed`, not added to it —
+`total=T` is conserved, so a reclassification can never inflate the number you quote.
 
 **A summary is meaningless without the gates that produced it.** Two sweeps compare only when the
 same gates were set. Measured across the 158–161 batch:
