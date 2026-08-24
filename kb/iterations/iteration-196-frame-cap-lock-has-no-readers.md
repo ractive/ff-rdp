@@ -212,6 +212,29 @@ The first pass of that loop was **not** green: it caught a flake this iteration 
 (`raised_frame_cap_restores_previous_value_on_drop` snapshotted the cell outside the raise lock,
 35 failures in 200). Theme C earned its place.
 
+### Live sweep (2026-08-24)
+
+`FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo run -p xtask -- live-sweep` against a raw
+headless Firefox on port 6000:
+
+```
+LIVE_SWEEP_SUMMARY executed=285 skipped=0 preexisting=0 vanished=0 launch_timeout=0 total=285
+```
+
+285 passed / 0 failed, summed across the five `test result:` lines — `P + F == executed`, so the
+record reconciles and no test went without a verdict. Zero non-green lines, hence no sweep rows in
+the carry-over table below.
+
+## Carry-over
+
+| item | disposition |
+|---|---|
+| `live_bulk_cap.rs` still calls `set_max_frame_bytes(1024)` on the process-global cell (found while enumerating writers; different test binary, so it cannot redden `cargo test --workspace`) | **file** — [[iteration-207-live-bulk-cap-shrinks-a-process-global]], `check-iteration-plan: OK` |
+| `raised_frame_cap_restores_previous_value_on_drop` was flaky at 35/200 when first written | **closed in this PR** — the snapshot moved inside the raise lock; 200/200 green after |
+| `transport_rejects_deep_json` (1204 B) was a second unguarded victim in `transport.rs`, never previously identified | **closed in this PR** — it no longer depends on any test-mutated cap; its stale comment was corrected |
+| DEC-029's read-guard contract is now unenforceable prose | **closed in this PR** — DEC-029 marked superseded, DEC-048 added |
+| Live sweep non-green lines | **no plan** — there were none (285/285). If a later sweep on this code reds a transport test, it needs its own plan. |
+
 ## Out of scope
 
 - **The 85 plans failing `check-iteration-plan`.** Separate carry-over,
