@@ -428,6 +428,11 @@ fixture, not a reproduced-then-fixed defect.
 
 ## DEC-029: cap-mutating unit tests take a `write` guard, cap-dependent unit tests take a `read` guard — the plain `ff-rdp-core` suite runs parallel, unlike the live suite
 
+> **Superseded by DEC-048 (iter-196).** The `read` half of this contract was
+> adopted by exactly one test in the whole workspace while six unguarded
+> readers accumulated, so `FRAME_CAP_LOCK` protected writers from each other
+> and nobody else. The lock is gone; tests pass the cap as an argument.
+
 **Decision** (iter-150): `transport::FRAME_CAP_LOCK`, previously a private
 `Mutex<()>` inside `transport::tests` used only by the five tests that mutate
 `MAX_FRAME_BYTES_CELL`, is now a crate-visible (`pub(crate)`)
@@ -1670,3 +1675,61 @@ separate defect, filed as iteration 205.
 `kb/iterations/iteration-82-dogfood-54-fixes.md`,
 `kb/iterations/iteration-83-dogfood-55-real-fixes.md`,
 `kb/iterations/iteration-187-nothing-detects-a-duplicate-iteration-number.md`.
+
+## DEC-048: tests pass the frame cap as an argument; the process-global cap may be raised but never shrunk (supersedes DEC-029)
+
+**Decision** (iter-196): every frame parser in `transport.rs` now has a
+`*_with_cap` form — `recv_from_with_cap`, `drain_bulk_frame_with_cap`,
+`recv_bulk_with_handler_from_with_cap`, `check_outbound_bulk_size(len, cap)` —
+and the argument-less forms are one-line wrappers that pass
+`max_frame_bytes()`. A test that needs a non-default cap passes one. No test
+mutates `MAX_FRAME_BYTES_CELL` to a smaller value any more.
+
+`FRAME_CAP_LOCK` (DEC-029) is **deleted**, along with its read guard in
+`specs::types` and its self-test. Its replacement is `RaisedFrameCap`, a
+`#[cfg(test)]` RAII guard whose `raise_to` *panics* if asked for a value below
+`DEFAULT_MAX_FRAME_BYTES`, holds a mutex against other raisers, and restores the
+raw cell value on drop. Raising is the one direction that cannot make a
+concurrent parse stricter, so a raise needs no cooperation from readers at all.
+
+**Why**: DEC-029's contract had two halves and only one was ever implemented.
+Five tests took the `write` guard; across the whole workspace exactly **one**
+test ever took the `read` guard. iter-196 found six unguarded readers that
+parse frames larger than the 1024-byte cap those writers set —
+`transport::tests::recv_bulk_with_handler_chunked` (20 KB body),
+`transport::tests::transport_rejects_deep_json` (1204 B),
+`actors::page_style::tests::parse_computed_properties_resolves_longstring_value`,
+`actors::dom_walker::tests::parse_dom_node_resolves_longstring_node_value`,
+`actors::dom_walker::tests::parse_dom_node_resolves_longstring_attr_value`,
+`actors::storage::tests::parse_cookie_resolves_longstring_value` (15–20 KB
+each). A reader-less `RwLock` is indistinguishable from a `Mutex` between
+writers, which is why the discipline looked complete while
+`cargo test --workspace` stayed intermittently red: roughly 1 run in 30 at
+`--test-threads=16`, and the failure lands on whatever branch happens to be
+running, not on the branch that owns the bug (iter-187's PR, whose diff was
+`crates/xtask/` and markdown, ate one).
+
+The deeper reason to stop guarding and start passing: the reader set is not
+enumerable in practice. 108 call sites across 38 files reach a cap-reading
+entry point, and any of them can grow past the cap tomorrow. A convention that
+every future author must remember, whose violation surfaces as someone else's
+red CI run, is not a fix — it is a tax with a 1-in-30 penalty. Making the cap
+an argument removes the shared state from the test path entirely; making
+`raise_to` panic on shrink turns the residue into an enforced property with a
+pinned self-test (`raised_frame_cap_refuses_to_shrink`).
+
+**Verification**: 200 consecutive runs of
+`cargo test -p ff-rdp-core --lib transport::tests:: -- --test-threads=16` and
+50 of the whole `ff-rdp-core` lib binary at `--test-threads=16`, zero failures.
+The same loop caught a *new* flake this iteration introduced (a snapshot read
+outside the raise lock, 35/200) — one green run proves nothing about a
+1-in-30 race, which is the whole point of running the loop.
+
+**Not fixed here**: `crates/ff-rdp-cli/tests/live/live_bulk_cap.rs` still calls
+`set_max_frame_bytes(1024)` on the process-global cell. It lives in a different
+test binary (the live suite, `--test-threads=1`, env-gated), so it cannot
+affect `cargo test --workspace`; it has nonetheless already broken a sibling
+live test once (DEC-022, iter-114). Filed as iteration 207.
+
+**Applies to**: `crates/ff-rdp-core/src/transport.rs`,
+`crates/ff-rdp-core/src/specs/types.rs`, iter-196.
