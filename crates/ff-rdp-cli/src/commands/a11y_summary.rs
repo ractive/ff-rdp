@@ -178,4 +178,93 @@ mod tests {
             Some(&Value::String("js-fallback".into()))
         );
     }
+
+    // ── iter-211 Theme A: `a11y summary --query` ────────────────────────────
+
+    fn query(text: &str) -> QueryFilter {
+        QueryFilter::from_query_args(&crate::cli::args::QueryArgs {
+            query: Some(text.to_owned()),
+            query_regex: None,
+        })
+    }
+
+    fn sample_view() -> Value {
+        json!({
+            "landmarks": [
+                {"role": "navigation", "label": "Site nav", "tag": "nav"},
+                {"role": "main", "label": "", "tag": "main"}
+            ],
+            "headings": [
+                {"level": 1, "text": "Ada Lovelace"},
+                {"level": 2, "text": "Charles Babbage"}
+            ],
+            "interactive": [
+                {"role": "link", "name": "Charles Babbage", "href": "/babbage", "ref": "e1"},
+                {"role": "link", "name": "Analytical Engine", "href": "/engine", "ref": "e2"},
+                {"role": "button", "name": "Ignore me", "ref": "e3"}
+            ]
+        })
+    }
+
+    /// AC `live_a11y_summary_query_filters_and_keeps_refs`, in unit form: the
+    /// survivors all match and every one keeps the `ref` it was registered
+    /// with, so `click --ref` still works on the filtered output.
+    #[test]
+    fn unit_211_query_filters_every_section_and_keeps_refs() {
+        let mut view = sample_view();
+        let matches = filter_page_view(&mut view, &query("Babbage"));
+        assert_eq!(matches, 2, "one heading and one link: {view}");
+        assert!(
+            view["landmarks"].as_array().expect("array").is_empty(),
+            "no landmark mentions Babbage: {view}"
+        );
+        assert_eq!(view["headings"].as_array().map(Vec::len), Some(1));
+        let interactive = view["interactive"].as_array().expect("array");
+        assert_eq!(interactive.len(), 1);
+        assert_eq!(interactive[0]["name"], "Charles Babbage");
+        assert_eq!(
+            interactive[0]["ref"], "e1",
+            "the ref must survive filtering: {view}"
+        );
+    }
+
+    /// `href` is matched as well as the visible name — "the link to /engine"
+    /// is as legitimate a question as "the link called Analytical Engine".
+    #[test]
+    fn unit_211_query_matches_href_as_well_as_name() {
+        let mut view = sample_view();
+        let matches = filter_page_view(&mut view, &query("/engine"));
+        assert_eq!(matches, 1);
+        assert_eq!(view["interactive"][0]["ref"], "e2");
+    }
+
+    /// The pre-filter `interactive_total` / `interactive_truncated` pair
+    /// describes the unfiltered collection; leaving it on a filtered view
+    /// would report a truncation that no longer happened.
+    #[test]
+    fn unit_211_query_drops_the_prefilter_truncation_keys() {
+        let mut view = sample_view();
+        if let Some(obj) = view.as_object_mut() {
+            obj.insert("interactive_total".to_owned(), json!(500));
+            obj.insert("interactive_truncated".to_owned(), json!(true));
+        }
+        filter_page_view(&mut view, &query("Babbage"));
+        assert!(view.get("interactive_total").is_none(), "{view}");
+        assert!(view.get("interactive_truncated").is_none(), "{view}");
+    }
+
+    /// A query nothing matches empties every section and reports 0 — never a
+    /// silent pass-through of the whole page.
+    #[test]
+    fn unit_211_no_match_empties_every_section() {
+        let mut view = sample_view();
+        let matches = filter_page_view(&mut view, &query("no-such-token"));
+        assert_eq!(matches, 0);
+        for section in ["landmarks", "headings", "interactive"] {
+            assert!(
+                view[section].as_array().expect("array").is_empty(),
+                "{section} should be empty: {view}"
+            );
+        }
+    }
 }

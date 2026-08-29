@@ -821,4 +821,102 @@ mod tests {
         let mut any_pruned = false;
         assert!(bound_node(node, &mut budget, &mut any_pruned, false).is_none());
     }
+
+    // ── iter-211 Theme A: `snapshot --query` ────────────────────────────────
+
+    fn query(text: &str) -> QueryFilter {
+        QueryFilter::from_query_args(&crate::cli::args::QueryArgs {
+            query: Some(text.to_owned()),
+            query_regex: None,
+        })
+    }
+
+    /// A three-row table nested under `html > body > table`, the shape the
+    /// benchmark's `tabular_data_analysis` task actually walks.
+    fn table_tree() -> Value {
+        json!({
+            "tag": "html",
+            "children": [{
+                "tag": "body",
+                "children": [
+                    {"tag": "h1", "children": ["World population"]},
+                    {"tag": "table", "children": [
+                        {"tag": "tr", "children": [
+                            {"tag": "td", "children": ["1804"]},
+                            {"tag": "td", "children": ["1 billion"]}
+                        ]},
+                        {"tag": "tr", "children": [
+                            {"tag": "td", "children": ["1927"]},
+                            {"tag": "td", "children": ["2 billion"]}
+                        ]}
+                    ]}
+                ]
+            }]
+        })
+    }
+
+    /// AC `live_snapshot_query_keeps_ancestors_of_matches`, in unit form: the
+    /// root stays `html` and the surviving leaf is the matching cell.
+    #[test]
+    fn unit_211_query_keeps_ancestors_and_prunes_siblings() {
+        let (pruned, matches) = prune_to_query(table_tree(), &query("1804"));
+        assert_eq!(matches, 1);
+        assert_eq!(pruned["tag"], "html", "the root must survive: {pruned}");
+        let body = &pruned["children"][0];
+        assert_eq!(body["tag"], "body");
+        // The <h1> sibling and the second <tr> are gone; only the path to the
+        // hit remains.
+        assert_eq!(body["children"].as_array().map(Vec::len), Some(1));
+        let table = &body["children"][0];
+        assert_eq!(table["tag"], "table");
+        assert_eq!(table["children"].as_array().map(Vec::len), Some(1));
+        let row = &table["children"][0];
+        assert_eq!(row["children"].as_array().map(Vec::len), Some(1));
+        let cell = &row["children"][0];
+        assert_eq!(cell["tag"], "td");
+        assert_eq!(cell["children"][0], "1804");
+    }
+
+    /// A matching node is kept whole — `--query billion` on the table returns
+    /// both cells' contents, not a stripped `<td>` shell.
+    #[test]
+    fn unit_211_matching_node_keeps_its_subtree() {
+        let (pruned, matches) = prune_to_query(table_tree(), &query("billion"));
+        assert_eq!(matches, 2, "one cell per row: {pruned}");
+        let table = &pruned["children"][0]["children"][0];
+        let rows = table["children"].as_array().expect("both rows survive");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["children"][0]["children"][0], "1 billion");
+    }
+
+    /// Attribute values match too, so "find the link to /babbage" works
+    /// without knowing the link's text.
+    #[test]
+    fn unit_211_attribute_values_match() {
+        let tree = json!({
+            "tag": "html",
+            "children": [{"tag": "a", "attrs": {"href": "/babbage"}, "children": ["Charles"]}]
+        });
+        let (pruned, matches) = prune_to_query(tree, &query("babbage"));
+        assert_eq!(matches, 1);
+        assert_eq!(pruned["children"][0]["attrs"]["href"], "/babbage");
+    }
+
+    /// No match prunes to `null` rather than quietly handing back the whole
+    /// page, which an agent would read as "here are your matches".
+    #[test]
+    fn unit_211_no_match_yields_null_not_the_whole_tree() {
+        let (pruned, matches) = prune_to_query(table_tree(), &query("no-such-token"));
+        assert_eq!(matches, 0);
+        assert_eq!(pruned, Value::Null);
+    }
+
+    /// The match test is shallow: an ancestor is kept as a path, but is not
+    /// itself counted as a match — otherwise `html` would match everything
+    /// and `meta.matches` would be meaningless.
+    #[test]
+    fn unit_211_ancestors_are_not_counted_as_matches() {
+        let (_, matches) = prune_to_query(table_tree(), &query("1 billion"));
+        assert_eq!(matches, 1);
+    }
 }

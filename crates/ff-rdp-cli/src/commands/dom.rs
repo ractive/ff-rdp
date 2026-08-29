@@ -826,4 +826,77 @@ mod tests {
             "ARIA-tree template must inspect shadowRoot: {ARIA_TREE_JS_TEMPLATE}"
         );
     }
+
+    // ── iter-211 Theme A: `dom --query` ─────────────────────────────────────
+
+    fn query(text: &str) -> QueryFilter {
+        QueryFilter::from_query_args(&crate::cli::args::QueryArgs {
+            query: Some(text.to_owned()),
+            query_regex: None,
+        })
+    }
+
+    #[test]
+    fn unit_211_query_matches_the_accessible_name() {
+        let entry = json!({"ref": "e1", "tag": "a", "role": "link", "name": "Bug: crash on save"});
+        assert!(entry_matches_query(&entry, &query("crash")));
+        assert!(entry_matches_query(&entry, &query("BUG")));
+        assert!(!entry_matches_query(&entry, &query("feature request")));
+    }
+
+    #[test]
+    fn unit_211_query_matches_actionable_attributes_but_not_tag_or_role() {
+        let entry = json!({"tag": "a", "role": "link", "name": "Docs",
+                           "attrs": {"href": "/pricing", "id": "nav-pricing"}});
+        assert!(entry_matches_query(&entry, &query("pricing")));
+        // `tag`/`role` are a closed vocabulary the selector already expresses;
+        // matching them would make `--query link` select every anchor.
+        assert!(!entry_matches_query(&entry, &query("link")));
+    }
+
+    /// `--text` and `--format html` hand back bare strings, which are matched
+    /// directly — the same flag works in every output mode.
+    #[test]
+    fn unit_211_query_matches_bare_string_entries() {
+        assert!(entry_matches_query(&json!("Bug: crash on save"), &query("crash")));
+        assert!(!entry_matches_query(&json!("something else"), &query("crash")));
+        assert!(!entry_matches_query(&json!(42), &query("42")));
+    }
+
+    // ── iter-211 Theme C: full accessible names ─────────────────────────────
+
+    /// The ARIA-tree walker must call the shared accessible-name helper, not
+    /// re-implement `textContent.trim().slice(0, 100)` — that slice is what
+    /// cut the benchmark's GitHub issue titles mid-word.
+    #[test]
+    fn unit_211_aria_tree_js_uses_the_shared_accessible_name_helper() {
+        let js = build_js("h3 a", OutputMode::AriaTree);
+        assert!(
+            js.contains("function __ffrdpAccName"),
+            "the helper must be spliced in: {js}"
+        );
+        assert!(
+            js.contains("var name = __ffrdpAccName(el)"),
+            "`name` must come from the helper: {js}"
+        );
+        assert!(
+            !js.contains("el.textContent || '').trim().slice"),
+            "the old 100-char textContent slice must be gone: {js}"
+        );
+    }
+
+    /// `dom --text` returns the accessible name, so
+    /// `<h3><a>Bug: <span>title</span></a></h3>` comes back whole and
+    /// whitespace-collapsed rather than as raw `textContent`.
+    #[test]
+    fn unit_211_text_mode_js_uses_the_shared_accessible_name_helper() {
+        let js = build_js("h3 a", OutputMode::Text);
+        assert!(js.contains("function __ffrdpAccName"), "{js}");
+        assert!(js.contains("__ffrdpAccName(els[0])"), "single-match path: {js}");
+        assert!(js.contains("__ffrdpAccName(e)"), "multi-match path: {js}");
+        assert!(
+            !js.contains("return els[0].textContent;"),
+            "raw textContent must no longer be the single-match answer: {js}"
+        );
+    }
 }

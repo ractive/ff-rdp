@@ -346,6 +346,7 @@ fn compare_values(a: Option<&Value>, b: Option<&Value>) -> std::cmp::Ordering {
 mod tests {
     use super::*;
     use serde_json::json;
+    use crate::cli::args::QueryArgs;
 
     fn make_controls(
         limit: Option<usize>,
@@ -615,5 +616,109 @@ mod tests {
             .to_string();
         assert!(msg.contains("'x'") && msg.contains("'y'"), "got: {msg}");
         assert!(msg.contains("names"), "plural wording expected: {msg}");
+    }
+
+    // ── iter-211 Theme A: --query / --query-regex ───────────────────────────
+
+    fn query_args(query: Option<&str>, regex: Option<&str>) -> QueryArgs {
+        QueryArgs {
+            query: query.map(str::to_owned),
+            query_regex: regex.map(|r| regex::Regex::new(r).expect("test pattern must compile")),
+        }
+    }
+
+    /// AC `query_filter_is_case_insensitive_substring_by_default`.
+    #[test]
+    fn query_filter_is_case_insensitive_substring_by_default() {
+        let f = QueryFilter::from_query_args(&query_args(Some("Billion"), None));
+        assert!(f.is_active());
+        assert!(f.matches("8.1 billion people"), "lowercase haystack");
+        assert!(f.matches("BILLION"), "uppercase haystack");
+        assert!(f.matches("multibillionaire"), "substring, not word-boundary");
+        assert!(!f.matches("8.1 million people"));
+
+        // Not a regex: metacharacters are literal in the default mode, so a
+        // caller pasting a URL or a price does not get a surprise match.
+        let f = QueryFilter::from_query_args(&query_args(Some("a.c"), None));
+        assert!(f.matches("xxa.cxx"));
+        assert!(!f.matches("abc"), "'.' must be literal without --query-regex");
+    }
+
+    #[test]
+    fn query_regex_matches_as_a_pattern_and_respects_its_own_case_rules() {
+        let f = QueryFilter::from_query_args(&query_args(None, Some(r"^\d{4}$")));
+        assert!(f.is_active());
+        assert!(f.matches("1804"));
+        assert!(!f.matches("in 1804"));
+
+        // Case sensitivity is the pattern's own business — `(?i)` opts in.
+        let f = QueryFilter::from_query_args(&query_args(None, Some("Babbage")));
+        assert!(f.matches("Charles Babbage"));
+        assert!(!f.matches("charles babbage"));
+        let f = QueryFilter::from_query_args(&query_args(None, Some("(?i)babbage")));
+        assert!(f.matches("Charles Babbage"));
+    }
+
+    /// AC `query_regex_rejects_invalid_pattern_with_exit_2`.
+    ///
+    /// The rejection happens in clap's value parser, so it is a *usage* error
+    /// — exit code 2, printed before any connection to Firefox is opened.
+    /// `AppError::User` would have been exit 1 and would have cost a browser
+    /// round-trip first.
+    #[test]
+    fn query_regex_rejects_invalid_pattern_with_exit_2() {
+        use clap::Parser as _;
+        let Err(err) =
+            crate::cli::args::Cli::try_parse_from(["ff-rdp", "page-text", "--query-regex", "([unclosed"])
+        else {
+            panic!("an unparseable pattern must not reach the browser");
+        };
+        assert_eq!(err.exit_code(), 2, "usage error, not runtime error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("invalid regular expression"),
+            "the message must say what is wrong: {msg}"
+        );
+    }
+
+    #[test]
+    fn query_and_query_regex_are_mutually_exclusive() {
+        use clap::Parser as _;
+        let Err(err) = crate::cli::args::Cli::try_parse_from([
+            "ff-rdp",
+            "page-text",
+            "--query",
+            "a",
+            "--query-regex",
+            "b",
+        ]) else {
+            panic!("--query and --query-regex must not combine");
+        };
+        assert_eq!(err.exit_code(), 2);
+    }
+
+    /// An inactive filter matches nothing, so a guard bug shows up as an
+    /// empty result rather than as a filter that silently passes everything.
+    #[test]
+    fn inactive_filter_is_never_a_match() {
+        let f = QueryFilter::from_query_args(&QueryArgs::default());
+        assert!(!f.is_active());
+        assert!(!f.matches("anything at all"));
+        assert!(!f.matches_shallow(&json!({"a": "anything at all"})));
+    }
+
+    #[test]
+    fn matches_shallow_covers_strings_arrays_and_object_values_one_level_deep() {
+        let f = QueryFilter::from_query_args(&query_args(Some("needle"), None));
+        assert!(f.matches_shallow(&json!("a needle here")));
+        assert!(f.matches_shallow(&json!(["x", "a needle here"])));
+        assert!(f.matches_shallow(&json!({"href": "/needle", "id": "x"})));
+        assert!(!f.matches_shallow(&json!({"id": "x"})));
+        // One level only: a nested object is not searched, because the
+        // snapshot pruning that consumes this needs "did THIS node match",
+        // not "did anything below it match".
+        assert!(!f.matches_shallow(&json!({"child": {"id": "needle"}})));
+        // Non-string scalars never match.
+        assert!(!f.matches_shallow(&json!(42)));
     }
 }
