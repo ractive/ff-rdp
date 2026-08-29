@@ -59,38 +59,38 @@ browser command failed with exit 1 ("port 6000 already in use") in 3 of 42 runs.
 ## Tasks
 
 ### A. `--with-page` [0/4]
-- [ ] Factor the `a11y summary` collector into `commands/page_view.rs` (`collect(ctx, tab) ->
+- [x] Factor the `a11y summary` collector into `commands/page_view.rs` (`collect(ctx, tab) ->
       PageView`) so `a11y summary` and `--with-page` share one implementation and one JSON shape
-- [ ] Add `--with-page` to `navigate`, `click`, `type`, and the `nav_action` commands (`reload`,
+- [x] Add `--with-page` to `navigate`, `click`, `type`, and the `nav_action` commands (`reload`,
       `back`, `forward`) and to `scroll`; on success, `results.page = PageView` — same keys as
       `a11y summary` (`headings`, `landmarks`, `interactive`), plus `meta.page_source`
       (`native|js-fallback`, mirroring `a11y`'s `meta.source`)
-- [ ] `--with-page` waits for `document.readyState == "complete"` (or the command's existing
+- [x] `--with-page` waits for `document.readyState == "complete"` (or the command's existing
       `--wait-*`) before collecting, so the page reflects the action's result, not the page it
       left; document the ordering in `--help`
-- [ ] `--format text` renders `page` with the existing `a11y summary` text renderer beneath the
+- [x] `--format text` renders `page` with the existing `a11y summary` text renderer beneath the
       command's own line, and prints one hint line: `-> ff-rdp click --ref <ref>  # act on an
       element above`
 
 ### B. Refs from the read commands [0/3]
-- [ ] `a11y summary` registers refs via `daemon::client::register_refs` (daemon route only, as
+- [x] `a11y summary` registers refs via `daemon::client::register_refs` (daemon route only, as
       `dom` does) and emits `ref` on every `interactive` entry; `meta.refs_registered` as in `dom`
-- [ ] `snapshot` does the same for nodes marked `interactive: true`
-- [ ] The `--with-page` payload of Theme A carries the same refs; one registration per command,
+- [x] `snapshot` does the same for nodes marked `interactive: true`
+- [x] The `--with-page` payload of Theme A carries the same refs; one registration per command,
       not one per sub-view
 
 ### C. `type --submit` [0/2]
-- [ ] `type … --submit` dispatches Enter on the element and, if the element is inside a `<form>`
+- [x] `type … --submit` dispatches Enter on the element and, if the element is inside a `<form>`
       and Enter did not navigate, calls `form.requestSubmit()`; output gains
       `{"submitted": true, "navigated": bool}`
-- [ ] `--submit` composes with `--with-page` (collect after the resulting navigation settles)
+- [x] `--submit` composes with `--with-page` (collect after the resulting navigation settles)
 
 ### D. Idempotent `launch` [0/2]
-- [ ] When the port is busy **and** the owner is a Firefox launched by ff-rdp (the same check
+- [x] When the port is busy **and** the owner is a Firefox launched by ff-rdp (the same check
       `--replace` uses to decide what it may stop), `launch` returns exit 0 with
       `results.already_running: true`, the existing `pid`, `port`, `profile`; the error path stays
       for a foreign port owner
-- [ ] `--replace` behaviour unchanged; `--help` documents the no-op
+- [x] `--replace` behaviour unchanged; `--help` documents the no-op
 
 ## Acceptance Criteria [0/9]
 
@@ -115,7 +115,7 @@ browser command failed with exit 1 ("port 6000 already in use") in 3 of 42 runs.
       `wikipedia_infobox_hop`, `wikipedia_link_follow`, `wikipedia_search_click` ≤ 5 (were 8.0,
       7.3, 8.3) with the same one-paragraph system prompt — record the table in this plan's
       Outcome section
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes
 
