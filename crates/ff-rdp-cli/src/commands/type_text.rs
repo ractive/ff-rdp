@@ -6,8 +6,8 @@ use crate::hints::{HintContext, HintSource};
 use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
-use super::connect_tab::connect_and_get_target;
 use super::connect_tab::ConnectedTab;
+use super::connect_tab::connect_and_get_target;
 use super::js_helpers::{
     JSON_SENTINEL, MatchPolicy, WaitForPredicate, autowait_element, escape_selector, eval_or_bail,
     poll_js_condition, resolve_disambiguated_target, resolve_result, settle_page,
@@ -84,7 +84,6 @@ fn build_type_js(escaped_sel: &str, escaped_text_json: &str, clear: bool) -> Str
 }})()"#
     )
 }
-
 
 // ---------------------------------------------------------------------------
 // `--submit` (iter-210 Theme C)
@@ -166,7 +165,12 @@ fn press_enter_and_submit(
     console_actor: &ff_rdp_core::ActorId,
     escaped_sel: &str,
 ) -> Result<serde_json::Value, AppError> {
-    let enter = eval_or_bail(ctx, console_actor, &build_enter_js(escaped_sel), "submit failed")?;
+    let enter = eval_or_bail(
+        ctx,
+        console_actor,
+        &build_enter_js(escaped_sel),
+        "submit failed",
+    )?;
     let enter_json = resolve_result(ctx, &enter.result)?;
     let url_before = enter_json
         .get("url_before")

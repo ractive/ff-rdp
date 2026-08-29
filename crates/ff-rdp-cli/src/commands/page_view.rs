@@ -21,9 +21,7 @@ use crate::cli::args::Cli;
 use crate::error::AppError;
 
 use super::connect_tab::ConnectedTab;
-use super::js_helpers::{
-    UNIQUE_SELECTOR_JS_FN, eval_or_bail, poll_js_condition, resolve_result,
-};
+use super::js_helpers::{UNIQUE_SELECTOR_JS_FN, eval_or_bail, poll_js_condition, resolve_result};
 
 /// Default cap on `interactive` entries, matching `a11y summary`'s own
 /// pre-iter-210 default. `--all` (or an explicit `--limit`) overrides it on
@@ -255,8 +253,7 @@ fn register_interactive_refs(ctx: &mut ConnectedTab, view: &mut Value) -> bool {
         return false;
     }
 
-    let Ok((start, nav_gen)) =
-        crate::daemon::client::alloc_refs(ctx.transport_mut(), count as u64)
+    let Ok((start, nav_gen)) = crate::daemon::client::alloc_refs(ctx.transport_mut(), count as u64)
     else {
         return false;
     };
@@ -350,18 +347,31 @@ pub(crate) fn attach(
             wait_complete_ms,
         },
     )?;
-    if let Some(obj) = results.as_object_mut() {
-        obj.insert("page".to_owned(), page.view);
-        obj.insert(
-            "page_meta".to_owned(),
-            json!({
-                "source": page.source,
-                "ready": page.ready,
-                "refs_registered": page.refs_registered,
-            }),
-        );
-    }
+    insert_page(results, &page);
     Ok(())
+}
+
+/// Write `page` and `page_meta` into `results`.
+///
+/// Split out of [`attach`] so the shape contract can be tested without a live
+/// Firefox: the `page` object must be the collected view **verbatim**. Nothing
+/// describing how the view was produced may be added to it — that all belongs
+/// in `page_meta`, which [`lift_meta`] moves into the envelope's `meta`. This
+/// is what keeps `results.page` and `a11y summary`'s `results` the same shape,
+/// so an agent can learn one key set and use it on either.
+fn insert_page(results: &mut Value, page: &PageView) {
+    let Some(obj) = results.as_object_mut() else {
+        return;
+    };
+    obj.insert("page".to_owned(), page.view.clone());
+    obj.insert(
+        "page_meta".to_owned(),
+        json!({
+            "source": page.source,
+            "ready": page.ready,
+            "refs_registered": page.refs_registered,
+        }),
+    );
 }
 
 /// Move [`attach`]'s `results.page_meta` into the envelope's `meta` as
@@ -501,11 +511,20 @@ pub(crate) fn render_text(results: &Value) {
 mod tests {
     use super::*;
     use crate::commands::js_helpers::JSON_SENTINEL;
+    use clap::Parser as _;
+
+    /// Parse a `Cli` from argv for the flag-reading helpers under test.
+    fn test_cli(argv: &[&str]) -> Cli {
+        Cli::parse_from(argv)
+    }
 
     #[test]
     fn page_view_js_has_sentinel_and_stringify() {
         let js = build_page_view_js();
-        assert!(js.contains(JSON_SENTINEL), "JS must use the sentinel prefix");
+        assert!(
+            js.contains(JSON_SENTINEL),
+            "JS must use the sentinel prefix"
+        );
         assert!(js.contains("JSON.stringify"), "JS must use JSON.stringify");
     }
 
@@ -613,6 +632,118 @@ mod tests {
         render_text(&results);
         render_text_section(Some(&results));
         render_text_section(None);
+    }
+
+    /// A view shaped like what `collect` returns on the fixture pages.
+    fn sample_view() -> Value {
+        json!({
+            "landmarks": [{"role": "main", "tag": "main", "label": ""}],
+            "headings": [{"level": 1, "text": "Ada Lovelace"}],
+            "interactive": [{"role": "link", "name": "Charles Babbage",
+                             "href": "/babbage", "ref": "e1"}],
+        })
+    }
+
+    fn sample_page() -> PageView {
+        PageView {
+            view: sample_view(),
+            refs_registered: true,
+            source: PAGE_SOURCE_JS_FALLBACK,
+            ready: true,
+        }
+    }
+
+    /// AC `with_page_shape_matches_a11y_summary`.
+    ///
+    /// `a11y summary` publishes `PageView::view` as its `results`; `--with-page`
+    /// publishes the same value as `results.page`. The test that matters is
+    /// therefore not "do two collectors agree" (there is only one) but "does
+    /// the embedding path leave the view alone" — the realistic regression is
+    /// someone folding `source`/`ready`/`refs_registered` into `page` because
+    /// it is convenient, which would give the two surfaces different key sets.
+    #[test]
+    fn with_page_shape_matches_a11y_summary() {
+        let page = sample_page();
+        let a11y_summary_results = page.view.clone();
+
+        let mut results = json!({"clicked": true});
+        insert_page(&mut results, &page);
+
+        assert_eq!(
+            results["page"], a11y_summary_results,
+            "results.page must be the collected view verbatim"
+        );
+        let embedded: Vec<&String> = results["page"]
+            .as_object()
+            .expect("page must be an object")
+            .keys()
+            .collect();
+        let standalone: Vec<&String> = a11y_summary_results
+            .as_object()
+            .expect("a11y summary results must be an object")
+            .keys()
+            .collect();
+        assert_eq!(
+            embedded, standalone,
+            "the two surfaces must serialise to the same key set"
+        );
+    }
+
+    /// The provenance keys ride in `results.page_meta` and end up in `meta`,
+    /// never inside `page`.
+    #[test]
+    fn lift_meta_moves_provenance_out_of_results() {
+        let mut results = json!({"clicked": true});
+        insert_page(&mut results, &sample_page());
+        let mut meta = json!({});
+        let cli = test_cli(&["ff-rdp", "tabs"]);
+
+        let text_section = lift_meta(&cli, &mut results, &mut meta);
+
+        assert!(text_section.is_none(), "JSON mode keeps the page in results");
+        assert!(
+            results.get("page_meta").is_none(),
+            "page_meta must not survive into the printed results: {results}"
+        );
+        assert_eq!(meta["page_source"], json!(PAGE_SOURCE_JS_FALLBACK));
+        assert_eq!(meta["page_ready"], json!(true));
+        assert_eq!(meta["page_refs_registered"], json!(true));
+        assert!(results.get("page").is_some(), "JSON mode keeps results.page");
+    }
+
+    /// `--format text` takes the page OUT of `results` (the generic renderer
+    /// would pretty-print the whole envelope as JSON otherwise) and hands it
+    /// back for [`render_text_section`].
+    #[test]
+    fn lift_meta_takes_the_page_out_in_text_mode() {
+        let mut results = json!({"clicked": true});
+        insert_page(&mut results, &sample_page());
+        let mut meta = json!({});
+        let cli = test_cli(&["ff-rdp", "--format", "text", "tabs"]);
+
+        let text_section = lift_meta(&cli, &mut results, &mut meta);
+
+        assert!(
+            results.get("page").is_none(),
+            "text mode must remove results.page: {results}"
+        );
+        assert_eq!(
+            text_section.as_ref().map(|p| p["headings"][0]["text"].clone()),
+            Some(json!("Ada Lovelace"))
+        );
+        assert_eq!(meta["page_source"], json!(PAGE_SOURCE_JS_FALLBACK));
+    }
+
+    /// `lift_meta` is a no-op when `--with-page` was not passed.
+    #[test]
+    fn lift_meta_without_with_page_changes_nothing() {
+        let mut results = json!({"clicked": true});
+        let mut meta = json!({"selector": "a"});
+        let cli = test_cli(&["ff-rdp", "tabs"]);
+
+        assert!(lift_meta(&cli, &mut results, &mut meta).is_none());
+        assert_eq!(results, json!({"clicked": true}));
+        assert_eq!(meta, json!({"selector": "a"}));
     }
 
     #[test]

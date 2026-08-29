@@ -43,7 +43,9 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
     let output_results = page.view;
 
     let mut meta = json!({});
-    if ctx.via_daemon && let Some(obj) = meta.as_object_mut() {
+    if ctx.via_daemon
+        && let Some(obj) = meta.as_object_mut()
+    {
         // Same contract as `dom`'s `meta.refs_registered` (iter-61j D1):
         // always emitted on the daemon route so a caller can check whether
         // the `ref` handles in the output are usable before relying on them.
@@ -113,6 +115,9 @@ mod tests {
     fn source_lands_in_meta() {
         let mut meta = json!({});
         obj_insert_source(&mut meta, "js-fallback");
-        assert_eq!(meta.get("source"), Some(&Value::String("js-fallback".into())));
+        assert_eq!(
+            meta.get("source"),
+            Some(&Value::String("js-fallback".into()))
+        );
     }
 }
