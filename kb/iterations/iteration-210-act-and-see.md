@@ -2,12 +2,14 @@
 title: "Iteration 210: act-and-see — every state-changing command can return the page it produced"
 type: iteration
 date: 2026-08-29
-status: planned
+status: done
 branch: iter-210/act-and-see
 depends_on: []
 first_call_sites:
   - primitive: ff_rdp_cli::commands::page_view::collect
-    site: crates/ff-rdp-cli/src/commands/navigate.rs (--with-page; also click.rs, type_text.rs, nav_action.rs)
+    site: >-
+      crates/ff-rdp-cli/src/commands/navigate.rs (--with-page; also click.rs,
+      type_text.rs, nav_action.rs)
 dogfood_path: |
   ff-rdp launch --headless
   ff-rdp launch --headless
@@ -20,7 +22,11 @@ dogfood_path: |
   # expected: a ref string, i.e. a11y summary now registers refs like dom does
   ff-rdp type --ref e<M> "Turing Award" --submit --with-page --jq '.results.page.headings[0].text'
   # on the Wikipedia main page search box: expected "Turing Award" (or the search results h1)
-tags: [iteration, cli, agent-ergonomics, refs]
+tags:
+  - iteration
+  - cli
+  - agent-ergonomics
+  - refs
 ---
 
 # Iteration 210: act-and-see
