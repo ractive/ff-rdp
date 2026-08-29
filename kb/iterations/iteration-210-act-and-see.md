@@ -164,6 +164,46 @@ CLI tier: 279 passed / 4 failed. Other tiers: 1 + 3 + 3 + 2 passed, 0 failed. 27
 
 Four failures, none in changed code paths — one row each in Carry-over below.
 
+### Review fixes (post-PR-creation)
+
+A local code review of PR #230 (no Copilot in this pass) found four correctness bugs and one
+cleanup, all fixed on the same branch before merge:
+
+- `navigate --auto-consent --with-page` collected the page inside `run_core`, before the consent
+  dismiss click ran on its own connection — returning the pre-consent document. Fixed by deferring
+  page collection to a second connection opened after consent runs when both flags are set,
+  matching `--with-network`'s already-correct ordering.
+- `reload --wait-idle --with-page` silently dropped `--with-page`: the `wait_idle` dispatch branch
+  never threaded the flag through. Threaded it into `run_reload_wait_idle` (both daemon and direct
+  paths) and `emit_reload_result`, which now also renders the text-mode page section like every
+  other `--with-page` command.
+- `type --ref X --submit --settle`/`--wait-for` reused the pre-submit `console_actor` after a
+  submission that actually navigated, risking `noSuchActor`. Fixed by refreshing the target and
+  re-fetching `console_actor` when `press_enter_and_submit` reports `navigated: true`.
+- `navigated_away`'s `poll_js_condition(...).is_ok()` collapsed a hard `noSuchActor`/
+  `EvalNavigatedDuringEval` protocol error — itself the navigation signal, since the docshell
+  tearing down is what causes it — into the same `false` as a genuine timeout. Rewritten as a
+  bespoke poll that reads those two errors as `navigated: true`; pinned by a new mock-transport
+  test, `navigated_away_treats_unknown_actor_as_navigated`.
+- `insert_page` cloned `PageView::view` on every call; it was the last use of the value, so it now
+  takes `PageView` by value and moves it in.
+
+The first three were verified live against Wikipedia (auto-consent+with-page ordering, `reload
+--wait-idle --with-page` now embeds the page, `type --ref e1 --text "Turing Award" --submit
+--with-page` returns the *destination* page's heading — `{"submitted":true,"navigated":false,
+"method":"request_submit","heading":{"level":1,"text":"Turing Award"}}` — after a real
+`requestSubmit()` navigation, with no `noSuchActor`). `cargo fmt` / `clippy -D warnings` /
+`test --workspace` all clean afterward.
+
+One thing noticed during that live check, not a review finding and not fixed here: the
+`request_submit` case above reports `navigated: false` even though the page demonstrably
+navigated (the returned heading changed). `ENTER_NAVIGATION_GRACE_MS` (600ms) is likely too short
+for a real network round-trip past the synthetic-Enter probe; this is a pre-existing tuning gap in
+the grace period, not the error-collapse bug this pass fixed, and not present before this iteration
+either (there was no `navigated_away` before iter-210). Filed as
+[[iteration-215-submit-navigation-grace-period]] rather than fixed blind under time pressure — see
+Carry-over below.
+
 ## Design notes
 
 - **Why the a11y summary and not `snapshot`.** ff-rdp is 16% cheaper per task than axi in the
@@ -195,6 +235,7 @@ Every non-green line from the sweep, plus the unticked AC. Dispositions per
 | 3 | `live_166_navigate_document_status::live_166_navigate_status_direct_parity` FAILED | same 304, on the `--no-daemon --with-network` route | **file** — same plan, [[iteration-214-live-166-cache-304]]: one defect, one fix |
 | 4 | `live_137_daemon_mode_parity::live_137_consent_accept_via_daemon` FAILED in the sweep | `daemon never reported live frame targets`, `live_target_count: 0` after 18 s | **no plan, with a stated reason** — passed on an isolated re-run at `--test-threads=1`; load-sensitive under the sweep's 6 threads. If it fails again on an isolated run, or in two consecutive sweeps, it needs its own plan. |
 | 5 | `live_navigate_default_fast::live_navigate_elapsed_matches_wall` FAILED in the sweep | `elapsed_ms (715) must be within ±750ms of measured wall (2187); delta 1472ms` | **no plan, with a stated reason** — passed on the same isolated re-run. The test measures wall-clock including process spawn, which the sweep's parallelism inflates; the ±750 ms band is the load-sensitive part, not the product. Same trigger as row 4 for filing. |
+| 6 | `type --ref … --submit` reports `results.navigated: false` after a `requestSubmit()` that demonstrably navigated (the returned `--with-page` heading changed) | Found live during this PR's review-fix pass: `{"submitted":true,"navigated":false,"method":"request_submit","heading":{"level":1,"text":"Turing Award"}}` against Wikipedia | **file** — [[iteration-215-submit-navigation-grace-period]]: `ENTER_NAVIGATION_GRACE_MS` (600ms) is too short for the post-`requestSubmit()` poll over a real network round-trip; not a regression from this PR's `navigated_away` fix (that fix changed what a hard `Err` means, not the timeout path or this constant) |
 
 Rows 2 and 3 are one defect: `live_166` hard-asserts HTTP 200 from `https://example.com/`, but
 Firefox's HTTP cache makes a repeat visit a conditional request the server answers **304 Not
