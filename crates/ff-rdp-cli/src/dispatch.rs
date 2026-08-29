@@ -479,7 +479,13 @@ fn dispatch_inner(
             with_page,
         }) => {
             if *wait_idle {
-                commands::nav_action::run_reload_wait_idle(cli, *idle_ms, *reload_timeout, *hard)
+                commands::nav_action::run_reload_wait_idle(
+                    cli,
+                    *idle_ms,
+                    *reload_timeout,
+                    *hard,
+                    *with_page,
+                )
             } else {
                 commands::nav_action::run(
                     cli,

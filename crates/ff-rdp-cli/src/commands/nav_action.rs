@@ -176,6 +176,7 @@ pub fn run_reload_wait_idle(
     idle_ms: u64,
     timeout_ms: u64,
     force: bool,
+    with_page: bool,
 ) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let target_actor = ctx.target.actor.clone();
@@ -188,10 +189,19 @@ pub fn run_reload_wait_idle(
             idle_ms,
             timeout_ms,
             force,
+            with_page,
         );
     }
 
-    run_reload_wait_idle_direct(&mut ctx, cli, &target_actor, idle_ms, timeout_ms, force)
+    run_reload_wait_idle_direct(
+        &mut ctx,
+        cli,
+        &target_actor,
+        idle_ms,
+        timeout_ms,
+        force,
+        with_page,
+    )
 }
 
 /// Reload + wait-idle through the daemon proxy.
@@ -207,6 +217,7 @@ fn run_reload_wait_idle_daemon(
     idle_ms: u64,
     timeout_ms: u64,
     force: bool,
+    with_page: bool,
 ) -> Result<(), AppError> {
     // Tell the daemon to stream network events directly to us.
     crate::daemon::client::start_daemon_stream(ctx.transport_mut(), "network-event")
@@ -234,11 +245,13 @@ fn run_reload_wait_idle_daemon(
     };
 
     emit_reload_result(
+        ctx,
         cli,
         requests_observed + inflight_count,
         idle_at_ms,
         force,
         true,
+        with_page,
     )
 }
 
@@ -308,6 +321,7 @@ fn run_reload_wait_idle_direct(
     idle_ms: u64,
     timeout_ms: u64,
     force: bool,
+    with_page: bool,
 ) -> Result<(), AppError> {
     let tab_actor = ctx.target_tab_actor().clone();
     let watcher_actor =
@@ -328,7 +342,15 @@ fn run_reload_wait_idle_direct(
     let _ =
         WatcherActor::unwatch_resources(ctx.transport_mut(), &watcher_actor, &["network-event"]);
 
-    emit_reload_result(cli, requests_observed, idle_at_ms, force, false)
+    emit_reload_result(
+        ctx,
+        cli,
+        requests_observed,
+        idle_at_ms,
+        force,
+        false,
+        with_page,
+    )
 }
 
 /// Drain network events from `transport` until idle or timeout.
@@ -414,11 +436,13 @@ fn count_network_events_in_frames(frames: &[serde_json::Value]) -> u64 {
 }
 
 fn emit_reload_result(
+    ctx: &mut super::connect_tab::ConnectedTab,
     cli: &Cli,
     requests_observed: u64,
     idle_at_ms: u64,
     force: bool,
     via_daemon: bool,
+    with_page: bool,
 ) -> Result<(), AppError> {
     let mut result = if force {
         json!({
@@ -442,7 +466,15 @@ fn emit_reload_result(
     if let Some(obj) = result.as_object_mut() {
         obj.extend(super::navigate::not_observed_status());
     }
+    // iter-210 Theme A: `--with-page`, collected last (after the idle drain)
+    // so `reload --wait-idle --with-page` describes the settled document, not
+    // whatever was on screen mid-reload. Previously dropped silently by the
+    // `dispatch.rs` `wait_idle` branch, which never threaded this flag in.
+    if with_page {
+        super::page_view::attach(ctx, &mut result, Some(cli.timeout))?;
+    }
     let mut meta = json!({});
+    let page_text = super::page_view::lift_meta(cli, &mut result, &mut meta);
     crate::connection_meta::merge_into_if_verbose(
         &mut meta,
         &cli.host,
@@ -455,7 +487,9 @@ fn emit_reload_result(
     let envelope = output::envelope(&result, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Reload);
-    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))?;
+    super::page_view::render_text_section(page_text.as_ref());
+    Ok(())
 }
 
 #[cfg(test)]

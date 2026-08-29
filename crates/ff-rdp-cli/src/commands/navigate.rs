@@ -2447,9 +2447,22 @@ pub fn run(
     auto_consent: bool,
     with_page: bool,
 ) -> Result<(), AppError> {
-    let (mut result, via_daemon) = run_core(cli, url, wait_opts, with_page)?;
+    // iter-210: `--with-page` promises the page it returns describes the
+    // document *this command* produced. `--auto-consent`'s dismiss click
+    // runs after `run_core` returns (on a fresh connection — see
+    // `merge_auto_consent`'s doc comment), so collecting the page inside
+    // `run_core` would hand back the pre-consent document. When both flags
+    // are set, defer collection to a second connection opened after consent
+    // runs, matching `run_with_network`'s ordering (consent before
+    // `page_view::attach`).
+    let defer_with_page = auto_consent && with_page;
+    let (mut result, via_daemon) = run_core(cli, url, wait_opts, with_page && !defer_with_page)?;
     if auto_consent {
         merge_auto_consent(cli, &mut result);
+    }
+    if defer_with_page {
+        let mut ctx = connect_and_get_target(cli)?;
+        super::page_view::attach(&mut ctx, &mut result, Some(cli.timeout))?;
     }
     let mut meta = json!({});
     let page_text = super::page_view::lift_meta(cli, &mut result, &mut meta);

@@ -10,8 +10,7 @@ use super::connect_tab::ConnectedTab;
 use super::connect_tab::connect_and_get_target;
 use super::js_helpers::{
     JSON_SENTINEL, MatchPolicy, WaitForPredicate, autowait_element, escape_selector, eval_or_bail,
-    poll_js_condition, resolve_disambiguated_target, resolve_result, settle_page,
-    wait_for_predicates,
+    resolve_disambiguated_target, resolve_result, settle_page, wait_for_predicates,
 };
 
 /// In-page helper that maps a character to a plausible `KeyboardEvent.code`
@@ -226,23 +225,65 @@ fn press_enter_and_submit(
 ///
 /// A timeout means "no navigation observed", which is a legitimate answer
 /// (a same-page form handler, an XHR submit) — not an error.
+///
+/// Deliberately does not go through the shared `poll_js_condition` helper:
+/// that helper collapses every non-timeout `Err` into a hard failure, which
+/// would be wrong here specifically. A real navigation can tear the docshell
+/// down *during* this very poll — Firefox answers with
+/// `ProtocolError::EvalNavigatedDuringEval`, or `console_actor` (still the
+/// pre-Enter actor; the caller hasn't refreshed it yet) comes back
+/// `noSuchActor`/`ActorErrorKind::UnknownActor` once the old target is gone.
+/// Both are themselves the navigation signal this function exists to detect,
+/// not a probe failure — treating them as "no" (as a bare
+/// `poll_js_condition(...).is_ok()` would) told `press_enter_and_submit` no
+/// navigation happened on exactly the runs where one did, sending it into
+/// the `requestSubmit()` fallback against a target that had already moved
+/// on.
 fn navigated_away(
     ctx: &mut ConnectedTab,
     console_actor: &ff_rdp_core::ActorId,
     url_before: &str,
     timeout_ms: u64,
 ) -> bool {
+    use ff_rdp_core::{ActorErrorKind, ProtocolError, WebConsoleActor};
+
     let before_lit = serde_json::to_string(url_before).unwrap_or_else(|_| "\"\"".to_owned());
     let js = format!("window.location.href !== {before_lit}");
-    poll_js_condition(
-        ctx,
-        console_actor,
-        &js,
-        timeout_ms,
-        "navigation probe threw",
-        "no navigation observed",
-    )
-    .is_ok()
+    let poll_interval = std::time::Duration::from_millis(50);
+    let deadline = std::time::Duration::from_millis(timeout_ms);
+    let started = std::time::Instant::now();
+
+    loop {
+        match WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, &js) {
+            Ok(result) if result.exception.is_none() => {
+                if super::js_helpers::is_truthy(&result.result) {
+                    return true;
+                }
+            }
+            // Neither a navigation signal nor proof of "no navigation": the
+            // probe threw, or the transport read simply timed out (Firefox
+            // hasn't answered yet). Keep polling — the deadline check below
+            // is the fallback answer.
+            Ok(_) | Err(ProtocolError::Timeout) => {}
+            // Both are themselves the navigation signal: `EvalNavigatedDuringEval`
+            // fires when the docshell tears down mid-eval, and `UnknownActor`
+            // means `console_actor` — still bound to the pre-Enter docshell —
+            // no longer exists because that docshell is already gone.
+            Err(
+                ProtocolError::EvalNavigatedDuringEval
+                | ProtocolError::ActorError {
+                    kind: ActorErrorKind::UnknownActor,
+                    ..
+                },
+            ) => return true,
+            Err(_) => return false,
+        }
+
+        if started.elapsed() >= deadline {
+            return false;
+        }
+        std::thread::sleep(poll_interval);
+    }
 }
 
 /// Options controlling auto-wait and post-action behaviour for `type`.
@@ -282,7 +323,7 @@ pub fn run_core(
     opts: &TypeOptions<'_>,
 ) -> Result<(serde_json::Value, bool), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
-    let console_actor = ctx.target.console_actor.clone();
+    let mut console_actor = ctx.target.console_actor.clone();
 
     let wait_timeout_ms = opts.wait_timeout_ms.unwrap_or(cli.timeout);
 
@@ -324,10 +365,25 @@ pub fn run_core(
     // observe the page the submission produced.
     if opts.submit {
         let submit_json = press_enter_and_submit(&mut ctx, &console_actor, &escaped_sel)?;
+        let navigated = submit_json
+            .get("navigated")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
         if let (Some(dst), Some(src)) = (result_json.as_object_mut(), submit_json.as_object()) {
             for (k, v) in src {
                 dst.insert(k.clone(), v.clone());
             }
+        }
+        // `press_enter_and_submit` may have navigated the tab (the "Enter
+        // handled by page JS" case `--submit` targets). The docshell tears
+        // down on a real cross-document navigation, so `console_actor` above
+        // — cached before the submit — is stale: reusing it against
+        // `settle_page`/`wait_for_predicates` below would hit `noSuchActor`.
+        // Refresh before either runs, same as `page_view::attach` does for
+        // `--with-page`.
+        if navigated {
+            ctx.refresh_target();
+            console_actor = ctx.target.console_actor.clone();
         }
     }
 
@@ -467,5 +523,69 @@ mod tests {
         );
         let kept = build_type_js("input", "\"hi\"", false);
         assert!(kept.contains("if (false) { applyValue(''); }"), "{kept}");
+    }
+
+    /// Regression (review finding on the iter-210 PR): a hard `noSuchActor`
+    /// reply while polling `navigated_away` — the console actor cached
+    /// before Enter, now stale because the page actually navigated — must be
+    /// read as "navigated", not silently swallowed into "no navigation
+    /// observed". A bare `poll_js_condition(...).is_ok()` (the pre-fix
+    /// implementation) collapsed every non-timeout `Err`, including this one,
+    /// into `false`, sending `press_enter_and_submit` into the
+    /// `requestSubmit()` fallback against a target that had already moved on.
+    #[test]
+    fn navigated_away_treats_unknown_actor_as_navigated() {
+        use std::io::Write as _;
+        use std::net::TcpListener;
+        use std::time::Duration;
+
+        use ff_rdp_core::ActorId;
+        use ff_rdp_core::transport::{RdpTransport, encode_frame, recv_from};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let server_handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut writer = stream.try_clone().unwrap();
+            let mut reader = std::io::BufReader::new(stream);
+
+            let greeting = json!({
+                "from": "root",
+                "applicationType": "browser",
+                "traits": {}
+            });
+            writer
+                .write_all(encode_frame(&serde_json::to_string(&greeting).unwrap()).as_bytes())
+                .unwrap();
+
+            // Read (and drop) the `evaluateJSAsync` request, then answer with
+            // a `noSuchActor` error instead of the usual `resultID` ack —
+            // exactly what Firefox sends once the docshell backing this
+            // console actor has already been torn down by a navigation.
+            let _ = recv_from(&mut reader);
+            let error_reply = json!({
+                "from": "conn0/console1",
+                "error": "noSuchActor",
+            });
+            writer
+                .write_all(encode_frame(&serde_json::to_string(&error_reply).unwrap()).as_bytes())
+                .unwrap();
+        });
+
+        let transport =
+            RdpTransport::connect("127.0.0.1", port, Duration::from_millis(500)).unwrap();
+        let console_actor = ActorId::from("conn0/console1");
+        let mut ctx = ConnectedTab::for_test(transport, console_actor.clone());
+
+        let navigated = navigated_away(&mut ctx, &console_actor, "https://example.com/", 2_000);
+
+        server_handle.join().unwrap();
+
+        assert!(
+            navigated,
+            "a noSuchActor reply means the docshell already tore down — \
+             navigated_away must report true, not false"
+        );
     }
 }

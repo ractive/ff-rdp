@@ -336,7 +336,7 @@ pub(crate) fn attach(
             wait_complete_ms,
         },
     )?;
-    insert_page(results, &page);
+    insert_page(results, page);
     Ok(())
 }
 
@@ -348,11 +348,11 @@ pub(crate) fn attach(
 /// in `page_meta`, which [`lift_meta`] moves into the envelope's `meta`. This
 /// is what keeps `results.page` and `a11y summary`'s `results` the same shape,
 /// so an agent can learn one key set and use it on either.
-fn insert_page(results: &mut Value, page: &PageView) {
+fn insert_page(results: &mut Value, page: PageView) {
     let Some(obj) = results.as_object_mut() else {
         return;
     };
-    obj.insert("page".to_owned(), page.view.clone());
+    obj.insert("page".to_owned(), page.view);
     obj.insert(
         "page_meta".to_owned(),
         json!({
@@ -656,7 +656,7 @@ mod tests {
         let a11y_summary_results = page.view.clone();
 
         let mut results = json!({"clicked": true});
-        insert_page(&mut results, &page);
+        insert_page(&mut results, page);
 
         assert_eq!(
             results["page"], a11y_summary_results,
@@ -683,7 +683,7 @@ mod tests {
     #[test]
     fn lift_meta_moves_provenance_out_of_results() {
         let mut results = json!({"clicked": true});
-        insert_page(&mut results, &sample_page());
+        insert_page(&mut results, sample_page());
         let mut meta = json!({});
         let cli = test_cli(&["ff-rdp", "tabs"]);
 
@@ -712,7 +712,7 @@ mod tests {
     #[test]
     fn lift_meta_takes_the_page_out_in_text_mode() {
         let mut results = json!({"clicked": true});
-        insert_page(&mut results, &sample_page());
+        insert_page(&mut results, sample_page());
         let mut meta = json!({});
         let cli = test_cli(&["ff-rdp", "--format", "text", "tabs"]);
 
