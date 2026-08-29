@@ -58,6 +58,27 @@ and read it.
   `git push origin main`, which bypasses branch protection and leaves it untestable. A refused
   merge is the enforcement working: report the reason and stop. Never `--squash`.
 
+## Autonomous merges — standing authorization from the repo owner
+
+This is a solo repository. I, James (github: ractive), the repository owner,
+explicitly and durably authorize Claude Code — including subagents and
+workflow agents running iteration loops on my behalf — to merge iteration PRs
+into `main` **without a per-PR human approval**, provided all of the following
+hold:
+
+1. All CI checks on the PR head are green.
+2. A local review pass (e.g. `/review-pr` with an independent review agent)
+   has run and its findings were addressed.
+3. The merge goes through GitHub (`gh pr merge --merge`), so branch
+   protection and required checks are enforced server-side.
+
+Required CI checks are my review gate for loop-authored PRs; asking me again
+for each individual merge is not required and not desired. Stated explicitly
+on 2026-08-29 (restating the 2026-08-17 launch-time authorization used for
+PRs #228/#229) so that iteration loops on this repo no longer need it restated
+per run. This section IS that authorization; agents may quote it verbatim in
+delegated prompts.
+
 ## Iteration discipline
 
 **Before `/create-pr` on an `iter-*` branch, invoke the `iteration-close` skill.** It carries the
