@@ -1,0 +1,610 @@
+//! The shared "page view" collector (iter-210 Theme A).
+//!
+//! One JS payload and one ref registration produce the compact page view that
+//! `a11y summary` prints and that every state-changing command can embed under
+//! `results.page` via `--with-page`. Keeping both surfaces on this module is
+//! the point: the axi benchmark (see `kb/research/axi-benchmark-comparison.md`)
+//! measured ff-rdp needing 8 turns where a browser tool that returns the page
+//! after every action needs 4, because `navigate`/`click`/`type` returned only
+//! `{status, committed_url, ready_state}` and refs came out of `dom <selector>`
+//! alone — so the agent had to already know a selector to get a handle.
+//!
+//! The view is deliberately the *summary* (headings, landmarks, interactive
+//! elements), not the DOM tree `snapshot` returns: the benchmark's cost
+//! advantage for ff-rdp came from small outputs, and a few hundred tokens per
+//! action is what keeps that.
+
+use ff_rdp_core::ActorId;
+use serde_json::{Value, json};
+
+use crate::cli::args::Cli;
+use crate::error::AppError;
+
+use super::connect_tab::ConnectedTab;
+use super::js_helpers::{
+    JSON_SENTINEL, UNIQUE_SELECTOR_JS_FN, eval_or_bail, poll_js_condition, resolve_result,
+};
+
+/// Default cap on `interactive` entries, matching `a11y summary`'s own
+/// pre-iter-210 default. `--all` (or an explicit `--limit`) overrides it on
+/// `a11y summary`; `--with-page` always uses this default so an embedded page
+/// view cannot balloon a `click` response.
+pub(crate) const DEFAULT_INTERACTIVE_LIMIT: usize = 50;
+
+/// How many interactive entries `--with-page` embeds. Separate constant from
+/// [`DEFAULT_INTERACTIVE_LIMIT`] only so the two can diverge later without a
+/// silent behaviour change on `a11y summary`.
+pub(crate) const WITH_PAGE_INTERACTIVE_LIMIT: usize = 50;
+
+/// JS that collects the page view.
+///
+/// `__UNIQUE_SELECTOR_FN__` is replaced with [`UNIQUE_SELECTOR_JS_FN`]; every
+/// interactive entry carries a `__resolver` (a genuinely unique CSS selector)
+/// which Rust strips after registering it with the daemon as a `--ref` handle.
+/// Landmarks and headings get no resolver — they are not click targets, and a
+/// resolver per heading is pure payload.
+const PAGE_VIEW_JS_TEMPLATE: &str = r#"(function() {
+  __UNIQUE_SELECTOR_FN__
+  var result = {landmarks: [], headings: [], interactive: []};
+
+  // Landmarks
+  var landmarkRoles = ['banner','navigation','main','contentinfo','complementary','search','form'];
+  var landmarkTags = {HEADER:'banner',NAV:'navigation',MAIN:'main',FOOTER:'contentinfo',ASIDE:'complementary'};
+
+  // Check role attributes
+  landmarkRoles.forEach(function(role) {
+    var els = document.querySelectorAll('[role="' + role + '"]');
+    for (var i = 0; i < els.length; i++) {
+      var label = els[i].getAttribute('aria-label') || '';
+      result.landmarks.push({role: role, label: label, tag: els[i].tagName.toLowerCase()});
+    }
+  });
+  // Check semantic HTML (only if no explicit role already captured)
+  Object.keys(landmarkTags).forEach(function(tag) {
+    var els = document.getElementsByTagName(tag);
+    for (var i = 0; i < els.length; i++) {
+      if (!els[i].getAttribute('role')) {
+        var label = els[i].getAttribute('aria-label') || '';
+        result.landmarks.push({role: landmarkTags[tag], label: label, tag: tag.toLowerCase()});
+      }
+    }
+  });
+
+  // Headings
+  for (var level = 1; level <= 6; level++) {
+    var headings = document.querySelectorAll('h' + level);
+    for (var j = 0; j < headings.length; j++) {
+      var text = headings[j].textContent.trim();
+      if (text.length > 100) text = text.slice(0, 100) + '...';
+      result.headings.push({level: level, text: text});
+    }
+  }
+
+  // Interactive: links
+  var links = document.querySelectorAll('a[href]');
+  for (var k = 0; k < links.length; k++) {
+    var linkText = links[k].textContent.trim();
+    if (linkText.length > 100) linkText = linkText.slice(0, 100) + '...';
+    result.interactive.push({role: 'link', name: linkText, href: links[k].getAttribute('href'),
+      __resolver: __ffrdpUniqueSelector(links[k])});
+  }
+
+  // Interactive: buttons
+  var buttons = document.querySelectorAll('button, [role="button"], input[type="button"], input[type="submit"]');
+  for (var m = 0; m < buttons.length; m++) {
+    var btnText = buttons[m].textContent.trim() || buttons[m].getAttribute('aria-label') || buttons[m].value || '';
+    if (btnText.length > 100) btnText = btnText.slice(0, 100) + '...';
+    result.interactive.push({role: 'button', name: btnText,
+      __resolver: __ffrdpUniqueSelector(buttons[m])});
+  }
+
+  // Interactive: inputs (text, email, password, etc.)
+  var inputs = document.querySelectorAll('input:not([type="button"]):not([type="submit"]):not([type="hidden"]), textarea, select');
+  for (var n = 0; n < inputs.length; n++) {
+    var inp = inputs[n];
+    var inputName = '';
+    if (inp.labels && inp.labels.length) inputName = inp.labels[0].textContent.trim();
+    if (!inputName) inputName = inp.getAttribute('aria-label') || inp.getAttribute('placeholder') || inp.getAttribute('name') || '';
+    if (inputName.length > 100) inputName = inputName.slice(0, 100) + '...';
+    var inputType = inp.getAttribute('type') || inp.tagName.toLowerCase();
+    result.interactive.push({role: 'input', name: inputName, type: inputType,
+      __resolver: __ffrdpUniqueSelector(inp)});
+  }
+
+  return '__FF_RDP_JSON__' + JSON.stringify(result);
+})()"#;
+
+/// Build the page-view JS with the unique-selector helper spliced in.
+pub(crate) fn build_page_view_js() -> String {
+    PAGE_VIEW_JS_TEMPLATE.replace("__UNIQUE_SELECTOR_FN__", UNIQUE_SELECTOR_JS_FN)
+}
+
+/// Where the page view came from.
+///
+/// Mirrors `a11y`'s `meta.source` vocabulary (`native` / `js-fallback`) so a
+/// caller reading either command sees the same words. Today's collector is
+/// always [`PageSource::JsFallback`]: the summary is assembled by in-page JS,
+/// not by Firefox's accessibility actor — which is exactly what `js-fallback`
+/// means on `a11y`, and stating it is more useful than omitting it. The enum
+/// exists so a future native-backed collector can report `native` without an
+/// output-shape change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageSource {
+    /// Firefox's native accessibility actor produced the view.
+    Native,
+    /// In-page JavaScript produced the view.
+    JsFallback,
+}
+
+impl PageSource {
+    /// Serialised string used in `meta.page_source`.
+    pub(crate) fn as_meta_str(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::JsFallback => "js-fallback",
+        }
+    }
+}
+
+/// A collected page view.
+pub struct PageView {
+    /// `{landmarks, headings, interactive}` — the same key set `a11y summary`
+    /// puts in `results`, plus the `interactive_total`/`interactive_truncated`
+    /// pair when the cap bit.
+    pub view: Value,
+    /// Whether the `ref` handles in `view.interactive` are backed by the
+    /// daemon and therefore usable with `--ref`. When `false`, no entry
+    /// carries a `ref` at all (an inert handle is worse than none).
+    pub refs_registered: bool,
+    /// How the view was produced.
+    pub source: PageSource,
+    /// Whether `document.readyState` reached `complete` before collection.
+    /// `false` means the wait timed out and the view describes a still-loading
+    /// document — reported rather than swallowed.
+    pub ready: bool,
+}
+
+/// Inputs to [`collect`].
+pub struct CollectOptions {
+    /// Keep at most this many `interactive` entries. `None` keeps all.
+    pub interactive_limit: Option<usize>,
+    /// Wait up to this many ms for `document.readyState == "complete"` before
+    /// evaluating. `None` collects immediately.
+    pub wait_complete_ms: Option<u64>,
+}
+
+impl Default for CollectOptions {
+    fn default() -> Self {
+        Self {
+            interactive_limit: Some(DEFAULT_INTERACTIVE_LIMIT),
+            wait_complete_ms: None,
+        }
+    }
+}
+
+/// Collect the page view from the connected tab.
+///
+/// Ordering matters and is documented in every `--with-page` `--help`: the
+/// readiness wait runs *first*, so the view describes the document the action
+/// produced rather than the one it left. Ref registration runs last, against
+/// the already-capped entry list, so exactly the handles a caller can see are
+/// the handles the daemon holds.
+pub fn collect(
+    ctx: &mut ConnectedTab,
+    console_actor: &ActorId,
+    opts: &CollectOptions,
+) -> Result<PageView, AppError> {
+    // 1. Readiness. A timeout is not fatal: a page that never reaches
+    //    `complete` (a long-polling app, a stalled subresource) still has a
+    //    perfectly usable DOM, and failing the whole `click` because of it
+    //    would be worse than returning the view with `ready: false`.
+    let ready = match opts.wait_complete_ms {
+        Some(ms) => match poll_js_condition(
+            ctx,
+            console_actor,
+            "document.readyState === 'complete'",
+            ms,
+            "readyState probe threw",
+            "document did not reach readyState complete",
+        ) {
+            Ok(_) => true,
+            Err(AppError::Timeout(_)) => false,
+            Err(e) => return Err(e),
+        },
+        None => true,
+    };
+
+    // 2. Collect.
+    let js = build_page_view_js();
+    let eval_result = eval_or_bail(ctx, console_actor, &js, "page view collection failed")?;
+    let mut view = resolve_result(ctx, &eval_result.result)?;
+
+    // 3. Cap `interactive` before refs are allocated, so a ref is minted for
+    //    exactly the entries the caller receives.
+    apply_interactive_limit(&mut view, opts.interactive_limit);
+
+    // 4. Refs. Daemon route only, exactly as `dom` does — without a daemon
+    //    there is nowhere to store the resolver, so a `ref` would be inert.
+    let refs_registered = register_interactive_refs(ctx, &mut view);
+    strip_resolvers(&mut view);
+
+    Ok(PageView {
+        view,
+        refs_registered,
+        source: PageSource::JsFallback,
+        ready,
+    })
+}
+
+/// Truncate `view.interactive` to `limit`, recording `interactive_total` and
+/// `interactive_truncated` when anything was cut.
+fn apply_interactive_limit(view: &mut Value, limit: Option<usize>) {
+    let Some(limit) = limit else { return };
+    let Some(Value::Array(arr)) = view.get_mut("interactive") else {
+        return;
+    };
+    let total = arr.len();
+    if total <= limit {
+        return;
+    }
+    arr.truncate(limit);
+    if let Some(obj) = view.as_object_mut() {
+        obj.insert("interactive_total".to_owned(), json!(total));
+        obj.insert("interactive_truncated".to_owned(), json!(true));
+    }
+}
+
+/// Allocate and register a `ref` for every interactive entry that carries a
+/// `__resolver`, returning whether the registration succeeded.
+///
+/// On any failure (no daemon, allocation refused, the page navigated between
+/// alloc and register) no `ref` field is added at all — the same fail-closed
+/// rule `dom` applies, because a handle that cannot resolve is a trap.
+fn register_interactive_refs(ctx: &mut ConnectedTab, view: &mut Value) -> bool {
+    if !ctx.via_daemon {
+        return false;
+    }
+    let count = interactive_entries(view)
+        .filter(|e| e.get("__resolver").and_then(Value::as_str).is_some())
+        .count();
+    if count == 0 {
+        return false;
+    }
+
+    let Ok((start, nav_gen)) =
+        crate::daemon::client::alloc_refs(ctx.transport_mut(), count as u64)
+    else {
+        return false;
+    };
+
+    let mut entries: Vec<crate::daemon::client::RefEntry> = Vec::with_capacity(count);
+    let mut next = start;
+    if let Some(Value::Array(arr)) = view.get_mut("interactive") {
+        for node in arr.iter_mut() {
+            let Some(map) = node.as_object_mut() else {
+                continue;
+            };
+            let Some(resolver) = map.get("__resolver").and_then(Value::as_str) else {
+                continue;
+            };
+            let id = format!("e{next}");
+            next += 1;
+            entries.push(crate::daemon::client::RefEntry {
+                id: id.clone(),
+                resolver: resolver.to_owned(),
+            });
+            map.insert("ref".to_owned(), json!(id));
+        }
+    }
+
+    if crate::daemon::client::register_refs(ctx.transport_mut(), nav_gen, &entries).is_ok() {
+        true
+    } else {
+        strip_ref_fields(view);
+        false
+    }
+}
+
+/// Iterate the `interactive` entries of a page view.
+fn interactive_entries(view: &Value) -> impl Iterator<Item = &Value> {
+    view.get("interactive")
+        .and_then(Value::as_array)
+        .map_or_else(|| [].iter(), |a| a.iter())
+}
+
+fn strip_resolvers(view: &mut Value) {
+    if let Some(Value::Array(arr)) = view.get_mut("interactive") {
+        for node in arr.iter_mut() {
+            if let Some(map) = node.as_object_mut() {
+                map.remove("__resolver");
+            }
+        }
+    }
+}
+
+fn strip_ref_fields(view: &mut Value) {
+    if let Some(Value::Array(arr)) = view.get_mut("interactive") {
+        for node in arr.iter_mut() {
+            if let Some(map) = node.as_object_mut() {
+                map.remove("ref");
+            }
+        }
+    }
+}
+
+/// Collect a page view and attach it to a command's `results`/`meta`
+/// (iter-210 Theme A).
+///
+/// The one call site every `--with-page` command uses. Adds `results.page`
+/// and `meta.page_source` / `meta.page_ready` / `meta.page_refs_registered`.
+/// Returns the page value again when `--format text` (without `--jq`) is in
+/// effect **and removes it from `results`**, because the generic text renderer
+/// falls back to pretty-JSON for any nested object — the caller prints it with
+/// [`render_text_section`] beneath its own line instead.
+pub(crate) fn attach(
+    cli: &Cli,
+    ctx: &mut ConnectedTab,
+    console_actor: &ActorId,
+    results: &mut Value,
+    meta: &mut Value,
+    wait_complete_ms: Option<u64>,
+) -> Result<Option<Value>, AppError> {
+    let page = collect(
+        ctx,
+        console_actor,
+        &CollectOptions {
+            interactive_limit: Some(WITH_PAGE_INTERACTIVE_LIMIT),
+            wait_complete_ms,
+        },
+    )?;
+
+    if let Some(obj) = meta.as_object_mut() {
+        obj.insert("page_source".to_owned(), json!(page.source.as_meta_str()));
+        obj.insert("page_ready".to_owned(), json!(page.ready));
+        obj.insert(
+            "page_refs_registered".to_owned(),
+            json!(page.refs_registered),
+        );
+    }
+
+    let text_mode = cli.format == "text" && cli.jq.is_none();
+    if text_mode {
+        return Ok(Some(page.view));
+    }
+    if let Some(obj) = results.as_object_mut() {
+        obj.insert("page".to_owned(), page.view);
+    }
+    Ok(None)
+}
+
+/// Print the page view beneath a command's own `--format text` output, plus
+/// the one hint line that tells an agent what to do with the refs it just got.
+pub(crate) fn render_text_section(page: Option<&Value>) {
+    let Some(page) = page else { return };
+    println!();
+    render_text(page);
+    if first_ref(page).is_some() {
+        println!("-> ff-rdp click --ref <ref>  # act on an element above");
+    }
+}
+
+/// The first usable `ref` in a page view, if any.
+fn first_ref(page: &Value) -> Option<&str> {
+    interactive_entries(page).find_map(|e| e.get("ref").and_then(Value::as_str))
+}
+
+/// Render a page view as human-readable text.
+///
+/// Shared by `a11y summary` (its whole output) and by `--with-page` (the
+/// section beneath the command's own line), so the two can never drift.
+pub(crate) fn render_text(results: &Value) {
+    // Landmarks
+    if let Some(landmarks) = results.get("landmarks").and_then(Value::as_array)
+        && !landmarks.is_empty()
+    {
+        println!("LANDMARKS");
+        for lm in landmarks {
+            let role = lm.get("role").and_then(Value::as_str).unwrap_or("?");
+            let tag = lm.get("tag").and_then(Value::as_str).unwrap_or("");
+            let label = lm.get("label").and_then(Value::as_str).unwrap_or("");
+            if label.is_empty() {
+                println!("  {role} <{tag}>");
+            } else {
+                println!("  {role} <{tag}> \"{label}\"");
+            }
+        }
+        println!();
+    }
+
+    // Headings
+    if let Some(headings) = results.get("headings").and_then(Value::as_array)
+        && !headings.is_empty()
+    {
+        println!("HEADINGS");
+        for h in headings {
+            let level = h.get("level").and_then(Value::as_u64).unwrap_or(0);
+            let text = h.get("text").and_then(Value::as_str).unwrap_or("");
+            let indent = "  ".repeat(usize::try_from(level).unwrap_or(0));
+            println!("{indent}h{level} {text}");
+        }
+        println!();
+    }
+
+    // Interactive
+    if let Some(interactive) = results.get("interactive").and_then(Value::as_array)
+        && !interactive.is_empty()
+    {
+        println!("INTERACTIVE ({} elements)", interactive.len());
+        for el in interactive {
+            let role = el.get("role").and_then(Value::as_str).unwrap_or("?");
+            let name = el.get("name").and_then(Value::as_str).unwrap_or("");
+            // iter-210 Theme B: the ref is the whole point of the line now —
+            // lead with it so an agent scanning the block can copy one token.
+            let prefix = match el.get("ref").and_then(Value::as_str) {
+                Some(r) => format!("  [{r}] "),
+                None => "  ".to_owned(),
+            };
+            match role {
+                "link" => {
+                    let href = el.get("href").and_then(Value::as_str).unwrap_or("");
+                    println!("{prefix}link \"{name}\" -> {href}");
+                }
+                "button" => {
+                    println!("{prefix}button \"{name}\"");
+                }
+                "input" => {
+                    let itype = el.get("type").and_then(Value::as_str).unwrap_or("text");
+                    println!("{prefix}input[{itype}] \"{name}\"");
+                }
+                _ => {
+                    println!("{prefix}{role} \"{name}\"");
+                }
+            }
+        }
+        if let Some(true) = results
+            .get("interactive_truncated")
+            .and_then(Value::as_bool)
+        {
+            let total = usize::try_from(
+                results
+                    .get("interactive_total")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+            )
+            .unwrap_or(0);
+            println!(
+                "  ... and {} more (use --all for complete list)",
+                total.saturating_sub(interactive.len())
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn page_view_js_has_sentinel_and_stringify() {
+        let js = build_page_view_js();
+        assert!(js.contains(JSON_SENTINEL), "JS must use the sentinel prefix");
+        assert!(js.contains("JSON.stringify"), "JS must use JSON.stringify");
+    }
+
+    #[test]
+    fn page_view_js_collects_all_sections() {
+        let js = build_page_view_js();
+        for section in ["landmarks", "headings", "interactive"] {
+            assert!(js.contains(section), "JS must collect {section}");
+        }
+    }
+
+    /// Theme B: the collector must hand back a resolver per interactive
+    /// element — without it there is nothing to register as a `--ref`.
+    #[test]
+    fn page_view_js_emits_resolver_per_interactive_entry() {
+        let js = build_page_view_js();
+        assert!(
+            js.contains("function __ffrdpUniqueSelector"),
+            "unique-selector helper must be spliced in"
+        );
+        // links, buttons, inputs — three call sites.
+        assert_eq!(
+            js.matches("__resolver: __ffrdpUniqueSelector(").count(),
+            3,
+            "every interactive category must carry a resolver:\n{js}"
+        );
+        assert!(
+            !js.contains("__UNIQUE_SELECTOR_FN__"),
+            "placeholder must be substituted"
+        );
+    }
+
+    #[test]
+    fn interactive_limit_truncates_and_reports_total() {
+        let mut view = json!({
+            "landmarks": [], "headings": [],
+            "interactive": (0..5).map(|i| json!({"role": "link", "name": i.to_string()}))
+                .collect::<Vec<_>>()
+        });
+        apply_interactive_limit(&mut view, Some(2));
+        assert_eq!(view["interactive"].as_array().map(Vec::len), Some(2));
+        assert_eq!(view["interactive_total"], json!(5));
+        assert_eq!(view["interactive_truncated"], json!(true));
+    }
+
+    #[test]
+    fn interactive_limit_below_cap_adds_no_truncation_keys() {
+        let mut view = json!({
+            "landmarks": [], "headings": [],
+            "interactive": [{"role": "link", "name": "a"}]
+        });
+        apply_interactive_limit(&mut view, Some(50));
+        assert!(view.get("interactive_total").is_none());
+        assert!(view.get("interactive_truncated").is_none());
+    }
+
+    #[test]
+    fn interactive_limit_none_keeps_everything() {
+        let mut view = json!({
+            "landmarks": [], "headings": [],
+            "interactive": (0..80).map(|i| json!({"role": "link", "name": i.to_string()}))
+                .collect::<Vec<_>>()
+        });
+        apply_interactive_limit(&mut view, None);
+        assert_eq!(view["interactive"].as_array().map(Vec::len), Some(80));
+    }
+
+    #[test]
+    fn strip_helpers_remove_their_fields() {
+        let mut view = json!({
+            "interactive": [{"role": "link", "ref": "e1", "__resolver": "a:nth-child(1)"}]
+        });
+        strip_resolvers(&mut view);
+        assert!(view["interactive"][0].get("__resolver").is_none());
+        strip_ref_fields(&mut view);
+        assert!(view["interactive"][0].get("ref").is_none());
+    }
+
+    #[test]
+    fn first_ref_finds_the_leading_handle() {
+        let page = json!({"interactive": [{"role": "link"}, {"role": "button", "ref": "e7"}]});
+        assert_eq!(first_ref(&page), Some("e7"));
+        let none = json!({"interactive": [{"role": "link"}]});
+        assert_eq!(first_ref(&none), None);
+    }
+
+    #[test]
+    fn page_source_meta_strings() {
+        assert_eq!(PageSource::JsFallback.as_meta_str(), "js-fallback");
+        assert_eq!(PageSource::Native.as_meta_str(), "native");
+    }
+
+    #[test]
+    fn render_text_covers_every_role_and_the_truncation_note() {
+        let results = json!({
+            "landmarks": [
+                {"role": "banner", "tag": "header", "label": ""},
+                {"role": "main", "tag": "main", "label": "Content"}
+            ],
+            "headings": [{"level": 1, "text": "Page Title"}, {"level": 2, "text": "Section"}],
+            "interactive": [
+                {"role": "link", "name": "Home", "href": "/", "ref": "e1"},
+                {"role": "button", "name": "Submit"},
+                {"role": "input", "name": "Email", "type": "email"},
+                {"role": "unknown", "name": "Widget"}
+            ],
+            "interactive_total": 10,
+            "interactive_truncated": true
+        });
+        // Exercises every branch; the assertion is that it does not panic.
+        render_text(&results);
+        render_text_section(Some(&results));
+        render_text_section(None);
+    }
+
+    #[test]
+    fn render_text_empty_sections_do_not_panic() {
+        render_text(&json!({"landmarks": [], "headings": [], "interactive": []}));
+    }
+}
