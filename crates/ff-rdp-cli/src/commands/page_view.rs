@@ -24,15 +24,13 @@ use super::connect_tab::ConnectedTab;
 use super::js_helpers::{UNIQUE_SELECTOR_JS_FN, eval_or_bail, poll_js_condition, resolve_result};
 
 /// Default cap on `interactive` entries, matching `a11y summary`'s own
-/// pre-iter-210 default. `--all` (or an explicit `--limit`) overrides it on
-/// `a11y summary`; `--with-page` always uses this default so an embedded page
-/// view cannot balloon a `click` response.
+/// pre-iter-210 default.
+///
+/// `a11y summary` lets `--all` lift it and `--limit N` override it.
+/// `--with-page` always uses it: an embedded page view rides along with every
+/// click, and an uncapped one on a link-heavy page would undo the token
+/// advantage the whole feature is meant to preserve.
 pub(crate) const DEFAULT_INTERACTIVE_LIMIT: usize = 50;
-
-/// How many interactive entries `--with-page` embeds. Separate constant from
-/// [`DEFAULT_INTERACTIVE_LIMIT`] only so the two can diverge later without a
-/// silent behaviour change on `a11y summary`.
-pub(crate) const WITH_PAGE_INTERACTIVE_LIMIT: usize = 50;
 
 /// JS that collects the page view.
 ///
@@ -153,15 +151,6 @@ pub struct CollectOptions {
     /// Wait up to this many ms for `document.readyState == "complete"` before
     /// evaluating. `None` collects immediately.
     pub wait_complete_ms: Option<u64>,
-}
-
-impl Default for CollectOptions {
-    fn default() -> Self {
-        Self {
-            interactive_limit: Some(DEFAULT_INTERACTIVE_LIMIT),
-            wait_complete_ms: None,
-        }
-    }
 }
 
 /// Collect the page view from the connected tab.
@@ -343,7 +332,7 @@ pub(crate) fn attach(
         ctx,
         &console_actor,
         &CollectOptions {
-            interactive_limit: Some(WITH_PAGE_INTERACTIVE_LIMIT),
+            interactive_limit: Some(DEFAULT_INTERACTIVE_LIMIT),
             wait_complete_ms,
         },
     )?;

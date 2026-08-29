@@ -58,7 +58,7 @@ browser command failed with exit 1 ("port 6000 already in use") in 3 of 42 runs.
 
 ## Tasks
 
-### A. `--with-page` [0/4]
+### A. `--with-page` [4/4]
 - [x] Factor the `a11y summary` collector into `commands/page_view.rs` (`collect(ctx, tab) ->
       PageView`) so `a11y summary` and `--with-page` share one implementation and one JSON shape
 - [x] Add `--with-page` to `navigate`, `click`, `type`, and the `nav_action` commands (`reload`,
@@ -72,50 +72,97 @@ browser command failed with exit 1 ("port 6000 already in use") in 3 of 42 runs.
       command's own line, and prints one hint line: `-> ff-rdp click --ref <ref>  # act on an
       element above`
 
-### B. Refs from the read commands [0/3]
+### B. Refs from the read commands [3/3]
 - [x] `a11y summary` registers refs via `daemon::client::register_refs` (daemon route only, as
       `dom` does) and emits `ref` on every `interactive` entry; `meta.refs_registered` as in `dom`
 - [x] `snapshot` does the same for nodes marked `interactive: true`
 - [x] The `--with-page` payload of Theme A carries the same refs; one registration per command,
       not one per sub-view
 
-### C. `type --submit` [0/2]
+### C. `type --submit` [2/2]
 - [x] `type … --submit` dispatches Enter on the element and, if the element is inside a `<form>`
       and Enter did not navigate, calls `form.requestSubmit()`; output gains
       `{"submitted": true, "navigated": bool}`
 - [x] `--submit` composes with `--with-page` (collect after the resulting navigation settles)
 
-### D. Idempotent `launch` [0/2]
+### D. Idempotent `launch` [2/2]
 - [x] When the port is busy **and** the owner is a Firefox launched by ff-rdp (the same check
       `--replace` uses to decide what it may stop), `launch` returns exit 0 with
       `results.already_running: true`, the existing `pid`, `port`, `profile`; the error path stays
       for a foreign port owner
 - [x] `--replace` behaviour unchanged; `--help` documents the no-op
 
-## Acceptance Criteria [0/9]
+## Acceptance Criteria [8/9]
 
-- [ ] `live_navigate_with_page_returns_headings_and_refs`: `navigate <fixture-page> --with-page`
+- [x] `live_navigate_with_page_returns_headings_and_refs`: `navigate <fixture-page> --with-page`
       → `results.page.headings[0].text` equals the fixture's `<h1>`; every `interactive` entry has
       a `ref` matching `^e\d+$`
-- [ ] `live_click_ref_from_with_page_lands_on_target`: refs from `navigate --with-page` are
+- [x] `live_click_ref_from_with_page_lands_on_target`: refs from `navigate --with-page` are
       accepted by `click --ref` and the click's `results.text` matches the ref's `name`
-- [ ] `live_click_with_page_reflects_post_click_document`: after `click --ref <link> --with-page`
+- [x] `live_click_with_page_reflects_post_click_document`: after `click --ref <link> --with-page`
       the returned `page.headings[0]` is the *destination* page's heading, not the origin's
-- [ ] `live_a11y_summary_registers_refs`: `a11y summary` output has `meta.refs_registered: true`
+- [x] `live_a11y_summary_registers_refs`: `a11y summary` output has `meta.refs_registered: true`
       and `click --ref` on its first interactive entry succeeds
-- [ ] `live_snapshot_interactive_nodes_carry_refs`: every `interactive: true` node in `snapshot`
+- [x] `live_snapshot_interactive_nodes_carry_refs`: every `interactive: true` node in `snapshot`
       output has a `ref`
-- [ ] `live_type_submit_navigates_search_form`: on a fixture form, `type --ref <input> "x"
+- [x] `live_type_submit_navigates_search_form`: on a fixture form, `type --ref <input> "x"
       --submit` yields `submitted: true` and the resulting URL contains the query
-- [ ] `live_launch_twice_is_a_noop`: second `launch` on the same port → exit 0,
+- [x] `live_launch_twice_is_a_noop`: second `launch` on the same port → exit 0,
       `already_running: true`, same `pid`; a listener that is not an ff-rdp Firefox still errors
-- [ ] `with_page_shape_matches_a11y_summary` (unit): the `page` object and `a11y summary`
+- [x] `with_page_shape_matches_a11y_summary` (unit): the `page` object and `a11y summary`
       `results` serialise to the same key set
 - [ ] Benchmark: re-run [[axi-benchmark-comparison]] `--repeat 3`; average turns on
       `wikipedia_infobox_hop`, `wikipedia_link_follow`, `wikipedia_search_click` ≤ 5 (were 8.0,
       7.3, 8.3) with the same one-paragraph system prompt — record the table in this plan's
       Outcome section
+      **NOT DONE — not re-measured.** The mechanisms this AC was supposed to validate all shipped
+      and are covered by the seven live tests above, but nobody ran the benchmark, so the turn
+      count after this change is unknown and this box stays empty. The harness drives real Claude
+      Code agents against live Wikipedia over hours at real per-run cost, and lived in a session
+      scratchpad rather than in this repo. Carried over as [[iteration-213-act-and-see-benchmark-rerun]],
+      which lands the harness under `tools/` first so the comparison is reproducible at all.
+      Note what remains genuinely open: `--with-page` is opt-in, so an unchanged turn count is a
+      possible and publishable outcome — it would mean agents do not discover the flag, which is a
+      discoverability finding, not a broken feature.
 - [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+
+## Outcome
+
+Landed as `iter-210/act-and-see`. Eight of nine acceptance criteria met; the benchmark re-run was
+not performed and is carried over (see the AC itself, and [[iteration-213-act-and-see-benchmark-rerun]]).
+
+### What shipped
+
+| Theme | Change |
+|---|---|
+| A | `crates/ff-rdp-cli/src/commands/page_view.rs` — one collector, one ref registration, one text renderer. `--with-page` on `navigate` (both routes), `click`, `type`, `reload`, `back`, `forward`, and all seven `scroll` subcommands. `results.page`; `meta.page_source` / `page_ready` / `page_refs_registered`. |
+| B | `a11y summary` and `snapshot` register refs via `daemon::client::register_refs`, fail-closed exactly as `dom` does (no daemon ⇒ no `ref` field at all). |
+| C | `type --submit`: Enter first, `form.requestSubmit()` only when no navigation followed. `results.method` reports which path ran. |
+| D | `launch` returns `already_running: true` and exit 0 when the port is held by a Firefox it can prove ff-rdp launched; a foreign owner still errors. `already_running` is present (`false`) on the launching path too. |
+
+### Two decisions the plan did not anticipate
+
+- **`a11y summary` moved off `connect_direct`.** Theme B is impossible otherwise: the ref store
+  lives in the daemon, and this command was bypassing it. Nothing in its protocol traffic conflicts
+  with the proxy (see the routing table in `dispatch.rs`), so it now takes the normal route.
+- **`page_view::attach` refreshes the target actor before collecting.** The console actor cached
+  before a click is bound to the old docshell; without the refresh,
+  `click --ref <link> --with-page` returns the page it *left*. That is the difference between the
+  feature working and it being actively misleading, and it is what
+  `live_click_with_page_reflects_post_click_document` pins.
+
+### Live sweep
+
+Gates: `FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1`
+
+```
+LIVE_SWEEP_SUMMARY executed=292 skipped=0 preexisting=0 vanished=0 launch_timeout=0 timed_out=0 total=292
+```
+
+CLI tier: 279 passed / 4 failed. Other tiers: 1 + 3 + 3 + 2 passed, 0 failed. 279 + 4 + 9 = 292 =
+`executed`, so the record reconciles. All seven `live_210_act_and_see` tests passed.
+
+Four failures, none in changed code paths — one row each in Carry-over below.
 
 ## Design notes
 
@@ -135,6 +182,28 @@ browser command failed with exit 1 ("port 6000 already in use") in 3 of 42 runs.
 - **`--submit` is best-effort.** Synthetic Enter is `isTrusted: false` (see `type --help`); the
   `requestSubmit()` fallback is what makes it reliable, and `navigated` tells the agent whether
   anything happened.
+
+## Carry-over
+
+Every non-green line from the sweep, plus the unticked AC. Dispositions per
+`.claude/skills/iteration-close`.
+
+| # | Item | Evidence | Disposition |
+|---|---|---|---|
+| 1 | AC "Benchmark: re-run [[axi-benchmark-comparison]] `--repeat 3`" not done | AC left unticked above | **file** — [[iteration-213-act-and-see-benchmark-rerun]] (validated with `check-iteration-plan`) |
+| 2 | `live_166_navigate_document_status::live_166_navigate_reports_document_status` FAILED | `expected HTTP 200, got status: 304` for `https://example.com/`; reproduced on an isolated re-run | **file** — [[iteration-214-live-166-cache-304]] |
+| 3 | `live_166_navigate_document_status::live_166_navigate_status_direct_parity` FAILED | same 304, on the `--no-daemon --with-network` route | **file** — same plan, [[iteration-214-live-166-cache-304]]: one defect, one fix |
+| 4 | `live_137_daemon_mode_parity::live_137_consent_accept_via_daemon` FAILED in the sweep | `daemon never reported live frame targets`, `live_target_count: 0` after 18 s | **no plan, with a stated reason** — passed on an isolated re-run at `--test-threads=1`; load-sensitive under the sweep's 6 threads. If it fails again on an isolated run, or in two consecutive sweeps, it needs its own plan. |
+| 5 | `live_navigate_default_fast::live_navigate_elapsed_matches_wall` FAILED in the sweep | `elapsed_ms (715) must be within ±750ms of measured wall (2187); delta 1472ms` | **no plan, with a stated reason** — passed on the same isolated re-run. The test measures wall-clock including process spawn, which the sweep's parallelism inflates; the ±750 ms band is the load-sensitive part, not the product. Same trigger as row 4 for filing. |
+
+Rows 2 and 3 are one defect: `live_166` hard-asserts HTTP 200 from `https://example.com/`, but
+Firefox's HTTP cache makes a repeat visit a conditional request the server answers **304 Not
+Modified**. ff-rdp reports what the server sent, which is correct; the test's premise ("a
+navigation to a reachable page reports 200") is what is wrong. It reproduced on an isolated
+re-run, so it is not load-sensitive. It is **not** caused by this iteration —
+`git diff main...HEAD -- crates/ff-rdp-cli/src/commands/navigate.rs` touches only `--with-page`
+plumbing and nothing in the document-status path — but "not ours" is a diagnosis, not a
+disposition, so it is filed as [[iteration-214-live-166-cache-304]].
 
 ## Out of scope
 
