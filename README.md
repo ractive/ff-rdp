@@ -82,16 +82,26 @@ A typical first-time session looks like:
 ```bash
 ff-rdp launch --headless --temp-profile   # start a fresh Firefox
 ff-rdp doctor                             # confirm everything is healthy
-ff-rdp navigate https://example.com       # do work
+ff-rdp navigate https://example.com --with-page   # do work, and see the page
 ```
 
-When `ff-rdp launch` finds the requested port already in use it fails
-immediately — before spawning Firefox — naming the occupying process and its
-PID, and hinting at `--debug-port`, `--replace` and `doctor`. That is a
-*different* failure from Firefox spawning fine but not opening its debug port
-in time, which reports `Firefox (pid N) did not open debug port P within Ss`.
-Keeping the two apart matters: pre-iter-158 both printed "is the port already
-in use?", which sent users hunting for a process that did not exist.
+`launch` is idempotent (iter-210). If the requested port is already held by a
+Firefox **ff-rdp itself launched**, a second `launch` exits 0 and reports that
+instance — `results.already_running: true` alongside the existing `pid`,
+`port` and `profile` — instead of failing. An agent that cannot remember
+whether it has a browser open can simply run `launch` and proceed.
+
+When the port is held by anything else — a Firefox you started by hand, an
+unrelated server — `launch` still fails immediately, before spawning Firefox,
+naming the occupying process and its PID and hinting at `--debug-port`,
+`--replace` and `doctor`. The ownership bar for "ours" is the same one
+`--replace` must clear before it may stop anything (see below); claiming
+someone else's browser as the one we launched would put a PID this command has
+no claim on into `results.pid`. That is also a *different* failure from Firefox
+spawning fine but not opening its debug port in time, which reports
+`Firefox (pid N) did not open debug port P within Ss`. Keeping the two apart
+matters: pre-iter-158 both printed "is the port already in use?", which sent
+users hunting for a process that did not exist.
 
 `--replace` stops the instance already on that port and relaunches — but only
 one ff-rdp itself started. It will refuse rather than signal a process it
@@ -201,6 +211,31 @@ ff-rdp network --method POST
 # somewhere else (iter-159 removed that substitution).
 ff-rdp network                          # watcher (default)
 ff-rdp network --source performance-api # explicit opt-out: fewer fields
+
+# Act and see: return the page the action produced (iter-210). `navigate`,
+# `click`, `type`, `reload`, `back`, `forward` and `scroll` all take it.
+# `results.page` is the `a11y summary` view — headings, landmarks, and
+# interactive elements, each with a `ref` you can pass straight to
+# `click --ref`, so following a link is two commands with no selector guessing.
+ff-rdp navigate https://en.wikipedia.org/wiki/Ada_Lovelace --with-page \
+  --jq '.results.page.interactive[] | select(.name | test("Babbage"))'
+ff-rdp click --ref e12 --with-page --jq '.results.page.headings[0]'
+
+# The page is collected LAST — after the command's own wait and after
+# `document.readyState == "complete"` — so a click that navigates reports the
+# DESTINATION page. `meta.page_ready` is false if that wait timed out;
+# `meta.page_refs_registered` says whether the refs are usable (daemon only).
+
+# Refs no longer come only from `dom <selector>`: `a11y summary` and `snapshot`
+# register them too, so the first thing you read after navigating already
+# carries click handles.
+ff-rdp a11y summary --jq '.results.interactive[0].ref'
+
+# Type into a search box and submit in one command. Enter is dispatched first;
+# because a synthetic Enter is `isTrusted: false` Firefox performs no implicit
+# form submission for it, so when nothing navigated ff-rdp falls back to
+# `form.requestSubmit()`. `results.method` says which path ran.
+ff-rdp type --ref e7 "Turing Award" --submit --with-page
 
 # Navigate and capture all network traffic in one shot
 ff-rdp navigate https://example.com --with-network

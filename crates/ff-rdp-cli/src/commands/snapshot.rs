@@ -6,14 +6,15 @@ use crate::hints::{HintContext, HintSource};
 use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
-use super::connect_tab::connect_and_get_target;
-use super::js_helpers::{eval_or_bail, resolve_result};
+use super::connect_tab::{ConnectedTab, connect_and_get_target};
+use super::js_helpers::{UNIQUE_SELECTOR_JS_FN, eval_or_bail, resolve_result};
 
 /// JavaScript IIFE that walks the DOM and returns a compact tree for LLM consumption.
 ///
 /// `__DEPTH__` and `__MAX_CHARS__` are replaced with the actual numeric values
 /// before evaluation.
 const SNAPSHOT_JS_TEMPLATE: &str = r"(function() {
+  __UNIQUE_SELECTOR_FN__
   var SKIP = {SCRIPT:1,STYLE:1,NOSCRIPT:1,SVG:1};
   var INTERACTIVE = {A:1,BUTTON:1,INPUT:1,SELECT:1,TEXTAREA:1,DETAILS:1,SUMMARY:1};
   var SEMANTIC = {NAV:'navigation',HEADER:'banner',FOOTER:'contentinfo',MAIN:'main',
@@ -52,7 +53,10 @@ const SNAPSHOT_JS_TEMPLATE: &str = r"(function() {
     var o = {tag: tag.toLowerCase()};
     var role = node.getAttribute('role') || SEMANTIC[tag] || null;
     if (role) o.role = role;
-    if (INTERACTIVE[tag]) o.interactive = true;
+    // iter-210 Theme B: an interactive node carries a resolver so Rust can
+    // register it as a `--ref` handle. Only interactive nodes get one — a
+    // resolver per <div> would double the payload for nothing clickable.
+    if (INTERACTIVE[tag]) { o.interactive = true; o.__resolver = __ffrdpUniqueSelector(node); }
 
     var a = {};
     for (var i = 0; i < KEY_ATTRS.length; i++) {
@@ -86,12 +90,24 @@ pub fn run(cli: &Cli, depth: u32, max_chars: u32) -> Result<(), AppError> {
     let console_actor = ctx.target.console_actor.clone();
 
     let js = SNAPSHOT_JS_TEMPLATE
+        .replace("__UNIQUE_SELECTOR_FN__", UNIQUE_SELECTOR_JS_FN)
         .replace("__DEPTH__", &depth.to_string())
         .replace("__MAX_CHARS__", &max_chars.to_string());
 
     let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, "snapshot evaluation failed")?;
 
-    let results = resolve_result(&mut ctx, &eval_result.result)?;
+    let mut results = resolve_result(&mut ctx, &eval_result.result)?;
+
+    // iter-210 Theme B: register a `--ref` handle for every `interactive:
+    // true` node, exactly as `dom` does — daemon route only, and fail closed
+    // (strip the resolvers and mint no refs) when there is no ref store to
+    // back them. Done BEFORE the `--max-chars` bounding pass so a node that
+    // survives bounding keeps the ref it was given; nodes the bounding pass
+    // drops leave a registered-but-unreferenced entry in the daemon, which
+    // costs nothing and expires with the next navigation.
+    let refs_registered = register_interactive_refs(&mut ctx, &mut results);
+    strip_resolvers(&mut results);
+
     // Theme C (iter-131): `--max-chars` previously bounded only leaf text
     // content — the serialized tree (tags, attrs, structure) was unbounded,
     // making the flag a near-no-op (100 vs 5000 vs default all landed within
@@ -121,6 +137,12 @@ pub fn run(cli: &Cli, depth: u32, max_chars: u32) -> Result<(), AppError> {
         "truncated": truncated,
         "text_truncated": text_truncated,
     });
+    if ctx.via_daemon
+        && let Some(obj) = meta.as_object_mut()
+    {
+        // Same contract as `dom`'s `meta.refs_registered` (iter-61j D1).
+        obj.insert("refs_registered".to_owned(), json!(refs_registered));
+    }
     crate::connection_meta::merge_into_if_verbose(
         &mut meta,
         &cli.host,
@@ -150,6 +172,82 @@ pub fn run(cli: &Cli, depth: u32, max_chars: u32) -> Result<(), AppError> {
 
     let hint_ctx = HintContext::new(HintSource::Snapshot);
     OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
+}
+
+/// Walk `tree` depth-first, calling `f` on every object node.
+///
+/// The snapshot tree nests arbitrarily (`children` holds objects *and* bare
+/// text strings), so both the ref pass and the resolver strip need the same
+/// traversal. One implementation, two callers.
+fn for_each_node(tree: &mut Value, f: &mut impl FnMut(&mut serde_json::Map<String, Value>)) {
+    match tree {
+        Value::Object(map) => {
+            f(map);
+            if let Some(children) = map.get_mut("children") {
+                for_each_node(children, f);
+            }
+        }
+        Value::Array(arr) => {
+            for child in arr.iter_mut() {
+                for_each_node(child, f);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Register a `--ref` handle for every `interactive: true` node in the
+/// snapshot tree (iter-210 Theme B), returning whether registration succeeded.
+///
+/// Fail-closed, matching `dom`: with no daemon (or a refused allocation, or a
+/// navigation that raced the evaluation) no `ref` field is written at all,
+/// because a handle that cannot resolve is worse than no handle.
+fn register_interactive_refs(ctx: &mut ConnectedTab, tree: &mut Value) -> bool {
+    if !ctx.via_daemon {
+        return false;
+    }
+    let mut count: u64 = 0;
+    for_each_node(tree, &mut |map| {
+        if map.get("__resolver").and_then(Value::as_str).is_some() {
+            count += 1;
+        }
+    });
+    if count == 0 {
+        return false;
+    }
+
+    let Ok((start, nav_gen)) = crate::daemon::client::alloc_refs(ctx.transport_mut(), count) else {
+        return false;
+    };
+
+    let mut entries: Vec<crate::daemon::client::RefEntry> = Vec::new();
+    let mut next = start;
+    for_each_node(tree, &mut |map| {
+        let Some(resolver) = map.get("__resolver").and_then(Value::as_str) else {
+            return;
+        };
+        let resolver = resolver.to_owned();
+        let id = format!("e{next}");
+        next += 1;
+        map.insert("ref".to_owned(), json!(id.clone()));
+        entries.push(crate::daemon::client::RefEntry { id, resolver });
+    });
+
+    if crate::daemon::client::register_refs(ctx.transport_mut(), nav_gen, &entries).is_ok() {
+        true
+    } else {
+        for_each_node(tree, &mut |map| {
+            map.remove("ref");
+        });
+        false
+    }
+}
+
+/// Remove the internal `__resolver` field from every node.
+fn strip_resolvers(tree: &mut Value) {
+    for_each_node(tree, &mut |map| {
+        map.remove("__resolver");
+    });
 }
 
 /// Derive the `(truncated, text_truncated)` pair reported in `meta` from a

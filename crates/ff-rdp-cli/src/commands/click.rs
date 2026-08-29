@@ -48,6 +48,9 @@ pub struct ClickOptions<'a> {
     /// (the default, flag-less path) is completely unchanged: DOM-order index
     /// 0, same timing, same JS.
     pub match_policy: Option<MatchPolicy>,
+    /// iter-210 Theme A: `--with-page` — embed the page the click produced
+    /// under `results.page`, collected after the click settles.
+    pub with_page: bool,
 }
 
 impl Default for ClickOptions<'_> {
@@ -61,6 +64,7 @@ impl Default for ClickOptions<'_> {
             settle: false,
             frame: None,
             match_policy: None,
+            with_page: false,
         }
     }
 }
@@ -237,6 +241,15 @@ pub fn run_core(
         result["match_count"] = json!(match_count);
         result["chosen_index"] = json!(chosen_index);
     }
+
+    // iter-210 Theme A: `--with-page`. Last, on the connection the click
+    // already owns, and after `--settle`/`--wait-for`/`--wait-for-network` —
+    // a click that navigates must report the DESTINATION page, not the one it
+    // left, which is the whole reason the flag exists (see `page_view`).
+    if opts.with_page {
+        super::page_view::attach(&mut ctx, &mut result, Some(wait_timeout_ms))?;
+    }
+
     Ok((result, ctx.via_daemon))
 }
 
@@ -266,6 +279,7 @@ pub fn run(
         meta["settle_method"] = sm;
     }
     meta["frame_url"] = frame_url;
+    let page_text = super::page_view::lift_meta(cli, &mut result, &mut meta);
     crate::connection_meta::merge_into_if_verbose(
         &mut meta,
         &cli.host,
@@ -278,7 +292,9 @@ pub fn run(
     let envelope = output::envelope(&result, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Click).with_selector(selector);
-    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))?;
+    super::page_view::render_text_section(page_text.as_ref());
+    Ok(())
 }
 
 /// Cheap, single-shot existence probe: does `selector` match anything in the

@@ -6,6 +6,7 @@ use crate::hints::{HintContext, HintSource};
 use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
+use super::connect_tab::ConnectedTab;
 use super::connect_tab::connect_and_get_target;
 use super::js_helpers::{
     JSON_SENTINEL, MatchPolicy, WaitForPredicate, autowait_element, escape_selector, eval_or_bail,
@@ -83,6 +84,208 @@ fn build_type_js(escaped_sel: &str, escaped_text_json: &str, clear: bool) -> Str
     )
 }
 
+// ---------------------------------------------------------------------------
+// `--submit` (iter-210 Theme C)
+// ---------------------------------------------------------------------------
+
+/// How long to watch for a navigation caused by the synthetic Enter before
+/// falling back to `form.requestSubmit()`.
+///
+/// Short on purpose: this is not "how long can a page take to load", it is
+/// "did pressing Enter start anything at all". A real submission changes
+/// `location.href` (or begins a load) within a couple of hundred milliseconds;
+/// waiting longer just delays the fallback on every page whose Enter handler
+/// does nothing, which is the common case that made `--submit` necessary.
+const ENTER_NAVIGATION_GRACE_MS: u64 = 600;
+
+/// JS that presses Enter on the element and reports what it found there.
+///
+/// It deliberately does NOT submit the form: whether the fallback is needed
+/// depends on whether this Enter navigated, which no synchronous script can
+/// observe. Rust decides, after watching for a navigation.
+fn build_enter_js(escaped_sel: &str) -> String {
+    format!(
+        r#"(function() {{
+  "use strict";
+  var el = document.querySelector('{escaped_sel}');
+  if (!el) throw new Error('Element not found: {escaped_sel} — use ff-rdp dom SELECTOR --count to verify the selector matches');
+  var before = window.location.href;
+  var init = {{key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true}};
+  var notPrevented = el.dispatchEvent(new KeyboardEvent('keydown', init));
+  el.dispatchEvent(new KeyboardEvent('keypress', init));
+  el.dispatchEvent(new KeyboardEvent('keyup', init));
+  var form = el.form || (el.closest ? el.closest('form') : null);
+  return '{JSON_SENTINEL}' + JSON.stringify({{
+    url_before: before,
+    default_prevented: !notPrevented,
+    has_form: !!form
+  }});
+}})()"#
+    )
+}
+
+/// JS that submits the element's owning form for real.
+///
+/// `requestSubmit()` is the correct call — unlike `form.submit()` it fires the
+/// `submit` event and runs constraint validation, so a page's own handler and
+/// its `required` fields behave as they would for a human. `form.submit()` is
+/// the fallback for the (older) case where `requestSubmit` is absent.
+fn build_request_submit_js(escaped_sel: &str) -> String {
+    format!(
+        r#"(function() {{
+  "use strict";
+  var el = document.querySelector('{escaped_sel}');
+  if (!el) throw new Error('Element not found: {escaped_sel}');
+  var form = el.form || (el.closest ? el.closest('form') : null);
+  if (!form) return '{JSON_SENTINEL}' + JSON.stringify({{requested: false, reason: 'no_form'}});
+  if (typeof form.requestSubmit === 'function') {{
+    form.requestSubmit();
+  }} else {{
+    form.submit();
+  }}
+  return '{JSON_SENTINEL}' + JSON.stringify({{requested: true, reason: null}});
+}})()"#
+    )
+}
+
+/// Press Enter on `selector` and, when that did not navigate, submit its form.
+///
+/// Returns `{submitted, navigated, method}` for `results`.
+///
+/// Why two steps rather than one: the synthetic `keydown` is `isTrusted:
+/// false` (see `type --help`), and Firefox does not perform its own implicit
+/// form submission for untrusted Enter — so on most forms the key press alone
+/// does nothing at all. But on the pages that *do* handle Enter in script
+/// (every search box with a JS handler), calling `requestSubmit()` as well
+/// would submit twice. Watching for a navigation in between is what tells the
+/// two apart.
+fn press_enter_and_submit(
+    ctx: &mut ConnectedTab,
+    console_actor: &ff_rdp_core::ActorId,
+    escaped_sel: &str,
+) -> Result<serde_json::Value, AppError> {
+    let enter = eval_or_bail(
+        ctx,
+        console_actor,
+        &build_enter_js(escaped_sel),
+        "submit failed",
+    )?;
+    let enter_json = resolve_result(ctx, &enter.result)?;
+    let url_before = enter_json
+        .get("url_before")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let has_form = enter_json
+        .get("has_form")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let default_prevented = enter_json
+        .get("default_prevented")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+
+    if navigated_away(ctx, console_actor, &url_before, ENTER_NAVIGATION_GRACE_MS) {
+        return Ok(json!({"submitted": true, "navigated": true, "method": "enter"}));
+    }
+
+    // Enter did nothing observable. Fall back to the form, when there is one
+    // and no handler asked us not to.
+    if !has_form || default_prevented {
+        return Ok(json!({
+            "submitted": false,
+            "navigated": false,
+            "method": if has_form { "enter_prevented" } else { "no_form" },
+        }));
+    }
+
+    let req = eval_or_bail(
+        ctx,
+        console_actor,
+        &build_request_submit_js(escaped_sel),
+        "submit failed",
+    )?;
+    let req_json = resolve_result(ctx, &req.result)?;
+    let requested = req_json
+        .get("requested")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if !requested {
+        return Ok(json!({"submitted": false, "navigated": false, "method": "no_form"}));
+    }
+    let navigated = navigated_away(ctx, console_actor, &url_before, ENTER_NAVIGATION_GRACE_MS);
+    Ok(json!({
+        "submitted": true,
+        "navigated": navigated,
+        "method": "request_submit",
+    }))
+}
+
+/// Poll for `window.location.href` moving away from `url_before`.
+///
+/// A timeout means "no navigation observed", which is a legitimate answer
+/// (a same-page form handler, an XHR submit) — not an error.
+///
+/// Deliberately does not go through the shared `poll_js_condition` helper:
+/// that helper collapses every non-timeout `Err` into a hard failure, which
+/// would be wrong here specifically. A real navigation can tear the docshell
+/// down *during* this very poll — Firefox answers with
+/// `ProtocolError::EvalNavigatedDuringEval`, or `console_actor` (still the
+/// pre-Enter actor; the caller hasn't refreshed it yet) comes back
+/// `noSuchActor`/`ActorErrorKind::UnknownActor` once the old target is gone.
+/// Both are themselves the navigation signal this function exists to detect,
+/// not a probe failure — treating them as "no" (as a bare
+/// `poll_js_condition(...).is_ok()` would) told `press_enter_and_submit` no
+/// navigation happened on exactly the runs where one did, sending it into
+/// the `requestSubmit()` fallback against a target that had already moved
+/// on.
+fn navigated_away(
+    ctx: &mut ConnectedTab,
+    console_actor: &ff_rdp_core::ActorId,
+    url_before: &str,
+    timeout_ms: u64,
+) -> bool {
+    use ff_rdp_core::{ActorErrorKind, ProtocolError, WebConsoleActor};
+
+    let before_lit = serde_json::to_string(url_before).unwrap_or_else(|_| "\"\"".to_owned());
+    let js = format!("window.location.href !== {before_lit}");
+    let poll_interval = std::time::Duration::from_millis(50);
+    let deadline = std::time::Duration::from_millis(timeout_ms);
+    let started = std::time::Instant::now();
+
+    loop {
+        match WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, &js) {
+            Ok(result) if result.exception.is_none() => {
+                if super::js_helpers::is_truthy(&result.result) {
+                    return true;
+                }
+            }
+            // Neither a navigation signal nor proof of "no navigation": the
+            // probe threw, or the transport read simply timed out (Firefox
+            // hasn't answered yet). Keep polling — the deadline check below
+            // is the fallback answer.
+            Ok(_) | Err(ProtocolError::Timeout) => {}
+            // Both are themselves the navigation signal: `EvalNavigatedDuringEval`
+            // fires when the docshell tears down mid-eval, and `UnknownActor`
+            // means `console_actor` — still bound to the pre-Enter docshell —
+            // no longer exists because that docshell is already gone.
+            Err(
+                ProtocolError::EvalNavigatedDuringEval
+                | ProtocolError::ActorError {
+                    kind: ActorErrorKind::UnknownActor,
+                    ..
+                },
+            ) => return true,
+            Err(_) => return false,
+        }
+
+        if started.elapsed() >= deadline {
+            return false;
+        }
+        std::thread::sleep(poll_interval);
+    }
+}
+
 /// Options controlling auto-wait and post-action behaviour for `type`.
 #[derive(Default)]
 pub struct TypeOptions<'a> {
@@ -100,6 +303,13 @@ pub struct TypeOptions<'a> {
     /// that matches more than one element before doing anything else. `None`
     /// (the default, flag-less path) is unchanged.
     pub match_policy: Option<MatchPolicy>,
+    /// iter-210 Theme C: `--submit` — press Enter on the element and, if that
+    /// did not navigate and the element is inside a `<form>`, call
+    /// `form.requestSubmit()`.
+    pub submit: bool,
+    /// iter-210 Theme A: `--with-page` — embed the resulting page under
+    /// `results.page`.
+    pub with_page: bool,
 }
 
 /// Type text into a DOM element and return the result value without printing.
@@ -113,7 +323,7 @@ pub fn run_core(
     opts: &TypeOptions<'_>,
 ) -> Result<(serde_json::Value, bool), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
-    let console_actor = ctx.target.console_actor.clone();
+    let mut console_actor = ctx.target.console_actor.clone();
 
     let wait_timeout_ms = opts.wait_timeout_ms.unwrap_or(cli.timeout);
 
@@ -149,7 +359,33 @@ pub fn run_core(
 
     let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, "type failed")?;
 
-    let result_json = resolve_result(&mut ctx, &eval_result.result)?;
+    let mut result_json = resolve_result(&mut ctx, &eval_result.result)?;
+
+    // iter-210 Theme C: --submit. Runs before --settle/--wait-for so those
+    // observe the page the submission produced.
+    if opts.submit {
+        let submit_json = press_enter_and_submit(&mut ctx, &console_actor, &escaped_sel)?;
+        let navigated = submit_json
+            .get("navigated")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        if let (Some(dst), Some(src)) = (result_json.as_object_mut(), submit_json.as_object()) {
+            for (k, v) in src {
+                dst.insert(k.clone(), v.clone());
+            }
+        }
+        // `press_enter_and_submit` may have navigated the tab (the "Enter
+        // handled by page JS" case `--submit` targets). The docshell tears
+        // down on a real cross-document navigation, so `console_actor` above
+        // — cached before the submit — is stale: reusing it against
+        // `settle_page`/`wait_for_predicates` below would hit `noSuchActor`.
+        // Refresh before either runs, same as `page_view::attach` does for
+        // `--with-page`.
+        if navigated {
+            ctx.refresh_target();
+            console_actor = ctx.target.console_actor.clone();
+        }
+    }
 
     // C2: --settle.
     let settle_method = if opts.settle {
@@ -179,6 +415,13 @@ pub fn run_core(
         result["match_count"] = json!(match_count);
         result["chosen_index"] = json!(chosen_index);
     }
+
+    // iter-210 Theme A: `--with-page`, collected after `--submit` so a form
+    // that navigated reports the page it landed on.
+    if opts.with_page {
+        super::page_view::attach(&mut ctx, &mut result, Some(wait_timeout_ms))?;
+    }
+
     Ok((result, ctx.via_daemon))
 }
 
@@ -200,6 +443,7 @@ pub fn run(
     if let Some(sm) = settle_method {
         meta["settle_method"] = sm;
     }
+    let page_text = super::page_view::lift_meta(cli, &mut result_json, &mut meta);
     crate::connection_meta::merge_into_if_verbose(
         &mut meta,
         &cli.host,
@@ -212,7 +456,9 @@ pub fn run(
     let envelope = output::envelope(&result_json, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::TypeText).with_selector(selector);
-    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))?;
+    super::page_view::render_text_section(page_text.as_ref());
+    Ok(())
 }
 
 #[cfg(test)]
@@ -277,5 +523,69 @@ mod tests {
         );
         let kept = build_type_js("input", "\"hi\"", false);
         assert!(kept.contains("if (false) { applyValue(''); }"), "{kept}");
+    }
+
+    /// Regression (review finding on the iter-210 PR): a hard `noSuchActor`
+    /// reply while polling `navigated_away` — the console actor cached
+    /// before Enter, now stale because the page actually navigated — must be
+    /// read as "navigated", not silently swallowed into "no navigation
+    /// observed". A bare `poll_js_condition(...).is_ok()` (the pre-fix
+    /// implementation) collapsed every non-timeout `Err`, including this one,
+    /// into `false`, sending `press_enter_and_submit` into the
+    /// `requestSubmit()` fallback against a target that had already moved on.
+    #[test]
+    fn navigated_away_treats_unknown_actor_as_navigated() {
+        use std::io::Write as _;
+        use std::net::TcpListener;
+        use std::time::Duration;
+
+        use ff_rdp_core::ActorId;
+        use ff_rdp_core::transport::{RdpTransport, encode_frame, recv_from};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let server_handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut writer = stream.try_clone().unwrap();
+            let mut reader = std::io::BufReader::new(stream);
+
+            let greeting = json!({
+                "from": "root",
+                "applicationType": "browser",
+                "traits": {}
+            });
+            writer
+                .write_all(encode_frame(&serde_json::to_string(&greeting).unwrap()).as_bytes())
+                .unwrap();
+
+            // Read (and drop) the `evaluateJSAsync` request, then answer with
+            // a `noSuchActor` error instead of the usual `resultID` ack —
+            // exactly what Firefox sends once the docshell backing this
+            // console actor has already been torn down by a navigation.
+            let _ = recv_from(&mut reader);
+            let error_reply = json!({
+                "from": "conn0/console1",
+                "error": "noSuchActor",
+            });
+            writer
+                .write_all(encode_frame(&serde_json::to_string(&error_reply).unwrap()).as_bytes())
+                .unwrap();
+        });
+
+        let transport =
+            RdpTransport::connect("127.0.0.1", port, Duration::from_millis(500)).unwrap();
+        let console_actor = ActorId::from("conn0/console1");
+        let mut ctx = ConnectedTab::for_test(transport, console_actor.clone());
+
+        let navigated = navigated_away(&mut ctx, &console_actor, "https://example.com/", 2_000);
+
+        server_handle.join().unwrap();
+
+        assert!(
+            navigated,
+            "a noSuchActor reply means the docshell already tore down — \
+             navigated_away must report true, not false"
+        );
     }
 }

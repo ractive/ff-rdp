@@ -422,6 +422,7 @@ fn dispatch_inner(
             wait,
             wait_strategy,
             auto_consent,
+            with_page,
         }) => {
             let wait_opts = commands::navigate::WaitAfterNav {
                 wait_text: wait_text.as_deref(),
@@ -439,9 +440,10 @@ fn dispatch_inner(
                     &wait_opts,
                     *network_timeout,
                     *auto_consent,
+                    *with_page,
                 )
             } else {
-                commands::navigate::run(cli, url, &wait_opts, *auto_consent)
+                commands::navigate::run(cli, url, &wait_opts, *auto_consent, *with_page)
             }
         }
         Command::Eval(EvalArgs {
@@ -474,9 +476,16 @@ fn dispatch_inner(
             reload_timeout,
             hard,
             no_wait,
+            with_page,
         }) => {
             if *wait_idle {
-                commands::nav_action::run_reload_wait_idle(cli, *idle_ms, *reload_timeout, *hard)
+                commands::nav_action::run_reload_wait_idle(
+                    cli,
+                    *idle_ms,
+                    *reload_timeout,
+                    *hard,
+                    *with_page,
+                )
             } else {
                 commands::nav_action::run(
                     cli,
@@ -484,14 +493,15 @@ fn dispatch_inner(
                         force: *hard,
                         no_wait: *no_wait,
                     },
+                    *with_page,
                 )
             }
         }
-        Command::Back(BackForwardArgs { no_wait }) => {
-            commands::nav_action::run(cli, NavAction::Back { no_wait: *no_wait })
+        Command::Back(BackForwardArgs { no_wait, with_page }) => {
+            commands::nav_action::run(cli, NavAction::Back { no_wait: *no_wait }, *with_page)
         }
-        Command::Forward(BackForwardArgs { no_wait }) => {
-            commands::nav_action::run(cli, NavAction::Forward { no_wait: *no_wait })
+        Command::Forward(BackForwardArgs { no_wait, with_page }) => {
+            commands::nav_action::run(cli, NavAction::Forward { no_wait: *no_wait }, *with_page)
         }
         Command::PageText => commands::page_text::run(cli),
         Command::Dom(DomArgs {
@@ -632,6 +642,7 @@ fn dispatch_inner(
             frame,
             visible,
             index,
+            with_page,
         }) => {
             let selector = resolve_selector_or_ref(
                 selector_pos.as_deref(),
@@ -657,6 +668,7 @@ fn dispatch_inner(
                     settle: *settle,
                     frame: frame.as_deref(),
                     match_policy,
+                    with_page: *with_page,
                     ..Default::default()
                 },
             )
@@ -674,6 +686,8 @@ fn dispatch_inner(
             settle,
             visible,
             index,
+            submit,
+            with_page,
         }) => {
             let selector = resolve_selector_or_ref(
                 selector_pos.as_deref(),
@@ -710,6 +724,8 @@ fn dispatch_inner(
                     wait_for_timeout_ms: *wait_for_timeout,
                     settle: *settle,
                     match_policy,
+                    submit: *submit,
+                    with_page: *with_page,
                     ..Default::default()
                 },
             )
@@ -976,6 +992,7 @@ fn dispatch_inner(
                 wait_for,
                 wait_for_timeout,
                 settle,
+                with_page,
             } => {
                 let resolved = resolve_selector_or_ref(
                     selector.as_deref(),
@@ -994,6 +1011,7 @@ fn dispatch_inner(
                         wait_for,
                         wait_for_timeout_ms: *wait_for_timeout,
                         settle: *settle,
+                        with_page: *with_page,
                         ..Default::default()
                     },
                 )
@@ -1004,22 +1022,39 @@ fn dispatch_inner(
                 page_down,
                 page_up,
                 smooth,
-            } => commands::scroll::run_by(cli, *dx, *dy, *page_down, *page_up, *smooth),
+                with_page,
+            } => commands::scroll::run_by(
+                cli,
+                *dx,
+                *dy,
+                commands::scroll::ScrollByOptions {
+                    page_down: *page_down,
+                    page_up: *page_up,
+                    smooth: *smooth,
+                    with_page: *with_page,
+                },
+            ),
             ScrollCommand::Container {
                 selector,
                 dx,
                 dy,
                 to_end,
                 to_start,
-            } => commands::scroll::run_container(cli, selector, *dx, *dy, *to_end, *to_start),
+                with_page,
+            } => commands::scroll::run_container(
+                cli, selector, *dx, *dy, *to_end, *to_start, *with_page,
+            ),
             ScrollCommand::Until {
                 selector,
                 direction,
                 timeout,
-            } => commands::scroll::run_until(cli, selector, direction, *timeout),
-            ScrollCommand::Text { text } => commands::scroll::run_text(cli, text),
-            ScrollCommand::Top => commands::scroll::run_top(cli),
-            ScrollCommand::Bottom => commands::scroll::run_bottom(cli),
+                with_page,
+            } => commands::scroll::run_until(cli, selector, direction, *timeout, *with_page),
+            ScrollCommand::Text { text, with_page } => {
+                commands::scroll::run_text(cli, text, *with_page)
+            }
+            ScrollCommand::Top { with_page } => commands::scroll::run_top(cli, *with_page),
+            ScrollCommand::Bottom { with_page } => commands::scroll::run_bottom(cli, *with_page),
         },
         Command::DaemonInternal => {
             server::run_daemon(&cli.host, cli.port, cli.daemon_timeout).map_err(AppError::Internal)

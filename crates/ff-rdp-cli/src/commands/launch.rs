@@ -530,6 +530,18 @@ pub(crate) struct LaunchHooks {
     /// gated on the real browser being present, which is exactly the reason
     /// this leak went four iterations without a regression test.
     pub(crate) locate_firefox: fn() -> Result<PathBuf, AppError>,
+    /// Read the per-port launch record ff-rdp writes for a Firefox it started
+    /// (iter-210 Theme D).
+    pub(crate) read_launch_record: fn(u16) -> Option<crate::daemon_record::DaemonRecord>,
+    /// Does *some* process still hold this PID?
+    pub(crate) is_pid_alive: fn(u32) -> bool,
+    /// Does this launch record's PID still name the process it was written for?
+    /// See [`crate::daemon_record::record_pid_is_ours`].
+    pub(crate) record_pid_is_ours: fn(&crate::daemon_record::DaemonRecord) -> bool,
+    /// Does an owner-PID marker under ff-rdp's managed profile root name this
+    /// PID? The fail-closed ownership proof `launch --replace` requires before
+    /// it signals a port owner.
+    pub(crate) pid_is_ff_rdp_spawned: fn(u32) -> bool,
 }
 
 impl LaunchHooks {
@@ -541,8 +553,111 @@ impl LaunchHooks {
             probe_port: wait_for_port,
             spawn: std::process::Command::spawn,
             locate_firefox: find_firefox,
+            read_launch_record: |port| crate::daemon_record::read(port).ok().flatten(),
+            is_pid_alive: crate::daemon::process::is_process_alive,
+            record_pid_is_ours: crate::daemon_record::record_pid_is_ours,
+            pid_is_ff_rdp_spawned: crate::util::profile_dir::pid_is_ff_rdp_spawned,
         }
     }
+}
+
+#[cfg(test)]
+impl LaunchHooks {
+    /// Hooks whose iter-210 Theme D ownership probes all answer "no ff-rdp
+    /// instance here".
+    ///
+    /// Tests that plant a fake port listener predate Theme D and assert the
+    /// port-occupied ERROR path; without this they would silently take the new
+    /// no-op path instead. Spread it last (`..LaunchHooks::none_running()`) and
+    /// override whatever the test actually cares about.
+    fn none_running() -> Self {
+        Self {
+            read_launch_record: |_port| None,
+            is_pid_alive: |_pid| false,
+            record_pid_is_ours: |_rec| false,
+            pid_is_ff_rdp_spawned: |_pid| false,
+            ..Self::real()
+        }
+    }
+}
+
+/// An ff-rdp-launched Firefox already listening on the requested debug port
+/// (iter-210 Theme D).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RunningInstance {
+    pub(crate) pid: u32,
+    /// Profile directory, when a launch record recorded one. `None` when the
+    /// instance was identified from the port listener alone.
+    pub(crate) profile: Option<String>,
+    /// Whether that instance was started headless, when known.
+    pub(crate) headless: Option<bool>,
+}
+
+/// Identify an ff-rdp-launched Firefox already holding `port`, if there is one.
+///
+/// Theme D exists because `ff-rdp launch` was the first browser command an
+/// agent ran and it failed with exit 1 in 3 of 42 benchmark runs — always
+/// because a previous run's Firefox was still up. "The browser you asked for is
+/// already running" is not an error; it is the requested state.
+///
+/// The ownership bar is deliberately the SAME one `--replace` clears before it
+/// is allowed to kill anything (`daemon::client::stop_prior_instance`): a
+/// launch record whose PID is alive *and* still identifies the process the
+/// record was written for, or a port listener with an owner-PID marker naming
+/// it. It fails closed. A Firefox the user started by hand on port 6000, or any
+/// other listener, is a foreign owner and still gets the error — reporting
+/// someone else's browser as "the instance we launched" would be a lie, and
+/// `results.pid` would name a process this command has no claim on.
+fn identify_running_instance(port: u16, hooks: &LaunchHooks) -> Option<RunningInstance> {
+    if let Some(rec) = (hooks.read_launch_record)(port)
+        && rec.port == port
+        && (hooks.is_pid_alive)(rec.pid)
+        && (hooks.record_pid_is_ours)(&rec)
+    {
+        return Some(RunningInstance {
+            pid: rec.pid,
+            profile: Some(rec.profile_dir.to_string_lossy().into_owned()),
+            headless: Some(rec.headless),
+        });
+    }
+
+    let owner = (hooks.find_listener)(port)?;
+    if !(hooks.pid_is_ff_rdp_spawned)(owner.pid) {
+        return None;
+    }
+    Some(RunningInstance {
+        pid: owner.pid,
+        profile: None,
+        headless: None,
+    })
+}
+
+/// The envelope a no-op `launch` emits (iter-210 Theme D).
+///
+/// Same keys as a real launch so a caller can read `results.pid` /
+/// `results.port` / `results.profile` without branching, plus
+/// `already_running: true` — which is `false` on the launching path, never
+/// absent, so `--jq '.results.already_running'` answers on both.
+fn emit_already_running(
+    cli: &Cli,
+    host: &str,
+    port: u16,
+    instance: &RunningInstance,
+) -> Result<(), AppError> {
+    let result = json!({
+        "already_running": true,
+        "pid": instance.pid,
+        "host": host,
+        "port": port,
+        "headless": instance.headless,
+        "profile": instance.profile,
+        "profile_path": instance.profile,
+    });
+    let mut meta = json!({});
+    crate::connection_meta::merge_into_if_verbose(&mut meta, host, port, None, cli.is_verbose());
+    let envelope = output::envelope(&result, 1, &meta);
+    let hint_ctx = HintContext::new(HintSource::Launch);
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
 /// Reject a launch whose debug port is already held by another process,
@@ -726,6 +841,13 @@ pub(crate) fn run_with_hooks(
         if replace {
             // --replace / --force: stop the prior instance gracefully, then proceed.
             replaced = Some(crate::daemon::client::stop_prior_instance(cli, port)?);
+        } else if let Some(instance) = identify_running_instance(port, hooks) {
+            // iter-210 Theme D: the port is held by a Firefox ff-rdp launched.
+            // The caller asked for a debuggable Firefox on this port and there
+            // is one — report it and exit 0 instead of failing. `--replace`
+            // still restarts it; a foreign owner still falls through to the
+            // error below.
+            return emit_already_running(cli, host, port, &instance);
         } else {
             // iter-158 Theme A: the *pre-spawn* occupancy failure. This is the
             // only branch allowed to say "already in use", and it names the
@@ -887,6 +1009,9 @@ pub(crate) fn run_with_hooks(
             });
 
             let mut result = json!({
+                // iter-210 Theme D: always present, so
+                // `--jq '.results.already_running'` answers on both paths.
+                "already_running": false,
                 "pid": pid,
                 "host": host,
                 "port": port,
@@ -1000,6 +1125,122 @@ mod tests {
 
     fn cleanup_fake_firefox(p: &Path) {
         let _ = std::fs::remove_file(p);
+    }
+
+    // ── iter-210 Theme D: idempotent `launch` ───────────────────────────────
+
+    fn record_for(port: u16, pid: u32) -> crate::daemon_record::DaemonRecord {
+        crate::daemon_record::DaemonRecord {
+            pid,
+            port,
+            headless: true,
+            launched_at: chrono::Utc::now(),
+            profile_dir: std::path::PathBuf::from("/tmp/ff-rdp-profile-test"),
+            start_token: None,
+        }
+    }
+
+    /// A live launch record whose PID is still ours identifies the instance —
+    /// pid, profile, and headless all come from the record.
+    #[test]
+    fn unit_210_live_launch_record_identifies_the_running_instance() {
+        let hooks = LaunchHooks {
+            read_launch_record: |port| Some(record_for(port, 4242)),
+            is_pid_alive: |_pid| true,
+            record_pid_is_ours: |_rec| true,
+            // Must not be consulted: the record path answers first.
+            find_listener: |_port| panic!("the record branch must short-circuit"),
+            ..LaunchHooks::none_running()
+        };
+        let found = identify_running_instance(6000, &hooks)
+            .expect("a live, owned record must identify the instance");
+        assert_eq!(found.pid, 4242);
+        assert_eq!(found.headless, Some(true));
+        assert_eq!(
+            found.profile.as_deref(),
+            Some("/tmp/ff-rdp-profile-test"),
+            "the record's profile must be reported so the no-op envelope matches a real launch"
+        );
+    }
+
+    /// AC `live_launch_twice_is_a_noop` (foreign-owner half): a listener with
+    /// no ownership proof is NOT reported as ours. This is the check that keeps
+    /// a hand-started Firefox on port 6000 producing the port-occupied error
+    /// instead of a fabricated "already running" success naming someone else's
+    /// process.
+    #[test]
+    fn unit_210_foreign_port_owner_is_not_a_running_instance() {
+        let hooks = LaunchHooks {
+            read_launch_record: |_port| None,
+            find_listener: |_port| {
+                Some(port_owner::PortOwner {
+                    pid: 51234,
+                    process_name: "firefox".to_owned(),
+                    uptime_s: None,
+                })
+            },
+            pid_is_ff_rdp_spawned: |_pid| false,
+            ..LaunchHooks::none_running()
+        };
+        assert_eq!(
+            identify_running_instance(6000, &hooks),
+            None,
+            "a listener with no owner-PID marker must not be claimed as ff-rdp's"
+        );
+    }
+
+    /// A port listener that DOES carry ff-rdp's owner-PID marker is ours, even
+    /// with no launch record (the record was GC'd, or none was written).
+    #[test]
+    fn unit_210_marked_port_owner_is_a_running_instance() {
+        let hooks = LaunchHooks {
+            read_launch_record: |_port| None,
+            find_listener: |_port| {
+                Some(port_owner::PortOwner {
+                    pid: 777,
+                    process_name: "firefox".to_owned(),
+                    uptime_s: None,
+                })
+            },
+            pid_is_ff_rdp_spawned: |_pid| true,
+            ..LaunchHooks::none_running()
+        };
+        let found = identify_running_instance(6000, &hooks)
+            .expect("an owner-PID-marked listener is an ff-rdp instance");
+        assert_eq!(found.pid, 777);
+        assert_eq!(
+            found.profile, None,
+            "no record means no profile path — reporting one would be invention"
+        );
+    }
+
+    /// A record whose PID the OS has recycled onto some other process must not
+    /// be trusted: the same rule `--replace` applies before it signals anything
+    /// (iter-191). Falls through to the port-owner check, which here has no
+    /// proof either.
+    #[test]
+    fn unit_210_recycled_record_pid_falls_through_to_the_owner_check() {
+        let hooks = LaunchHooks {
+            read_launch_record: |port| Some(record_for(port, 4242)),
+            is_pid_alive: |_pid| true,
+            record_pid_is_ours: |_rec| false,
+            find_listener: |_port| None,
+            ..LaunchHooks::none_running()
+        };
+        assert_eq!(identify_running_instance(6000, &hooks), None);
+    }
+
+    /// A record for a DIFFERENT port never identifies this port's instance.
+    #[test]
+    fn unit_210_record_for_another_port_is_ignored() {
+        let hooks = LaunchHooks {
+            read_launch_record: |_port| Some(record_for(9999, 4242)),
+            is_pid_alive: |_pid| true,
+            record_pid_is_ours: |_rec| true,
+            find_listener: |_port| None,
+            ..LaunchHooks::none_running()
+        };
+        assert_eq!(identify_running_instance(6000, &hooks), None);
     }
 
     /// AC: `unit_owner_pid_marker_written_only_for_managed_profiles` — the
@@ -1149,6 +1390,7 @@ mod tests {
                     "the firefox lookup must never be reached either"
                 )))
             },
+            ..LaunchHooks::none_running()
         };
 
         let cli = <Cli as clap::Parser>::try_parse_from(["ff-rdp", "launch"])
@@ -1584,6 +1826,7 @@ mod iter_175_tests {
                 Err(std::io::Error::other("simulated spawn failure"))
             },
             locate_firefox: || Ok(PathBuf::from("/nonexistent/ff-rdp-fake-firefox")),
+            ..LaunchHooks::none_running()
         };
 
         let err = run_with_hooks(&bare_launch_cli(), &managed_opts(7601), &hooks)
@@ -1620,6 +1863,7 @@ mod iter_175_tests {
                 spawn_exiting_child()
             },
             locate_firefox: || Ok(PathBuf::from("/nonexistent/ff-rdp-fake-firefox")),
+            ..LaunchHooks::none_running()
         };
 
         let err = run_with_hooks(&bare_launch_cli(), &managed_opts(7602), &hooks)
@@ -1656,6 +1900,7 @@ mod iter_175_tests {
                 spawn_lingering_child()
             },
             locate_firefox: || Ok(PathBuf::from("/nonexistent/ff-rdp-fake-firefox")),
+            ..LaunchHooks::none_running()
         };
 
         let err = run_with_hooks(&bare_launch_cli(), &managed_opts(7603), &hooks)
@@ -1697,6 +1942,7 @@ mod iter_175_tests {
             probe_port: |_host, _port, _timeout| PortWaitOutcome::Opened,
             spawn: |_cmd| Err(std::io::Error::other("simulated spawn failure")),
             locate_firefox: || Ok(PathBuf::from("/nonexistent/ff-rdp-fake-firefox")),
+            ..LaunchHooks::none_running()
         };
 
         let profile_str = user_profile

@@ -1980,6 +1980,7 @@ pub fn run_core(
     cli: &Cli,
     url: &str,
     wait_opts: &WaitAfterNav<'_>,
+    with_page: bool,
 ) -> Result<(serde_json::Value, bool), AppError> {
     validate_url_with_opts(url, cli.allow_file_urls, cli.allow_unsafe_urls)?;
     let mut ctx = connect_and_get_target(cli)?;
@@ -2349,6 +2350,16 @@ pub fn run_core(
     {
         obj.insert("wait_for".to_string(), wf);
     }
+
+    // iter-210 Theme A: `--with-page`. Collected here, last, and on the
+    // connection this navigation already owns — after the commit wait and
+    // after any `--wait-text`/`--wait-selector`/`--wait-for` predicate, so
+    // the view describes the document this command produced rather than the
+    // one it left. See `page_view::collect`.
+    if with_page {
+        super::page_view::attach(&mut ctx, &mut result, Some(cli.timeout))?;
+    }
+
     Ok((result, ctx.via_daemon))
 }
 
@@ -2434,12 +2445,27 @@ pub fn run(
     url: &str,
     wait_opts: &WaitAfterNav<'_>,
     auto_consent: bool,
+    with_page: bool,
 ) -> Result<(), AppError> {
-    let (mut result, via_daemon) = run_core(cli, url, wait_opts)?;
+    // iter-210: `--with-page` promises the page it returns describes the
+    // document *this command* produced. `--auto-consent`'s dismiss click
+    // runs after `run_core` returns (on a fresh connection — see
+    // `merge_auto_consent`'s doc comment), so collecting the page inside
+    // `run_core` would hand back the pre-consent document. When both flags
+    // are set, defer collection to a second connection opened after consent
+    // runs, matching `run_with_network`'s ordering (consent before
+    // `page_view::attach`).
+    let defer_with_page = auto_consent && with_page;
+    let (mut result, via_daemon) = run_core(cli, url, wait_opts, with_page && !defer_with_page)?;
     if auto_consent {
         merge_auto_consent(cli, &mut result);
     }
+    if defer_with_page {
+        let mut ctx = connect_and_get_target(cli)?;
+        super::page_view::attach(&mut ctx, &mut result, Some(cli.timeout))?;
+    }
     let mut meta = json!({});
+    let page_text = super::page_view::lift_meta(cli, &mut result, &mut meta);
     crate::connection_meta::merge_into_if_verbose(
         &mut meta,
         &cli.host,
@@ -2453,7 +2479,9 @@ pub fn run(
     let envelope = output::envelope(&result, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Navigate);
-    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))?;
+    super::page_view::render_text_section(page_text.as_ref());
+    Ok(())
 }
 
 /// Build the document-status tracker for the batch (`--with-network`) route
@@ -2524,6 +2552,7 @@ pub fn run_with_network(
     wait_opts: &WaitAfterNav<'_>,
     network_timeout_ms: u64,
     auto_consent: bool,
+    with_page: bool,
 ) -> Result<(), AppError> {
     validate_url_with_opts(url, cli.allow_file_urls, cli.allow_unsafe_urls)?;
     let mut ctx = connect_and_get_target(cli)?;
@@ -2719,7 +2748,11 @@ pub fn run_with_network(
         {
             obj.insert("consent".to_string(), c);
         }
+        if with_page {
+            super::page_view::attach(&mut ctx, &mut result, Some(cli.timeout))?;
+        }
         let mut meta = json!({});
+        let page_text = super::page_view::lift_meta(cli, &mut result, &mut meta);
         crate::connection_meta::merge_into_if_verbose(
             &mut meta,
             &cli.host,
@@ -2731,7 +2764,9 @@ pub fn run_with_network(
         crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
         let envelope = output::envelope(&result, 1, &meta);
         let hint_ctx = HintContext::new(HintSource::Navigate);
-        return OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx));
+        OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))?;
+        super::page_view::render_text_section(page_text.as_ref());
+        return Ok(());
     }
 
     let tab_actor = ctx.target_tab_actor().clone();
@@ -2906,7 +2941,11 @@ pub fn run_with_network(
     {
         obj.insert("consent".to_string(), c);
     }
+    if with_page {
+        super::page_view::attach(&mut ctx, &mut result, Some(cli.timeout))?;
+    }
     let mut meta = json!({});
+    let page_text = super::page_view::lift_meta(cli, &mut result, &mut meta);
     crate::connection_meta::merge_into_if_verbose(
         &mut meta,
         &cli.host,
@@ -2919,7 +2958,9 @@ pub fn run_with_network(
     let envelope = output::envelope(&result, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Navigate);
-    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))?;
+    super::page_view::render_text_section(page_text.as_ref());
+    Ok(())
 }
 
 /// Apply output controls (sort, limit, fields) to network entries from navigate.

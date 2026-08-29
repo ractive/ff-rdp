@@ -813,7 +813,9 @@ fn execute_navigate(
         // covers those cases without changing behaviour on event-rich pages.
         wait_strategy: crate::commands::navigate::WaitStrategy::Both,
     };
-    nav_run_core(cli, &effective_url, &wait_opts).map(|(v, _)| v)
+    // Script steps have no `--with-page` equivalent in the script format; a
+    // step that wants the page view runs an `a11y summary` step instead.
+    nav_run_core(cli, &effective_url, &wait_opts, false).map(|(v, _)| v)
 }
 
 fn resolve_element_target_selector(
