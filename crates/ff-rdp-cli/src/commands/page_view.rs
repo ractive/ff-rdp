@@ -21,7 +21,9 @@ use crate::cli::args::Cli;
 use crate::error::AppError;
 
 use super::connect_tab::ConnectedTab;
-use super::js_helpers::{UNIQUE_SELECTOR_JS_FN, eval_or_bail, poll_js_condition, resolve_result};
+use super::js_helpers::{
+    UNIQUE_SELECTOR_JS_FN, acc_name_js_fn, eval_or_bail, poll_js_condition, resolve_result,
+};
 
 /// Default cap on `interactive` entries, matching `a11y summary`'s own
 /// pre-iter-210 default.
@@ -41,6 +43,7 @@ pub(crate) const DEFAULT_INTERACTIVE_LIMIT: usize = 50;
 /// resolver per heading is pure payload.
 const PAGE_VIEW_JS_TEMPLATE: &str = r#"(function() {
   __UNIQUE_SELECTOR_FN__
+  __ACC_NAME_FN__
   var result = {landmarks: [], headings: [], interactive: []};
 
   // Landmarks
@@ -70,8 +73,7 @@ const PAGE_VIEW_JS_TEMPLATE: &str = r#"(function() {
   for (var level = 1; level <= 6; level++) {
     var headings = document.querySelectorAll('h' + level);
     for (var j = 0; j < headings.length; j++) {
-      var text = headings[j].textContent.trim();
-      if (text.length > 100) text = text.slice(0, 100) + '...';
+      var text = __ffrdpAccName(headings[j]);
       result.headings.push({level: level, text: text});
     }
   }
@@ -79,8 +81,7 @@ const PAGE_VIEW_JS_TEMPLATE: &str = r#"(function() {
   // Interactive: links
   var links = document.querySelectorAll('a[href]');
   for (var k = 0; k < links.length; k++) {
-    var linkText = links[k].textContent.trim();
-    if (linkText.length > 100) linkText = linkText.slice(0, 100) + '...';
+    var linkText = __ffrdpAccName(links[k]);
     result.interactive.push({role: 'link', name: linkText, href: links[k].getAttribute('href'),
       __resolver: __ffrdpUniqueSelector(links[k])});
   }
@@ -88,8 +89,7 @@ const PAGE_VIEW_JS_TEMPLATE: &str = r#"(function() {
   // Interactive: buttons
   var buttons = document.querySelectorAll('button, [role="button"], input[type="button"], input[type="submit"]');
   for (var m = 0; m < buttons.length; m++) {
-    var btnText = buttons[m].textContent.trim() || buttons[m].getAttribute('aria-label') || buttons[m].value || '';
-    if (btnText.length > 100) btnText = btnText.slice(0, 100) + '...';
+    var btnText = __ffrdpAccName(buttons[m]);
     result.interactive.push({role: 'button', name: btnText,
       __resolver: __ffrdpUniqueSelector(buttons[m])});
   }
@@ -98,10 +98,7 @@ const PAGE_VIEW_JS_TEMPLATE: &str = r#"(function() {
   var inputs = document.querySelectorAll('input:not([type="button"]):not([type="submit"]):not([type="hidden"]), textarea, select');
   for (var n = 0; n < inputs.length; n++) {
     var inp = inputs[n];
-    var inputName = '';
-    if (inp.labels && inp.labels.length) inputName = inp.labels[0].textContent.trim();
-    if (!inputName) inputName = inp.getAttribute('aria-label') || inp.getAttribute('placeholder') || inp.getAttribute('name') || '';
-    if (inputName.length > 100) inputName = inputName.slice(0, 100) + '...';
+    var inputName = __ffrdpAccName(inp) || inp.getAttribute('name') || '';
     var inputType = inp.getAttribute('type') || inp.tagName.toLowerCase();
     result.interactive.push({role: 'input', name: inputName, type: inputType,
       __resolver: __ffrdpUniqueSelector(inp)});
@@ -112,7 +109,13 @@ const PAGE_VIEW_JS_TEMPLATE: &str = r#"(function() {
 
 /// Build the page-view JS with the unique-selector helper spliced in.
 pub(crate) fn build_page_view_js() -> String {
-    PAGE_VIEW_JS_TEMPLATE.replace("__UNIQUE_SELECTOR_FN__", UNIQUE_SELECTOR_JS_FN)
+    // iter-211 Theme C: names come from the shared `__ffrdpAccName` helper —
+    // the same one `dom` uses — rather than four hand-rolled
+    // `textContent.trim().slice(0, 100)` variants that disagreed with each
+    // other and cut real titles mid-word.
+    PAGE_VIEW_JS_TEMPLATE
+        .replace("__UNIQUE_SELECTOR_FN__", UNIQUE_SELECTOR_JS_FN)
+        .replace("__ACC_NAME_FN__", &acc_name_js_fn())
 }
 
 /// The value `meta.page_source` (and `a11y summary`'s `meta.source`) carries.
@@ -209,7 +212,7 @@ pub fn collect(
 
 /// Truncate `view.interactive` to `limit`, recording `interactive_total` and
 /// `interactive_truncated` when anything was cut.
-fn apply_interactive_limit(view: &mut Value, limit: Option<usize>) {
+pub(crate) fn apply_interactive_limit(view: &mut Value, limit: Option<usize>) {
     let Some(limit) = limit else { return };
     let Some(Value::Array(arr)) = view.get_mut("interactive") else {
         return;

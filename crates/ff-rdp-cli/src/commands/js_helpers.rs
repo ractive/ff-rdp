@@ -145,6 +145,90 @@ pub(crate) const UNIQUE_SELECTOR_JS_FN: &str = r"
   }
 ";
 
+/// Longest accessible name any command emits, in characters.
+///
+/// Before iter-211 the ARIA-tree walker sliced names at 100 characters and
+/// `page_view` did the same, which is how the axi benchmark's
+/// `github_issue_investigation` run reported four issue titles cut mid-word.
+/// A cap is still needed — `__ffrdpAccName(document.body)` would otherwise
+/// return the whole page — but it is now well past the length of a real
+/// heading, link, or issue title, and a name that does hit it is marked with
+/// a trailing `…` rather than ending silently.
+pub(crate) const ACC_NAME_MAX_CHARS: usize = 300;
+
+/// Source of a JS function `__ffrdpAccName(el)` that computes an element's
+/// accessible name.
+///
+/// The single source of truth for "what is this element called", shared by
+/// `dom`'s ARIA-tree `name` field, `dom --text`, and `page_view`'s
+/// headings/links/buttons/inputs (iter-211 Theme C). Before it existed each
+/// of those three surfaces had its own partial version — `dom --text` handed
+/// back raw `textContent`, complete with the source indentation and newlines
+/// of a markup-formatted title, and every one of them truncated at 100
+/// characters.
+///
+/// Resolution order, a pragmatic subset of the accname spec in the order
+/// that actually decides real pages:
+///
+/// 1. `aria-label`
+/// 2. `aria-labelledby` (the referenced elements' text, space-joined)
+/// 3. the associated `<label>` for a form control (`el.labels`)
+/// 4. `alt` (images, `input[type=image]`)
+/// 5. the element's **full** descendant text, whitespace-collapsed — the step
+///    that makes `<h3><a>Bug: <span>title</span></a></h3>` come back as
+///    `"Bug: title"` instead of the first text node alone
+/// 6. `placeholder`, then the live `value`, then `title`
+///
+/// Whitespace is collapsed to single spaces and the result trimmed, because
+/// markup-formatted titles are full of newlines and indentation that are not
+/// part of the name and that make a `--query` substring match fail.
+///
+/// `__ACC_NAME_MAX_CHARS__` is replaced by the caller with
+/// [`ACC_NAME_MAX_CHARS`]; use [`acc_name_js_fn`] rather than splicing this
+/// constant directly.
+const ACC_NAME_JS_FN_TEMPLATE: &str = r"
+  function __ffrdpAccName(el) {
+    if (!el || el.nodeType !== 1) return '';
+    function norm(s) { return (s == null ? '' : String(s)).replace(/\s+/g, ' ').trim(); }
+    function cap(s) {
+      if (s.length > __ACC_NAME_MAX_CHARS__) return s.slice(0, __ACC_NAME_MAX_CHARS__) + '…';
+      return s;
+    }
+    var n = norm(el.getAttribute && el.getAttribute('aria-label'));
+    if (n) return cap(n);
+    var lb = el.getAttribute && el.getAttribute('aria-labelledby');
+    if (lb) {
+      var parts = [];
+      lb.split(/\s+/).forEach(function(id) {
+        var t = document.getElementById(id);
+        if (t) parts.push(norm(t.textContent));
+      });
+      n = norm(parts.join(' '));
+      if (n) return cap(n);
+    }
+    if (el.labels && el.labels.length) {
+      n = norm(el.labels[0].textContent);
+      if (n) return cap(n);
+    }
+    n = norm(el.getAttribute && el.getAttribute('alt'));
+    if (n) return cap(n);
+    n = norm(el.textContent);
+    if (n) return cap(n);
+    n = norm(el.getAttribute && el.getAttribute('placeholder'));
+    if (n) return cap(n);
+    n = norm(el.value);
+    if (n) return cap(n);
+    n = norm(el.getAttribute && el.getAttribute('title'));
+    return cap(n);
+  }
+";
+
+/// [`ACC_NAME_JS_FN_TEMPLATE`] with the character cap spliced in, ready to
+/// embed once per IIFE alongside a `__ffrdpAccName(el)` call.
+pub(crate) fn acc_name_js_fn() -> String {
+    ACC_NAME_JS_FN_TEMPLATE.replace("__ACC_NAME_MAX_CHARS__", &ACC_NAME_MAX_CHARS.to_string())
+}
+
 const POLL_INTERVAL_MS: u64 = 100;
 
 // ---------------------------------------------------------------------------

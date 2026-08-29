@@ -4,6 +4,7 @@ use crate::cli::args::Cli;
 use crate::error::AppError;
 use crate::hints::{HintContext, HintSource};
 use crate::output;
+use crate::output_controls::QueryFilter;
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::{ConnectedTab, connect_and_get_target};
@@ -85,7 +86,12 @@ const SNAPSHOT_JS_TEMPLATE: &str = r"(function() {
   return '__FF_RDP_JSON__' + JSON.stringify(tree);
 })()";
 
-pub fn run(cli: &Cli, depth: u32, max_chars: u32) -> Result<(), AppError> {
+pub fn run(
+    cli: &Cli,
+    depth: u32,
+    max_chars: u32,
+    query: &QueryFilter,
+) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
 
@@ -107,6 +113,20 @@ pub fn run(cli: &Cli, depth: u32, max_chars: u32) -> Result<(), AppError> {
     // costs nothing and expires with the next navigation.
     let refs_registered = register_interactive_refs(&mut ctx, &mut results);
     strip_resolvers(&mut results);
+
+    // iter-211 Theme A: `--query` prunes the tree to the matching nodes and
+    // their ancestors, BEFORE the `--max-chars` bounding pass — otherwise the
+    // budget would be spent on the very subtrees the caller just said they
+    // did not want, and a match deep in a long document would be cut before
+    // the filter ever saw it. Refs are minted above, so a survivor keeps the
+    // handle it was given.
+    let query_matches = if query.is_active() {
+        let (pruned, matches) = prune_to_query(results, query);
+        results = pruned;
+        Some(matches)
+    } else {
+        None
+    };
 
     // Theme C (iter-131): `--max-chars` previously bounded only leaf text
     // content — the serialized tree (tags, attrs, structure) was unbounded,
@@ -137,6 +157,9 @@ pub fn run(cli: &Cli, depth: u32, max_chars: u32) -> Result<(), AppError> {
         "truncated": truncated,
         "text_truncated": text_truncated,
     });
+    if let (Some(matches), Some(obj)) = (query_matches, meta.as_object_mut()) {
+        obj.insert("matches".to_owned(), json!(matches));
+    }
     if ctx.via_daemon
         && let Some(obj) = meta.as_object_mut()
     {
@@ -248,6 +271,76 @@ fn strip_resolvers(tree: &mut Value) {
     for_each_node(tree, &mut |map| {
         map.remove("__resolver");
     });
+}
+
+/// Prune `tree` to the nodes matching `query` plus their ancestors, returning
+/// `(pruned_tree, match_count)` (iter-211 Theme A).
+///
+/// A node **matches** when one of its own attribute values matches, or when
+/// one of its direct text children does. A matching node is kept **whole**,
+/// subtree included — the point of `snapshot --query "1804"` on a table is to
+/// get that row/cell with its contents, not a stripped shell of it. A
+/// non-matching node survives only as a path to a match: its own tag, role
+/// and attributes are kept and its children are replaced by the surviving
+/// ones, so the root stays `html` and the caller can see where each hit sits.
+///
+/// A tree with no match at all prunes to `Value::Null` — `total: 0`,
+/// `meta.matches: 0`. Returning the unpruned tree instead would be the worse
+/// lie: an agent that asked for "billion" and got the whole page back would
+/// read it as "here are your matches".
+fn prune_to_query(tree: Value, query: &QueryFilter) -> (Value, usize) {
+    let mut matches = 0usize;
+    let pruned = prune_node(tree, query, &mut matches).unwrap_or(Value::Null);
+    (pruned, matches)
+}
+
+/// Whether this node's own attributes or direct text children match.
+///
+/// Deliberately shallow: a deep test would report every ancestor of a hit as
+/// a hit itself, which would both inflate `meta.matches` and keep the whole
+/// document (the root is an ancestor of everything).
+fn node_matches_query(map: &serde_json::Map<String, Value>, query: &QueryFilter) -> bool {
+    if let Some(attrs) = map.get("attrs")
+        && query.matches_shallow(attrs)
+    {
+        return true;
+    }
+    match map.get("children") {
+        Some(Value::Array(kids)) => kids.iter().any(|kid| match kid {
+            Value::String(text) => query.matches(text),
+            _ => false,
+        }),
+        _ => false,
+    }
+}
+
+/// Recursive worker for [`prune_to_query`]. `None` means "nothing under here
+/// matched" and the caller drops the node.
+fn prune_node(node: Value, query: &QueryFilter, matches: &mut usize) -> Option<Value> {
+    let Value::Object(mut map) = node else {
+        // A bare text leaf is judged by its parent in `node_matches_query` —
+        // a matching string is what makes the element holding it a match, and
+        // a naked string with no tag around it is not a useful result.
+        return None;
+    };
+    if node_matches_query(&map, query) {
+        *matches += 1;
+        return Some(Value::Object(map));
+    }
+    let children = map.remove("children");
+    let mut kept: Vec<Value> = Vec::new();
+    if let Some(Value::Array(kids)) = children {
+        for kid in kids {
+            if let Some(kept_kid) = prune_node(kid, query, matches) {
+                kept.push(kept_kid);
+            }
+        }
+    }
+    if kept.is_empty() {
+        return None;
+    }
+    map.insert("children".to_owned(), Value::Array(kept));
+    Some(Value::Object(map))
 }
 
 /// Derive the `(truncated, text_truncated)` pair reported in `meta` from a

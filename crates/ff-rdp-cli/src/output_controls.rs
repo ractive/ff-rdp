@@ -175,9 +175,10 @@ impl OutputControls {
 /// invalid pattern is rejected by clap's value parser (usage exit code 2),
 /// not deep inside the command after a browser round-trip.
 ///
-/// [`QueryFilter::none`] is the inactive filter — [`QueryFilter::is_active`]
-/// is `false` and [`QueryFilter::matches`] never runs, so a caller that
-/// always constructs one pays nothing when no flag was passed.
+/// A filter built from a [`QueryArgs`](crate::cli::args::QueryArgs) with
+/// neither flag set is inactive: [`QueryFilter::is_active`] is `false` and
+/// [`QueryFilter::matches`] never runs, so a command that always constructs
+/// one pays nothing when no flag was passed.
 pub struct QueryFilter {
     matcher: Option<Matcher>,
 }
@@ -189,11 +190,6 @@ enum Matcher {
 }
 
 impl QueryFilter {
-    /// The inactive filter: matches nothing and is never consulted.
-    pub fn none() -> Self {
-        Self { matcher: None }
-    }
-
     /// Build from the flattened `--query` / `--query-regex` pair.
     ///
     /// The two are mutually exclusive at the clap level, so at most one arm
