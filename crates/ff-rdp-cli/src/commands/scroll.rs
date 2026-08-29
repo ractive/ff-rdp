@@ -1,13 +1,13 @@
 use std::time::{Duration, Instant};
 
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::cli::args::{Cli, ScrollBlock};
 use crate::error::AppError;
 use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
-use super::connect_tab::connect_and_get_target;
+use super::connect_tab::{ConnectedTab, connect_and_get_target};
 use super::js_helpers::{
     JSON_SENTINEL, WaitForPredicate, autowait_element, escape_selector, eval_or_bail,
     resolve_result, settle_page, wait_for_predicates,
@@ -26,6 +26,8 @@ pub struct ScrollOptions<'a> {
     pub wait_for_timeout_ms: Option<u64>,
     /// Whether to wait for page settle after scrolling (--settle).
     pub settle: bool,
+    /// iter-210 Theme A: embed the post-scroll page view under `results.page`.
+    pub with_page: bool,
 }
 
 /// Serialize a user-supplied string as a JS string literal (double-quoted,
@@ -37,6 +39,46 @@ fn js_string_literal(s: &str) -> String {
     // string is also a valid JS string literal.
     serde_json::to_string(s)
         .unwrap_or_else(|e| unreachable!("serde_json::to_string(&str) is infallible: {e}"))
+}
+
+/// Emit a scroll command's envelope, optionally with the `--with-page` view
+/// attached (iter-210 Theme A).
+///
+/// Every `scroll` subcommand ends here so the `--with-page` collection, the
+/// `meta` lift, and the text-mode page section exist exactly once rather than
+/// seven times. `meta` arrives already carrying whatever the caller wants in
+/// it (selector, settle method, direction); this adds only the connection and
+/// page keys.
+///
+/// The page view is collected *after* the scroll and after any `--settle` /
+/// `--wait-for`, so lazily-rendered content the scroll revealed is in it.
+fn finalize_scroll(
+    cli: &Cli,
+    ctx: &mut ConnectedTab,
+    mut result: Value,
+    mut meta: Value,
+    with_page: bool,
+) -> Result<(), AppError> {
+    if with_page {
+        super::page_view::attach(ctx, &mut result, Some(cli.timeout))?;
+    }
+    let page_text = super::page_view::lift_meta(cli, &mut result, &mut meta);
+    crate::connection_meta::merge_into_if_verbose(
+        &mut meta,
+        &cli.host,
+        cli.port,
+        None,
+        cli.is_verbose(),
+    );
+    // iter-134: always present, not gated by --verbose — an
+    // agent can tell how this command executed without a
+    // separate `daemon status` round-trip.
+    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
+    let envelope = output::envelope(&result, 1, &meta);
+
+    OutputPipeline::from_cli(cli)?.finalize(&envelope)?;
+    super::page_view::render_text_section(page_text.as_ref());
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -107,20 +149,7 @@ pub fn run_to(
     if let Some(sm) = settle_method {
         meta["settle_method"] = json!(sm.as_meta_str());
     }
-    crate::connection_meta::merge_into_if_verbose(
-        &mut meta,
-        &cli.host,
-        cli.port,
-        None,
-        cli.is_verbose(),
-    );
-    // iter-134: always present, not gated by --verbose — an
-    // agent can tell how this command executed without a
-    // separate `daemon status` round-trip.
-    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
-    let envelope = output::envelope(&result_json, 1, &meta);
-
-    OutputPipeline::from_cli(cli)?.finalize(&envelope)
+    finalize_scroll(cli, &mut ctx, result_json, meta, opts.with_page)
 }
 
 // ---------------------------------------------------------------------------
@@ -134,6 +163,7 @@ pub fn run_by(
     page_down: bool,
     page_up: bool,
     smooth: bool,
+    with_page: bool,
 ) -> Result<(), AppError> {
     // Mutual exclusion: --page-down/--page-up cannot be combined with --dy
     if (page_down || page_up) && dy.is_some() {
@@ -175,40 +205,31 @@ pub fn run_by(
 
     let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, "scroll by failed")?;
     let result_json = resolve_result(&mut ctx, &eval_result.result)?;
-    let mut meta = json!({});
-    crate::connection_meta::merge_into_if_verbose(
-        &mut meta,
-        &cli.host,
-        cli.port,
-        None,
-        cli.is_verbose(),
-    );
-    // iter-134: always present, not gated by --verbose — an
-    // agent can tell how this command executed without a
-    // separate `daemon status` round-trip.
-    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
-    let envelope = output::envelope(&result_json, 1, &meta);
-
-    OutputPipeline::from_cli(cli)?.finalize(&envelope)
+    finalize_scroll(cli, &mut ctx, result_json, json!({}), with_page)
 }
 
 // ---------------------------------------------------------------------------
 // scroll top / scroll bottom
 // ---------------------------------------------------------------------------
 
-pub fn run_top(cli: &Cli) -> Result<(), AppError> {
-    run_scroll_absolute(cli, "0", "scroll top failed")
+pub fn run_top(cli: &Cli, with_page: bool) -> Result<(), AppError> {
+    run_scroll_absolute(cli, "0", "scroll top failed", with_page)
 }
 
-pub fn run_bottom(cli: &Cli) -> Result<(), AppError> {
-    run_scroll_absolute(cli, "root.scrollHeight", "scroll bottom failed")
+pub fn run_bottom(cli: &Cli, with_page: bool) -> Result<(), AppError> {
+    run_scroll_absolute(cli, "root.scrollHeight", "scroll bottom failed", with_page)
 }
 
 /// Shared implementation for `scroll top` and `scroll bottom`.
 ///
 /// `y_expr` is a JavaScript expression for the Y coordinate passed to
 /// `window.scrollTo(0, <y_expr>)`.  `error_label` appears in error messages.
-fn run_scroll_absolute(cli: &Cli, y_expr: &str, error_label: &str) -> Result<(), AppError> {
+fn run_scroll_absolute(
+    cli: &Cli,
+    y_expr: &str,
+    error_label: &str,
+    with_page: bool,
+) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
 
@@ -248,21 +269,7 @@ fn run_scroll_absolute(cli: &Cli, y_expr: &str, error_label: &str) -> Result<(),
 
     let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, error_label)?;
     let result_json = resolve_result(&mut ctx, &eval_result.result)?;
-    let mut meta = json!({});
-    crate::connection_meta::merge_into_if_verbose(
-        &mut meta,
-        &cli.host,
-        cli.port,
-        None,
-        cli.is_verbose(),
-    );
-    // iter-134: always present, not gated by --verbose — an
-    // agent can tell how this command executed without a
-    // separate `daemon status` round-trip.
-    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
-    let envelope = output::envelope(&result_json, 1, &meta);
-
-    OutputPipeline::from_cli(cli)?.finalize(&envelope)
+    finalize_scroll(cli, &mut ctx, result_json, json!({}), with_page)
 }
 
 // ---------------------------------------------------------------------------
@@ -276,6 +283,7 @@ pub fn run_container(
     dy: i64,
     to_end: bool,
     to_start: bool,
+    with_page: bool,
 ) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
@@ -312,21 +320,8 @@ pub fn run_container(
 
     let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, "scroll container failed")?;
     let result_json = resolve_result(&mut ctx, &eval_result.result)?;
-    let mut meta = json!({"selector": selector});
-    crate::connection_meta::merge_into_if_verbose(
-        &mut meta,
-        &cli.host,
-        cli.port,
-        None,
-        cli.is_verbose(),
-    );
-    // iter-134: always present, not gated by --verbose — an
-    // agent can tell how this command executed without a
-    // separate `daemon status` round-trip.
-    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
-    let envelope = output::envelope(&result_json, 1, &meta);
-
-    OutputPipeline::from_cli(cli)?.finalize(&envelope)
+    let meta = json!({"selector": selector});
+    finalize_scroll(cli, &mut ctx, result_json, meta, with_page)
 }
 
 // ---------------------------------------------------------------------------
@@ -340,6 +335,7 @@ pub fn run_until(
     selector: &str,
     direction: &str,
     timeout_ms: u64,
+    with_page: bool,
 ) -> Result<(), AppError> {
     if direction != "up" && direction != "down" {
         return Err(AppError::User(format!(
@@ -448,21 +444,8 @@ pub fn run_until(
         obj.insert("scrolls".to_owned(), json!(scrolls));
     }
 
-    let mut meta = json!({"selector": selector, "direction": direction, "timeout_ms": timeout_ms});
-    crate::connection_meta::merge_into_if_verbose(
-        &mut meta,
-        &cli.host,
-        cli.port,
-        None,
-        cli.is_verbose(),
-    );
-    // iter-134: always present, not gated by --verbose — an
-    // agent can tell how this command executed without a
-    // separate `daemon status` round-trip.
-    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
-    let envelope = output::envelope(&result_json, 1, &meta);
-
-    OutputPipeline::from_cli(cli)?.finalize(&envelope)
+    let meta = json!({"selector": selector, "direction": direction, "timeout_ms": timeout_ms});
+    finalize_scroll(cli, &mut ctx, result_json, meta, with_page)
 }
 
 fn is_truthy_grip(grip: &ff_rdp_core::Grip) -> bool {
@@ -489,7 +472,7 @@ fn is_truthy_grip(grip: &ff_rdp_core::Grip) -> bool {
 // scroll text <text>
 // ---------------------------------------------------------------------------
 
-pub fn run_text(cli: &Cli, text: &str) -> Result<(), AppError> {
+pub fn run_text(cli: &Cli, text: &str, with_page: bool) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
 
@@ -522,21 +505,8 @@ pub fn run_text(cli: &Cli, text: &str) -> Result<(), AppError> {
 
     let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, "scroll text failed")?;
     let result_json = resolve_result(&mut ctx, &eval_result.result)?;
-    let mut meta = json!({"text": text});
-    crate::connection_meta::merge_into_if_verbose(
-        &mut meta,
-        &cli.host,
-        cli.port,
-        None,
-        cli.is_verbose(),
-    );
-    // iter-134: always present, not gated by --verbose — an
-    // agent can tell how this command executed without a
-    // separate `daemon status` round-trip.
-    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
-    let envelope = output::envelope(&result_json, 1, &meta);
-
-    OutputPipeline::from_cli(cli)?.finalize(&envelope)
+    let meta = json!({"text": text});
+    finalize_scroll(cli, &mut ctx, result_json, meta, with_page)
 }
 
 #[cfg(test)]
@@ -568,7 +538,7 @@ mod tests {
             panic!("expected Scroll command");
         };
         assert!(
-            matches!(scroll_command, ScrollCommand::Top),
+            matches!(scroll_command, ScrollCommand::Top { .. }),
             "expected ScrollCommand::Top"
         );
     }
@@ -581,7 +551,7 @@ mod tests {
             panic!("expected Scroll command");
         };
         assert!(
-            matches!(scroll_command, ScrollCommand::Bottom),
+            matches!(scroll_command, ScrollCommand::Bottom { .. }),
             "expected ScrollCommand::Bottom"
         );
     }

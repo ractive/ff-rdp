@@ -49,7 +49,7 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
         // the `ref` handles in the output are usable before relying on them.
         obj.insert("refs_registered".to_owned(), json!(page.refs_registered));
     }
-    obj_insert_source(&mut meta, page.source.as_meta_str());
+    obj_insert_source(&mut meta, page.source);
     crate::connection_meta::merge_into_if_verbose(
         &mut meta,
         &cli.host,

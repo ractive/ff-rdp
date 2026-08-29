@@ -7,9 +7,11 @@ use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::connect_and_get_target;
+use super::connect_tab::ConnectedTab;
 use super::js_helpers::{
     JSON_SENTINEL, MatchPolicy, WaitForPredicate, autowait_element, escape_selector, eval_or_bail,
-    resolve_disambiguated_target, resolve_result, settle_page, wait_for_predicates,
+    poll_js_condition, resolve_disambiguated_target, resolve_result, settle_page,
+    wait_for_predicates,
 };
 
 /// In-page helper that maps a character to a plausible `KeyboardEvent.code`
@@ -83,6 +85,162 @@ fn build_type_js(escaped_sel: &str, escaped_text_json: &str, clear: bool) -> Str
     )
 }
 
+
+// ---------------------------------------------------------------------------
+// `--submit` (iter-210 Theme C)
+// ---------------------------------------------------------------------------
+
+/// How long to watch for a navigation caused by the synthetic Enter before
+/// falling back to `form.requestSubmit()`.
+///
+/// Short on purpose: this is not "how long can a page take to load", it is
+/// "did pressing Enter start anything at all". A real submission changes
+/// `location.href` (or begins a load) within a couple of hundred milliseconds;
+/// waiting longer just delays the fallback on every page whose Enter handler
+/// does nothing, which is the common case that made `--submit` necessary.
+const ENTER_NAVIGATION_GRACE_MS: u64 = 600;
+
+/// JS that presses Enter on the element and reports what it found there.
+///
+/// It deliberately does NOT submit the form: whether the fallback is needed
+/// depends on whether this Enter navigated, which no synchronous script can
+/// observe. Rust decides, after watching for a navigation.
+fn build_enter_js(escaped_sel: &str) -> String {
+    format!(
+        r#"(function() {{
+  "use strict";
+  var el = document.querySelector('{escaped_sel}');
+  if (!el) throw new Error('Element not found: {escaped_sel} — use ff-rdp dom SELECTOR --count to verify the selector matches');
+  var before = window.location.href;
+  var init = {{key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true}};
+  var notPrevented = el.dispatchEvent(new KeyboardEvent('keydown', init));
+  el.dispatchEvent(new KeyboardEvent('keypress', init));
+  el.dispatchEvent(new KeyboardEvent('keyup', init));
+  var form = el.form || (el.closest ? el.closest('form') : null);
+  return '{JSON_SENTINEL}' + JSON.stringify({{
+    url_before: before,
+    default_prevented: !notPrevented,
+    has_form: !!form
+  }});
+}})()"#
+    )
+}
+
+/// JS that submits the element's owning form for real.
+///
+/// `requestSubmit()` is the correct call — unlike `form.submit()` it fires the
+/// `submit` event and runs constraint validation, so a page's own handler and
+/// its `required` fields behave as they would for a human. `form.submit()` is
+/// the fallback for the (older) case where `requestSubmit` is absent.
+fn build_request_submit_js(escaped_sel: &str) -> String {
+    format!(
+        r#"(function() {{
+  "use strict";
+  var el = document.querySelector('{escaped_sel}');
+  if (!el) throw new Error('Element not found: {escaped_sel}');
+  var form = el.form || (el.closest ? el.closest('form') : null);
+  if (!form) return '{JSON_SENTINEL}' + JSON.stringify({{requested: false, reason: 'no_form'}});
+  if (typeof form.requestSubmit === 'function') {{
+    form.requestSubmit();
+  }} else {{
+    form.submit();
+  }}
+  return '{JSON_SENTINEL}' + JSON.stringify({{requested: true, reason: null}});
+}})()"#
+    )
+}
+
+/// Press Enter on `selector` and, when that did not navigate, submit its form.
+///
+/// Returns `{submitted, navigated, method}` for `results`.
+///
+/// Why two steps rather than one: the synthetic `keydown` is `isTrusted:
+/// false` (see `type --help`), and Firefox does not perform its own implicit
+/// form submission for untrusted Enter — so on most forms the key press alone
+/// does nothing at all. But on the pages that *do* handle Enter in script
+/// (every search box with a JS handler), calling `requestSubmit()` as well
+/// would submit twice. Watching for a navigation in between is what tells the
+/// two apart.
+fn press_enter_and_submit(
+    ctx: &mut ConnectedTab,
+    console_actor: &ff_rdp_core::ActorId,
+    escaped_sel: &str,
+) -> Result<serde_json::Value, AppError> {
+    let enter = eval_or_bail(ctx, console_actor, &build_enter_js(escaped_sel), "submit failed")?;
+    let enter_json = resolve_result(ctx, &enter.result)?;
+    let url_before = enter_json
+        .get("url_before")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let has_form = enter_json
+        .get("has_form")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let default_prevented = enter_json
+        .get("default_prevented")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+
+    if navigated_away(ctx, console_actor, &url_before, ENTER_NAVIGATION_GRACE_MS) {
+        return Ok(json!({"submitted": true, "navigated": true, "method": "enter"}));
+    }
+
+    // Enter did nothing observable. Fall back to the form, when there is one
+    // and no handler asked us not to.
+    if !has_form || default_prevented {
+        return Ok(json!({
+            "submitted": false,
+            "navigated": false,
+            "method": if has_form { "enter_prevented" } else { "no_form" },
+        }));
+    }
+
+    let req = eval_or_bail(
+        ctx,
+        console_actor,
+        &build_request_submit_js(escaped_sel),
+        "submit failed",
+    )?;
+    let req_json = resolve_result(ctx, &req.result)?;
+    let requested = req_json
+        .get("requested")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if !requested {
+        return Ok(json!({"submitted": false, "navigated": false, "method": "no_form"}));
+    }
+    let navigated = navigated_away(ctx, console_actor, &url_before, ENTER_NAVIGATION_GRACE_MS);
+    Ok(json!({
+        "submitted": true,
+        "navigated": navigated,
+        "method": "request_submit",
+    }))
+}
+
+/// Poll for `window.location.href` moving away from `url_before`.
+///
+/// A timeout means "no navigation observed", which is a legitimate answer
+/// (a same-page form handler, an XHR submit) — not an error.
+fn navigated_away(
+    ctx: &mut ConnectedTab,
+    console_actor: &ff_rdp_core::ActorId,
+    url_before: &str,
+    timeout_ms: u64,
+) -> bool {
+    let before_lit = serde_json::to_string(url_before).unwrap_or_else(|_| "\"\"".to_owned());
+    let js = format!("window.location.href !== {before_lit}");
+    poll_js_condition(
+        ctx,
+        console_actor,
+        &js,
+        timeout_ms,
+        "navigation probe threw",
+        "no navigation observed",
+    )
+    .is_ok()
+}
+
 /// Options controlling auto-wait and post-action behaviour for `type`.
 #[derive(Default)]
 pub struct TypeOptions<'a> {
@@ -100,6 +258,13 @@ pub struct TypeOptions<'a> {
     /// that matches more than one element before doing anything else. `None`
     /// (the default, flag-less path) is unchanged.
     pub match_policy: Option<MatchPolicy>,
+    /// iter-210 Theme C: `--submit` — press Enter on the element and, if that
+    /// did not navigate and the element is inside a `<form>`, call
+    /// `form.requestSubmit()`.
+    pub submit: bool,
+    /// iter-210 Theme A: `--with-page` — embed the resulting page under
+    /// `results.page`.
+    pub with_page: bool,
 }
 
 /// Type text into a DOM element and return the result value without printing.
@@ -149,7 +314,18 @@ pub fn run_core(
 
     let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, "type failed")?;
 
-    let result_json = resolve_result(&mut ctx, &eval_result.result)?;
+    let mut result_json = resolve_result(&mut ctx, &eval_result.result)?;
+
+    // iter-210 Theme C: --submit. Runs before --settle/--wait-for so those
+    // observe the page the submission produced.
+    if opts.submit {
+        let submit_json = press_enter_and_submit(&mut ctx, &console_actor, &escaped_sel)?;
+        if let (Some(dst), Some(src)) = (result_json.as_object_mut(), submit_json.as_object()) {
+            for (k, v) in src {
+                dst.insert(k.clone(), v.clone());
+            }
+        }
+    }
 
     // C2: --settle.
     let settle_method = if opts.settle {
@@ -179,6 +355,13 @@ pub fn run_core(
         result["match_count"] = json!(match_count);
         result["chosen_index"] = json!(chosen_index);
     }
+
+    // iter-210 Theme A: `--with-page`, collected after `--submit` so a form
+    // that navigated reports the page it landed on.
+    if opts.with_page {
+        super::page_view::attach(&mut ctx, &mut result, Some(wait_timeout_ms))?;
+    }
+
     Ok((result, ctx.via_daemon))
 }
 
@@ -200,6 +383,7 @@ pub fn run(
     if let Some(sm) = settle_method {
         meta["settle_method"] = sm;
     }
+    let page_text = super::page_view::lift_meta(cli, &mut result_json, &mut meta);
     crate::connection_meta::merge_into_if_verbose(
         &mut meta,
         &cli.host,
@@ -212,7 +396,9 @@ pub fn run(
     let envelope = output::envelope(&result_json, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::TypeText).with_selector(selector);
-    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))?;
+    super::page_view::render_text_section(page_text.as_ref());
+    Ok(())
 }
 
 #[cfg(test)]

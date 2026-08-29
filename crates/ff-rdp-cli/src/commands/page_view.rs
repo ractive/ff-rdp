@@ -22,7 +22,7 @@ use crate::error::AppError;
 
 use super::connect_tab::ConnectedTab;
 use super::js_helpers::{
-    JSON_SENTINEL, UNIQUE_SELECTOR_JS_FN, eval_or_bail, poll_js_condition, resolve_result,
+    UNIQUE_SELECTOR_JS_FN, eval_or_bail, poll_js_condition, resolve_result,
 };
 
 /// Default cap on `interactive` entries, matching `a11y summary`'s own
@@ -119,32 +119,16 @@ pub(crate) fn build_page_view_js() -> String {
     PAGE_VIEW_JS_TEMPLATE.replace("__UNIQUE_SELECTOR_FN__", UNIQUE_SELECTOR_JS_FN)
 }
 
-/// Where the page view came from.
+/// The value `meta.page_source` (and `a11y summary`'s `meta.source`) carries.
 ///
-/// Mirrors `a11y`'s `meta.source` vocabulary (`native` / `js-fallback`) so a
-/// caller reading either command sees the same words. Today's collector is
-/// always [`PageSource::JsFallback`]: the summary is assembled by in-page JS,
-/// not by Firefox's accessibility actor — which is exactly what `js-fallback`
-/// means on `a11y`, and stating it is more useful than omitting it. The enum
-/// exists so a future native-backed collector can report `native` without an
-/// output-shape change.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PageSource {
-    /// Firefox's native accessibility actor produced the view.
-    Native,
-    /// In-page JavaScript produced the view.
-    JsFallback,
-}
-
-impl PageSource {
-    /// Serialised string used in `meta.page_source`.
-    pub(crate) fn as_meta_str(self) -> &'static str {
-        match self {
-            Self::Native => "native",
-            Self::JsFallback => "js-fallback",
-        }
-    }
-}
+/// Borrowed from `a11y`'s vocabulary so the two accessibility surfaces read the
+/// same way. `js-fallback` is literally true of this collector: the summary is
+/// assembled by in-page JavaScript, not by Firefox's accessibility actor —
+/// which is exactly what the word means on `a11y`. There is deliberately no
+/// second constant here: nothing in this iteration produces a native-backed
+/// page view, and a `native` variant nothing can emit would be a lie with a
+/// doc comment attached.
+pub(crate) const PAGE_SOURCE_JS_FALLBACK: &str = "js-fallback";
 
 /// A collected page view.
 pub struct PageView {
@@ -156,8 +140,8 @@ pub struct PageView {
     /// daemon and therefore usable with `--ref`. When `false`, no entry
     /// carries a `ref` at all (an inert handle is worse than none).
     pub refs_registered: bool,
-    /// How the view was produced.
-    pub source: PageSource,
+    /// How the view was produced — see [`PAGE_SOURCE_JS_FALLBACK`].
+    pub source: &'static str,
     /// Whether `document.readyState` reached `complete` before collection.
     /// `false` means the wait timed out and the view describes a still-loading
     /// document — reported rather than swallowed.
@@ -231,7 +215,7 @@ pub fn collect(
     Ok(PageView {
         view,
         refs_registered,
-        source: PageSource::JsFallback,
+        source: PAGE_SOURCE_JS_FALLBACK,
         ready,
     })
 }
@@ -332,49 +316,82 @@ fn strip_ref_fields(view: &mut Value) {
     }
 }
 
-/// Collect a page view and attach it to a command's `results`/`meta`
-/// (iter-210 Theme A).
+/// Collect a page view and attach it to a command's `results` (iter-210
+/// Theme A).
 ///
-/// The one call site every `--with-page` command uses. Adds `results.page`
-/// and `meta.page_source` / `meta.page_ready` / `meta.page_refs_registered`.
-/// Returns the page value again when `--format text` (without `--jq`) is in
-/// effect **and removes it from `results`**, because the generic text renderer
-/// falls back to pretty-JSON for any nested object — the caller prints it with
-/// [`render_text_section`] beneath its own line instead.
+/// The one call site every `--with-page` command uses, and it must run while
+/// the command still owns its connection. Adds two keys:
+///
+/// - `results.page` — the view itself, the same key set `a11y summary` puts in
+///   its `results`.
+/// - `results.page_meta` — `{source, ready, refs_registered}`, which
+///   [`lift_meta`] moves into the envelope's `meta` before printing. It rides
+///   in `results` only because the commands that collect the page
+/// (`navigate`/`click`/`type`) build their envelope in a *different* function
+///   from the one holding the connection — the same reason `settle_method`
+///   already travels this way.
 pub(crate) fn attach(
-    cli: &Cli,
     ctx: &mut ConnectedTab,
-    console_actor: &ActorId,
     results: &mut Value,
-    meta: &mut Value,
     wait_complete_ms: Option<u64>,
-) -> Result<Option<Value>, AppError> {
+) -> Result<(), AppError> {
+    // An action that navigated (a `click` on a link, `type --submit`) left the
+    // console actor cached in `ctx.target` bound to the *previous* docshell, so
+    // every eval below would come back `noSuchActor` — or, worse, describe the
+    // page the action left. Refresh first: this is precisely what lets
+    // `click --ref <link> --with-page` return the destination page.
+    ctx.refresh_target();
+    let console_actor = ctx.target.console_actor.clone();
     let page = collect(
         ctx,
-        console_actor,
+        &console_actor,
         &CollectOptions {
             interactive_limit: Some(WITH_PAGE_INTERACTIVE_LIMIT),
             wait_complete_ms,
         },
     )?;
-
-    if let Some(obj) = meta.as_object_mut() {
-        obj.insert("page_source".to_owned(), json!(page.source.as_meta_str()));
-        obj.insert("page_ready".to_owned(), json!(page.ready));
-        obj.insert(
-            "page_refs_registered".to_owned(),
-            json!(page.refs_registered),
-        );
-    }
-
-    let text_mode = cli.format == "text" && cli.jq.is_none();
-    if text_mode {
-        return Ok(Some(page.view));
-    }
     if let Some(obj) = results.as_object_mut() {
         obj.insert("page".to_owned(), page.view);
+        obj.insert(
+            "page_meta".to_owned(),
+            json!({
+                "source": page.source,
+                "ready": page.ready,
+                "refs_registered": page.refs_registered,
+            }),
+        );
     }
-    Ok(None)
+    Ok(())
+}
+
+/// Move [`attach`]'s `results.page_meta` into the envelope's `meta` as
+/// `page_source` / `page_ready` / `page_refs_registered`, and — in
+/// `--format text` without `--jq` — take `results.page` out so the caller can
+/// print it with [`render_text_section`] beneath its own line.
+///
+/// Text mode has to remove it: the generic text renderer falls back to
+/// pretty-printed JSON for any `results` object with a nested value, so
+/// leaving `page` in place would replace the command's own key-value line with
+/// a wall of JSON.
+///
+/// A no-op when `--with-page` was not passed.
+pub(crate) fn lift_meta(cli: &Cli, results: &mut Value, meta: &mut Value) -> Option<Value> {
+    let page_meta = results.as_object_mut()?.remove("page_meta")?;
+    if let Some(obj) = meta.as_object_mut() {
+        for (from, to) in [
+            ("source", "page_source"),
+            ("ready", "page_ready"),
+            ("refs_registered", "page_refs_registered"),
+        ] {
+            if let Some(v) = page_meta.get(from) {
+                obj.insert(to.to_owned(), v.clone());
+            }
+        }
+    }
+    if cli.format == "text" && cli.jq.is_none() {
+        return results.as_object_mut()?.remove("page");
+    }
+    None
 }
 
 /// Print the page view beneath a command's own `--format text` output, plus
@@ -483,6 +500,7 @@ pub(crate) fn render_text(results: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::js_helpers::JSON_SENTINEL;
 
     #[test]
     fn page_view_js_has_sentinel_and_stringify() {
@@ -572,12 +590,6 @@ mod tests {
         assert_eq!(first_ref(&page), Some("e7"));
         let none = json!({"interactive": [{"role": "link"}]});
         assert_eq!(first_ref(&none), None);
-    }
-
-    #[test]
-    fn page_source_meta_strings() {
-        assert_eq!(PageSource::JsFallback.as_meta_str(), "js-fallback");
-        assert_eq!(PageSource::Native.as_meta_str(), "native");
     }
 
     #[test]

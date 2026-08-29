@@ -60,7 +60,7 @@ impl NavAction {
 /// used to always return before iter-130 — the escape hatch the Theme B/C
 /// timeout message recommends, which previously didn't exist for these three
 /// verbs at all.
-pub fn run(cli: &Cli, action: NavAction) -> Result<(), AppError> {
+pub fn run(cli: &Cli, action: NavAction, with_page: bool) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let target_actor = ctx.target.actor.clone();
 
@@ -123,7 +123,14 @@ pub fn run(cli: &Cli, action: NavAction) -> Result<(), AppError> {
         }
     }
 
+    // iter-210 Theme A: `--with-page`, collected after the navigation commit
+    // so `back --with-page` describes the page it went back TO.
+    if with_page {
+        super::page_view::attach(&mut ctx, &mut result, Some(cli.timeout))?;
+    }
+
     let mut meta = json!({});
+    let page_text = super::page_view::lift_meta(cli, &mut result, &mut meta);
     crate::connection_meta::merge_into_if_verbose(
         &mut meta,
         &cli.host,
@@ -143,7 +150,9 @@ pub fn run(cli: &Cli, action: NavAction) -> Result<(), AppError> {
         NavAction::Forward { .. } => HintSource::Forward,
     };
     let hint_ctx = HintContext::new(hint_source);
-    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))?;
+    super::page_view::render_text_section(page_text.as_ref());
+    Ok(())
 }
 
 /// Reload the page and wait until network activity has been idle for `idle_ms`
