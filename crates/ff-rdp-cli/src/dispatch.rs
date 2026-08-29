@@ -1017,7 +1017,17 @@ fn dispatch_inner(
                 page_up,
                 smooth,
                 with_page,
-            } => commands::scroll::run_by(cli, *dx, *dy, *page_down, *page_up, *smooth, *with_page),
+            } => commands::scroll::run_by(
+                cli,
+                *dx,
+                *dy,
+                commands::scroll::ScrollByOptions {
+                    page_down: *page_down,
+                    page_up: *page_up,
+                    smooth: *smooth,
+                    with_page: *with_page,
+                },
+            ),
             ScrollCommand::Container {
                 selector,
                 dx,

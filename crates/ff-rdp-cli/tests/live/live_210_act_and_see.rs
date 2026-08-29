@@ -365,7 +365,9 @@ fn live_type_submit_navigates_search_form() {
     );
     routes.insert(
         "/results".to_owned(),
-        FixtureRoute::html("<!doctype html><title>t210 results</title><body><h1>Results</h1></body>"),
+        FixtureRoute::html(
+            "<!doctype html><title>t210 results</title><body><h1>Results</h1></body>",
+        ),
     );
     let Some(server) = FixtureServer::start(routes) else {
         eprintln!("live_type_submit_navigates_search_form: no fixture HTTP — skipping");
@@ -414,7 +416,10 @@ fn live_launch_twice_is_a_noop() {
     let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
-    let again = run(port, &["launch", "--headless", "--debug-port", &port.to_string()]);
+    let again = run(
+        port,
+        &["launch", "--headless", "--debug-port", &port.to_string()],
+    );
     assert!(
         again.status.success(),
         "a second launch on an ff-rdp-owned port must exit 0: stdout={} stderr={}",

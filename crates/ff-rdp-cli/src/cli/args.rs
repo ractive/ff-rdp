@@ -15,9 +15,9 @@ COMMAND REFERENCE:
     ff-rdp tabs
 
   Navigate & wait:
-    ff-rdp navigate <URL> [--with-network] [--wait-text T | --wait-selector S] [--wait-timeout MS]
-    ff-rdp reload [--wait-idle [--idle-ms MS] [--reload-timeout MS]]
-    ff-rdp back | forward
+    ff-rdp navigate <URL> [--with-page] [--with-network] [--wait-text T | --wait-selector S] [--wait-timeout MS]
+    ff-rdp reload [--with-page] [--wait-idle [--idle-ms MS] [--reload-timeout MS]]
+    ff-rdp back | forward [--with-page]
     ff-rdp wait --selector S | --text T | --eval JS [--wait-timeout MS]
 
   Page content:
@@ -29,10 +29,18 @@ COMMAND REFERENCE:
     ff-rdp snapshot [--depth N] [--max-chars N]
 
   Interaction:
-    ff-rdp click <SEL> [--dispatch pointer|legacy|click-only] [--no-wait] [--settle]
+    ff-rdp click <SEL> | --ref <REF> [--with-page] [--dispatch pointer|legacy|click-only] [--no-wait] [--settle]
     ff-rdp click <SEL> --wait-for-network <pattern> [--network-timeout MS]
     ff-rdp click <SEL> --wait-for selector:<css> --wait-for text:<substr>
-    ff-rdp type <SEL> <TEXT> [--clear] [--no-wait] [--settle] [--wait-for ...]
+    ff-rdp type <SEL> <TEXT> [--submit] [--with-page] [--clear] [--no-wait] [--settle] [--wait-for ...]
+
+  Act and see (iter-210):
+    --with-page on navigate/click/type/reload/back/forward/scroll returns the
+    resulting page under results.page — headings, landmarks, and interactive
+    elements carrying `ref` handles for `click --ref` / `type --ref`. Same view
+    and shape as `ff-rdp a11y summary`, which (with `snapshot`) now registers
+    refs too. Collected after the action settles, so a click that navigates
+    reports the destination page.
 
   Scrolling:
     ff-rdp scroll to <SEL> [--block top|center|bottom] [--smooth] [--no-wait] [--settle]
@@ -1304,6 +1312,20 @@ measured binding its debug port at 7 s under load, and the previous hardcoded
 spawn, `launch` fails immediately naming that process and PID instead of
 waiting out the bound.
 
+`launch` is a NO-OP when the port is already held by a Firefox ff-rdp itself
+launched (iter-210): it exits 0 and reports that instance —
+`results.already_running: true` with the existing `pid`, `port` and `profile`
+— rather than failing, so an agent that is unsure whether it already has a
+browser can just run `launch` and carry on. `already_running` is present on
+both paths (`false` on a real launch), so `--jq '.results.already_running'`
+always answers. --replace is unaffected: it still stops the prior instance and
+starts a new one. Ownership is proved exactly as --replace proves it before it
+may signal anything — a launch record whose PID still identifies the process it
+was written for, or an owner-PID marker under ff-rdp's managed profile root. A
+Firefox you started by hand, or any other listener, is a foreign owner and
+still gets the port-occupied error; reporting someone else's process as
+`results.pid` would be a lie this command has no way to back up.
+
 When `launch` FAILS after creating its temporary profile — spawn error, Firefox
 exiting immediately, the debug port never opening — it removes that profile
 directory again (iter-175), so a failed launch costs no disk. A directory passed
@@ -1315,6 +1337,7 @@ FF_RDP_PROFILE_PRUNE_DAYS.
 Examples:
   ff-rdp launch                          # launch with temp profile on port 6000
   ff-rdp launch --headless               # headless mode (no visible window)
+  ff-rdp launch --headless               # again: exit 0, already_running: true
   ff-rdp launch --port 9222              # use a different debug port
   ff-rdp launch --launch-timeout 45      # allow 45 s for the debug port to open
   ff-rdp launch --auto-consent           # install the Consent-O-Matic extension
@@ -2169,6 +2192,13 @@ pub struct SourcesArgs {
 #[derive(clap::Args)]
 pub struct SnapshotArgs {
     /// Maximum tree depth to traverse (default: 6). Alias: --max-depth.
+    ///
+    /// Every node marked `interactive: true` carries a `ref` handle usable with
+    /// `click --ref` / `type --ref` (iter-210). Refs live in the daemon, so
+    /// they appear only on the daemon route; `meta.refs_registered` says
+    /// whether the ones in this output are usable, and a navigation clears
+    /// them. For a much smaller orientation view — headings, landmarks and
+    /// interactive elements only, also ref-carrying — use `a11y summary`.
     #[arg(long, default_value_t = 6)]
     pub depth: u32,
     /// Maximum tree depth to traverse (alias for --depth, matches `dom tree --max-depth` / CDP convention).
@@ -2675,6 +2705,29 @@ Output: {\"results\": [{\"selector\": \"...\", \"ratio\": N, \"aa_normal\": bool
         fail_only: bool,
     },
     /// Flat summary: landmarks, headings, and interactive elements for quick page orientation
+    #[command(
+        long_about = "Flat page summary: landmarks, headings, and interactive elements.
+
+The cheapest way to orient on a page — a few hundred tokens on an article,
+against tens of kilobytes for `snapshot`'s DOM tree.
+
+Since iter-210 every `interactive` entry carries a `ref` you can pass straight
+to `click --ref` / `type --ref`, so this command is a complete answer to \"what
+can I do on this page\" — no `dom <selector>` round-trip, and no guessing a
+selector in order to get a handle. Refs are stored by the daemon, so they exist
+only on the daemon route (the default); `meta.refs_registered` says whether the
+ones in this output are usable, and `meta.source` names how the view was
+produced. A navigation clears them.
+
+`--limit N` caps the interactive list (default 50); `--all` lifts the cap.
+`interactive_total` and `interactive_truncated` appear when the cap bit.
+
+The same view is what `--with-page` embeds under `results.page` on
+navigate/click/type/reload/back/forward/scroll — identical keys, so a recipe
+written against one works on the other.
+
+Output: {\"results\": {\"landmarks\": [...], \"headings\": [...], \"interactive\": [{\"role\": \"link\", \"name\": \"...\", \"href\": \"...\", \"ref\": \"e3\"}]}, \"total\": 1, \"meta\": {\"refs_registered\": bool, \"source\": \"js-fallback\", ...}}"
+    )]
     Summary,
 }
 

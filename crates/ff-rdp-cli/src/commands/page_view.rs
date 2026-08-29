@@ -324,9 +324,9 @@ fn strip_ref_fields(view: &mut Value) {
 /// - `results.page_meta` — `{source, ready, refs_registered}`, which
 ///   [`lift_meta`] moves into the envelope's `meta` before printing. It rides
 ///   in `results` only because the commands that collect the page
-/// (`navigate`/`click`/`type`) build their envelope in a *different* function
-///   from the one holding the connection — the same reason `settle_method`
-///   already travels this way.
+///   (`navigate`/`click`/`type`) build their envelope in a *different*
+///   function from the one holding the connection — the same reason
+///   `settle_method` already travels this way.
 pub(crate) fn attach(
     ctx: &mut ConnectedTab,
     results: &mut Value,
@@ -700,7 +700,10 @@ mod tests {
 
         let text_section = lift_meta(&cli, &mut results, &mut meta);
 
-        assert!(text_section.is_none(), "JSON mode keeps the page in results");
+        assert!(
+            text_section.is_none(),
+            "JSON mode keeps the page in results"
+        );
         assert!(
             results.get("page_meta").is_none(),
             "page_meta must not survive into the printed results: {results}"
@@ -708,7 +711,10 @@ mod tests {
         assert_eq!(meta["page_source"], json!(PAGE_SOURCE_JS_FALLBACK));
         assert_eq!(meta["page_ready"], json!(true));
         assert_eq!(meta["page_refs_registered"], json!(true));
-        assert!(results.get("page").is_some(), "JSON mode keeps results.page");
+        assert!(
+            results.get("page").is_some(),
+            "JSON mode keeps results.page"
+        );
     }
 
     /// `--format text` takes the page OUT of `results` (the generic renderer
@@ -728,7 +734,9 @@ mod tests {
             "text mode must remove results.page: {results}"
         );
         assert_eq!(
-            text_section.as_ref().map(|p| p["headings"][0]["text"].clone()),
+            text_section
+                .as_ref()
+                .map(|p| p["headings"][0]["text"].clone()),
             Some(json!("Ada Lovelace"))
         );
         assert_eq!(meta["page_source"], json!(PAGE_SOURCE_JS_FALLBACK));

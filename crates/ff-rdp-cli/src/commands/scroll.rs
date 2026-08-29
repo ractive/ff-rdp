@@ -156,15 +156,27 @@ pub fn run_to(
 // scroll by [--dx] [--dy] [--page-down] [--page-up] [--smooth]
 // ---------------------------------------------------------------------------
 
-pub fn run_by(
-    cli: &Cli,
-    dx: i64,
-    dy: Option<i64>,
-    page_down: bool,
-    page_up: bool,
-    smooth: bool,
-    with_page: bool,
-) -> Result<(), AppError> {
+/// Flags for [`run_by`], bundled so the four booleans do not become four
+/// positional parameters at the call site.
+#[derive(Default, Clone, Copy)]
+pub struct ScrollByOptions {
+    /// `--page-down`: scroll down by 85% of the viewport height.
+    pub page_down: bool,
+    /// `--page-up`: scroll up by 85% of the viewport height.
+    pub page_up: bool,
+    /// `--smooth`: animate instead of jumping.
+    pub smooth: bool,
+    /// `--with-page`: embed the resulting page view (iter-210 Theme A).
+    pub with_page: bool,
+}
+
+pub fn run_by(cli: &Cli, dx: i64, dy: Option<i64>, opts: ScrollByOptions) -> Result<(), AppError> {
+    let ScrollByOptions {
+        page_down,
+        page_up,
+        smooth,
+        with_page,
+    } = opts;
     // Mutual exclusion: --page-down/--page-up cannot be combined with --dy
     if (page_down || page_up) && dy.is_some() {
         return Err(AppError::User(
