@@ -2,12 +2,15 @@
 title: "Iteration 220: --with-page hangs after a click that navigates a heavy page"
 type: iteration
 date: 2026-08-30
-status: in-review
+status: done
 branch: iter-220/with-page-after-navigating-click
 depends_on: []
 first_call_sites:
   - primitive: ff_rdp_cli::commands::page_view::attach
-    site: crates/ff-rdp-cli/src/commands/page_view.rs (already the sole `--with-page` entry point; this iteration changes what it does before evaluating, and adds no new pub item)
+    site: >-
+      crates/ff-rdp-cli/src/commands/page_view.rs (already the sole `--with-page`
+      entry point; this iteration changes what it does before evaluating, and adds no new
+      pub item)
 dogfood_path: |
   ff-rdp launch --headless
   ff-rdp navigate https://en.wikipedia.org/wiki/Ada_Lovelace --with-page \
@@ -20,7 +23,12 @@ dogfood_path: |
   ff-rdp click --ref e19 --jq '.results.clicked'
   ff-rdp scroll top --with-page --jq '.results.page.headings[0].text'
   # the same two steps as separate processes already work — which is the clue
-tags: [iteration, act-and-see, page-view, defect, carry-over]
+tags:
+  - iteration
+  - act-and-see
+  - page-view
+  - defect
+  - carry-over
 ---
 
 # Iteration 220: `--with-page` hangs after a click that navigates a heavy page
