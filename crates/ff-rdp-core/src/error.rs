@@ -245,6 +245,25 @@ pub enum ProtocolError {
     #[error("page navigated during JS evaluation — result will not arrive")]
     EvalNavigatedDuringEval,
 
+    /// Firefox destroyed the target the caller was talking to (iter-220).
+    ///
+    /// A `click` on a link — or `type --submit` — starts a navigation while
+    /// the CLI still holds the *outgoing* document's console actor.  Firefox
+    /// tears that docshell down and simply never answers the in-flight
+    /// `evaluateJSAsync`, so without this the caller blocks until the socket
+    /// read timeout fires and reports a bare `phase: recv` timeout that names
+    /// nothing.  The `target-destroyed-form` watcher event carries the
+    /// `innerWindowId` of the document that went away; when it matches the
+    /// target guard installed via
+    /// [`RdpTransport::set_target_guard`](crate::transport::RdpTransport::set_target_guard)
+    /// the wait loops abort with this error instead — typically within tens of
+    /// milliseconds, leaving the caller enough budget to re-resolve the target
+    /// and retry against the document the action actually produced.
+    #[error(
+        "the target was destroyed while the request was in flight (innerWindowId {inner_window_id}) — a navigation replaced the document, so Firefox will never reply"
+    )]
+    EvalTargetDestroyed { inner_window_id: u64 },
+
     /// Frame declared too large to be a valid Firefox RDP packet.
     ///
     /// Firefox frames are length-prefixed JSON.  A declared length exceeding
@@ -385,6 +404,7 @@ impl ProtocolError {
             | Self::ConnectionFailed(_)
             | Self::InvalidPacket(_)
             | Self::EvalNavigatedDuringEval
+            | Self::EvalTargetDestroyed { .. }
             | Self::FrameTooLarge { .. }
             | Self::BulkFrameTooLarge { .. }
             | Self::BulkPacketUnsupported { .. }

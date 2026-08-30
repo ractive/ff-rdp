@@ -245,6 +245,12 @@ pub struct RdpTransport {
     /// pre-iter-69 behaviour). See `kb/rdp/protocol/message-format.md` —
     /// replies have no `type` field, every `from`+`type` packet is an event.
     event_sink: Option<Sender<Value>>,
+    /// `innerWindowId` of the target the caller is currently talking to, when
+    /// it has asked the wait loops to watch for that target being destroyed.
+    ///
+    /// See [`set_target_guard`](RdpTransport::set_target_guard).  `None` (the
+    /// default) leaves the loops behaving exactly as they did before iter-220.
+    target_guard: Option<u64>,
 }
 
 impl std::fmt::Debug for RdpTransport {
@@ -293,6 +299,7 @@ impl RdpTransport {
                         reader,
                         writer: stream,
                         event_sink: None,
+                        target_guard: None,
                     });
                 }
                 Err(e) => {
@@ -339,6 +346,7 @@ impl RdpTransport {
             reader,
             writer,
             event_sink: None,
+            target_guard: None,
         }
     }
 
@@ -371,6 +379,39 @@ impl RdpTransport {
     /// original sink — without silently clobbering a daemon-installed one.
     pub fn swap_event_sink(&mut self, sink: Option<Sender<Value>>) -> Option<Sender<Value>> {
         std::mem::replace(&mut self.event_sink, sink)
+    }
+
+    /// Watch for Firefox destroying the target bound to `inner_window_id`
+    /// while a reply or event wait is in flight (iter-220).
+    ///
+    /// A `click` on a link starts a navigation that tears the current docshell
+    /// down.  Any request already sent to that docshell's actors is silently
+    /// dropped — Firefox neither answers it nor reports an error — so
+    /// [`recv_reply_from`] / [`recv_event_from`] block until the socket read
+    /// timeout, and the caller reports `operation timed out (phase: recv)`
+    /// having burned its whole `--timeout` budget.
+    ///
+    /// Firefox *does* announce the teardown, on the watcher actor, as
+    /// `{"type": "target-destroyed-form", "target": {"innerWindowId": N}}`.
+    /// With the guard set to `N` the wait loops turn that announcement into
+    /// [`ProtocolError::EvalTargetDestroyed`] the moment it arrives, which in
+    /// practice is tens of milliseconds — early enough for the caller to
+    /// re-resolve the target and retry against the new document.
+    ///
+    /// The guard is **opt-in and narrow on purpose**: aborting a wait is only
+    /// correct where the caller is prepared to retry.  A caller that sets it
+    /// must clear it (`None`) as soon as its guarded section ends, or a later
+    /// unrelated wait on the same connection inherits the abort.
+    pub fn set_target_guard(&mut self, inner_window_id: Option<u64>) {
+        self.target_guard = inner_window_id;
+    }
+
+    /// The `innerWindowId` currently guarded, if any.
+    ///
+    /// Lets a caller save and restore the guard around a nested section
+    /// instead of clobbering an outer one.
+    pub fn target_guard(&self) -> Option<u64> {
+        self.target_guard
     }
 
     /// Internal accessor used by [`recv_reply_from`] / [`recv_event_from`].
@@ -929,9 +970,37 @@ fn recv_bulk_with_handler_from_with_cap<W: Write, R: BufRead>(
 ///
 /// On `error`-bearing replies, the helper converts the packet into a
 /// [`ProtocolError::ActorError`] using [`ActorErrorKind::from_code`].
+/// Recognise Firefox's announcement that the guarded target has been destroyed.
+///
+/// Returns `Some(ProtocolError::EvalTargetDestroyed)` only when a guard is
+/// installed (see [`RdpTransport::set_target_guard`]) *and* the incoming packet
+/// is a `target-destroyed-form` naming exactly that `innerWindowId`.  Every
+/// other packet — including `target-destroyed-form` for some *other* document,
+/// which is routine on a page with iframes — returns `None` and is handled
+/// normally.
+fn target_destroyed_guard_hit(msg: &Value, guard: Option<u64>) -> Option<ProtocolError> {
+    let guard = guard?;
+    if msg.get("type").and_then(Value::as_str)? != "target-destroyed-form" {
+        return None;
+    }
+    let destroyed = msg
+        .get("target")?
+        .get("innerWindowId")
+        .and_then(Value::as_u64)?;
+    (destroyed == guard).then_some(ProtocolError::EvalTargetDestroyed {
+        inner_window_id: guard,
+    })
+}
+
 pub fn recv_reply_from(transport: &mut RdpTransport, actor: &str) -> Result<Value, ProtocolError> {
     loop {
         let msg = transport.recv()?;
+        // iter-220: the actor we are waiting on may have just been destroyed by
+        // a navigation; Firefox will never answer, so abort now rather than at
+        // the socket read timeout.
+        if let Some(err) = target_destroyed_guard_hit(&msg, transport.target_guard()) {
+            return Err(err);
+        }
         let from = msg.get("from").and_then(Value::as_str).unwrap_or_default();
         if from != actor {
             // iter-101 Theme B: a control-error frame injected by the daemon
@@ -995,6 +1064,10 @@ pub fn recv_event_from(
 ) -> Result<Value, ProtocolError> {
     loop {
         let msg = transport.recv()?;
+        // iter-220: see `recv_reply_from` — a destroyed target never replies.
+        if let Some(err) = target_destroyed_guard_hit(&msg, transport.target_guard()) {
+            return Err(err);
+        }
         let from = msg.get("from").and_then(Value::as_str).unwrap_or_default();
         if from == actor {
             // A typed-less packet carrying `error` is an error reply from the
@@ -1747,6 +1820,7 @@ mod tests {
             reader,
             writer,
             event_sink: None,
+            target_guard: None,
         };
 
         let msg = serde_json::json!({"type": "listTabs", "to": "root"});

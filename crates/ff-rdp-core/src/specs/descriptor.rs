@@ -68,6 +68,9 @@ pub mod response {
         pub manifest_actor: Option<ActorId>,
         #[serde(rename = "browsingContextID", default)]
         pub browsing_context_id: Option<u64>,
+        /// Inner window ID of the document this target is bound to (iter-220).
+        #[serde(default)]
+        pub inner_window_id: Option<u64>,
     }
 
     /// Reply for `getTarget` (tab descriptor — wraps target in `"frame"`).

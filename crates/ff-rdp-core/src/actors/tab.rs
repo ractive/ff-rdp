@@ -61,6 +61,18 @@ pub struct TargetInfo {
     /// Required by the Firefox 149+ two-step screenshot protocol:
     /// `screenshotContentActor.prepareCapture` + `screenshotActor.capture`.
     pub browsing_context_id: Option<u64>,
+    /// The inner window ID of the document this target is bound to.
+    ///
+    /// iter-220: this is the join key between a target handed out by
+    /// `getTarget` and the `target-destroyed-form` event Firefox pushes when
+    /// that document is replaced.  The two carry *different* actor IDs (the
+    /// descriptor's forwarded `childN/` prefix vs. the watcher's
+    /// `watcherN.processN//` prefix), so the actor ID cannot be used to tell
+    /// whether a destroyed target is the one a caller is evaluating against —
+    /// `innerWindowId` can.  See [`RdpTransport::set_target_guard`].
+    ///
+    /// [`RdpTransport::set_target_guard`]: crate::transport::RdpTransport::set_target_guard
+    pub inner_window_id: Option<u64>,
 }
 
 /// Inspect a `tabNavigated` push packet and emit a `tracing::warn!` when the
@@ -267,6 +279,8 @@ fn parse_target_response_inner(
 
     let browsing_context_id = inner.get("browsingContextID").and_then(Value::as_u64);
 
+    let inner_window_id = inner.get("innerWindowId").and_then(Value::as_u64);
+
     Ok(TargetInfo {
         actor: actor.into(),
         console_actor: console_actor.into(),
@@ -277,6 +291,7 @@ fn parse_target_response_inner(
         responsive_actor,
         manifest_actor,
         browsing_context_id,
+        inner_window_id,
     })
 }
 
