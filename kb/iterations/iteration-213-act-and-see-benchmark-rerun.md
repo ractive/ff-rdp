@@ -2,7 +2,7 @@
 title: "Iteration 213: re-measure the axi benchmark after act-and-see"
 type: iteration
 date: 2026-08-29
-status: planned
+status: in-progress
 branch: iter-213/act-and-see-benchmark-rerun
 depends_on: [iteration-210-act-and-see, iteration-211-find-not-guess, iteration-212-ambient-context]
 dogfood_path: |
@@ -67,36 +67,36 @@ would measure the same 8 turns and would be the correct answer, not a broken run
 - [ ] Record the exact system prompt used for both tools, verbatim, in
       [[axi-benchmark-comparison]] — a turn count is not comparable without it
 
-### B. Re-measure [0/3]
-- [ ] Re-run all 42 tasks `--repeat 3` for ff-rdp with the post-210/post-211 binary; keep
+### B. Re-measure [3/3]
+- [x] Re-run all 42 tasks `--repeat 3` for ff-rdp with the post-210/post-211 binary; keep
       chrome-devtools-axi's 2026-08-29 numbers as the reference rather than re-running them
-- [ ] Record the per-task table in the Outcome section of this plan AND in
+- [x] Record the per-task table in the Outcome section of this plan AND in
       [[axi-benchmark-comparison]]
-- [ ] Classify every extraction trajectory as "used `--query`" or "did not" — the same
+- [x] Classify every extraction trajectory as "used `--query`" or "did not" — the same
       mechanism-vs-discoverability split Theme C applies to `--with-page`
 
-### D. Ambient context (from iter-212) [0/2]
+### D. Ambient context (from iter-212) [1/2]
 - [ ] Decide and record how the hook is delivered under `--setting-sources ""`: either a harness
       change that loads a real settings file, or `--append-system-prompt` with the hook's output —
       and state plainly which of the two the recorded numbers measure
-- [ ] Classify every ff-rdp trajectory by its **first** tool call: `--help`, a browser command, or
+- [x] Classify every ff-rdp trajectory by its **first** tool call: `--help`, a browser command, or
       bare `ff-rdp`
 
-### C. Decide the default [0/1]
-- [ ] From the measured trajectories, state whether `--with-page` should default on for JSON
+### C. Decide the default [1/1]
+- [x] From the measured trajectories, state whether `--with-page` should default on for JSON
       output — and if agents never used it, say so and name which discoverability surface to
       change
 
-## Acceptance Criteria [0/6]
+## Acceptance Criteria [3/6]
 
 - [ ] `tools/axi-bench/` runs the comparison from a clean checkout with no scratchpad recovery
-- [ ] The three click-through tasks (`wikipedia_infobox_hop`, `wikipedia_link_follow`,
+- [x] The three click-through tasks (`wikipedia_infobox_hop`, `wikipedia_link_follow`,
       `wikipedia_search_click`) have a measured post-210 average turn count recorded, whatever it
       is — a number that did NOT improve is a valid, publishable result and must not be re-run
       until it looks better
-- [ ] Every trajectory is classified as "used `--with-page`" or "did not", so a flat turn count
+- [x] Every trajectory is classified as "used `--with-page`" or "did not", so a flat turn count
       can be attributed to the mechanism or to discoverability
-- [ ] Carried over from [[iteration-211-find-not-guess]] (left unticked there, not reworded): the
+- [x] Carried over from [[iteration-211-find-not-guess]] (left unticked there, not reworded): the
       three extraction tasks (`tabular_data_analysis`, `wikipedia_deep_extraction`,
       `github_issue_investigation`) have a measured post-211 average turn count recorded —
       211's own target was ≤ 6 turns for the first two (were 9.3, 10.7) and 3/3 passes for the
@@ -109,6 +109,40 @@ would measure the same 8 turns and would be the correct answer, not a broken run
       mechanism Theme D chose, because "≥ 80% with the hook's text pasted into the system prompt"
       and "≥ 80% with the hook installed" are different claims.
 - [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+
+## Outcome (2026-08-30, measured by hand from the launching session — Theme A not yet done)
+
+Run against ff-rdp `28695d3` (post-211, pre-212), same harness/model/prompt as the baseline;
+full tables and trajectory analysis in [[axi-benchmark-comparison]] § "Re-measurement 2026-08-30".
+
+| | axi (ref) | ff-rdp @0a87d1d | ff-rdp @28695d3 |
+|---|---|---|---|
+| all 42 runs | 6.0 turns / $0.160 / 42 pass | 7.1 / $0.134 / 41 | **6.0 / $0.121 / 42** |
+| wikipedia_infobox_hop | 4.0 | 8.0 | 8.3 |
+| wikipedia_link_follow | 4.0 | 7.3 | 8.3 |
+| wikipedia_search_click | 6.7 | 8.3 | 5.3 |
+| tabular_data_analysis | 4.0 | 9.3 | 6.7 |
+| wikipedia_deep_extraction | 7.0 | 10.7 | 10.0 |
+| github_issue_investigation | 9.0 / 3 pass | 10.3 / 2 pass | 4.3 / 3 pass |
+
+- **210's click-through target (≤ 5 on all three) is not met**: 8.3 / 8.3 / 5.3. Recorded, not
+  re-run.
+- **211's extraction target** (≤ 6 on `tabular`/`deep_extraction`, 3/3 on `issue_investigation`):
+  one of three — 6.7, 10.0, and 3/3. Recorded, not re-run.
+- **Adoption**: `--with-page` used in 13/42 runs, `--query` in 18/42. Runs that used `--with-page`
+  averaged 5.9 turns vs 6.0 without, at +12% input tokens — no turn benefit where used.
+  `link_follow` used it in all three runs and still took 8/7/10: the view lacks body text, so the
+  agent re-fetched the page. `infobox_hop` never used it and re-navigated by URL after each click.
+- **First tool call**: 42/42 runs start with `ff-rdp --help` (0% browser-command-first). Measured
+  **without** any hook — the harness passes `--setting-sources ""` and never runs bare `ff-rdp`,
+  so 212's home view was not exercised; Theme D's delivery decision is still open.
+- **Theme C decision: do not default `--with-page` on.** Instead (a) add a text excerpt to the
+  post-action page view so it answers "what does the page say now", and (b) surface `--query` and
+  `--with-page` in top-level `--help`'s Quick start, sourced from the `IDIOMS` table. Both are
+  follow-up behaviour changes per "Out of scope", not part of this plan.
+- Remaining here: Theme A (land the harness under `tools/axi-bench/`), Theme D's delivery
+  mechanism, and the ff-rdp condition's `ffrdp-bench.sh` plus the `conditions.yaml`/`types.ts`/
+  `lifecycle.ts` diff, all still only in a session scratchpad.
 
 ## Design notes
 
