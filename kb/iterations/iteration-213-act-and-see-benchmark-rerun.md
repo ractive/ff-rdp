@@ -62,8 +62,17 @@ would measure the same 8 turns and would be the correct answer, not a broken run
 ## Tasks
 
 ### A. Reproduce the harness [0/2]
-- [ ] Move the benchmark runner and task definitions into `tools/axi-bench/` so a later reader can
-      re-run the comparison without recovering a deleted scratchpad
+- [ ] Land the ff-rdp side of the harness under `tools/axi-bench/` **without checking in the
+      upstream TypeScript** (CLAUDE.md: no polyglot tooling): a `README.md` pinning the upstream
+      `kunchenguid/axi` commit, `ff-rdp-condition.patch` (the `conditions.yaml` / `types.ts` /
+      `lifecycle.ts` diff), `ffrdp-bench.sh` (sources `dogfood-lib.sh`, launches one headless
+      Firefox, kills only that PID), and a `run.sh` that clones the pinned commit into a temp
+      dir, applies the patch, builds ff-rdp into a temp target dir, prepends it to PATH, refuses
+      to start if port 6000 is busy, and runs `pnpm bench matrix` — so a later reader can
+      re-run the comparison without recovering a session scratchpad. The current copy is at
+      `/private/tmp/claude-501/-Users-james-devel-ff-rdp/6e29cb88-95d5-48ad-b750-bad99c3e3d49/scratchpad/`
+      (`axi/`, `bin/ffrdp-bench.sh`); the 2026-08-30 wrappers are in the launching session's
+      scratchpad (`run-axi-bench.sh`, `run-mcp-bench.sh`)
 - [ ] Record the exact system prompt used for both tools, verbatim, in
       [[axi-benchmark-comparison]] — a turn count is not comparable without it
 
@@ -89,7 +98,8 @@ would measure the same 8 turns and would be the correct answer, not a broken run
 
 ## Acceptance Criteria [3/6]
 
-- [ ] `tools/axi-bench/` runs the comparison from a clean checkout with no scratchpad recovery
+- [ ] `tools/axi-bench/run.sh` runs the comparison from a clean checkout with no scratchpad recovery
+      and no TypeScript committed to this repo
 - [x] The three click-through tasks (`wikipedia_infobox_hop`, `wikipedia_link_follow`,
       `wikipedia_search_click`) have a measured post-210 average turn count recorded, whatever it
       is — a number that did NOT improve is a valid, publishable result and must not be re-run
