@@ -161,6 +161,15 @@ has already substituted its `"json"` default by the time the command sees `Cli::
 `--format json` and any `--jq` filter still get the envelope, which is what the dogfood path and
 the hook consume.
 
+Two counting guards from [[iteration-162b-ac-fidelity-shrink]] had to be updated, deliberately and
+in place: `unit_162b_xtask_help_lists_eight` (renamed
+`unit_162b_xtask_help_matches_the_pinned_list`, 8 → 10 subcommands) and
+`ci_162b_discipline_job_two_xtask_steps` (renamed `…_xtask_steps_are_pinned`, 2 → 3 CI steps).
+Those guards exist so growing the xtask surface is a deliberate edit rather than a drive-by, which
+is exactly what happened here. 162b's own acceptance criteria are left as written — they were true
+when that iteration closed, and editing a merged plan to match a later change is the reflex this
+repo's discipline rules exist to stop.
+
 **Two ACs are not ticked, and neither was reworded.**
 
 1. *Theme B task 3 — `--codex` / `--opencode`.* Both exit 1 naming their file location and the
