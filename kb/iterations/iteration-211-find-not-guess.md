@@ -140,11 +140,25 @@ Shipped as PR (branch `iter-211/find-not-guess`).
 
 **Not done**
 
-- The benchmark re-run (`axi-benchmark-comparison --repeat 3`) is left unticked. It is a
-  multi-hour, many-API-call harness run that this implementation pass could not execute, so the
-  turn-count claim in that AC is unverified — the code changes are in, but nothing here measures
-  whether they moved 9.3 → ≤6. File it as follow-up work against the benchmark harness rather
-  than reading the unticked box as "it failed".
+- The benchmark re-run (`axi-benchmark-comparison --repeat 3`) is left **unticked and not
+  reworded**. It is a multi-hour, many-API-call harness run against live sites that this
+  implementation pass could not execute, so the turn-count claim in that AC is unverified — the
+  code is in, nothing here measures whether it moved 9.3 → ≤6. Folded into
+  [[iteration-213-act-and-see-benchmark-rerun]] rather than filed separately: same harness, same
+  42 tasks, same money, and 213 already carries iter-210's identical unticked AC.
+
+**Behaviour changes a caller can see**
+
+- `page-text` returns at most 8000 characters unless `--full` or `--max-chars N` is passed.
+  Anything scripted against uncapped `page-text` output needs `--full`;
+  `live_dom_text_longstring_roundtrip` was updated in this PR for exactly that reason.
+- `dom --text` returns the accessible name (whitespace-collapsed, `aria-label`-aware) rather
+  than raw `textContent`. For a `<select>` that is now its label instead of the concatenation of
+  every `<option>`.
+- `a11y summary` / `--with-page` names are capped at 300 characters with a trailing `…` rather
+  than 100 with a trailing `...`.
+- `dom --count --query` and `dom stats|tree --query` are refused rather than silently ignoring
+  the filter.
 
 ## Design notes
 
