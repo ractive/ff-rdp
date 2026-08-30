@@ -165,6 +165,22 @@ jobs:
         # quietly describe a CLI that no longer exists.
         # Fix: cargo run -p xtask -- gen-skill
         run: cargo run -p xtask -- check-skill-drift
+      - name: Check --help still carries the idioms (iter-219)
+        # `check-skill-drift`'s sibling for the other agent-facing surface.
+        # All 42 runs of the axi benchmark opened with `ff-rdp --help` and
+        # several piped it through `head -50`; `--query` appeared nowhere in
+        # it. The Quick start block is rendered from the same IDIOMS table
+        # SKILL.md uses, and this fails the day someone hand-writes it again
+        # and drops a line.
+        run: cargo run -p xtask -- check-help-idioms
+      - name: Check the vendored Readability bundle is unmodified (iter-219)
+        # ff-rdp injects Mozilla's Readability.js into the live page so
+        # `--with-page` can tell the article from the site chrome. The files
+        # are committed, never downloaded, which is only worth anything if the
+        # committed bytes are the released ones: this recomputes the SHA-256 of
+        # each against crates/ff-rdp-cli/js/readability/VERSION.
+        # An upgrade is a deliberate commit that updates those hashes.
+        run: cargo run -p xtask -- check-vendored-js
 
   # iter-75c: PR-time smoke that proves `gh attestation verify` will succeed
   # against a freshly built artifact. Builds the Linux x86_64 CLI, runs
