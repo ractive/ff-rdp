@@ -695,14 +695,20 @@ const TIMEOUT_HINT: &str = "the page view was being collected when the reply sto
      hint: re-run the read as a separate command (`ff-rdp a11y summary`), or raise --timeout.";
 
 /// Interval between `getTarget` polls while waiting for a navigation to commit.
-const NAV_SETTLE_POLL_MS: u64 = 25;
+///
+/// Not tighter than this on purpose: each `getTarget` makes the tab descriptor
+/// open a *new* forwarded connection to the content process (the `childN/`
+/// prefix increments every call), so polling is not free on Firefox's side. At
+/// 50 ms the observed Wikipedia commit lands on the first or second poll and a
+/// full 3 s budget costs at most 60 calls.
+const NAV_SETTLE_POLL_MS: u64 = 50;
 
 /// How many times [`collect_settled`] re-resolves the target and collects again
 /// after Firefox reported the document it was talking to is going away.
 ///
-/// Two is enough for the observed shape (outgoing document → destination); a
-/// third pass would only help a page that navigates twice in a row, and each
-/// pass costs a full collection.
+/// The observed shape needs two (outgoing document → destination); the third is
+/// slack for a page that redirects once more on arrival. Each pass costs a full
+/// collection, so this is not a knob to raise casually.
 const NAV_COLLECT_ATTEMPTS: usize = 3;
 
 /// Collect the page view against the document the action actually produced.

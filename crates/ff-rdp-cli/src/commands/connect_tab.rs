@@ -320,10 +320,18 @@ impl ConnectedTab {
 
     /// Re-resolve the target actors (consoleActor, etc.) from Firefox.
     ///
-    /// After a navigation the docshell is torn down and replaced.  The old
-    /// `consoleActor` ID becomes stale — any `evaluateJSAsync` sent to it
-    /// returns `noSuchActor`.  Calling this refreshes `self.target` so the
+    /// After a navigation has **committed**, the old docshell is gone and its
+    /// `consoleActor` ID is stale; calling this refreshes `self.target` so the
     /// next `eval` uses the actor bound to the new docshell.
+    ///
+    /// **It does not escape a navigation that is still in flight** (iter-220).
+    /// Between the click and the commit, `getTarget` re-forwards the *outgoing*
+    /// docshell under a fresh `childN/` prefix: a new-looking target actor with
+    /// the same `innerWindowId` and the same `url`. Evaluating against it either
+    /// describes the page you are leaving or hangs, because Firefox drops the
+    /// request without answering when the docshell goes. A caller that acts and
+    /// then reads must wait for the navigation first — see
+    /// `page_view::collect_settled`.
     ///
     /// When a refresh succeeds the registry is also updated: the old console
     /// front is invalidated (via `invalidate_target` on the old target ID) and
