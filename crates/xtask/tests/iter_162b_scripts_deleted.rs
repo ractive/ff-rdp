@@ -179,10 +179,13 @@ fn unit_162b_no_script_is_invoked_anywhere() {
     assert!(offenders.is_empty(), "{}", offenders.join("\n"));
 }
 
-/// The subcommand list after iter-162a (16 → 9), iter-162b (9 → 8) and
-/// iter-212 (8 → 10: `gen-skill` + `check-skill-drift`, which keep the bundled
-/// skill's command reference generated from the CLI's own tables rather than
-/// hand-written and unchecked).
+/// The subcommand list after iter-162a (16 → 9), iter-162b (9 → 8), iter-212
+/// (8 → 10: `gen-skill` + `check-skill-drift`, which keep the bundled skill's
+/// command reference generated from the CLI's own tables rather than
+/// hand-written and unchecked) and iter-219 (10 → 12: `check-help-idioms`,
+/// which extends that guarantee to `ff-rdp --help` — the surface every
+/// benchmark agent actually reads — and `check-vendored-js`, which pins the
+/// SHA-256 of the Readability bundle ff-rdp injects into the live page).
 /// Pinned so a re-added gate has to be a deliberate edit here, not a drive-by.
 const EXPECTED_SUBCOMMANDS: &[&str] = &[
     "check-iteration-plan",
@@ -195,6 +198,8 @@ const EXPECTED_SUBCOMMANDS: &[&str] = &[
     "live-sweep",
     "gen-skill",
     "check-skill-drift",
+    "check-help-idioms",
+    "check-vendored-js",
 ];
 
 #[test]
@@ -259,13 +264,14 @@ fn ci_162b_discipline_job_xtask_steps_are_pinned() {
         .filter(|l| !l.starts_with('#'))
         .filter(|l| l.contains("cargo run -p xtask --"))
         .collect();
-    // 2 after iter-162b, 3 after iter-212 added `check-skill-drift`. The point
-    // of the count is that growing CI's gate list is a deliberate edit here,
-    // not that the number is 2 forever.
+    // 2 after iter-162b, 3 after iter-212 added `check-skill-drift`, 5 after
+    // iter-219 added `check-help-idioms` and `check-vendored-js`. The point of
+    // the count is that growing CI's gate list is a deliberate edit here, not
+    // that the number is 2 forever.
     assert_eq!(
         invocations.len(),
-        3,
-        "expected exactly 3 xtask steps in CI, found: {invocations:#?}"
+        5,
+        "expected exactly 5 xtask steps in CI, found: {invocations:#?}"
     );
     for line in &invocations {
         // Take the subcommand only — trailing arguments are legitimate.
