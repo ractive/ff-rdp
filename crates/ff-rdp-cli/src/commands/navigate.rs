@@ -1980,7 +1980,7 @@ pub fn run_core(
     cli: &Cli,
     url: &str,
     wait_opts: &WaitAfterNav<'_>,
-    with_page: bool,
+    page_args: &crate::cli::args::PageViewArgs,
 ) -> Result<(serde_json::Value, bool), AppError> {
     validate_url_with_opts(url, cli.allow_file_urls, cli.allow_unsafe_urls)?;
     let mut ctx = connect_and_get_target(cli)?;
@@ -2356,8 +2356,8 @@ pub fn run_core(
     // after any `--wait-text`/`--wait-selector`/`--wait-for` predicate, so
     // the view describes the document this command produced rather than the
     // one it left. See `page_view::collect`.
-    if with_page {
-        super::page_view::attach(&mut ctx, &mut result, Some(cli.timeout))?;
+    if page_args.with_page {
+        super::page_view::attach(&mut ctx, &mut result, Some(cli.timeout), page_args)?;
     }
 
     Ok((result, ctx.via_daemon))
@@ -2445,7 +2445,7 @@ pub fn run(
     url: &str,
     wait_opts: &WaitAfterNav<'_>,
     auto_consent: bool,
-    with_page: bool,
+    page_args: &crate::cli::args::PageViewArgs,
 ) -> Result<(), AppError> {
     // iter-210: `--with-page` promises the page it returns describes the
     // document *this command* produced. `--auto-consent`'s dismiss click
@@ -2455,14 +2455,22 @@ pub fn run(
     // are set, defer collection to a second connection opened after consent
     // runs, matching `run_with_network`'s ordering (consent before
     // `page_view::attach`).
-    let defer_with_page = auto_consent && with_page;
-    let (mut result, via_daemon) = run_core(cli, url, wait_opts, with_page && !defer_with_page)?;
+    let defer_with_page = auto_consent && page_args.with_page;
+    let core_args = if defer_with_page {
+        crate::cli::args::PageViewArgs {
+            with_page: false,
+            ..page_args.clone()
+        }
+    } else {
+        page_args.clone()
+    };
+    let (mut result, via_daemon) = run_core(cli, url, wait_opts, &core_args)?;
     if auto_consent {
         merge_auto_consent(cli, &mut result);
     }
     if defer_with_page {
         let mut ctx = connect_and_get_target(cli)?;
-        super::page_view::attach(&mut ctx, &mut result, Some(cli.timeout))?;
+        super::page_view::attach(&mut ctx, &mut result, Some(cli.timeout), page_args)?;
     }
     let mut meta = json!({});
     let page_text = super::page_view::lift_meta(cli, &mut result, &mut meta);
@@ -2552,7 +2560,7 @@ pub fn run_with_network(
     wait_opts: &WaitAfterNav<'_>,
     network_timeout_ms: u64,
     auto_consent: bool,
-    with_page: bool,
+    page_args: &crate::cli::args::PageViewArgs,
 ) -> Result<(), AppError> {
     validate_url_with_opts(url, cli.allow_file_urls, cli.allow_unsafe_urls)?;
     let mut ctx = connect_and_get_target(cli)?;
@@ -2748,8 +2756,8 @@ pub fn run_with_network(
         {
             obj.insert("consent".to_string(), c);
         }
-        if with_page {
-            super::page_view::attach(&mut ctx, &mut result, Some(cli.timeout))?;
+        if page_args.with_page {
+            super::page_view::attach(&mut ctx, &mut result, Some(cli.timeout), page_args)?;
         }
         let mut meta = json!({});
         let page_text = super::page_view::lift_meta(cli, &mut result, &mut meta);
@@ -2941,8 +2949,8 @@ pub fn run_with_network(
     {
         obj.insert("consent".to_string(), c);
     }
-    if with_page {
-        super::page_view::attach(&mut ctx, &mut result, Some(cli.timeout))?;
+    if page_args.with_page {
+        super::page_view::attach(&mut ctx, &mut result, Some(cli.timeout), page_args)?;
     }
     let mut meta = json!({});
     let page_text = super::page_view::lift_meta(cli, &mut result, &mut meta);

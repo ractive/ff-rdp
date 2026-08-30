@@ -291,6 +291,11 @@ fn page_block(cli: &Cli, interactive_limit: usize, daemon_running: bool) -> Opti
         &CollectOptions {
             interactive_limit: Some(interactive_limit),
             wait_complete_ms: None,
+            // The home view is the cheapest possible orientation call — it
+            // runs on a bare `ff-rdp` with no flags, so it takes neither the
+            // landmark scan nor iter-219's clone-and-parse.
+            landmarks: false,
+            reader: None,
         },
     )
     .ok()?;

@@ -1675,21 +1675,8 @@ pub struct NavigateArgs {
     /// need both — forced a choice between them.
     #[arg(long)]
     pub auto_consent: bool,
-    /// After the action completes, embed the resulting page under
-    /// `results.page`: `headings`, `landmarks`, and `interactive` elements —
-    /// each with a `ref` you can pass straight to `click --ref` / `type --ref`
-    /// (daemon mode; see `meta.page_refs_registered`).
-    ///
-    /// Ordering: the page is collected LAST — after the command's own
-    /// readiness wait, after `--wait-for`/`--settle` where those apply, and
-    /// after waiting for `document.readyState == "complete"` (bounded by
-    /// --timeout). So it describes the document this command produced, not the
-    /// one it started from. `meta.page_ready` is false if that wait timed out.
-    ///
-    /// Same view and same JSON shape as `ff-rdp a11y summary`, capped at 50
-    /// interactive elements.
-    #[arg(long)]
-    pub with_page: bool,
+    #[command(flatten)]
+    pub page: PageViewArgs,
 }
 
 #[derive(clap::Args)]
@@ -1769,6 +1756,60 @@ pub struct QueryArgs {
     /// syntax). An invalid pattern is a usage error (exit 2).
     #[arg(long, value_name = "PATTERN", value_parser = parse_query_regex)]
     pub query_regex: Option<Regex>,
+}
+
+/// The `--with-page` family, shared by every command that can return the page
+/// it produced (iter-210 Theme A; `--page-chars` and `--query` added by
+/// iter-219 Theme C).
+///
+/// One flattened struct rather than seven copies of the same three flags: a
+/// recipe written against `navigate --with-page --query X` works verbatim on
+/// `click`, `type`, `reload`, `back`, `forward` and every `scroll`
+/// subcommand, which is the whole reason agents can learn the idiom once.
+#[derive(clap::Args, Clone, Debug, Default)]
+pub struct PageViewArgs {
+    /// After the action completes, embed the resulting page under
+    /// `results.page`: `headings`, an article `excerpt`, and `interactive`
+    /// elements — each with a `ref` you can pass straight to `click --ref` /
+    /// `type --ref` (daemon mode; see `meta.page_refs_registered`).
+    ///
+    /// Ordering: the page is collected LAST — after the command's own
+    /// readiness wait, after `--wait-for`/`--settle` where those apply, and
+    /// after waiting for `document.readyState == "complete"` (bounded by
+    /// --timeout). So it describes the document this command produced, not the
+    /// one it started from. `meta.page_ready` is false if that wait timed out.
+    ///
+    /// Since iter-219 the view is a reader view: Mozilla's Readability.js runs
+    /// on the live page, every `interactive` entry is tagged
+    /// `zone: "content"|"chrome"`, content sorts first so the 50-entry cap
+    /// falls on the navigation bar rather than on the article, and
+    /// `chrome_omitted` says how much nav the cap dropped. `page.excerpt`
+    /// carries the article text (`--page-chars`), `page.readerable` says
+    /// whether the page looks like an article at all, and `page.source` is
+    /// `readability` or `innertext` (the fallback for dashboards, forms and
+    /// SPAs without prose).
+    #[arg(long)]
+    pub with_page: bool,
+    /// Characters of article text to return in `page.excerpt` (default 1500).
+    ///
+    /// Cut on a paragraph, sentence or word boundary — never mid-word;
+    /// `page.excerpt_truncated` says whether anything was dropped. `0` is the
+    /// "structure only" knob: zones and refs, no text.
+    #[arg(long, value_name = "N",
+          default_value_t = crate::commands::page_view::DEFAULT_PAGE_CHARS)]
+    pub page_chars: usize,
+    /// Narrow the embedded page view: `page.excerpt` becomes the window around
+    /// each match and `page.interactive` keeps only the entries whose name or
+    /// href matches, with `page.matches` counting the hits. The same `--query`
+    /// / `--query-regex` pair `page-text` and `a11y summary` take, and the way
+    /// to reach a control the 50-entry cap dropped.
+    #[command(flatten)]
+    pub query: QueryArgs,
+    /// Lines of context to keep either side of each `--query` match inside
+    /// `page.excerpt` (default 2) — the same semantics as `page-text
+    /// --context`.
+    #[arg(long = "page-context", value_name = "N", default_value_t = 2)]
+    pub context: usize,
 }
 
 #[derive(clap::Args)]
@@ -2036,21 +2077,8 @@ pub struct ClickArgs {
     /// (0-based), regardless of visibility. Mutually exclusive with --visible.
     #[arg(long, value_name = "N", conflicts_with = "visible")]
     pub index: Option<usize>,
-    /// After the action completes, embed the resulting page under
-    /// `results.page`: `headings`, `landmarks`, and `interactive` elements —
-    /// each with a `ref` you can pass straight to `click --ref` / `type --ref`
-    /// (daemon mode; see `meta.page_refs_registered`).
-    ///
-    /// Ordering: the page is collected LAST — after the command's own
-    /// readiness wait, after `--wait-for`/`--settle` where those apply, and
-    /// after waiting for `document.readyState == "complete"` (bounded by
-    /// --timeout). So it describes the document this command produced, not the
-    /// one it started from. `meta.page_ready` is false if that wait timed out.
-    ///
-    /// Same view and same JSON shape as `ff-rdp a11y summary`, capped at 50
-    /// interactive elements.
-    #[arg(long)]
-    pub with_page: bool,
+    #[command(flatten)]
+    pub page: PageViewArgs,
 }
 
 #[derive(clap::Args)]
@@ -2109,21 +2137,8 @@ pub struct TypeArgs {
     /// `no_form`, or `enter_prevented`.
     #[arg(long)]
     pub submit: bool,
-    /// After the action completes, embed the resulting page under
-    /// `results.page`: `headings`, `landmarks`, and `interactive` elements —
-    /// each with a `ref` you can pass straight to `click --ref` / `type --ref`
-    /// (daemon mode; see `meta.page_refs_registered`).
-    ///
-    /// Ordering: the page is collected LAST — after the command's own
-    /// readiness wait, after `--wait-for`/`--settle` where those apply, and
-    /// after waiting for `document.readyState == "complete"` (bounded by
-    /// --timeout). So it describes the document this command produced, not the
-    /// one it started from. `meta.page_ready` is false if that wait timed out.
-    ///
-    /// Same view and same JSON shape as `ff-rdp a11y summary`, capped at 50
-    /// interactive elements.
-    #[arg(long)]
-    pub with_page: bool,
+    #[command(flatten)]
+    pub page: PageViewArgs,
 }
 
 #[derive(clap::Args)]
@@ -2254,21 +2269,8 @@ pub struct ReloadArgs {
     /// has. Conflicts with --wait-idle (a different kind of wait).
     #[arg(long, conflicts_with = "wait_idle")]
     pub no_wait: bool,
-    /// After the action completes, embed the resulting page under
-    /// `results.page`: `headings`, `landmarks`, and `interactive` elements —
-    /// each with a `ref` you can pass straight to `click --ref` / `type --ref`
-    /// (daemon mode; see `meta.page_refs_registered`).
-    ///
-    /// Ordering: the page is collected LAST — after the command's own
-    /// readiness wait, after `--wait-for`/`--settle` where those apply, and
-    /// after waiting for `document.readyState == "complete"` (bounded by
-    /// --timeout). So it describes the document this command produced, not the
-    /// one it started from. `meta.page_ready` is false if that wait timed out.
-    ///
-    /// Same view and same JSON shape as `ff-rdp a11y summary`, capped at 50
-    /// interactive elements.
-    #[arg(long)]
-    pub with_page: bool,
+    #[command(flatten)]
+    pub page: PageViewArgs,
 }
 
 /// Shared args for `back`/`forward` (iter-138 Theme E).
@@ -2278,21 +2280,8 @@ pub struct BackForwardArgs {
     /// to commit — the same escape hatch `navigate` already has.
     #[arg(long)]
     pub no_wait: bool,
-    /// After the action completes, embed the resulting page under
-    /// `results.page`: `headings`, `landmarks`, and `interactive` elements —
-    /// each with a `ref` you can pass straight to `click --ref` / `type --ref`
-    /// (daemon mode; see `meta.page_refs_registered`).
-    ///
-    /// Ordering: the page is collected LAST — after the command's own
-    /// readiness wait, after `--wait-for`/`--settle` where those apply, and
-    /// after waiting for `document.readyState == "complete"` (bounded by
-    /// --timeout). So it describes the document this command produced, not the
-    /// one it started from. `meta.page_ready` is false if that wait timed out.
-    ///
-    /// Same view and same JSON shape as `ff-rdp a11y summary`, capped at 50
-    /// interactive elements.
-    #[arg(long)]
-    pub with_page: bool,
+    #[command(flatten)]
+    pub page: PageViewArgs,
 }
 
 #[derive(clap::Args)]
@@ -2926,12 +2915,8 @@ Output: {\"results\": {\"scrolled\": true, \"selector\": \"...\", \"viewport\": 
         /// After scrolling, wait for network and DOM to idle
         #[arg(long)]
         settle: bool,
-        /// After scrolling, embed the resulting page under `results.page`
-        /// (`headings`, `landmarks`, `interactive` with `click --ref` handles)
-        /// — the same view `ff-rdp a11y summary` prints. Collected last, so
-        /// content the scroll lazily rendered is included.
-        #[arg(long)]
-        with_page: bool,
+        #[command(flatten)]
+        page: PageViewArgs,
     },
     /// Scroll the viewport by a number of pixels or by a page
     #[command(
@@ -2958,12 +2943,8 @@ Output: {\"results\": {\"scrolled\": true, \"viewport\": {...}, \"scrollHeight\"
         /// Use smooth scrolling behavior
         #[arg(long)]
         smooth: bool,
-        /// After scrolling, embed the resulting page under `results.page`
-        /// (`headings`, `landmarks`, `interactive` with `click --ref` handles)
-        /// — the same view `ff-rdp a11y summary` prints. Collected last, so
-        /// content the scroll lazily rendered is included.
-        #[arg(long)]
-        with_page: bool,
+        #[command(flatten)]
+        page: PageViewArgs,
     },
     /// Scroll to the very top of the page (equivalent to scroll by --dy -99999999)
     #[command(long_about = "Scroll to the very top of the page.
@@ -2975,12 +2956,8 @@ Output: {\"results\": {\"scrolled\": true, \"viewport\": {...}, \"scrollHeight\"
   the real cause (dogfooding-session-62).
 Output: {\"results\": {\"scrolled\": true, \"viewport\": {...}, \"scrollHeight\": N, \"atEnd\": bool, \"warning\": null}, \"total\": 1, \"meta\": {...}}")]
     Top {
-        /// After scrolling, embed the resulting page under `results.page`
-        /// (`headings`, `landmarks`, `interactive` with `click --ref` handles)
-        /// — the same view `ff-rdp a11y summary` prints. Collected last, so
-        /// content the scroll lazily rendered is included.
-        #[arg(long)]
-        with_page: bool,
+        #[command(flatten)]
+        page: PageViewArgs,
     },
     /// Scroll to the very bottom of the page (equivalent to scroll by --dy 99999999)
     #[command(long_about = "Scroll to the very bottom of the page.
@@ -2992,12 +2969,8 @@ Output: {\"results\": {\"scrolled\": true, \"viewport\": {...}, \"scrollHeight\"
   the real cause (dogfooding-session-62).
 Output: {\"results\": {\"scrolled\": true, \"viewport\": {...}, \"scrollHeight\": N, \"atEnd\": bool, \"warning\": null}, \"total\": 1, \"meta\": {...}}")]
     Bottom {
-        /// After scrolling, embed the resulting page under `results.page`
-        /// (`headings`, `landmarks`, `interactive` with `click --ref` handles)
-        /// — the same view `ff-rdp a11y summary` prints. Collected last, so
-        /// content the scroll lazily rendered is included.
-        #[arg(long)]
-        with_page: bool,
+        #[command(flatten)]
+        page: PageViewArgs,
     },
     /// Scroll an overflow container element directly
     #[command(
@@ -3020,12 +2993,8 @@ Output: {\"results\": {\"scrolled\": true, \"selector\": \"...\", \"before\": {.
         /// Scroll to the start (top/left) of the container (ignores --dx/--dy)
         #[arg(long, conflicts_with_all = ["to_end", "dx", "dy"])]
         to_start: bool,
-        /// After scrolling, embed the resulting page under `results.page`
-        /// (`headings`, `landmarks`, `interactive` with `click --ref` handles)
-        /// — the same view `ff-rdp a11y summary` prints. Collected last, so
-        /// content the scroll lazily rendered is included.
-        #[arg(long)]
-        with_page: bool,
+        #[command(flatten)]
+        page: PageViewArgs,
     },
     /// Scroll until an element is visible in the viewport (polls up to --timeout)
     #[command(long_about = "Scroll until an element is visible in the viewport.
@@ -3040,12 +3009,8 @@ Output: {\"results\": {\"found\": true, \"selector\": \"...\", \"elapsed_ms\": N
         /// Timeout in milliseconds before giving up [default: 10000]
         #[arg(long, default_value_t = 10000)]
         timeout: u64,
-        /// After scrolling, embed the resulting page under `results.page`
-        /// (`headings`, `landmarks`, `interactive` with `click --ref` handles)
-        /// — the same view `ff-rdp a11y summary` prints. Collected last, so
-        /// content the scroll lazily rendered is included.
-        #[arg(long)]
-        with_page: bool,
+        #[command(flatten)]
+        page: PageViewArgs,
     },
     /// Find text on the page and scroll to it using TreeWalker
     #[command(
@@ -3056,12 +3021,8 @@ Output: {\"results\": {\"scrolled\": true, \"text\": \"...\", \"viewport\": {...
     Text {
         /// Text to search for (case-sensitive substring match)
         text: String,
-        /// After scrolling, embed the resulting page under `results.page`
-        /// (`headings`, `landmarks`, `interactive` with `click --ref` handles)
-        /// — the same view `ff-rdp a11y summary` prints. Collected last, so
-        /// content the scroll lazily rendered is included.
-        #[arg(long)]
-        with_page: bool,
+        #[command(flatten)]
+        page: PageViewArgs,
     },
 }
 

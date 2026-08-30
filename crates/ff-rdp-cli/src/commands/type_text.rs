@@ -308,8 +308,9 @@ pub struct TypeOptions<'a> {
     /// `form.requestSubmit()`.
     pub submit: bool,
     /// iter-210 Theme A: `--with-page` — embed the resulting page under
-    /// `results.page`.
-    pub with_page: bool,
+    /// `results.page`. Carries `--page-chars` and `--query` with it since
+    /// iter-219.
+    pub page: crate::cli::args::PageViewArgs,
 }
 
 /// Type text into a DOM element and return the result value without printing.
@@ -418,8 +419,8 @@ pub fn run_core(
 
     // iter-210 Theme A: `--with-page`, collected after `--submit` so a form
     // that navigated reports the page it landed on.
-    if opts.with_page {
-        super::page_view::attach(&mut ctx, &mut result, Some(wait_timeout_ms))?;
+    if opts.page.with_page {
+        super::page_view::attach(&mut ctx, &mut result, Some(wait_timeout_ms), &opts.page)?;
     }
 
     Ok((result, ctx.via_daemon))
