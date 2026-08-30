@@ -161,6 +161,14 @@ has already substituted its `"json"` default by the time the command sees `Cli::
 `--format json` and any `--jq` filter still get the envelope, which is what the dogfood path and
 the hook consume.
 
+**A `find_subcommand_token` gap, found during PR #232 review.** `VALUE_GLOBALS` (the allowlist
+`parse_as_home` and `find_subcommand_token` use to skip past value-taking global flags) was
+missing `--max-frame-mb` and `--redact-threshold`, both added earlier in this same iteration —
+`ff-rdp --max-frame-mb 512` with no real subcommand mistook `512` for one and fell through to
+clap's usage dump instead of the home view every other global flag gets. Fixed in this PR
+(`crates/ff-rdp-cli/src/main.rs`, commits 50b1b11/a47a6ee) with regression tests covering both the
+`find_subcommand_token`/`is_type_invocation` heuristic and `parse_as_home` directly.
+
 Two counting guards from [[iteration-162b-ac-fidelity-shrink]] had to be updated, deliberately and
 in place: `unit_162b_xtask_help_lists_eight` (renamed
 `unit_162b_xtask_help_matches_the_pinned_list`, 8 → 10 subcommands) and
