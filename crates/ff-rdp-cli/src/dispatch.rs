@@ -1,10 +1,10 @@
 use crate::cli::args::{
     A11yArgs, A11yCommand, BackForwardArgs, CascadeArgs, Cli, ClickArgs, Command, ComputedArgs,
     ConsentCommand, ConsoleArgs, CookiesArgs, DaemonCommand, DomArgs, DomCommand, EmulateArgs,
-    EvalArgs, GeometryArgs, IndexArgs, InspectArgs, LaunchArgs, NavigateArgs, NetworkArgs,
-    PerfArgs, PerfCommand, ProfilesCommand, RecordCommand, ReloadArgs, ResponsiveArgs, RunArgs,
-    ScreenshotArgs, ScrollCommand, SnapshotArgs, SourcesArgs, StorageArgs, StylesArgs,
-    ThrottleArgs, TypeArgs, WaitArgs,
+    EvalArgs, GeometryArgs, HomeArgs, IndexArgs, InspectArgs, InstallHookArgs, LaunchArgs,
+    NavigateArgs, NetworkArgs, PerfArgs, PerfCommand, ProfilesCommand, RecordCommand, ReloadArgs,
+    ResponsiveArgs, RunArgs, ScreenshotArgs, ScrollCommand, SnapshotArgs, SourcesArgs, StorageArgs,
+    StylesArgs, ThrottleArgs, TypeArgs, WaitArgs,
 };
 use crate::commands;
 use crate::commands::index::IndexOpts;
@@ -346,6 +346,9 @@ fn command_to_step(cmd: &Command, resolved_selector: Option<&str>) -> Option<Ste
         | Command::Daemon { .. }
         | Command::DaemonInternal
         | Command::InstallSkill(_)
+        | Command::InstallHook(_)
+        | Command::Home(_)
+        | Command::SkillDoc
         | Command::Profiles { .. }
         | Command::Index(IndexArgs { .. })
         | Command::Consent { .. }
@@ -1192,6 +1195,11 @@ fn dispatch_inner(
             RecordCommand::Stop => commands::record::run_stop(),
             RecordCommand::Status => commands::record::run_status(),
         },
+        Command::InstallHook(args @ InstallHookArgs { .. }) => {
+            commands::install_hook::run(cli, args)
+        }
+        Command::Home(args @ HomeArgs { .. }) => commands::home::run(cli, args),
+        Command::SkillDoc => commands::skill_doc::run(cli),
         Command::InstallSkill(args) => {
             if !args.claude {
                 return Err(AppError::User(

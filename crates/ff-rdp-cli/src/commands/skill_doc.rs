@@ -31,8 +31,7 @@ use crate::output_pipeline::OutputPipeline;
 /// Deliberately says *what it drives* and *how you talk to it* — an agent that
 /// reads only this line should already know it is looking at a browser it can
 /// command, not a log reader.
-pub(crate) const DESCRIPTION: &str =
-    "drive a live Firefox from the shell — inspect, act on, and measure the page over the \
+pub(crate) const DESCRIPTION: &str = "drive a live Firefox from the shell — inspect, act on, and measure the page over the \
      Remote Debugging Protocol; every command answers in JSON";
 
 /// HTML comment that opens the generated region of `SKILL.md`.
@@ -60,7 +59,14 @@ pub(crate) const COMMAND_GROUPS: &[(&str, &str, &[&str])] = &[
     (
         "See the page",
         "read structure and text; `a11y summary` is the orientation view and hands out refs",
-        &["a11y", "snapshot", "dom", "page-text", "screenshot", "inspect"],
+        &[
+            "a11y",
+            "snapshot",
+            "dom",
+            "page-text",
+            "screenshot",
+            "inspect",
+        ],
     ),
     (
         "Act on the page",
@@ -80,36 +86,56 @@ pub(crate) const COMMAND_GROUPS: &[(&str, &str, &[&str])] = &[
     (
         "Measure the page",
         "Web Vitals, contrast, layout, and emulated conditions",
-        &["perf", "geometry", "styles", "computed", "cascade", "responsive", "emulate", "throttle"],
+        &[
+            "perf",
+            "geometry",
+            "styles",
+            "computed",
+            "cascade",
+            "responsive",
+            "emulate",
+            "throttle",
+        ],
     ),
     (
         "Automate",
         "record a session, replay it, crawl a site, install the agent surface",
-        &["record", "run", "index", "install-skill", "install-hook", "completions"],
+        &[
+            "record",
+            "run",
+            "index",
+            "install-skill",
+            "install-hook",
+            "completions",
+        ],
     ),
 ];
 
 /// The three idioms that separate a productive session from a guessing one,
-/// as `(literal syntax, why it matters)`.
+/// as `(literal syntax, why it matters, the hint line the home view prints)`.
 ///
-/// [`crate::commands::home`] turns these into the `-> ff-rdp …` hint lines it
-/// prints once a page is loaded, so the hints an agent sees at session start
-/// and the idioms the skill teaches are the same three strings.
-pub(crate) const IDIOMS: &[(&str, &str)] = &[
+/// [`crate::commands::home`] turns the third field into the `-> ff-rdp …`
+/// lines it prints once a page is loaded (substituting `{ref}` with a ref the
+/// page view actually minted), so the hints an agent sees at session start and
+/// the idioms the skill teaches cannot drift apart.
+pub(crate) const IDIOMS: &[(&str, &str, &str)] = &[
     (
         "--ref <ref>",
         "act on the element you just saw: `a11y summary` and `--with-page` mint a `ref` for \
          every interactive entry, and `click --ref e3` needs no selector guess",
+        "ff-rdp click --ref {ref}",
     ),
     (
         "--query \"<text>\"",
         "filter a page view down to the entries whose text, label, name, or href match, so a \
          control past the 50-entry cap is still reachable",
+        "ff-rdp page-text --query \"<text>\"",
     ),
     (
         "--with-page",
         "have an action return the page it produced, so a click and the look at its result are \
          one round trip instead of two",
+        "ff-rdp snapshot --query \"<text>\"",
     ),
 ];
 
@@ -132,10 +158,16 @@ pub(crate) fn generate_block() -> String {
 
     out.push_str("## Quick start\n\n");
     out.push_str("```bash\n");
-    out.push_str("ff-rdp                       # live state: daemon, browser, tabs, page, next steps\n");
-    out.push_str("ff-rdp launch --headless     # no browser yet? start one with the debug port open\n");
+    out.push_str(
+        "ff-rdp                       # live state: daemon, browser, tabs, page, next steps\n",
+    );
+    out.push_str(
+        "ff-rdp launch --headless     # no browser yet? start one with the debug port open\n",
+    );
     out.push_str("ff-rdp navigate <URL>        # blocks until the document commits\n");
-    out.push_str("ff-rdp a11y summary          # landmarks, headings, and interactive entries with refs\n");
+    out.push_str(
+        "ff-rdp a11y summary          # landmarks, headings, and interactive entries with refs\n",
+    );
     out.push_str("ff-rdp click --ref e3        # act on a ref from the view above\n");
     out.push_str("```\n\n");
     out.push_str(
@@ -158,7 +190,7 @@ pub(crate) fn generate_block() -> String {
     out.push('\n');
 
     out.push_str("## Idioms worth knowing\n\n");
-    for (syntax, why) in IDIOMS {
+    for (syntax, why, _) in IDIOMS {
         out.push_str(&format!("- `{syntax}` — {why}\n"));
     }
     out.push('\n');
@@ -166,41 +198,6 @@ pub(crate) fn generate_block() -> String {
     out.push_str(BLOCK_END);
     out.push('\n');
     out
-}
-
-/// Replace the generated region of `existing` with `generated`.
-///
-/// Returns `None` when the markers are missing or out of order — the caller
-/// decides whether that is a hard error (`gen-skill`) or a drift report
-/// (`check-skill-drift`). Never appends the block to a file that does not
-/// declare where it goes: silently bolting a generated section onto the end of
-/// a hand-written skill is worse than refusing.
-pub(crate) fn splice_block(existing: &str, generated: &str) -> Option<String> {
-    let start = existing.find(BLOCK_BEGIN)?;
-    let end = existing.find(BLOCK_END)?;
-    if end < start {
-        return None;
-    }
-    let after = end + BLOCK_END.len();
-    let mut out = String::with_capacity(existing.len() + generated.len());
-    out.push_str(&existing[..start]);
-    // `generated` ends with a newline after the end marker; the tail of the
-    // file already starts with one, so trim ours to avoid growing a blank line
-    // on every regeneration (which would make the check flap).
-    out.push_str(generated.trim_end_matches('\n'));
-    out.push_str(&existing[after..]);
-    Some(out)
-}
-
-/// Extract the generated region of `existing`, markers included, or `None`
-/// when it is absent or malformed.
-pub(crate) fn extract_block(existing: &str) -> Option<&str> {
-    let start = existing.find(BLOCK_BEGIN)?;
-    let end = existing.find(BLOCK_END)?;
-    if end < start {
-        return None;
-    }
-    Some(&existing[start..end + BLOCK_END.len()])
 }
 
 /// `ff-rdp skill-doc` — print the generated skill section to stdout.
@@ -268,45 +265,11 @@ mod tests {
                 );
             }
         }
-        for (syntax, _) in IDIOMS {
+        for (syntax, _, _) in IDIOMS {
             assert!(
                 block.contains(&format!("`{syntax}`")),
                 "idiom {syntax} missing from the generated block"
             );
         }
-    }
-
-    #[test]
-    fn splice_replaces_only_the_marked_region() {
-        let existing = format!("head\n\n{BLOCK_BEGIN}\nold\n{BLOCK_END}\n\ntail\n");
-        let generated = format!("{BLOCK_BEGIN}\nnew\n{BLOCK_END}\n");
-        let spliced = splice_block(&existing, &generated).expect("markers present");
-        assert_eq!(spliced, format!("head\n\n{BLOCK_BEGIN}\nnew\n{BLOCK_END}\n\ntail\n"));
-    }
-
-    /// Splicing must be idempotent, or `gen-skill` would report a diff every
-    /// time it ran on an already-current file.
-    #[test]
-    fn splice_is_idempotent() {
-        let generated = generate_block();
-        let existing = format!("head\n\n{BLOCK_BEGIN}\nold\n{BLOCK_END}\n\ntail\n");
-        let once = splice_block(&existing, &generated).expect("markers present");
-        let twice = splice_block(&once, &generated).expect("markers present");
-        assert_eq!(once, twice);
-    }
-
-    #[test]
-    fn splice_refuses_a_file_without_markers() {
-        assert!(splice_block("no markers here\n", &generate_block()).is_none());
-        let reversed = format!("{BLOCK_END}\n{BLOCK_BEGIN}\n");
-        assert!(splice_block(&reversed, &generate_block()).is_none());
-    }
-
-    #[test]
-    fn extract_returns_the_marked_region_only() {
-        let existing = format!("head\n{BLOCK_BEGIN}\nbody\n{BLOCK_END}\ntail\n");
-        let extracted = extract_block(&existing).expect("markers present");
-        assert_eq!(extracted, format!("{BLOCK_BEGIN}\nbody\n{BLOCK_END}"));
-        assert!(extract_block("nothing").is_none());
     }
 }

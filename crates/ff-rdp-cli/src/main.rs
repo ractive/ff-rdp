@@ -157,11 +157,59 @@ fn init_tracing(cli: &Cli) {
         .init();
 }
 
+/// The hidden subcommand bare `ff-rdp` resolves to (iter-212 Theme A).
+const HOME_SUBCOMMAND: &str = "home";
+
+/// Re-parse `argv` as if the user had typed the home subcommand.
+///
+/// Bare `ff-rdp` used to print clap's usage dump and exit 2 — an agent that
+/// tried it learned nothing about the browser it already had. It now prints
+/// live state and exits 0 (see `commands/home.rs`).
+///
+/// Implemented as a *retry* rather than by making `Cli::command` an `Option`,
+/// so the one behaviour that changes is the one this iteration meant to
+/// change:
+///
+/// * `ff-rdp --help` and `ff-rdp help` still render clap's own help, because
+///   those parse into `DisplayHelp` before this is ever consulted;
+/// * `ff-rdp scroll` (a real subcommand missing its own sub-subcommand) still
+///   errors, because `find_subcommand_token` sees `scroll` and refuses to
+///   rewrite;
+/// * global flags keep working — `ff-rdp --jq '.results.tabs | length'`
+///   becomes `ff-rdp --jq '…' home`.
+///
+/// Returns `None` when the rewritten argv does not parse, so the caller falls
+/// back to rendering clap's original error rather than a confusing one about a
+/// subcommand the user never typed.
+fn parse_as_home(argv: &[String], err: &clap::Error) -> Option<Cli> {
+    use clap::error::ErrorKind;
+    // `arg_required_else_help` (clap's default for a required subcommand)
+    // reports the bare invocation as DisplayHelpOnMissingArgumentOrSubcommand;
+    // MissingSubcommand covers the same case when a global flag was supplied.
+    if !matches!(
+        err.kind(),
+        ErrorKind::MissingSubcommand | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+    ) {
+        return None;
+    }
+    // Only a genuinely subcommand-less invocation is rewritten.
+    if find_subcommand_token(argv).is_some() {
+        return None;
+    }
+    let mut with_home = argv.to_vec();
+    with_home.push(HOME_SUBCOMMAND.to_owned());
+    Cli::try_parse_from(&with_home).ok()
+}
+
 fn main() {
     let argv: Vec<String> = std::env::args().collect();
     let cli = match Cli::try_parse_from(&argv) {
         Ok(cli) => cli,
         Err(err) => {
+            if let Some(cli) = parse_as_home(&argv, &err) {
+                run(cli);
+                return;
+            }
             // Render clap's normal error (and exit on --help / --version).
             use clap::error::ErrorKind;
             let kind = err.kind();
@@ -206,6 +254,12 @@ fn main() {
         }
     };
 
+    run(cli);
+}
+
+/// Everything `main` does once a [`Cli`] has been parsed — shared by the
+/// normal path and by the bare-invocation home retry above.
+fn run(cli: Cli) {
     init_tracing(&cli);
 
     // Apply transport knobs from the CLI before opening any RDP connection.

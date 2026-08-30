@@ -1409,6 +1409,54 @@ Output (--uninstall): {\"results\": {\"uninstalled\": bool, \"path\": \"...\"}, 
     )]
     InstallSkill(InstallSkillArgs),
 
+    /// Install an opt-in SessionStart hook that prints the home view
+    #[command(
+        long_about = "Install an opt-in session-start hook that prints the bare `ff-rdp` view.
+
+An agent's first turn is otherwise spent on `--help`, which cannot say whether a
+browser is up or what is on it. This writes a `SessionStart` entry that runs
+`ff-rdp home --hook` — the same live-state view bare `ff-rdp` prints, with the
+page block trimmed to headings plus the first 15 interactive entries — so that
+state is already in the agent's context before it types anything.
+
+Only the entry ff-rdp owns (marked with `\"ff_rdp_managed\": true`) is ever added,
+rewritten or removed; every other hook in the file is left exactly as it was.
+Re-running with the same resolved binary path is a no-op that does not touch the
+file at all. A moved binary is repaired in place rather than duplicated.
+
+The command written is the bare name `ff-rdp` when the first `ff-rdp` on PATH is
+this executable, and the absolute path of this executable otherwise.
+
+Targets: --claude is supported today. --codex and --opencode exit 1 with the
+file location and the reason, rather than writing an entry whose shape this
+build cannot verify would ever fire (an inert hook looks installed forever).
+
+Examples:
+  ff-rdp install-hook --claude --dry-run    # print the entry, touch nothing
+  ff-rdp install-hook --claude              # ~/.claude/settings.json
+  ff-rdp install-hook --claude --project    # <git-root>/.claude/settings.json
+  ff-rdp install-hook --claude --uninstall
+
+Output: {\"results\": {\"target\": \"...\", \"scope\": \"...\", \"path\": \"...\", \"command\": \"...\", \"action\": \"installed|repaired|no-op|uninstalled|not-installed\", \"dry_run\": bool, \"entry\": {...}}, \"total\": 1}"
+    )]
+    InstallHook(InstallHookArgs),
+
+    /// Live state: daemon, browser, tabs, the current page, and what to run next
+    ///
+    /// This is what bare `ff-rdp` runs. Hidden from the command list because
+    /// the no-argument invocation is the interface; the named form exists so
+    /// the session hook has something explicit to call.
+    #[command(hide = true)]
+    Home(HomeArgs),
+
+    /// Print the generated section of the bundled skill's SKILL.md
+    ///
+    /// Hidden: its callers are `cargo run -p xtask -- gen-skill` and
+    /// `... check-skill-drift`, which need the generator's output without
+    /// linking this binary crate as a library.
+    #[command(hide = true)]
+    SkillDoc,
+
     /// Diagnose the connection: daemon, port owner, RDP handshake, tabs, version
     #[command(long_about = "Diagnose the ff-rdp connection top-to-bottom.
 
@@ -3181,6 +3229,42 @@ pub struct InstallSkillArgs {
 
     /// Skill name to install; if omitted, all registered skills are installed
     pub skill_name: Option<String>,
+}
+
+#[derive(clap::Args, Debug)]
+pub struct InstallHookArgs {
+    /// Target Claude Code (~/.claude/settings.json)
+    #[arg(long)]
+    pub claude: bool,
+
+    /// Target Codex — not supported yet; exits 1 naming the file location
+    #[arg(long)]
+    pub codex: bool,
+
+    /// Target OpenCode — not supported yet; exits 1 naming the file location
+    #[arg(long)]
+    pub opencode: bool,
+
+    /// Write to <git-root>/.claude/settings.json instead of the user's home
+    #[arg(long)]
+    pub project: bool,
+
+    /// Print the entry that would be written without touching disk
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Remove the entry ff-rdp owns, leaving every other hook untouched
+    #[arg(long)]
+    pub uninstall: bool,
+}
+
+#[derive(clap::Args, Debug, Default)]
+pub struct HomeArgs {
+    /// Trim the page block for session-hook use: drop landmarks and keep only
+    /// the first 15 interactive entries. This runs on every agent session, so
+    /// it has to stay small.
+    #[arg(long)]
+    pub hook: bool,
 }
 
 impl InstallSkillArgs {
