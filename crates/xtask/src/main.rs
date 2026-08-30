@@ -6,6 +6,7 @@ mod check_live_test_layout;
 mod check_source_invariants;
 mod find_iteration_plan;
 mod live_sweep;
+mod skill_drift;
 mod stderr_scan;
 
 use anyhow::Result;
@@ -49,6 +50,13 @@ enum Commands {
     /// phase the watchdog killed before libtest reported a verdict, and is
     /// always a red (iter-197).
     LiveSweep(live_sweep::Args),
+    /// Regenerate the marked region of the bundled skill's SKILL.md from the
+    /// CLI's own command tables (`ff_rdp_cli::commands::skill_doc`).
+    GenSkill(skill_drift::GenArgs),
+    /// Fail when the committed SKILL.md's generated region no longer matches
+    /// what the CLI would generate. Wired into CI so the agent-facing skill
+    /// cannot silently drift from the command surface it documents.
+    CheckSkillDrift(skill_drift::CheckArgs),
 }
 
 fn main() -> Result<()> {
@@ -62,5 +70,7 @@ fn main() -> Result<()> {
         Commands::FindIterationPlan(args) => find_iteration_plan::run(args),
         Commands::CheckDogfoodScript(args) => check_dogfood_script::run(args),
         Commands::LiveSweep(args) => live_sweep::run(args),
+        Commands::GenSkill(args) => skill_drift::run_gen(args),
+        Commands::CheckSkillDrift(args) => skill_drift::run_check(args),
     }
 }
