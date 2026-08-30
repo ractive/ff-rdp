@@ -434,6 +434,7 @@ fn live_137_network_source_parity() {
             content_type: "text/css",
             body: b"body{color:#111}".to_vec(),
             extra_headers: Vec::new(),
+            ..FixtureRoute::default()
         },
     );
     routes.insert(
@@ -442,6 +443,7 @@ fn live_137_network_source_parity() {
             content_type: "application/javascript",
             body: b"window.__ready = true;".to_vec(),
             extra_headers: Vec::new(),
+            ..FixtureRoute::default()
         },
     );
     let Some(server) = FixtureServer::start(routes) else {

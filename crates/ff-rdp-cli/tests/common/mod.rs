@@ -1426,6 +1426,15 @@ pub struct FixtureRoute {
     /// default so existing struct-literal and `html()` construction sites are
     /// unaffected — use [`FixtureRoute::with_header`] to add one.
     pub extra_headers: Vec<(String, String)>,
+    /// How long to sit on the request before writing the first byte (iter-220).
+    ///
+    /// Zero by default, which is every pre-iter-220 fixture. A non-zero delay
+    /// buys a navigation that is genuinely *in flight* for a measurable window:
+    /// the existing two-element fixtures commit before a collector can race
+    /// them, which is exactly why three live suites and two iterations missed
+    /// `--with-page` collecting from the outgoing document. Set it with
+    /// [`FixtureRoute::with_delay`].
+    pub delay: Duration,
 }
 
 impl FixtureRoute {
@@ -1436,7 +1445,15 @@ impl FixtureRoute {
             content_type: "text/html; charset=utf-8",
             body: body.into().into_bytes(),
             extra_headers: Vec::new(),
+            delay: Duration::ZERO,
         }
+    }
+
+    /// Builder method: hold the response back for `delay` before the first
+    /// byte, so the navigation to this route stays uncommitted that long.
+    pub fn with_delay(mut self, delay: Duration) -> Self {
+        self.delay = delay;
+        self
     }
 
     /// Builder method: append an extra `name: value` response header.
@@ -1476,13 +1493,25 @@ impl FixtureServer {
         let shutdown = Arc::new(AtomicBool::new(false));
         let shutdown_for_thread = Arc::clone(&shutdown);
 
+        // iter-220: one thread per connection. With a delayed route the accept
+        // loop would otherwise be the delay's hostage — Firefox's parallel
+        // subresource and favicon requests would queue behind it and the page
+        // would appear far slower than the route asked for.
+        let routes = Arc::new(routes);
         let handle = std::thread::spawn(move || {
+            let mut workers = Vec::new();
             for stream in listener.incoming() {
                 if shutdown_for_thread.load(Ordering::Acquire) {
                     break;
                 }
                 let Ok(stream) = stream else { continue };
-                handle_connection(stream, &routes);
+                let routes = Arc::clone(&routes);
+                workers.push(std::thread::spawn(move || {
+                    handle_connection(stream, &routes);
+                }));
+            }
+            for worker in workers {
+                let _ = worker.join();
             }
         });
 
@@ -1541,6 +1570,9 @@ fn handle_connection(mut stream: TcpStream, routes: &HashMap<String, FixtureRout
         .unwrap_or("/");
 
     if let Some(route) = routes.get(path) {
+        if !route.delay.is_zero() {
+            std::thread::sleep(route.delay);
+        }
         let mut header = format!(
             "HTTP/1.1 200 OK\r\n\
              Content-Type: {}\r\n\

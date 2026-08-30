@@ -320,10 +320,18 @@ impl ConnectedTab {
 
     /// Re-resolve the target actors (consoleActor, etc.) from Firefox.
     ///
-    /// After a navigation the docshell is torn down and replaced.  The old
-    /// `consoleActor` ID becomes stale — any `evaluateJSAsync` sent to it
-    /// returns `noSuchActor`.  Calling this refreshes `self.target` so the
+    /// After a navigation has **committed**, the old docshell is gone and its
+    /// `consoleActor` ID is stale; calling this refreshes `self.target` so the
     /// next `eval` uses the actor bound to the new docshell.
+    ///
+    /// **It does not escape a navigation that is still in flight** (iter-220).
+    /// Between the click and the commit, `getTarget` re-forwards the *outgoing*
+    /// docshell under a fresh `childN/` prefix: a new-looking target actor with
+    /// the same `innerWindowId` and the same `url`. Evaluating against it either
+    /// describes the page you are leaving or hangs, because Firefox drops the
+    /// request without answering when the docshell goes. A caller that acts and
+    /// then reads must wait for the navigation first — see
+    /// `page_view::collect_settled`.
     ///
     /// When a refresh succeeds the registry is also updated: the old console
     /// front is invalidated (via `invalidate_target` on the old target ID) and
@@ -352,6 +360,49 @@ impl ConnectedTab {
         }
     }
 
+    /// Guard the wait loops against the current target being torn down by a
+    /// navigation (iter-220).
+    ///
+    /// Thin forwarder to
+    /// [`RdpTransport::set_target_guard`](ff_rdp_core::RdpTransport::set_target_guard);
+    /// `Some(inner_window_id)` arms it, `None` disarms it.  Callers arm it only
+    /// around a section they are prepared to retry — see
+    /// [`crate::commands::page_view::attach`].
+    pub(crate) fn set_target_guard(&mut self, inner_window_id: Option<u64>) {
+        self.session
+            .transport_mut()
+            .set_target_guard(inner_window_id);
+    }
+
+    /// Take (and clear) the destination URL of the most recent top-level
+    /// navigation Firefox announced on this connection (iter-220).
+    ///
+    /// Thin forwarder to
+    /// [`RdpTransport::take_navigation_started`](ff_rdp_core::RdpTransport::take_navigation_started).
+    pub(crate) fn take_navigation_started(&mut self) -> Option<String> {
+        self.session.transport_mut().take_navigation_started()
+    }
+
+    /// Arm [`set_target_guard`](Self::set_target_guard) for the returned
+    /// scope's lifetime and disarm it automatically when the scope drops
+    /// (iter-220 review finding).
+    ///
+    /// `set_target_guard`/`take_navigation_started`-style manual arm/clear
+    /// pairs rely on every call site remembering the second half; a `?`
+    /// early-return added between them later — or a panic unwinding out of
+    /// the guarded section — would leave the guard armed for a later,
+    /// unrelated wait on the same connection. This makes clearing it
+    /// structural instead of a doc-comment promise: the scope
+    /// `Deref`/`DerefMut`s to `ConnectedTab`, so a caller passes `&mut scope`
+    /// anywhere a `&mut ConnectedTab` is expected, same as `ctx` itself.
+    pub(crate) fn arm_target_guard(
+        &mut self,
+        inner_window_id: Option<u64>,
+    ) -> TargetGuardScope<'_> {
+        self.set_target_guard(inner_window_id);
+        TargetGuardScope { ctx: self }
+    }
+
     /// Build a `ConnectedTab` directly from a transport and console actor ID,
     /// bypassing the connect + `getTarget` handshake.
     ///
@@ -370,6 +421,8 @@ impl ConnectedTab {
             responsive_actor: None,
             manifest_actor: None,
             browsing_context_id: None,
+            inner_window_id: None,
+            url: None,
         };
         Self {
             session: Session::new(transport),
@@ -378,5 +431,35 @@ impl ConnectedTab {
             tab_actor: ActorId::from("conn0/tab1"),
             via_daemon: false,
         }
+    }
+}
+
+/// RAII scope returned by [`ConnectedTab::arm_target_guard`] (iter-220).
+///
+/// Disarms the target guard on drop, however the scope ends — a normal fall
+/// through, an early `return`/`?`, or a panic unwinding out of it — so a
+/// guarded section cannot leave the guard armed for whatever the connection
+/// waits on next. See [`ConnectedTab::arm_target_guard`]'s doc comment.
+pub(crate) struct TargetGuardScope<'a> {
+    ctx: &'a mut ConnectedTab,
+}
+
+impl std::ops::Deref for TargetGuardScope<'_> {
+    type Target = ConnectedTab;
+
+    fn deref(&self) -> &ConnectedTab {
+        self.ctx
+    }
+}
+
+impl std::ops::DerefMut for TargetGuardScope<'_> {
+    fn deref_mut(&mut self) -> &mut ConnectedTab {
+        self.ctx
+    }
+}
+
+impl Drop for TargetGuardScope<'_> {
+    fn drop(&mut self) {
+        self.ctx.set_target_guard(None);
     }
 }

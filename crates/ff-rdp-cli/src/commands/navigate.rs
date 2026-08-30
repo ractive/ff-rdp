@@ -1874,8 +1874,18 @@ fn run_wait_for_predicates(
 /// to fetch a fresh actor so the next `eval` does not get `noSuchActor`.
 ///
 /// This is a best-effort operation; failures are logged to stderr and swallowed.
+///
+/// iter-220: this also *consumes* the navigation announcement the transport
+/// latched. `navigate` has already waited for its own commit by the time this
+/// runs, so the target resolved here is the document the command produced —
+/// there is nothing left for `--with-page`'s settle loop to wait for, and
+/// leaving the latch armed would send it polling `getTarget` for a change that
+/// already happened. `click` and `type --submit` deliberately do NOT clear it:
+/// their navigation is still in flight when `page_view::attach` runs, which is
+/// the whole defect iter-220 fixes.
 fn refresh_console_actor(ctx: &mut super::connect_tab::ConnectedTab) {
     ctx.refresh_target();
+    let _ = ctx.take_navigation_started();
 }
 
 /// Check whether the REAL tab URL (from `listTabs`) is an about:neterror page.

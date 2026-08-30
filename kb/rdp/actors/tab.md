@@ -73,6 +73,34 @@ for the `ff-rdp manifest` command; see [[manifest]]), and `browsingContextID`.
 Absent optional fields deserialize to `None`, so older Firefox builds that omit
 a sub-actor are tolerated.
 
+### `innerWindowId` and `url` (iter-220)
+
+Two further frame fields are read into `TargetInfo::inner_window_id` and
+`TargetInfo::url`. They exist because **`getTarget` keeps returning the
+outgoing document while a navigation is in flight** — verified on live Firefox
+153 on 2026-08-30, `en.wikipedia.org/wiki/Ada_Lovelace` → `Charles_Babbage`:
+
+```
+getTarget → frame.actor  = server1.conn2.child81/windowGlobalTarget2
+            innerWindowId = 15032385539    url = …/Ada_Lovelace
+<click; tabNavigated {state:"start", url: …/Charles_Babbage}>
+getTarget → frame.actor  = server1.conn2.child83/windowGlobalTarget2   ← NEW prefix
+            innerWindowId = 15032385539    url = …/Ada_Lovelace        ← SAME document
+```
+
+So the actor id is **not** a usable "did the document change" key: the
+descriptor re-forwards the same docshell under a fresh `childN/` prefix on every
+call. `innerWindowId` is, and it is also the join key against the watcher's
+`target-destroyed-form` (whose own `target.actor` lives in an unrelated
+`watcherN.processN//` namespace and therefore cannot be matched by id).
+
+`url` covers the case `innerWindowId` cannot: a same-document `#fragment`
+navigation flips the URL and never changes the id.
+
+Both are consumed by `page_view::collect_settled` and
+`RdpTransport::set_target_guard` — see [[iteration-220-with-page-after-navigating-click]].
+
 ## Status
 
-Stub — backfilled in iter-73; `getTarget` frame fields documented in iter-104.
+Stub — backfilled in iter-73; `getTarget` frame fields documented in iter-104;
+`innerWindowId`/`url` and the stale-frame finding added in iter-220.

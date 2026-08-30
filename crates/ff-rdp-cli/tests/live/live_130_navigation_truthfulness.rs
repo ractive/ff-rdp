@@ -302,6 +302,7 @@ fn live_130_perf_no_silent_zero() {
             content_type: "text/css",
             body: b"body{color:red}".to_vec(),
             extra_headers: Vec::new(),
+            ..FixtureRoute::default()
         },
     );
     let Some(server) = FixtureServer::start(routes) else {

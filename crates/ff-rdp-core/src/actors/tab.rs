@@ -61,6 +61,27 @@ pub struct TargetInfo {
     /// Required by the Firefox 149+ two-step screenshot protocol:
     /// `screenshotContentActor.prepareCapture` + `screenshotActor.capture`.
     pub browsing_context_id: Option<u64>,
+    /// The inner window ID of the document this target is bound to.
+    ///
+    /// iter-220: this is the join key between a target handed out by
+    /// `getTarget` and the `target-destroyed-form` event Firefox pushes when
+    /// that document is replaced.  The two carry *different* actor IDs (the
+    /// descriptor's forwarded `childN/` prefix vs. the watcher's
+    /// `watcherN.processN//` prefix), so the actor ID cannot be used to tell
+    /// whether a destroyed target is the one a caller is evaluating against —
+    /// `innerWindowId` can.  See [`RdpTransport::set_target_guard`].
+    ///
+    /// [`RdpTransport::set_target_guard`]: crate::transport::RdpTransport::set_target_guard
+    pub inner_window_id: Option<u64>,
+    /// The URL of the document this target is bound to.
+    ///
+    /// iter-220: the settle loop in `page_view::attach` compares this against
+    /// the destination URL Firefox announced in `tabNavigated` to tell a
+    /// same-document navigation (a `#fragment` link, where the URL flips
+    /// immediately and `innerWindowId` never changes) apart from a real
+    /// document swap.  Without it a hash link would burn the whole settle
+    /// budget waiting for an `innerWindowId` that is never going to change.
+    pub url: Option<String>,
 }
 
 /// Inspect a `tabNavigated` push packet and emit a `tracing::warn!` when the
@@ -267,6 +288,13 @@ fn parse_target_response_inner(
 
     let browsing_context_id = inner.get("browsingContextID").and_then(Value::as_u64);
 
+    let inner_window_id = inner.get("innerWindowId").and_then(Value::as_u64);
+
+    let url = inner
+        .get("url")
+        .and_then(Value::as_str)
+        .map(std::borrow::ToOwned::to_owned);
+
     Ok(TargetInfo {
         actor: actor.into(),
         console_actor: console_actor.into(),
@@ -277,6 +305,8 @@ fn parse_target_response_inner(
         responsive_actor,
         manifest_actor,
         browsing_context_id,
+        inner_window_id,
+        url,
     })
 }
 
@@ -508,6 +538,44 @@ mod tests {
             err.to_string().contains("'consoleActor'"),
             "error should mention 'consoleActor': {err}"
         );
+    }
+
+    /// iter-220: `innerWindowId` and `url` are the two keys that tell a caller
+    /// whether the target it just re-resolved is still the document the action
+    /// was performed on. A real `getTarget` reply, recorded while the outgoing
+    /// docshell was still being handed back after a click.
+    #[test]
+    fn parse_target_response_reads_inner_window_id_and_url() {
+        let response = json!({
+            "frame": {
+                "actor": "server1.conn2.child83/windowGlobalTarget2",
+                "consoleActor": "server1.conn2.child83/consoleActor3",
+                "browsingContextID": 15,
+                "innerWindowId": 15_032_385_539u64,
+                "url": "https://en.wikipedia.org/wiki/Ada_Lovelace"
+            },
+            "from": "server1.conn2.tabDescriptor1"
+        });
+        let info = parse_target_response(&response).unwrap();
+        assert_eq!(info.inner_window_id, Some(15_032_385_539));
+        assert_eq!(
+            info.url.as_deref(),
+            Some("https://en.wikipedia.org/wiki/Ada_Lovelace")
+        );
+    }
+
+    #[test]
+    fn parse_target_response_tolerates_absent_inner_window_id_and_url() {
+        let response = json!({
+            "frame": {
+                "actor": "server1.conn3.child2/windowGlobalTarget2",
+                "consoleActor": "server1.conn3.child2/consoleActor3"
+            },
+            "from": "server1.conn3.tabDescriptor1"
+        });
+        let info = parse_target_response(&response).unwrap();
+        assert!(info.inner_window_id.is_none());
+        assert!(info.url.is_none());
     }
 
     // --- parse_process_target_response ---

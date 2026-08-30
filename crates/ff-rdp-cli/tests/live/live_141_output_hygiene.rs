@@ -302,6 +302,7 @@ fn live_141_index_robots_user_agent_groups() {
             body: b"User-agent: *\nDisallow: /private\n\nUser-agent: deepcrawl\nDisallow: /\n"
                 .to_vec(),
             extra_headers: Vec::new(),
+            ..FixtureRoute::default()
         },
     );
     let Some(site) = FixtureServer::start(routes) else {

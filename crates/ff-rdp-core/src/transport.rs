@@ -245,6 +245,17 @@ pub struct RdpTransport {
     /// pre-iter-69 behaviour). See `kb/rdp/protocol/message-format.md` —
     /// replies have no `type` field, every `from`+`type` packet is an event.
     event_sink: Option<Sender<Value>>,
+    /// `innerWindowId` of the target the caller is currently talking to, when
+    /// it has asked the wait loops to watch for that target being destroyed.
+    ///
+    /// See [`set_target_guard`](RdpTransport::set_target_guard).  `None` (the
+    /// default) leaves the loops behaving exactly as they did before iter-220.
+    target_guard: Option<u64>,
+    /// Destination URL of the most recent top-level navigation Firefox
+    /// announced on this connection, latched by [`recv`](RdpTransport::recv).
+    ///
+    /// See [`take_navigation_started`](RdpTransport::take_navigation_started).
+    navigation_started: Option<String>,
 }
 
 impl std::fmt::Debug for RdpTransport {
@@ -293,6 +304,8 @@ impl RdpTransport {
                         reader,
                         writer: stream,
                         event_sink: None,
+                        target_guard: None,
+                        navigation_started: None,
                     });
                 }
                 Err(e) => {
@@ -339,6 +352,8 @@ impl RdpTransport {
             reader,
             writer,
             event_sink: None,
+            target_guard: None,
+            navigation_started: None,
         }
     }
 
@@ -371,6 +386,59 @@ impl RdpTransport {
     /// original sink — without silently clobbering a daemon-installed one.
     pub fn swap_event_sink(&mut self, sink: Option<Sender<Value>>) -> Option<Sender<Value>> {
         std::mem::replace(&mut self.event_sink, sink)
+    }
+
+    /// Watch for Firefox destroying the target bound to `inner_window_id`
+    /// while a reply or event wait is in flight (iter-220).
+    ///
+    /// A `click` on a link starts a navigation that tears the current docshell
+    /// down.  Any request already sent to that docshell's actors is silently
+    /// dropped — Firefox neither answers it nor reports an error — so
+    /// [`recv_reply_from`] / [`recv_event_from`] block until the socket read
+    /// timeout, and the caller reports `operation timed out (phase: recv)`
+    /// having burned its whole `--timeout` budget.
+    ///
+    /// Firefox *does* announce the teardown, on the watcher actor, as
+    /// `{"type": "target-destroyed-form", "target": {"innerWindowId": N}}`.
+    /// With the guard set to `N` the wait loops turn that announcement into
+    /// [`ProtocolError::EvalTargetDestroyed`] the moment it arrives, which in
+    /// practice is tens of milliseconds — early enough for the caller to
+    /// re-resolve the target and retry against the new document.
+    ///
+    /// The guard is **opt-in and narrow on purpose**: aborting a wait is only
+    /// correct where the caller is prepared to retry.  A caller that sets it
+    /// must clear it (`None`) as soon as its guarded section ends, or a later
+    /// unrelated wait on the same connection inherits the abort.
+    pub fn set_target_guard(&mut self, inner_window_id: Option<u64>) {
+        self.target_guard = inner_window_id;
+    }
+
+    /// The `innerWindowId` currently guarded, if any.
+    ///
+    /// Lets a caller save and restore the guard around a nested section
+    /// instead of clobbering an outer one.
+    pub fn target_guard(&self) -> Option<u64> {
+        self.target_guard
+    }
+
+    /// Take (and clear) the destination URL of the most recent top-level
+    /// navigation Firefox announced on this connection (iter-220).
+    ///
+    /// Firefox pushes `{"type": "tabNavigated", "state": "start", "url": …}`
+    /// — or `willNavigate` — the moment a link click, form submit, or
+    /// `location` assignment starts loading a new top-level document.  That
+    /// announcement is the only *positive* evidence a command has that the
+    /// action it just performed navigated: `getTarget` keeps handing back the
+    /// outgoing docshell for a while afterwards, so comparing target actor IDs
+    /// cannot tell the difference between "nothing happened" and "the document
+    /// is about to be replaced".
+    ///
+    /// [`recv`](Self::recv) latches it because that is the single choke point
+    /// every packet passes through, including the ones the reply/event loops
+    /// forward to the event sink or drop.  Returns `None` when no navigation
+    /// has been announced since the last call.
+    pub fn take_navigation_started(&mut self) -> Option<String> {
+        self.navigation_started.take()
     }
 
     /// Internal accessor used by [`recv_reply_from`] / [`recv_event_from`].
@@ -472,6 +540,13 @@ impl RdpTransport {
                 payload_size = serde_json::to_string(&value).map_or(0, |s| s.len()),
                 body = %serde_json::to_string(&redact(&value)).unwrap_or_default(),
             );
+        }
+
+        // iter-220: latch top-level navigation announcements here — the one
+        // choke point every packet passes through, including the events the
+        // reply/event loops forward to the sink or drop on the floor.
+        if let Some(url) = navigation_start_url(&value) {
+            self.navigation_started = Some(url);
         }
 
         Ok(value)
@@ -929,9 +1004,104 @@ fn recv_bulk_with_handler_from_with_cap<W: Write, R: BufRead>(
 ///
 /// On `error`-bearing replies, the helper converts the packet into a
 /// [`ProtocolError::ActorError`] using [`ActorErrorKind::from_code`].
+/// Extract the destination URL from a top-level navigation-start announcement.
+///
+/// Firefox pushes two shapes for "a new top-level document is on its way":
+/// `{"type": "willNavigate", "url": …}` and
+/// `{"type": "tabNavigated", "state": "start", "url": …}`.  A `tabNavigated`
+/// with `state: "stop"` reports a navigation that has *finished* and is not a
+/// start announcement.  Sub-frame loads travel as `frameUpdate`, not
+/// `tabNavigated`, so this never fires for an iframe.
+///
+/// Returns the URL string when the packet is a start announcement, `None`
+/// otherwise.  A start announcement with no `url` still counts, reported as an
+/// empty string, because the fact that a navigation began is the signal —
+/// the URL only refines it.
+fn navigation_start_url(msg: &Value) -> Option<String> {
+    let ty = msg.get("type").and_then(Value::as_str)?;
+    let is_start = match ty {
+        "willNavigate" => true,
+        "tabNavigated" => msg.get("state").and_then(Value::as_str) != Some("stop"),
+        _ => false,
+    };
+    if !is_start {
+        return None;
+    }
+    Some(
+        msg.get("url")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+    )
+}
+
+/// Recognise Firefox's announcement that the guarded target has been destroyed
+/// — or is about to be.
+///
+/// Fires (`Some(ProtocolError::EvalTargetDestroyed)`) only when a guard is
+/// installed (see [`RdpTransport::set_target_guard`]), on either of two
+/// packet shapes:
+///
+/// - a `target-destroyed-form` naming exactly the guarded `innerWindowId` —
+///   every other one, including one for some *other* document (routine on a
+///   page with iframes), is ignored;
+/// - **any** top-level navigation-start announcement
+///   ([`navigation_start_url`]), regardless of destination. This one does
+///   *not* check the announcement against the guarded document, on the
+///   assumption documented below.
+///
+/// Every other packet returns `None` and is handled normally.
+///
+/// # The "any navigation start" branch relies on one target per connection
+///
+/// A guard is armed for, at most, one in-flight collection against one
+/// document. On the connections this ships against today — one Firefox tab
+/// per `RdpTransport`, no concurrent guarded section on the same connection —
+/// *any* top-level navigation-start seen while a guard is armed can only be
+/// about the guarded document, so not checking the destination costs nothing
+/// and buys the no-daemon route (which never sees `target-destroyed-form` at
+/// all — see [`RdpTransport::set_target_guard`]) its only signal.
+///
+/// This stops holding the moment a connection can carry navigation-start
+/// events for a document *other* than the one guarded — e.g. a future
+/// multi-tab feature sharing one transport, or a daemon-proxied connection
+/// that starts forwarding events for a sibling client's tab. Either would
+/// need this to filter by destination/actor identity before the coarse
+/// fallback fires; nothing here does that today (iter-220 review finding).
+fn target_destroyed_guard_hit(msg: &Value, guard: Option<u64>) -> Option<ProtocolError> {
+    let guard = guard?;
+    // A top-level navigation started. Whatever the guarded target is still
+    // computing describes a document that is on its way out, and once its
+    // docshell goes Firefox drops the pending request without a word — so stop
+    // waiting now while the caller still has budget to re-resolve and retry.
+    // Only a guarded section asks for this, and a guarded section is by
+    // definition one the caller is prepared to redo.
+    if navigation_start_url(msg).is_some() {
+        return Some(ProtocolError::EvalTargetDestroyed {
+            inner_window_id: guard,
+        });
+    }
+    if msg.get("type").and_then(Value::as_str)? != "target-destroyed-form" {
+        return None;
+    }
+    let destroyed = msg
+        .get("target")?
+        .get("innerWindowId")
+        .and_then(Value::as_u64)?;
+    (destroyed == guard).then_some(ProtocolError::EvalTargetDestroyed {
+        inner_window_id: guard,
+    })
+}
+
 pub fn recv_reply_from(transport: &mut RdpTransport, actor: &str) -> Result<Value, ProtocolError> {
     loop {
         let msg = transport.recv()?;
+        // iter-220: the actor we are waiting on may have just been destroyed by
+        // a navigation; Firefox will never answer, so abort now rather than at
+        // the socket read timeout.
+        if let Some(err) = target_destroyed_guard_hit(&msg, transport.target_guard()) {
+            return Err(err);
+        }
         let from = msg.get("from").and_then(Value::as_str).unwrap_or_default();
         if from != actor {
             // iter-101 Theme B: a control-error frame injected by the daemon
@@ -995,6 +1165,10 @@ pub fn recv_event_from(
 ) -> Result<Value, ProtocolError> {
     loop {
         let msg = transport.recv()?;
+        // iter-220: see `recv_reply_from` — a destroyed target never replies.
+        if let Some(err) = target_destroyed_guard_hit(&msg, transport.target_guard()) {
+            return Err(err);
+        }
         let from = msg.get("from").and_then(Value::as_str).unwrap_or_default();
         if from == actor {
             // A typed-less packet carrying `error` is an error reply from the
@@ -1336,6 +1510,165 @@ impl Drop for RaisedFrameCap {
 
 #[cfg(test)]
 mod tests {
+
+    // ── iter-220: navigation latch + target guard ────────────────────────
+
+    #[test]
+    fn navigation_start_url_reads_tab_navigated_start() {
+        let msg = serde_json::json!({
+            "type": "tabNavigated",
+            "state": "start",
+            "url": "https://example.com/next",
+            "from": "server1.conn2.child9/windowGlobalTarget2",
+        });
+        assert_eq!(
+            super::navigation_start_url(&msg).as_deref(),
+            Some("https://example.com/next")
+        );
+    }
+
+    #[test]
+    fn navigation_start_url_reads_will_navigate() {
+        let msg = serde_json::json!({"type": "willNavigate", "url": "https://example.com/x"});
+        assert_eq!(
+            super::navigation_start_url(&msg).as_deref(),
+            Some("https://example.com/x")
+        );
+    }
+
+    #[test]
+    fn navigation_start_url_ignores_completed_navigation() {
+        // A `stop` reports a navigation that already finished; treating it as
+        // a start would make every settled page look like one in flight.
+        let msg = serde_json::json!({
+            "type": "tabNavigated",
+            "state": "stop",
+            "url": "https://example.com/next",
+        });
+        assert_eq!(super::navigation_start_url(&msg), None);
+    }
+
+    #[test]
+    fn navigation_start_url_ignores_unrelated_packets() {
+        for msg in [
+            serde_json::json!({"type": "frameUpdate", "url": "https://example.com/iframe"}),
+            serde_json::json!({"type": "evaluationResult", "resultID": "1"}),
+            serde_json::json!({"from": "root"}),
+        ] {
+            assert_eq!(super::navigation_start_url(&msg), None, "for {msg}");
+        }
+    }
+
+    #[test]
+    fn target_guard_fires_on_matching_destroyed_form() {
+        let msg = serde_json::json!({
+            "type": "target-destroyed-form",
+            "target": {"actor": "server1.conn2.watcher2.process7//windowGlobalTarget60",
+                       "innerWindowId": 15_032_385_539u64,
+                       "isTopLevelTarget": true},
+            "from": "server1.conn2.watcher3",
+        });
+        let err = super::target_destroyed_guard_hit(&msg, Some(15_032_385_539))
+            .expect("the guarded document was the one destroyed");
+        assert!(matches!(
+            err,
+            ProtocolError::EvalTargetDestroyed {
+                inner_window_id: 15_032_385_539
+            }
+        ));
+    }
+
+    #[test]
+    fn target_guard_ignores_other_documents_being_destroyed() {
+        // An iframe or a background tab going away must not abort our wait.
+        let msg = serde_json::json!({
+            "type": "target-destroyed-form",
+            "target": {"innerWindowId": 42u64},
+        });
+        assert!(super::target_destroyed_guard_hit(&msg, Some(7)).is_none());
+    }
+
+    #[test]
+    fn target_guard_is_inert_when_disarmed() {
+        let msg = serde_json::json!({
+            "type": "target-destroyed-form",
+            "target": {"innerWindowId": 7u64},
+        });
+        assert!(super::target_destroyed_guard_hit(&msg, None).is_none());
+        let nav = serde_json::json!({"type": "tabNavigated", "state": "start", "url": "u"});
+        assert!(super::target_destroyed_guard_hit(&nav, None).is_none());
+    }
+
+    #[test]
+    fn target_guard_fires_on_a_navigation_starting_mid_request() {
+        // The direct (no-daemon) route never sees `target-destroyed-form` —
+        // nothing subscribed the connection to target watching — so the
+        // navigation announcement is the only warning it gets.
+        let msg = serde_json::json!({
+            "type": "tabNavigated",
+            "state": "start",
+            "url": "https://en.wikipedia.org/wiki/Charles_Babbage",
+        });
+        assert!(matches!(
+            super::target_destroyed_guard_hit(&msg, Some(9)),
+            Some(ProtocolError::EvalTargetDestroyed { inner_window_id: 9 })
+        ));
+    }
+
+    #[test]
+    fn recv_latches_navigation_start_and_take_clears_it() {
+        let (mut transport, mut server) = make_transport_pair();
+        let frame = encode_frame(
+            &serde_json::to_string(&serde_json::json!({
+                "type": "tabNavigated",
+                "state": "start",
+                "url": "https://example.com/dest",
+                "from": "server1.conn2.child9/windowGlobalTarget2",
+            }))
+            .unwrap(),
+        );
+        server.write_all(frame.as_bytes()).unwrap();
+
+        assert_eq!(
+            transport.take_navigation_started(),
+            None,
+            "nothing has been received yet"
+        );
+        transport.recv().unwrap();
+        assert_eq!(
+            transport.take_navigation_started().as_deref(),
+            Some("https://example.com/dest")
+        );
+        assert_eq!(
+            transport.take_navigation_started(),
+            None,
+            "take must clear the latch"
+        );
+    }
+
+    #[test]
+    fn recv_event_from_aborts_when_the_guarded_target_is_destroyed() {
+        let (mut transport, mut server) = make_transport_pair();
+        transport.set_target_guard(Some(11));
+        let frame = encode_frame(
+            &serde_json::to_string(&serde_json::json!({
+                "type": "target-destroyed-form",
+                "target": {"innerWindowId": 11u64},
+                "from": "server1.conn2.watcher3",
+            }))
+            .unwrap(),
+        );
+        server.write_all(frame.as_bytes()).unwrap();
+
+        let err = recv_event_from(&mut transport, "server1.conn2.child9/consoleActor3", |_| {
+            true
+        })
+        .expect_err("the guarded target went away — the reply is never coming");
+        assert!(
+            matches!(err, ProtocolError::EvalTargetDestroyed { .. }),
+            "unexpected error: {err}"
+        );
+    }
     use std::io::Cursor;
 
     use super::*;
@@ -1747,6 +2080,8 @@ mod tests {
             reader,
             writer,
             event_sink: None,
+            target_guard: None,
+            navigation_started: None,
         };
 
         let msg = serde_json::json!({"type": "listTabs", "to": "root"});

@@ -36,6 +36,8 @@
 //! applied after the sort. The article's text becomes [`PageView::view`]'s
 //! `excerpt`.
 
+use std::time::{Duration, Instant};
+
 use ff_rdp_core::ActorId;
 use serde_json::{Value, json};
 
@@ -651,13 +653,6 @@ pub(crate) fn attach(
     wait_complete_ms: Option<u64>,
     args: &crate::cli::args::PageViewArgs,
 ) -> Result<(), AppError> {
-    // An action that navigated (a `click` on a link, `type --submit`) left the
-    // console actor cached in `ctx.target` bound to the *previous* docshell, so
-    // every eval below would come back `noSuchActor` — or, worse, describe the
-    // page the action left. Refresh first: this is precisely what lets
-    // `click --ref <link> --with-page` return the destination page.
-    ctx.refresh_target();
-    let console_actor = ctx.target.console_actor.clone();
     let mut opts = CollectOptions::with_page(
         args.page_chars,
         QueryFilter::from_query_args(&args.query),
@@ -671,13 +666,210 @@ pub(crate) fn attach(
     if args.query.query.is_some() || args.query.query_regex.is_some() {
         opts.interactive_limit = None;
     }
-    let page = collect(ctx, &console_actor, &opts)?;
-    let mut page = page;
+    let mut page = collect_settled(ctx, &opts)?;
     if opts.interactive_limit.is_none() {
         apply_interactive_limit(&mut page.view, limit);
     }
     insert_page(results, page);
     Ok(())
+}
+
+/// Upper bound [`collect_settled`] will wait, per attempt, for a navigation
+/// the action started to hand over a new document before giving up and
+/// collecting whatever the tab reports (iter-220).
+///
+/// Deliberately far below the default `--timeout` of 10 s: the wait is a
+/// *poll of `getTarget`*, which the parent process answers in a millisecond or
+/// two even while the content process is busy, so 3 s is many times what a
+/// commit needs. Exceeding it means the destination is genuinely slow, and a
+/// view of the outgoing page beats no view at all.
+///
+/// This bounds one call to [`settle_after_navigation`] — `collect_settled`
+/// additionally shrinks it against the caller's own `--timeout` on later
+/// attempts, so `NAV_COLLECT_ATTEMPTS` retries cannot silently add up to far
+/// more settle-polling than the caller asked for (iter-220 review finding).
+const NAV_SETTLE_BUDGET_MS: u64 = 3_000;
+
+/// What a `phase: recv` timeout during page-view collection most likely means.
+///
+/// Appended to the timeout by [`AppError::with_timeout_hint`]. Written for
+/// someone reading a failed `click --with-page` in a script log, so it names
+/// the mechanism *and* the two things they can actually do about it.
+const TIMEOUT_HINT: &str = "the page view was being collected when the reply stopped coming — \
+     most often the action started a navigation and Firefox tore down the document mid-request. \
+     hint: re-run the read as a separate command (`ff-rdp a11y summary`), or raise --timeout.";
+
+/// Interval between `getTarget` polls while waiting for a navigation to commit.
+///
+/// Not tighter than this on purpose: each `getTarget` makes the tab descriptor
+/// open a *new* forwarded connection to the content process (the `childN/`
+/// prefix increments every call), so polling is not free on Firefox's side. At
+/// 50 ms the observed Wikipedia commit lands on the first or second poll and a
+/// full 3 s budget costs at most 60 calls.
+const NAV_SETTLE_POLL_MS: u64 = 50;
+
+/// How many times [`collect_settled`] re-resolves the target and collects again
+/// after Firefox reported the document it was talking to is going away.
+///
+/// The observed shape needs two (outgoing document → destination); the third is
+/// slack for a page that redirects once more on arrival. Each pass costs a full
+/// collection, so this is not a knob to raise casually.
+const NAV_COLLECT_ATTEMPTS: usize = 3;
+
+/// Collect the page view against the document the action actually produced.
+///
+/// # The bug this exists for (iter-220)
+///
+/// `click --ref <link> --with-page` on `en.wikipedia.org/wiki/Ada_Lovelace`
+/// timed out — `phase: recv`, the full `--timeout` budget, 3 runs out of 3 —
+/// from iter-210 until this function landed. The wire traces say why, and it is
+/// not what `refresh_target`'s doc comment assumes:
+///
+/// 1. The click dispatches and Firefox pushes
+///    `tabNavigated {state: "start", url: <destination>}`.
+/// 2. `getTarget` is called immediately afterwards and hands back **the
+///    outgoing document** — same `innerWindowId`, same `url`, merely re-forwarded
+///    under a fresh `childN/` prefix. Refreshing the target does not escape the
+///    doomed docshell, because as far as the tab descriptor is concerned the
+///    navigation has not committed yet.
+/// 3. The collector then evaluates against that docshell. Sometimes it gets as
+///    far as a 250 KB long-string fetch; then the docshell is torn down and
+///    Firefox simply stops answering. No error, no `noSuchActor` — the request
+///    is dropped, and the client sits on the socket until `--timeout` expires.
+///
+/// So the fix cannot be "refresh and hope". It has to *wait for the navigation
+/// the action started*, and it needs a positive signal that one is under way,
+/// which [`RdpTransport::take_navigation_started`] provides.
+///
+/// # What it does
+///
+/// - No navigation announced → collect straight away, exactly as before. A
+///   plain `click --with-page` on a button pays nothing.
+/// - A navigation announced → poll `getTarget` (a parent-process call, ~1 ms)
+///   until the target reports a different `innerWindowId` or the destination
+///   URL, then collect against that.
+/// - Mid-collection teardown → [`ConnectedTab::set_target_guard`] turns
+///   Firefox's silence into [`AppError::RdpActorDestroyed`] within tens of
+///   milliseconds instead of a `--timeout`-long stall, and the next attempt
+///   settles and collects again.
+///
+/// [`RdpTransport::take_navigation_started`]: ff_rdp_core::RdpTransport::take_navigation_started
+fn collect_settled(ctx: &mut ConnectedTab, opts: &CollectOptions) -> Result<PageView, AppError> {
+    let mut pending = ctx.take_navigation_started();
+    let mut last_err = None;
+
+    // iter-220 review finding: NAV_COLLECT_ATTEMPTS × NAV_SETTLE_BUDGET_MS is,
+    // uncoordinated, several seconds of settle-polling alone — on top of
+    // collection itself — with nothing tying it to the caller's own
+    // `--timeout`. Track that budget here: stop retrying once it is spent,
+    // and shrink each settle wait to what is actually left of it, so a small
+    // `--timeout` bounds this call the way it bounds everything else instead
+    // of `collect_settled` always running all `NAV_COLLECT_ATTEMPTS` regardless.
+    let overall_deadline = opts
+        .wait_complete_ms
+        .map(|ms| Instant::now() + Duration::from_millis(ms));
+
+    for attempt in 0..NAV_COLLECT_ATTEMPTS {
+        if attempt > 0 && overall_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            break;
+        }
+
+        // The document the action ran against. When a navigation is under way
+        // this is precisely the docshell that must NOT be collected from.
+        let before = ctx.target.inner_window_id;
+        if let Some(dest) = pending.as_deref() {
+            let settle_budget =
+                overall_deadline.map_or(Duration::from_millis(NAV_SETTLE_BUDGET_MS), |deadline| {
+                    Duration::from_millis(NAV_SETTLE_BUDGET_MS)
+                        .min(deadline.saturating_duration_since(Instant::now()))
+                });
+            settle_after_navigation(ctx, dest, before, settle_budget);
+        } else {
+            ctx.refresh_target();
+        }
+
+        let console_actor = ctx.target.console_actor.clone();
+        // Arm the guard for the collection only — the returned scope disarms
+        // it on drop (end of this iteration) however the attempt ends,
+        // including the early returns below (iter-220 review finding: no
+        // longer a manual arm/clear pair a future call site could unbalance).
+        let mut guarded = ctx.arm_target_guard(ctx.target.inner_window_id);
+        let outcome = collect(&mut guarded, &console_actor, opts);
+
+        match outcome {
+            Ok(page) => return Ok(page),
+            Err(e @ AppError::RdpActorDestroyed { .. }) => {
+                // Another navigation landed while we were collecting. Take its
+                // destination (`recv` latched it) and go round again.
+                pending = guarded.take_navigation_started().or(pending);
+                last_err = Some(e);
+            }
+            // iter-220 Theme C. A recv timeout here means Firefox accepted the
+            // request and never answered, which for a page view has one likely
+            // cause worth naming — the bare "(phase: recv)" names the socket
+            // and leaves the reader to guess.
+            Err(e) => return Err(e.with_timeout_hint(TIMEOUT_HINT)),
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| {
+        AppError::Internal(anyhow::anyhow!(
+            "page view collection made no attempt — NAV_COLLECT_ATTEMPTS must be non-zero"
+        ))
+    }))
+}
+
+/// Poll `getTarget` until the tab stops reporting the document the action was
+/// performed on, or `budget` elapses.
+///
+/// Two independent exit conditions, because neither alone covers both kinds of
+/// navigation:
+///
+/// - **`innerWindowId` changed** — a cross-document load committed. This is the
+///   Wikipedia case.
+/// - **the target's URL is the announced destination** — a *same-document*
+///   navigation (a `#fragment` link) flips the URL and never changes
+///   `innerWindowId`, so waiting on the id alone would burn the whole budget on
+///   a page that was ready immediately.
+///
+/// When **neither** signal is available — `before` is `None` because this
+/// Firefox build's `getTarget` reply omitted `innerWindowId`
+/// ([`ff_rdp_core::TargetInfo::inner_window_id`] tolerates that; see
+/// `actors::tab`'s "tolerates absent" test), and `destination` is empty because the
+/// navigation announcement carried no `url` — there is nothing here that can
+/// ever flip, so this returns immediately instead of silently spending the
+/// whole `budget` on every navigating collection for a case waiting cannot
+/// help (iter-220 review finding).
+///
+/// Returning after the budget (or immediately, in the no-signal case) is not
+/// an error: the caller collects whatever the tab reports and the view says
+/// which document it describes.
+fn settle_after_navigation(
+    ctx: &mut ConnectedTab,
+    destination: &str,
+    before: Option<u64>,
+    budget: Duration,
+) {
+    if before.is_none() && destination.is_empty() {
+        tracing::debug!(
+            target: "ff_rdp_cli::page_view",
+            "collect_settled: no innerWindowId and no destination URL — cannot detect \
+             settlement, collecting without waiting"
+        );
+        ctx.refresh_target();
+        return;
+    }
+    let deadline = Instant::now() + budget;
+    loop {
+        ctx.refresh_target();
+        let changed_document = before.is_some() && ctx.target.inner_window_id != before;
+        let at_destination =
+            !destination.is_empty() && ctx.target.url.as_deref() == Some(destination);
+        if changed_document || at_destination || Instant::now() >= deadline {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(NAV_SETTLE_POLL_MS));
+    }
 }
 
 /// Write `page` and `page_meta` into `results`.
