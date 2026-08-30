@@ -157,6 +157,14 @@ jobs:
         #   stderr-annotations (iter-148)   — every eprintln! under commands/ carries
         #                                     a `// stderr-ok: <reason>` comment.
         run: cargo run -p xtask -- check-source-invariants
+      - name: Check the bundled skill is not stale (iter-212)
+        # The command-reference region of skills/ff-rdp-debug/SKILL.md is
+        # generated from crates/ff-rdp-cli/src/commands/skill_doc.rs — the same
+        # tables the no-args home view reads. This fails when the committed
+        # region and the generator disagree, so the agent-facing skill cannot
+        # quietly describe a CLI that no longer exists.
+        # Fix: cargo run -p xtask -- gen-skill
+        run: cargo run -p xtask -- check-skill-drift
 
   # iter-75c: PR-time smoke that proves `gh attestation verify` will succeed
   # against a freshly built artifact. Builds the Linux x86_64 CLI, runs

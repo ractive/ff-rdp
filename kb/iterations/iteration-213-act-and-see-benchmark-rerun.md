@@ -4,7 +4,7 @@ type: iteration
 date: 2026-08-29
 status: planned
 branch: iter-213/act-and-see-benchmark-rerun
-depends_on: [iteration-210-act-and-see, iteration-211-find-not-guess]
+depends_on: [iteration-210-act-and-see, iteration-211-find-not-guess, iteration-212-ambient-context]
 dogfood_path: |
   ff-rdp launch --headless
   ff-rdp navigate https://en.wikipedia.org/wiki/Ada_Lovelace --with-page --jq '.results.page.interactive[] | select(.name | test("Babbage")) | .ref'
@@ -47,6 +47,14 @@ would measure the same 8 turns and would be the correct answer, not a broken run
   (`--query`, the `page-text` cap, full accessible names) from
   [[iteration-211-find-not-guess]] — folded in here rather than re-run twice, because it is the
   same harness, the same money, and the same 42 tasks.
+- **D — Did the ambient context change turn 1?** Folded in from
+  [[iteration-212-ambient-context]], whose own benchmark criterion was left unticked rather than
+  reworded. 212 made bare `ff-rdp` a live-state view and added an opt-in `SessionStart` hook that
+  prints it; the question is whether an agent's *first* tool call stops being `--help`. The
+  harness passes `--setting-sources ""`, so an installed hook is **not loaded** — supplying the
+  hook's output through `--append-system-prompt` measures the payload, not the hook, and deciding
+  whether that answers the question is part of this theme rather than an assumption it starts
+  from.
 - **C — Decide `--with-page`'s default.** If agents do not reach for the flag from `--help`, the
   finding is about discoverability, and the options are a default-on JSON page view, an error-path
   hint, or [[iteration-212-ambient-context]] — not a louder `--help`.
@@ -67,12 +75,19 @@ would measure the same 8 turns and would be the correct answer, not a broken run
 - [ ] Classify every extraction trajectory as "used `--query`" or "did not" — the same
       mechanism-vs-discoverability split Theme C applies to `--with-page`
 
+### D. Ambient context (from iter-212) [0/2]
+- [ ] Decide and record how the hook is delivered under `--setting-sources ""`: either a harness
+      change that loads a real settings file, or `--append-system-prompt` with the hook's output —
+      and state plainly which of the two the recorded numbers measure
+- [ ] Classify every ff-rdp trajectory by its **first** tool call: `--help`, a browser command, or
+      bare `ff-rdp`
+
 ### C. Decide the default [0/1]
 - [ ] From the measured trajectories, state whether `--with-page` should default on for JSON
       output — and if agents never used it, say so and name which discoverability surface to
       change
 
-## Acceptance Criteria [0/5]
+## Acceptance Criteria [0/6]
 
 - [ ] `tools/axi-bench/` runs the comparison from a clean checkout with no scratchpad recovery
 - [ ] The three click-through tasks (`wikipedia_infobox_hop`, `wikipedia_link_follow`,
@@ -87,6 +102,12 @@ would measure the same 8 turns and would be the correct answer, not a broken run
       211's own target was ≤ 6 turns for the first two (were 9.3, 10.7) and 3/3 passes for the
       third, but as with the click-through tasks a number that did NOT improve is a valid,
       publishable result and must not be re-run until it looks better
+- [ ] Carried over from [[iteration-212-ambient-context]] (left unticked there, not reworded):
+      every ff-rdp run's first tool call is classified, and the share that is a browser command
+      rather than `--help` is recorded. 212's own target was ≥ 80%; as above, a number that did
+      NOT improve is a valid, publishable result. The record must also say which delivery
+      mechanism Theme D chose, because "≥ 80% with the hook's text pasted into the system prompt"
+      and "≥ 80% with the hook installed" are different claims.
 - [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes

@@ -18,6 +18,8 @@
 //! red CI check, not a silent drift: change the tables here and re-run
 //! `cargo run -p xtask -- gen-skill`.
 
+use std::fmt::Write as _;
+
 use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
@@ -185,13 +187,13 @@ pub(crate) fn generate_block() -> String {
             .map(|c| format!("`{c}`"))
             .collect::<Vec<_>>()
             .join(", ");
-        out.push_str(&format!("| {group} | {purpose} | {list} |\n"));
+        let _ = writeln!(out, "| {group} | {purpose} | {list} |");
     }
     out.push('\n');
 
     out.push_str("## Idioms worth knowing\n\n");
     for (syntax, why, _) in IDIOMS {
-        out.push_str(&format!("- `{syntax}` — {why}\n"));
+        let _ = writeln!(out, "- `{syntax}` — {why}");
     }
     out.push('\n');
 

@@ -202,16 +202,17 @@ fn parse_as_home(argv: &[String], err: &clap::Error) -> Option<Cli> {
 }
 
 fn main() {
+    use clap::error::ErrorKind;
+
     let argv: Vec<String> = std::env::args().collect();
     let cli = match Cli::try_parse_from(&argv) {
         Ok(cli) => cli,
         Err(err) => {
             if let Some(cli) = parse_as_home(&argv, &err) {
-                run(cli);
+                run(&cli);
                 return;
             }
             // Render clap's normal error (and exit on --help / --version).
-            use clap::error::ErrorKind;
             let kind = err.kind();
             let is_help_or_version =
                 matches!(kind, ErrorKind::DisplayHelp | ErrorKind::DisplayVersion);
@@ -254,13 +255,13 @@ fn main() {
         }
     };
 
-    run(cli);
+    run(&cli);
 }
 
 /// Everything `main` does once a [`Cli`] has been parsed — shared by the
 /// normal path and by the bare-invocation home retry above.
-fn run(cli: Cli) {
-    init_tracing(&cli);
+fn run(cli: &Cli) {
+    init_tracing(cli);
 
     // Apply transport knobs from the CLI before opening any RDP connection.
     // --max-frame-mb caps the receive frame size; --redact-threshold tunes
@@ -306,7 +307,7 @@ fn run(cli: Cli) {
         eprintln!("warning: FF_RDP_TRACE_RAW is set — raw unredacted trace output enabled");
     }
 
-    let result = dispatch::dispatch(&cli);
+    let result = dispatch::dispatch(cli);
     match result {
         Ok(()) => {}
         Err(AppError::Exit(code)) => {

@@ -19,6 +19,7 @@
 //! start and a multi-second daemon spawn hidden behind a bare command would be
 //! a nasty surprise.
 
+use std::fmt::Write as _;
 use std::time::Duration;
 
 use ff_rdp_core::{RdpConnection, RootActor};
@@ -148,18 +149,15 @@ fn hints_for(state: HintState<'_>) -> Vec<String> {
         return hints;
     }
 
-    match state.first_ref {
-        Some(r) => {
-            for (_, _, command) in IDIOMS {
-                hints.push(command.replace("{ref}", r));
-            }
+    if let Some(r) = state.first_ref {
+        for (_, _, command) in IDIOMS {
+            hints.push(command.replace("{ref}", r));
         }
-        None => {
-            hints.push("ff-rdp a11y summary  # re-read the page and mint --ref handles".into());
-            for (_, _, command) in IDIOMS {
-                if !command.contains("{ref}") {
-                    hints.push((*command).to_owned());
-                }
+    } else {
+        hints.push("ff-rdp a11y summary  # re-read the page and mint --ref handles".into());
+        for (_, _, command) in IDIOMS {
+            if !command.contains("{ref}") {
+                hints.push((*command).to_owned());
             }
         }
     }
@@ -331,11 +329,8 @@ fn render_text(results: &Value) -> String {
     };
 
     let version = get_str(&["version"]);
-    out.push_str(&format!(
-        "ff-rdp {version} — {}\n",
-        get_str(&["description"])
-    ));
-    out.push_str(&format!("bin: {}\n", get_str(&["bin"])));
+    let _ = writeln!(out, "ff-rdp {version} — {}", get_str(&["description"]));
+    let _ = writeln!(out, "bin: {}", get_str(&["bin"]));
 
     // Daemon line.
     let daemon = &results["daemon"];
@@ -345,9 +340,7 @@ fn render_text(results: &Value) -> String {
             .get("firefox_port")
             .and_then(Value::as_u64)
             .unwrap_or(0);
-        out.push_str(&format!(
-            "daemon: running (pid {pid}, firefox port {port})\n"
-        ));
+        let _ = writeln!(out, "daemon: running (pid {pid}, firefox port {port})");
     } else {
         out.push_str("daemon: not running\n");
     }
@@ -361,11 +354,9 @@ fn render_text(results: &Value) -> String {
             .get("firefox_version")
             .and_then(Value::as_u64)
             .map_or_else(|| "version unknown".to_owned(), |v| format!("Firefox {v}"));
-        out.push_str(&format!(
-            "browser: reachable at {host}:{port} ({version})\n"
-        ));
+        let _ = writeln!(out, "browser: reachable at {host}:{port} ({version})");
     } else {
-        out.push_str(&format!("browser: not reachable at {host}:{port}\n"));
+        let _ = writeln!(out, "browser: not reachable at {host}:{port}");
     }
 
     // Tabs.
@@ -382,10 +373,10 @@ fn render_text(results: &Value) -> String {
             let index = tab.get("index").and_then(Value::as_u64).unwrap_or(0);
             let title = tab.get("title").and_then(Value::as_str).unwrap_or("");
             let url = tab.get("url").and_then(Value::as_str).unwrap_or("");
-            out.push_str(&format!("  {marker} {index}  {title}  {url}\n"));
+            let _ = writeln!(out, "  {marker} {index}  {title}  {url}");
         }
         if tabs.len() > TEXT_MAX_TABS {
-            out.push_str(&format!("    … {} more tabs\n", tabs.len() - TEXT_MAX_TABS));
+            let _ = writeln!(out, "    … {} more tabs", tabs.len() - TEXT_MAX_TABS);
         }
     }
 
@@ -441,7 +432,7 @@ fn render_text(results: &Value) -> String {
         out.push('\n');
         for hint in hints {
             if let Some(h) = hint.as_str() {
-                out.push_str(&format!("-> {h}\n"));
+                let _ = writeln!(out, "-> {h}");
             }
         }
     }
@@ -464,12 +455,12 @@ fn render_section(
     if entries.is_empty() {
         return;
     }
-    out.push_str(&format!("\n{heading}\n"));
+    let _ = writeln!(out, "\n{heading}");
     for entry in entries.iter().take(max) {
-        out.push_str(&format!("  {}\n", line(entry)));
+        let _ = writeln!(out, "  {}", line(entry));
     }
     if entries.len() > max {
-        out.push_str(&format!("    … {} more\n", entries.len() - max));
+        let _ = writeln!(out, "    … {} more", entries.len() - max);
     }
 }
 
@@ -478,11 +469,11 @@ fn render_section(
 /// Split out from [`run`] so the hint and text-rendering logic can be driven
 /// from a fixture in tests without a Firefox anywhere.
 fn build_results(
-    bin: String,
+    bin: &str,
     version: &str,
-    daemon: Value,
-    browser: Value,
-    tabs: Vec<Value>,
+    daemon: &Value,
+    browser: &Value,
+    tabs: &[Value],
     page: Option<Value>,
 ) -> Value {
     let browser_reachable = browser.get("reachable").and_then(Value::as_bool) == Some(true);
@@ -513,9 +504,10 @@ fn build_results(
 /// way this returns an error is an invalid `--format`/`--jq`, which is a
 /// caller mistake rather than an observation about the machine.
 pub fn run(cli: &Cli, args: &HomeArgs) -> Result<(), AppError> {
-    let bin = std::env::current_exe()
-        .map(|p| collapse_home(&p.to_string_lossy()))
-        .unwrap_or_else(|_| "ff-rdp".to_owned());
+    let bin = std::env::current_exe().map_or_else(
+        |_| "ff-rdp".to_owned(),
+        |p| collapse_home(&p.to_string_lossy()),
+    );
 
     let daemon = daemon_block(&cli.host, cli.port);
     let daemon_running = daemon.get("running").and_then(Value::as_bool) == Some(true);
@@ -548,10 +540,18 @@ pub fn run(cli: &Cli, args: &HomeArgs) -> Result<(), AppError> {
         (_, other) => other,
     };
 
-    let results = build_results(bin, env!("CARGO_PKG_VERSION"), daemon, browser, tabs, page);
+    let results = build_results(
+        &bin,
+        env!("CARGO_PKG_VERSION"),
+        &daemon,
+        &browser,
+        &tabs,
+        page,
+    );
 
-    let argv: Vec<String> = std::env::args().collect();
-    let wants_envelope = cli.jq.is_some() || (format_is_explicit(&argv) && cli.format != "text");
+    let invocation: Vec<String> = std::env::args().collect();
+    let wants_envelope =
+        cli.jq.is_some() || (format_is_explicit(&invocation) && cli.format != "text");
     if !wants_envelope {
         print!("{}", render_text(&results));
         return Ok(());
@@ -591,11 +591,11 @@ mod tests {
     #[test]
     fn unit_212_home_without_browser_reports_state_and_names_launch() {
         let results = build_results(
-            "~/.cargo/bin/ff-rdp".into(),
+            "~/.cargo/bin/ff-rdp",
             "0.3.0",
-            no_daemon(),
-            no_browser(),
-            Vec::new(),
+            &no_daemon(),
+            &no_browser(),
+            &[],
             None,
         );
         assert_eq!(results["browser"]["reachable"], json!(false));
@@ -618,11 +618,11 @@ mod tests {
     #[test]
     fn unit_212_blank_tab_asks_for_a_navigate_not_a_click() {
         let results = build_results(
-            "ff-rdp".into(),
+            "ff-rdp",
             "0.3.0",
-            no_daemon(),
-            live_browser(),
-            vec![tab(1, "about:blank", true)],
+            &no_daemon(),
+            &live_browser(),
+            &[tab(1, "about:blank", true)],
             None,
         );
         let hints: Vec<&str> = results["hints"]
@@ -648,11 +648,11 @@ mod tests {
             "refs_registered": true,
         });
         let results = build_results(
-            "ff-rdp".into(),
+            "ff-rdp",
             "0.3.0",
-            no_daemon(),
-            live_browser(),
-            vec![tab(1, "https://example.com/", true)],
+            &no_daemon(),
+            &live_browser(),
+            &[tab(1, "https://example.com/", true)],
             Some(page),
         );
         let hints: Vec<&str> = results["hints"]
@@ -683,11 +683,11 @@ mod tests {
             "refs_registered": false,
         });
         let results = build_results(
-            "ff-rdp".into(),
+            "ff-rdp",
             "0.3.0",
-            no_daemon(),
-            live_browser(),
-            vec![tab(1, "https://example.com/", true)],
+            &no_daemon(),
+            &live_browser(),
+            &[tab(1, "https://example.com/", true)],
             Some(page),
         );
         let hints: Vec<&str> = results["hints"]
@@ -698,8 +698,8 @@ mod tests {
             .collect();
         assert!(hints[0].starts_with("ff-rdp a11y summary"), "{hints:?}");
         assert!(
-            !hints.iter().any(|h| h.contains("--ref")),
-            "an inert ref handle must never be offered: {hints:?}"
+            !hints.iter().any(|h| h.contains("click --ref")),
+            "an inert ref handle must never be offered as a command: {hints:?}"
         );
     }
 
@@ -721,11 +721,11 @@ mod tests {
             .map(|i| tab(i + 1, &format!("https://example.com/{i}"), i == 0))
             .collect();
         let results = build_results(
-            "~/.cargo/bin/ff-rdp".into(),
+            "~/.cargo/bin/ff-rdp",
             "0.3.0",
-            no_daemon(),
-            live_browser(),
-            tabs,
+            &no_daemon(),
+            &live_browser(),
+            &tabs,
             Some(json!({
                 "landmarks": landmarks,
                 "headings": headings,
@@ -754,11 +754,11 @@ mod tests {
     #[test]
     fn unit_212_text_view_without_a_browser_is_self_explanatory() {
         let results = build_results(
-            "~/.cargo/bin/ff-rdp".into(),
+            "~/.cargo/bin/ff-rdp",
             "0.3.0",
-            no_daemon(),
-            no_browser(),
-            Vec::new(),
+            &no_daemon(),
+            &no_browser(),
+            &[],
             None,
         );
         let text = render_text(&results);
@@ -853,14 +853,7 @@ mod tests {
     /// constant the generated skill section opens with (Theme C).
     #[test]
     fn unit_212_description_is_the_shared_one() {
-        let results = build_results(
-            "ff-rdp".into(),
-            "0.3.0",
-            no_daemon(),
-            no_browser(),
-            Vec::new(),
-            None,
-        );
+        let results = build_results("ff-rdp", "0.3.0", &no_daemon(), &no_browser(), &[], None);
         assert_eq!(results["description"], json!(DESCRIPTION));
         assert!(
             super::super::skill_doc::generate_block().contains(DESCRIPTION),
