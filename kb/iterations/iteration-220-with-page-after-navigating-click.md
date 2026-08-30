@@ -167,6 +167,23 @@ The two remaining tests are the cost side and pass on both: a non-navigating cli
 `#fragment` click must return well under the 3 s settle budget. The fragment case is why
 the settle loop has a URL exit as well as an `innerWindowId` exit.
 
+### Live sweep
+
+```
+FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo run -p xtask -- live-sweep
+LIVE_SWEEP_SUMMARY executed=313 skipped=0 preexisting=0 vanished=0 launch_timeout=0 timed_out=0 total=313
+  CLI tier   301 passed / 3 failed
+  core tiers   1 + 3 + 3 + 2 passed / 0 failed
+```
+
+Reconciles: 301 + 3 + 1 + 3 + 3 + 2 = 313 = `executed`. Port 6000 carried a raw
+`firefox -no-remote --start-debugger-server 6000 --headless` (never `ff-rdp launch`), which is
+why `preexisting=0`.
+
+All three reds are carried over — see the PR's `## Carry-over` table.
+[[iteration-221-live-166-cached-example-com]] and
+[[iteration-222-live-123-daemon-autostart-under-load]] are filed.
+
 ### Residual, deliberately not fixed here
 
 When a navigation starts *and* the outgoing document answers the whole collection before its
