@@ -245,3 +245,28 @@ plain MCP; our local axi number was 6.0, so which side of that claim reproduces?
   the two tasks where ff-rdp agents did not reach for `--query`.
 - ff-rdp wins the multi-site and error-path tasks (`multi_site_research` 7.7 vs 12.3 / 16.0,
   `navigate_404` 5.0 vs 6.0 / 8.3).
+
+
+## 2026-08-30 — what iteration 219 changed, and what is still unmeasured
+
+[[iteration-219-reader-view-page]] acted on the `link_follow` / `infobox_hop` diagnosis above.
+**No new benchmark numbers were taken**, so the 8.3 / 8.3 figures in the table stand as the
+current record for ff-rdp on those two tasks. What changed is the two defects the diagnosis
+named, both verified by hand on `en.wikipedia.org/wiki/Ada_Lovelace`:
+
+| defect (2026-08-30, `main`) | state after iteration 219 |
+|---|---|
+| `--with-page`'s `interactive` was the first 50 links in DOM order — all site chrome; `interactive_total: 1659`, the article's own links truncated away | Readability.js runs on the live page; entries carry `zone: "content" \| "chrome"`, content sorts first. "Charles Babbage" is now in the top 50 with a usable ref; "Jump to content" is not. `chrome_omitted: 530` reports the nav the cap dropped |
+| the view carried no page text, so an agent needing "what does it say" spent a `page-text` turn anyway | `page.excerpt` carries the article text (`--page-chars`, default 1500), opening at the lede; `page.readerable` and `page.source` say what kind of page it is |
+| `--query` was invisible in `ff-rdp --help`, which all 42 runs read and several piped through `head -50` | the top-level `--help` Quick start is rendered from the same `IDIOMS` table `SKILL.md` uses, so `--query` and `--with-page` are both in the first 50 lines; `xtask check-help-idioms` keeps them there |
+
+**Adoption count for the six runs is not available**: the re-measurement was not re-run. The
+`--with-page` adoption figure in the section above (used in all three `link_follow` runs, and
+still 8 / 7 / 10 turns) remains the last measurement.
+
+**A blocker for the re-run.** `click --ref <link> --with-page` — the exact trajectory
+`wikipedia_link_follow` measures — times out on Wikipedia (`phase: recv`), 3 runs out of 3.
+A binary built from `main` at `0a87d1d` fails identically, so it is an iter-210 defect rather
+than anything iteration 219 introduced; it is filed as
+[[iteration-220-with-page-after-navigating-click]]. Re-measuring the click-through tasks before
+that lands would measure the timeout, not the design.
