@@ -135,7 +135,15 @@ fn unsupported_target(target: Target) -> AppError {
              (CLAUDE.md: all code stays in Rust); a plugin file with a guessed export shape \
              would load inert",
         ),
-        Target::Claude => unreachable!("claude is supported"),
+        // Not reachable — `run` and `settings_path` both handle Claude before
+        // asking for a refusal — but written out rather than `unreachable!`
+        // so a future target added to the enum cannot turn a wiring mistake
+        // into a panic in a command whose whole job is to not damage files.
+        Target::Claude => (
+            "claude",
+            "~/.claude/settings.json",
+            "this target is supported; reaching this message is a wiring bug",
+        ),
     };
     AppError::User(format!(
         "install-hook --{name} is not supported yet: {why}.\n\

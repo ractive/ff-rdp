@@ -234,16 +234,10 @@ pub(crate) fn refresh_generated_region(existing: &str) -> String {
 /// linking this binary crate as a library.
 pub fn run(cli: &Cli) -> Result<(), AppError> {
     let block = generate_block();
-    // `--format text` (and the bare hidden invocation xtask uses) wants the
-    // markdown itself, not a JSON envelope wrapping it — xtask splices stdout
-    // straight into SKILL.md.
-    if cli.jq.is_none() && cli.format != "json" {
-        print!("{block}");
-        return Ok(());
-    }
-    if cli.jq.is_none() && cli.format == "json" {
-        // Default (`--format json`) still emits markdown for xtask; JSON is
-        // only produced when a caller explicitly filters it.
+    // Markdown is the default output, not the JSON envelope: xtask splices
+    // this stdout straight into SKILL.md, and a caller who wants it wrapped
+    // asks with `--jq`.
+    if cli.jq.is_none() {
         print!("{block}");
         return Ok(());
     }

@@ -180,6 +180,18 @@ the hook consume.
    through `--append-system-prompt` instead — which measures the hook's payload, not the hook.
    Filed as its own iteration rather than left as a half-answer here.
 
+**Live sweep** (2026-08-30, macOS, gates `FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1`, with a
+raw `firefox -no-remote --start-debugger-server 6000 --headless` on port 6000):
+
+```
+LIVE_SWEEP_SUMMARY executed=300 skipped=0 preexisting=0 vanished=0 launch_timeout=0 timed_out=0 total=300
+```
+
+300 passed / 0 failed, so `passed + failed == executed` reconciles exactly. All three
+`live_212_ambient_context` tests ran and passed. `preexisting=0` because the port-6000 browser was
+up before the sweep started, so the `ff-rdp-core` tier folded into `executed` rather than being
+reported `ignored`.
+
 **Live sweep.** The three live tests are
 `crates/ff-rdp-cli/tests/live/live_212_ambient_context.rs`:
 `live_home_with_page_lists_tabs_and_refs` (the AC — tabs name the loaded URL, the first `ref` is

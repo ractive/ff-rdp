@@ -138,21 +138,23 @@ pub fn drift_report(existing: &str, generated: &str) -> Result<(), String> {
     if committed == generated {
         return Ok(());
     }
+    // First disagreeing line. Both regions always end with the same end
+    // marker, so in practice the scan finds one whenever they differ at all;
+    // the length fallback below exists only to keep this total — it is not a
+    // case a committed file can reach, and no test asserts it.
     let first_diff = committed
         .lines()
         .zip(generated.lines())
         .position(|(a, b)| a != b);
     let detail = match first_diff {
-        Some(i) => {
-            let committed_line = committed.lines().nth(i).unwrap_or("");
-            let generated_line = generated.lines().nth(i).unwrap_or("");
-            format!(
-                "first difference at line {} of the generated region:\n  committed: {committed_line}\n  generated: {generated_line}",
-                i + 1
-            )
-        }
+        Some(i) => format!(
+            "first difference at line {} of the generated region:\n  committed: {}\n  generated: {}",
+            i + 1,
+            committed.lines().nth(i).unwrap_or(""),
+            generated.lines().nth(i).unwrap_or("")
+        ),
         None => format!(
-            "the regions have different lengths ({} committed lines vs {} generated)",
+            "the generated region has {} committed lines vs {} generated",
             committed.lines().count(),
             generated.lines().count()
         ),
@@ -231,14 +233,17 @@ mod tests {
         assert!(report.contains("clik"), "{report}");
     }
 
-    /// A line *removed* from the committed region is drift too — the
-    /// zip-based scan would otherwise walk off the end and see no difference.
+    /// A line *removed* from the committed region is drift too. Because both
+    /// regions end with the same marker line, a deletion shows up as a
+    /// divergence rather than as a length mismatch — the report names the line
+    /// where the two stop agreeing, which is the one a reader needs.
     #[test]
     fn unit_212_a_removed_line_is_drift() {
         let generated = block("one\ntwo\nthree");
         let stale = file("one\ntwo");
         let report = drift_report(&stale, &generated).expect_err("a dropped line must be drift");
-        assert!(report.contains("different lengths"), "{report}");
+        assert!(report.contains("first difference at line 4"), "{report}");
+        assert!(report.contains("three"), "{report}");
     }
 
     /// Hand-written prose outside the markers is *not* drift: the whole point
