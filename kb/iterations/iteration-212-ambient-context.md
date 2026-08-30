@@ -207,7 +207,7 @@ reported `ignored`.
 accepted by `click --ref`, and the click actually navigates), `live_home_with_blank_tab_asks_for_a_navigate`,
 and `live_home_hook_form_is_trimmed`.
 
-**Carry-over**, both filed before this PR merges:
+**Carry-over**, all filed before this PR merges:
 
 - [[iteration-217-hook-targets]] — `install-hook --codex` / `--opencode`, gated on pinning each
   target's entry schema against its published docs first.
@@ -216,6 +216,16 @@ and `live_home_hook_form_is_trimmed`.
   as the 210/211 re-run already queued there. That theme also carries the unsettled part — the
   harness passes `--setting-sources ""`, so it must decide and *record* whether it is measuring
   the hook or an `--append-system-prompt` paste of its output.
+- [[iteration-218-home-view-single-connect]] — a fifth finding from PR #232's local review pass
+  (a code-review subagent): `home.rs` opens two independent RDP connections per invocation
+  (`browser_and_tabs`, then `page_block`) where one would do, which matters because the
+  `SessionStart` hook runs this command on every agent session. Fixing it means adding a primitive
+  to the shared `connect_tab.rs` module nearly every command depends on, which is more regression
+  surface than a same-day review-fix pass on an already-green PR should take on — filed instead of
+  fixed. The other four review findings (the `--with-page` idiom silently duplicating `--query`'s
+  shape, a non-atomic `settings.json` write, unescaped shell metacharacters in a resolved binary
+  path, and an undocumented type-coercion asymmetry in `apply_install`) were fixed directly in this
+  PR; see the branch diff for `commands/skill_doc.rs`, `commands/install_hook.rs`.
 
 ## References
 
