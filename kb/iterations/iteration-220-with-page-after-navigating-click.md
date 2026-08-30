@@ -132,7 +132,7 @@ Traces (`--log-level trace`) of the failing call on both routes:
    destination URL of any `tabNavigated{state:"start"}` / `willNavigate`
    (`take_navigation_started`).
 2. `page_view::collect_settled` (new, replaces the bare `refresh_target()` in `attach`):
-   when a navigation was announced, poll `getTarget` at 25 ms until the target reports a
+   when a navigation was announced, poll `getTarget` at 50 ms until the target reports a
    different `innerWindowId` **or** the announced URL, capped at 3 s; then collect. Nothing
    announced → collect immediately, as before.
 3. `RdpTransport::set_target_guard(Some(innerWindowId))`, armed **only** around the
