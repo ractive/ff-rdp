@@ -87,3 +87,32 @@ Theme C follow-up): prototype both routes in the dogfood script on Wikipedia/Ada
 GitHub issues, and a `<main>`-less SPA; record in-content time and whether the Babbage link
 lands in the top 50. Sources: Schwartz "Comparing 13 Rust crates for extracting text from HTML"
 (2025), ScrapingHub article-extraction-benchmark, the crates' repos as of 2026-08-30.
+
+## Addendum: can ff-rdp use Firefox's built-in Readability on the live tab? (verified 2026-08-30)
+
+Firefox ships `toolkit/components/reader/readability/Readability.js` + `JSDOMParser.js`, driven by
+`ReaderMode.sys.mjs` (`_readerParse` serializes the document with `XMLSerializer` and parses a copy
+in `ReaderWorker`). Routes, each checked against the Firefox `main` source:
+
+| Route | Works? | Notes |
+|---|---|---|
+| **A1. Content-process target eval** | **Yes** | `--start-debugger-server` sets `allowChromeProcess = true` unconditionally (`DevToolsStartup.sys.mjs:1172`); `launch.rs:93-97` already writes the gating prefs; ff-rdp already calls `getProcess` (`screenshot.rs:369`). Tab form → `processID`, `innerWindowId` (`window-global.js:733-741`) → `getProcess(pid)` → `getTarget` → console `evaluateJSAsync` in a system-principal `Cu.Sandbox` (`content-process.js:82-124`). There: `ChromeUtils.importESModule("moz-src:///toolkit/components/reader/ReaderMode.sys.mjs")`, `Services.wm.getCurrentInnerWindowWithId(id).document`, `await ReaderMode.parseDocument(doc)` — the same call `AboutReaderChild.sys.mjs:46-48` makes in the content process. `data-*` attributes survive (`Readability.js:417-431, 2088-2105`), so stamped ids recover the content-link set. |
+| A2. Parent-process target | Partial | content `document` is out-of-process; needs an actor hop. |
+| A3. `Reader:ToggleReaderMode` actor message | Side effect | child parses the live doc, parent immediately navigates to `about:reader` (`AboutReaderParent.sys.mjs:84-87`). No query returns the article without navigating. |
+| B. `about:reader?url=` | No | re-downloads via XHR (`ReaderMode.sys.mjs:224-260`); loses JS-rendered DOM, state, stamps; navigates. |
+| C. `reader.parse-on-load.enabled` | No | only `isProbablyReaderable`, no cached article. |
+| C. Marionette chrome context / BiDi | No | Marionette needs `-remote-allow-system-access` and is another protocol; BiDi `script.evaluate` has no privileged realm. |
+
+**Verdict: A1 is viable but not preferable.** (1) `ReaderMode.parseDocument` applies a host/path
+blocklist (`Readerable.js:49-82`: github issues/projects, reddit, twitter, youtube, amazon, slack,
+any root path `/`) and returns `null` silently — `github_issue_investigation` is a benchmark task.
+(2) Everything it touches is unversioned internals outside the RDP spec dict (`moz-src:///` module
+URL — recently moved from `resource://gre/modules/`; `Services.wm`; sandbox globals), a permanent
+`allow-spec-drift` site with no Bugzilla to cite. (3) Two extra RDP hops and a chrome-scope code
+path that only live tests cover, to save a 33 KB string literal; output is identical.
+Keep A1 as an optional spike in the implementing plan; design around vendored injection.
+
+**Security note (pre-existing, not introduced by this):** an ff-rdp-launched Firefox already
+accepts system-principal evaluation from anything that reaches its loopback port
+(`devtools.debugger.force-local` keeps it loopback-only). Worth a line in the README's security
+section.
