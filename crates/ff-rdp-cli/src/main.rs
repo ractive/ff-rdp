@@ -46,6 +46,8 @@ fn find_subcommand_token(args: &[String]) -> Option<&str> {
         "--fields",
         "--format",
         "--log-level",
+        "--max-frame-mb",
+        "--redact-threshold",
     ];
 
     let mut iter = args.iter().skip(1); // skip program name
