@@ -200,8 +200,9 @@ fn iter_211_page_text_query_narrows_results_and_reports_counts() {
 /// returns an empty excerpt with `matches: 0` — never the whole page.
 #[test]
 fn iter_211_page_text_query_is_case_insensitive_and_honest_about_zero() {
-    let hit = page_text_json(&["--query", "EXAMPLE", "--context", "0"]);
+    let hit = page_text_json(&["--query", "ILLUSTRATIVE", "--context", "0"]);
     assert_eq!(hit["meta"]["matches"], 1, "{hit}");
+    assert_eq!(hit["meta"]["match_lines"], serde_json::json!([2]), "{hit}");
 
     let miss = page_text_json(&["--query", "no-such-token-211"]);
     assert_eq!(miss["meta"]["matches"], 0, "{miss}");
@@ -220,15 +221,23 @@ fn iter_211_page_text_rejects_a_zero_cap() {
         .args(["page-text", "--max-chars", "0"])
         .output()
         .expect("failed to spawn ff-rdp");
-    assert!(!output.status.success(), "--max-chars 0 must fail");
-    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("--max-chars"),
-        "the error must name the flag: {stderr}"
+        !output.status.success(),
+        "--max-chars 0 must fail: {}",
+        support::output_note(&output)
+    );
+    // ff-rdp writes its error envelope to STDOUT (iter-179), so that is where
+    // the message lives — stderr is empty on this path.
+    let envelope = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        envelope.contains("--max-chars"),
+        "the error must name the flag: {}",
+        support::output_note(&output)
     );
     assert!(
-        stderr.contains("--full"),
-        "the error must name the escape hatch: {stderr}"
+        envelope.contains("--full"),
+        "the error must name the escape hatch: {}",
+        support::output_note(&output)
     );
 }
 
@@ -244,12 +253,13 @@ fn iter_211_page_text_invalid_query_regex_exits_2() {
     assert_eq!(
         output.status.code(),
         Some(2),
-        "usage error, stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        "usage error: {}",
+        support::output_note(&output)
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("invalid regular expression"),
-        "the message must say what is wrong: {stderr}"
+        "the message must say what is wrong: {}",
+        support::output_note(&output)
     );
 }

@@ -30,7 +30,9 @@ use std::process::{Command, Output};
 
 use serde_json::Value;
 
-use crate::common::{FixtureRoute, FixtureServer, LiveFirefox, ff_rdp_bin, live_tests_enabled};
+use crate::common::{
+    FixtureRoute, FixtureServer, LiveFirefox, ff_rdp_bin, live_tests_enabled, output_note,
+};
 
 fn daemon_args(port: u16) -> Vec<String> {
     vec![
@@ -311,12 +313,13 @@ fn live_page_text_is_capped_by_default() {
     assert!(
         !zero.status.success(),
         "--max-chars 0 must fail: {}",
-        String::from_utf8_lossy(&zero.stdout)
+        output_note(&zero)
     );
-    let stderr = String::from_utf8_lossy(&zero.stderr);
+    // The error envelope goes to STDOUT, not stderr (iter-179).
     assert!(
-        stderr.contains("--max-chars"),
-        "the error must name the flag: {stderr}"
+        String::from_utf8_lossy(&zero.stdout).contains("--max-chars"),
+        "the error must name the flag: {}",
+        output_note(&zero)
     );
 
     stop_daemon(port);
