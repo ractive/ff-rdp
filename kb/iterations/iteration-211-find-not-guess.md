@@ -80,20 +80,23 @@ label span of four GitHub issue titles, and it reported those.
       `a11y summary` (label, `aria-label`, `aria-labelledby`, then full descendant text), so an
       `<h3><a>Bug: <span>…</span></a></h3>` title comes back whole
 
-## Acceptance Criteria [0/8]
+## Acceptance Criteria [7/8]
 
-- [ ] `live_page_text_query_returns_only_matching_lines_with_context`: on a fixture page with the
+- [x] `live_page_text_query_returns_only_matching_lines_with_context`: on a fixture page with the
       needle on line 40 of 60, `page-text --query needle` returns 5 lines and
-      `meta.matches == 1`
-- [ ] `live_page_text_is_capped_by_default`: on a fixture with 20 000 chars of text,
+      `meta.matches == 1` [2026-08-30: green in both PR-body sweeps and in an isolated
+      `FF_RDP_LIVE_TESTS=1 cargo test -p ff-rdp-cli --test live live_211_find_not_guess` re-run
+      during merge review]
+- [x] `live_page_text_is_capped_by_default`: on a fixture with 20 000 chars of text,
       `results` length ≤ 8000, `meta.truncated == true`, `meta.total_chars == 20000`;
-      `--full` returns all of it
-- [ ] `live_snapshot_query_keeps_ancestors_of_matches`: `snapshot --query <cell text>` on a
+      `--full` returns all of it [2026-08-30: green, same re-run]
+- [x] `live_snapshot_query_keeps_ancestors_of_matches`: `snapshot --query <cell text>` on a
       fixture table returns a tree whose leaf is the matching cell and whose root is still `html`
-- [ ] `live_a11y_summary_query_filters_and_keeps_refs`: the filtered `interactive` entries all
-      match and each carries a `ref` that `click --ref` accepts
-- [ ] `live_dom_text_returns_full_accessible_name`: fixture `<h3><a>Bug: <span>title</span></a></h3>`
-      → `dom "h3 a" --text` yields `"Bug: title"`
+      [2026-08-30: green, same re-run]
+- [x] `live_a11y_summary_query_filters_and_keeps_refs`: the filtered `interactive` entries all
+      match and each carries a `ref` that `click --ref` accepts [2026-08-30: green, same re-run]
+- [x] `live_dom_text_returns_full_accessible_name`: fixture `<h3><a>Bug: <span>title</span></a></h3>`
+      → `dom "h3 a" --text` yields `"Bug: title"` [2026-08-30: green, same re-run]
 - [x] `query_filter_is_case_insensitive_substring_by_default` (unit) and
       `query_regex_rejects_invalid_pattern_with_exit_2` (unit)
 - [ ] Benchmark: re-run [[axi-benchmark-comparison]] `--repeat 3`; `tabular_data_analysis` and
