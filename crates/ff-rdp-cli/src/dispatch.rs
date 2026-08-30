@@ -13,6 +13,7 @@ use crate::commands::nav_action::NavAction;
 use crate::daemon::registry;
 use crate::daemon::server;
 use crate::error::AppError;
+use crate::output_controls::QueryFilter;
 use crate::script::format::{
     ElementStep, ElementTarget, EvalStep, NavigateStep, ScreenshotStep, Step,
 };
@@ -323,7 +324,7 @@ fn command_to_step(cmd: &Command, resolved_selector: Option<&str>) -> Option<Ste
         | Command::Console(ConsoleArgs { .. })
         | Command::Network(NetworkArgs { .. })
         | Command::Perf(PerfArgs { .. })
-        | Command::PageText
+        | Command::PageText(_)
         | Command::Cookies(CookiesArgs { .. })
         | Command::Storage(StorageArgs { .. })
         | Command::Sources(SourcesArgs { .. })
@@ -503,7 +504,7 @@ fn dispatch_inner(
         Command::Forward(BackForwardArgs { no_wait, with_page }) => {
             commands::nav_action::run(cli, NavAction::Forward { no_wait: *no_wait }, *with_page)
         }
-        Command::PageText => commands::page_text::run(cli),
+        Command::PageText(args) => commands::page_text::run(cli, args),
         Command::Dom(DomArgs {
             dom_command,
             selector,
@@ -517,7 +518,16 @@ fn dispatch_inner(
             first,
             include_style,
             include_style_limit,
+            query,
         }) => match dom_command {
+            // iter-211: `--query` filters `dom <selector>` results only. The
+            // sub-commands produce a stats record and a walker tree, neither
+            // of which the filter applies to — refuse rather than accept the
+            // flag and do nothing with it.
+            Some(_) if QueryFilter::from_query_args(query).is_active() => Err(AppError::User(
+                "--query/--query-regex applies to `dom <selector>`, not to `dom stats` or `dom tree`"
+                    .to_owned(),
+            )),
             Some(DomCommand::Stats) => commands::dom::run_stats(cli),
             Some(DomCommand::Tree {
                 selector,
@@ -560,7 +570,15 @@ fn dispatch_inner(
                                 .collect()
                         })
                         .unwrap_or_default();
-                    commands::dom::run(cli, sel, mode, *first, &style_props, *include_style_limit)
+                    commands::dom::run(
+                        cli,
+                        sel,
+                        mode,
+                        *first,
+                        &style_props,
+                        *include_style_limit,
+                        &QueryFilter::from_query_args(query),
+                    )
                 }
             }
         },
@@ -784,7 +802,9 @@ fn dispatch_inner(
                     selector: contrast_selector,
                     fail_only,
                 }) => commands::a11y_contrast::run(cli, contrast_selector.as_deref(), *fail_only),
-                Some(A11yCommand::Summary) => commands::a11y_summary::run(cli),
+                Some(A11yCommand::Summary { query }) => {
+                    commands::a11y_summary::run(cli, &QueryFilter::from_query_args(query))
+                }
                 None => {
                     if *critical {
                         commands::a11y::run_critical(cli, effective_selector)
@@ -967,6 +987,7 @@ fn dispatch_inner(
             depth,
             max_depth,
             max_chars,
+            query,
         }) => {
             // --max-depth overrides --depth; must be ≥ 1.
             let effective_depth = if let Some(md) = max_depth {
@@ -980,7 +1001,12 @@ fn dispatch_inner(
             } else {
                 *depth
             };
-            commands::snapshot::run(cli, effective_depth, *max_chars)
+            commands::snapshot::run(
+                cli,
+                effective_depth,
+                *max_chars,
+                &QueryFilter::from_query_args(query),
+            )
         }
         Command::Scroll { scroll_command } => match scroll_command {
             ScrollCommand::To {

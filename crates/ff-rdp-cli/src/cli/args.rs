@@ -1,4 +1,5 @@
 use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
+use regex::Regex;
 
 const AFTER_LONG_HELP: &str = "\
 EXIT CODES:
@@ -22,11 +23,19 @@ COMMAND REFERENCE:
 
   Page content:
     ff-rdp eval <SCRIPT> | --file PATH | --stdin [--stringify] [--no-isolate]
-    ff-rdp page-text
-    ff-rdp dom <SEL> [--text | --attrs | --text-attrs | --inner-html | --count]
+    ff-rdp page-text [--query TEXT [--context N]] [--max-chars N | --full]
+    ff-rdp dom <SEL> [--text | --attrs | --text-attrs | --inner-html | --count] [--query TEXT]
     ff-rdp dom stats
     ff-rdp dom tree [SEL] [--depth N] [--max-chars N]
-    ff-rdp snapshot [--depth N] [--max-chars N]
+    ff-rdp snapshot [--depth N] [--max-chars N] [--query TEXT]
+
+  Find, don't guess (iter-211):
+    --query TEXT (case-insensitive substring) or --query-regex PATTERN on
+    page-text, snapshot, `a11y summary` and dom returns only the matching part
+    of the page, with meta.matches counting the hits. page-text is capped at
+    8000 characters by default — meta.total_chars always reports the full
+    length, --full lifts the cap. Reach for --query instead of piping
+    page-text through `head`: the answer is usually further down.
 
   Interaction:
     ff-rdp click <SEL> | --ref <REF> [--with-page] [--dispatch pointer|legacy|click-only] [--no-wait] [--settle]
@@ -634,8 +643,17 @@ a real window size, launch with `ff-rdp launch --window-size WxH` (see its
     /// Extract visible page text (document.body.innerText)
     #[command(long_about = "Extract visible page text (document.body.innerText).
 
-Output: {\"results\": \"<page text as a plain string>\", \"total\": 1, \"meta\": {...}}")]
-    PageText,
+Capped at 8000 characters by default (iter-211): `meta.total_chars` always
+reports the full innerText length and `meta.truncated` says whether anything
+was cut. `--full` lifts the cap; `--max-chars N` moves it.
+
+`--query TEXT` returns only the lines containing TEXT plus `--context N`
+lines either side (default 2), with `meta.matches` / `meta.shown` counting
+hits. Use it instead of piping the whole article through `head` — the answer
+is usually further down than the first hundred lines.
+
+Output: {\"results\": \"<page text as a plain string>\", \"total\": 1, \"meta\": {\"total_chars\": N, \"truncated\": bool, ...}}")]
+    PageText(PageTextArgs),
     /// Query DOM elements by CSS selector
     #[command(long_about = "Query DOM elements by CSS selector.
 
@@ -1674,6 +1692,58 @@ pub struct EvalArgs {
     pub unwrap: bool,
 }
 
+// ---------------------------------------------------------------------------
+// --query / --query-regex (iter-211 Theme A)
+// ---------------------------------------------------------------------------
+
+/// Compile a `--query-regex` value, so an invalid pattern is a clap usage
+/// error (exit 2) rather than a runtime failure after a browser round-trip.
+fn parse_query_regex(raw: &str) -> Result<Regex, String> {
+    Regex::new(raw).map_err(|e| format!("invalid regular expression: {e}"))
+}
+
+/// The `--query` / `--query-regex` pair, flattened into every read command
+/// that supports filtering (`page-text`, `snapshot`, `a11y summary`, `dom`).
+///
+/// One struct rather than four copies so the flag names, the mutual
+/// exclusion, and the help text cannot drift apart between commands — a
+/// recipe written against one command's `--query` works on all of them.
+#[derive(clap::Args, Clone, Debug, Default)]
+#[command(group(ArgGroup::new("query_filter").required(false).multiple(false).args(["query", "query_regex"])))]
+pub struct QueryArgs {
+    /// Return only the parts of the output containing TEXT
+    /// (case-insensitive substring). `meta.matches` reports how many hits
+    /// there were, so a caller can tell "no matches" from "filtered down to
+    /// nothing by another flag".
+    #[arg(long, value_name = "TEXT")]
+    pub query: Option<String>,
+    /// Like --query, but PATTERN is a regular expression (Rust `regex`
+    /// syntax). An invalid pattern is a usage error (exit 2).
+    #[arg(long, value_name = "PATTERN", value_parser = parse_query_regex)]
+    pub query_regex: Option<Regex>,
+}
+
+#[derive(clap::Args)]
+pub struct PageTextArgs {
+    #[command(flatten)]
+    pub query: QueryArgs,
+    /// Lines of context to keep either side of each --query match (default 2).
+    #[arg(long, value_name = "N", default_value_t = 2, requires = "query_filter")]
+    pub context: usize,
+    /// Maximum characters of page text to return (default 8000).
+    ///
+    /// `page-text` was the only read command with no size cap, which is why
+    /// agents piped it through `head -100` and lost the answer further down
+    /// the page (iter-211 Theme B). `meta.total_chars` always reports the
+    /// full length and `meta.truncated` says whether anything was cut.
+    /// `0` is rejected — an unreachable cap is a bug, not a request.
+    #[arg(long, value_name = "N", default_value_t = 8000)]
+    pub max_chars: usize,
+    /// Return the whole page text, ignoring --max-chars.
+    #[arg(long, conflicts_with = "max_chars")]
+    pub full: bool,
+}
+
 #[derive(clap::Args)]
 #[command(group(ArgGroup::new("dom_target").required(false).multiple(false).args(["selector", "ref_id"])))]
 pub struct DomArgs {
@@ -1701,8 +1771,11 @@ pub struct DomArgs {
     /// Output both text content and attributes per element
     #[arg(long, group = "output_mode")]
     pub text_attrs: bool,
-    /// Return only the count of matching elements
-    #[arg(long, group = "output_mode")]
+    /// Return only the count of matching elements.
+    /// Mutually exclusive with `--query`/`--query-regex`: a count of the
+    /// unfiltered selector matches under a filter flag would be a number
+    /// nobody asked for, so it is refused rather than silently ignored.
+    #[arg(long, group = "output_mode", conflicts_with = "query_filter")]
     pub count: bool,
     /// Return just the first match as a single value (or null) instead of an array.
     /// Provided for callers who want the legacy pre-iter-61i single-element shape.
@@ -1724,6 +1797,10 @@ pub struct DomArgs {
         requires = "include_style"
     )]
     pub include_style_limit: usize,
+    /// Keep only the matched elements whose accessible name / text matches
+    /// (iter-211 Theme A). A selector-only call is unchanged.
+    #[command(flatten)]
+    pub query: QueryArgs,
 }
 
 #[derive(clap::Args)]
@@ -2210,6 +2287,11 @@ pub struct SnapshotArgs {
     /// default: 50000). `meta.truncated` reports whether anything was cut.
     #[arg(long, default_value_t = 50000)]
     pub max_chars: u32,
+    /// Keep only the nodes whose text or attribute values match, plus their
+    /// ancestors; everything else is pruned (iter-211 Theme A). The root
+    /// stays `html`, so the path to each hit is still visible.
+    #[command(flatten)]
+    pub query: QueryArgs,
 }
 
 #[derive(clap::Args)]
@@ -2728,7 +2810,12 @@ written against one works on the other.
 
 Output: {\"results\": {\"landmarks\": [...], \"headings\": [...], \"interactive\": [{\"role\": \"link\", \"name\": \"...\", \"href\": \"...\", \"ref\": \"e3\"}]}, \"total\": 1, \"meta\": {\"refs_registered\": bool, \"source\": \"js-fallback\", ...}}"
     )]
-    Summary,
+    Summary {
+        /// Keep only the headings/landmarks/interactive entries whose text or
+        /// name matches (iter-211 Theme A). Survivors keep their `ref`.
+        #[command(flatten)]
+        query: QueryArgs,
+    },
 }
 
 /// Block-alignment values accepted by `scroll to --block`.

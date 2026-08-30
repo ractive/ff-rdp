@@ -5,12 +5,13 @@ use crate::cli::args::Cli;
 use crate::error::AppError;
 use crate::hints::{HintContext, HintSource};
 use crate::output;
-use crate::output_controls::{OutputControls, SortDir};
+use crate::output_controls::{OutputControls, QueryFilter, SortDir};
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::connect_and_get_target;
 use super::js_helpers::{
-    JSON_SENTINEL, UNIQUE_SELECTOR_JS_FN, escape_selector, eval_or_bail, resolve_result,
+    JSON_SENTINEL, UNIQUE_SELECTOR_JS_FN, acc_name_js_fn, escape_selector, eval_or_bail,
+    resolve_result,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -48,6 +49,7 @@ pub enum OutputMode {
 /// as a double-nested, invalid selector string — see the plan's Theme A bug #1.
 const ARIA_TREE_JS_TEMPLATE: &str = r"(function() {
   __UNIQUE_SELECTOR_FN__
+  __ACC_NAME_FN__
   var ACTIONABLE_ATTRS = ['id','name','type','href','placeholder','value',
     'aria-label','aria-expanded','aria-hidden','aria-haspopup','aria-selected',
     'aria-checked','aria-disabled','aria-controls','aria-describedby',
@@ -68,9 +70,10 @@ const ARIA_TREE_JS_TEMPLATE: &str = r"(function() {
     var el = els[i];
     var tag = el.tagName;
     var role = el.getAttribute('role') || SEMANTIC_ROLES[tag] || null;
-    var name = el.getAttribute('aria-label') ||
-               el.getAttribute('alt') ||
-               (el.textContent || '').trim().slice(0, 100) || null;
+    // iter-211 Theme C: the whole accessible name, whitespace-collapsed —
+    // not `textContent.slice(0, 100)`, which cut GitHub issue titles mid-word
+    // and left the source indentation in the value.
+    var name = __ffrdpAccName(el) || null;
     var level = HEADING_LEVELS[tag] || null;
     var state = {};
     var ariaExpanded = el.getAttribute('aria-expanded');
@@ -133,6 +136,7 @@ pub fn run(
     first: bool,
     style_props: &[String],
     style_limit: usize,
+    query: &QueryFilter,
 ) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
@@ -254,11 +258,22 @@ pub fn run(
     //
     // `--first` reverts to the legacy single-element-object shape for
     // callers who explicitly want it.
-    let items_array: Vec<Value> = match results {
+    let mut items_array: Vec<Value> = match results {
         Value::Null => Vec::new(),
         Value::Array(arr) => arr,
         single => vec![single],
     };
+
+    // iter-211 Theme A: `--query` narrows the matched elements by accessible
+    // name / text before any of the output controls run, so `--sort` and
+    // `--limit` operate on the filtered set and `total` counts hits rather
+    // than raw selector matches. A selector-only call is untouched.
+    if query.is_active() {
+        items_array.retain(|entry| entry_matches_query(entry, query));
+        if let Some(obj) = meta.as_object_mut() {
+            obj.insert("matches".to_owned(), json!(items_array.len()));
+        }
+    }
 
     // Apply output controls (sort/limit/fields) uniformly on the array.
     let controls = OutputControls::from_cli(cli, SortDir::Asc);
@@ -284,6 +299,33 @@ pub fn run(
     let envelope =
         output::envelope_with_truncation(&json!(limited), shown, total, truncated, &meta);
     OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
+}
+
+/// Whether one `dom` result entry satisfies `--query` (iter-211 Theme A).
+///
+/// Judged on what a caller would call the element by — its accessible name,
+/// its text, its live `value`, and its actionable attributes (`href`, `id`,
+/// `aria-label`, …). Deliberately **not** `tag` or `role`: those are a
+/// closed vocabulary the selector already expresses, and matching them would
+/// make `--query a` select every anchor on the page.
+///
+/// Non-ARIA-tree modes hand back bare strings (`--text`, `--format html`), so
+/// a string entry is matched directly.
+fn entry_matches_query(entry: &Value, query: &QueryFilter) -> bool {
+    match entry {
+        Value::String(s) => query.matches(s),
+        Value::Object(map) => {
+            for key in ["name", "text", "textContent", "value"] {
+                if let Some(Value::String(s)) = map.get(key)
+                    && query.matches(s)
+                {
+                    return true;
+                }
+            }
+            map.get("attrs").is_some_and(|a| query.matches_shallow(a))
+        }
+        _ => false,
+    }
 }
 
 /// Extract `__resolver` fields from ARIA-tree results and return them as
@@ -458,6 +500,7 @@ fn build_js_with_ref_start(selector: &str, mode: OutputMode, ref_start: u64) -> 
                 .replace("__SELECTOR__", &escaped)
                 .replace("__REF_START__", &ref_start.to_string())
                 .replace("__UNIQUE_SELECTOR_FN__", UNIQUE_SELECTOR_JS_FN)
+                .replace("__ACC_NAME_FN__", &acc_name_js_fn())
         }
         OutputMode::OuterHtml => format!(
             r"(function() {{
@@ -475,14 +518,23 @@ fn build_js_with_ref_start(selector: &str, mode: OutputMode, ref_start: u64) -> 
   return '{JSON_SENTINEL}' + JSON.stringify(Array.from(els, function(e) {{ return e.innerHTML; }}));
 }})()"
         ),
-        OutputMode::Text => format!(
-            r"(function() {{
+        // iter-211 Theme C: `--text` returns the element's accessible name,
+        // not raw `textContent`. On the benchmark's GitHub issue list the two
+        // differ exactly where it mattered — `<h3><a>Bug: <span>…</span></a></h3>`
+        // gives `"Bug: …"` whole and whitespace-collapsed, where the raw
+        // property carried the markup's newlines and indentation with it.
+        OutputMode::Text => {
+            let acc_name_fn = acc_name_js_fn();
+            format!(
+                r"(function() {{
+  {acc_name_fn}
   var els = document.querySelectorAll('{escaped}');
   if (els.length === 0) return null;
-  if (els.length === 1) return els[0].textContent;
-  return '{JSON_SENTINEL}' + JSON.stringify(Array.from(els, function(e) {{ return e.textContent; }}));
+  if (els.length === 1) return __ffrdpAccName(els[0]);
+  return '{JSON_SENTINEL}' + JSON.stringify(Array.from(els, function(e) {{ return __ffrdpAccName(e); }}));
 }})()"
-        ),
+            )
+        }
         OutputMode::Attrs => format!(
             r"(function() {{
   function attrs(e) {{
@@ -772,5 +824,114 @@ mod tests {
             ARIA_TREE_JS_TEMPLATE.contains("shadowRoot"),
             "ARIA-tree template must inspect shadowRoot: {ARIA_TREE_JS_TEMPLATE}"
         );
+    }
+
+    // ── iter-211 Theme A: `dom --query` ─────────────────────────────────────
+
+    fn query(text: &str) -> QueryFilter {
+        QueryFilter::from_query_args(&crate::cli::args::QueryArgs {
+            query: Some(text.to_owned()),
+            query_regex: None,
+        })
+    }
+
+    #[test]
+    fn unit_211_query_matches_the_accessible_name() {
+        let entry = json!({"ref": "e1", "tag": "a", "role": "link", "name": "Bug: crash on save"});
+        assert!(entry_matches_query(&entry, &query("crash")));
+        assert!(entry_matches_query(&entry, &query("BUG")));
+        assert!(!entry_matches_query(&entry, &query("feature request")));
+    }
+
+    #[test]
+    fn unit_211_query_matches_actionable_attributes_but_not_tag_or_role() {
+        let entry = json!({"tag": "a", "role": "link", "name": "Docs",
+                           "attrs": {"href": "/pricing", "id": "nav-pricing"}});
+        assert!(entry_matches_query(&entry, &query("pricing")));
+        // `tag`/`role` are a closed vocabulary the selector already expresses;
+        // matching them would make `--query link` select every anchor.
+        assert!(!entry_matches_query(&entry, &query("link")));
+    }
+
+    /// `--text` and `--format html` hand back bare strings, which are matched
+    /// directly — the same flag works in every output mode.
+    #[test]
+    fn unit_211_query_matches_bare_string_entries() {
+        assert!(entry_matches_query(
+            &json!("Bug: crash on save"),
+            &query("crash")
+        ));
+        assert!(!entry_matches_query(
+            &json!("something else"),
+            &query("crash")
+        ));
+        assert!(!entry_matches_query(&json!(42), &query("42")));
+    }
+
+    // ── iter-211 Theme C: full accessible names ─────────────────────────────
+
+    /// The ARIA-tree walker must call the shared accessible-name helper, not
+    /// re-implement `textContent.trim().slice(0, 100)` — that slice is what
+    /// cut the benchmark's GitHub issue titles mid-word.
+    #[test]
+    fn unit_211_aria_tree_js_uses_the_shared_accessible_name_helper() {
+        let js = build_js("h3 a", OutputMode::AriaTree);
+        assert!(
+            js.contains("function __ffrdpAccName"),
+            "the helper must be spliced in: {js}"
+        );
+        assert!(
+            js.contains("var name = __ffrdpAccName(el)"),
+            "`name` must come from the helper: {js}"
+        );
+        assert!(
+            !js.contains("el.textContent || '').trim().slice"),
+            "the old 100-char textContent slice must be gone: {js}"
+        );
+    }
+
+    /// `dom --text` returns the accessible name, so
+    /// `<h3><a>Bug: <span>title</span></a></h3>` comes back whole and
+    /// whitespace-collapsed rather than as raw `textContent`.
+    #[test]
+    fn unit_211_text_mode_js_uses_the_shared_accessible_name_helper() {
+        let js = build_js("h3 a", OutputMode::Text);
+        assert!(js.contains("function __ffrdpAccName"), "{js}");
+        assert!(
+            js.contains("__ffrdpAccName(els[0])"),
+            "single-match path: {js}"
+        );
+        assert!(js.contains("__ffrdpAccName(e)"), "multi-match path: {js}");
+        assert!(
+            !js.contains("return els[0].textContent;"),
+            "raw textContent must no longer be the single-match answer: {js}"
+        );
+    }
+
+    /// A `<select>`'s descendant text is every `<option>` label concatenated
+    /// — a menu, not a name. The helper must skip the descendant-text step
+    /// for it, or `a11y summary` would report a country picker's name as the
+    /// list of every country.
+    #[test]
+    fn unit_211_accessible_name_js_skips_descendant_text_for_select() {
+        let js = build_js("select", OutputMode::AriaTree);
+        assert!(
+            js.contains("if (el.tagName !== 'SELECT')"),
+            "the <select> guard must be present: {js}"
+        );
+    }
+
+    /// `--count` and `--query` are refused together rather than silently
+    /// returning the *unfiltered* match count — the "flag accepted, nothing
+    /// happened" failure iter-161 Theme D removed for `--fields`/`--sort`.
+    #[test]
+    fn unit_211_count_and_query_are_mutually_exclusive() {
+        use clap::Parser as _;
+        let Err(err) = crate::cli::args::Cli::try_parse_from([
+            "ff-rdp", "dom", "a", "--count", "--query", "x",
+        ]) else {
+            panic!("--count with --query must be refused");
+        };
+        assert_eq!(err.exit_code(), 2, "usage error: {err}");
     }
 }

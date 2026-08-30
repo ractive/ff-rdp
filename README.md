@@ -180,11 +180,28 @@ ff-rdp dom "ul li" --text
 # Get element attributes as JSON
 ff-rdp dom "a" --attrs
 
-# Extract all visible page text
+# Extract visible page text (capped at 8000 chars by default since iter-211)
 ff-rdp page-text
 
-# Count characters in page text
-ff-rdp page-text --jq '.results | length'
+# How much text is there, and was anything cut?
+ff-rdp page-text --jq '.meta'   # {"total_chars": N, "truncated": bool, "max_chars": 8000, ...}
+
+# Lift the cap, or move it
+ff-rdp page-text --full
+ff-rdp page-text --max-chars 40000
+
+# Find, don't guess (iter-211): return only the part of the page containing a
+# string, with two lines of context either side. `meta.matches` counts the hits
+# and `meta.match_lines` gives their line numbers in the full document.
+ff-rdp page-text --query "billion"
+ff-rdp page-text --query "billion" --context 5
+ff-rdp page-text --query-regex '\$[0-9,]+' --jq '.meta'
+
+# The same flag narrows the other read commands. `--query-regex` everywhere
+# `--query` works; an invalid pattern is a usage error (exit 2).
+ff-rdp snapshot --query "1804"          # the matching nodes plus their ancestors
+ff-rdp a11y summary --query "Sign in"   # matching entries, refs intact
+ff-rdp dom "a" --query "pricing"        # matched elements filtered by name/text/attrs
 
 # Read console messages (errors only); output includes summary.total, summary.shown, summary.by_level
 ff-rdp console --level error

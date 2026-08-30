@@ -82,6 +82,7 @@ mod live_175_failed_launch_profile;
 mod live_176_eval_scanner_brace_positions;
 mod live_186_launch_record_gc;
 mod live_210_act_and_see;
+mod live_211_find_not_guess;
 mod live_61l;
 mod live_61q_resource_bus;
 mod live_61r_eval;

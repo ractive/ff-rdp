@@ -104,10 +104,40 @@ fn live_dom_text_longstring_roundtrip() {
         crate::common::output_note(&nav)
     );
 
-    let out = run(ff.port(), &["page-text"]);
+    // iter-211 capped `page-text` at 8000 chars by default, so the
+    // LongString round-trip this test exercises now needs `--full` to see the
+    // whole node. The cap is applied on the Rust side *after* the LongString
+    // is reassembled, which is exactly what the default-cap assertion below
+    // proves: `meta.total_chars` reports all BIG_LEN characters even when
+    // `results` carries 8000 of them, so a short `results` here would still
+    // mean a broken round-trip rather than a working cap.
+    let capped = run(ff.port(), &["page-text"]);
+    assert!(
+        capped.status.success(),
+        "page-text failed: {}",
+        crate::common::output_note(&capped)
+    );
+    let capped_json: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&capped.stdout).trim())
+            .expect("page-text output must be JSON");
+    assert!(
+        capped_json["meta"]["total_chars"]
+            .as_u64()
+            .is_some_and(|n| n >= BIG_LEN as u64),
+        "the default cap must still report the whole reassembled LongString in meta.total_chars: {}",
+        crate::common::output_note(&capped)
+    );
+    assert_eq!(
+        capped_json["meta"]["truncated"],
+        true,
+        "a {BIG_LEN}-char page is past the 8000-char default cap: {}",
+        crate::common::output_note(&capped)
+    );
+
+    let out = run(ff.port(), &["page-text", "--full"]);
     assert!(
         out.status.success(),
-        "page-text failed: {}",
+        "page-text --full failed: {}",
         crate::common::output_note(&out)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -116,9 +146,10 @@ fn live_dom_text_longstring_roundtrip() {
     let text = json["results"].as_str().unwrap_or_default();
     assert!(
         text.matches('A').count() >= BIG_LEN,
-        "page-text must return the full {BIG_LEN}-char text node; got {} 'A's (len {})",
+        "page-text --full must return the full {BIG_LEN}-char text node; got {} 'A's (len {}): {}",
         text.matches('A').count(),
-        text.len()
+        text.len(),
+        crate::common::output_note(&out)
     );
     eprintln!(
         "live_dom_text_longstring_roundtrip: PASS — {} chars",

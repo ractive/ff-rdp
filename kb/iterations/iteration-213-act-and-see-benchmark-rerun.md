@@ -4,7 +4,7 @@ type: iteration
 date: 2026-08-29
 status: planned
 branch: iter-213/act-and-see-benchmark-rerun
-depends_on: [iteration-210-act-and-see]
+depends_on: [iteration-210-act-and-see, iteration-211-find-not-guess]
 dogfood_path: |
   ff-rdp launch --headless
   ff-rdp navigate https://en.wikipedia.org/wiki/Ada_Lovelace --with-page --jq '.results.page.interactive[] | select(.name | test("Babbage")) | .ref'
@@ -42,7 +42,11 @@ would measure the same 8 turns and would be the correct answer, not a broken run
   not in the repo, so the comparison is currently unreproducible by anyone else. Land the runner
   and the task list under `tools/` before measuring anything with it.
 - **B — Re-measure.** Same tasks, same `--repeat 3`, same one-paragraph system prompt, new ff-rdp
-  binary. Record turns, cost, and pass rate per task.
+  binary. Record turns, cost, and pass rate per task. Since iter-211 this covers **two** shipped
+  changes, not one: the click-through mechanisms from 210 and the extraction mechanisms
+  (`--query`, the `page-text` cap, full accessible names) from
+  [[iteration-211-find-not-guess]] — folded in here rather than re-run twice, because it is the
+  same harness, the same money, and the same 42 tasks.
 - **C — Decide `--with-page`'s default.** If agents do not reach for the flag from `--help`, the
   finding is about discoverability, and the options are a default-on JSON page view, an error-path
   hint, or [[iteration-212-ambient-context]] — not a louder `--help`.
@@ -55,18 +59,20 @@ would measure the same 8 turns and would be the correct answer, not a broken run
 - [ ] Record the exact system prompt used for both tools, verbatim, in
       [[axi-benchmark-comparison]] — a turn count is not comparable without it
 
-### B. Re-measure [0/2]
-- [ ] Re-run all 42 tasks `--repeat 3` for ff-rdp with the post-210 binary; keep
+### B. Re-measure [0/3]
+- [ ] Re-run all 42 tasks `--repeat 3` for ff-rdp with the post-210/post-211 binary; keep
       chrome-devtools-axi's 2026-08-29 numbers as the reference rather than re-running them
 - [ ] Record the per-task table in the Outcome section of this plan AND in
       [[axi-benchmark-comparison]]
+- [ ] Classify every extraction trajectory as "used `--query`" or "did not" — the same
+      mechanism-vs-discoverability split Theme C applies to `--with-page`
 
 ### C. Decide the default [0/1]
 - [ ] From the measured trajectories, state whether `--with-page` should default on for JSON
       output — and if agents never used it, say so and name which discoverability surface to
       change
 
-## Acceptance Criteria [0/4]
+## Acceptance Criteria [0/5]
 
 - [ ] `tools/axi-bench/` runs the comparison from a clean checkout with no scratchpad recovery
 - [ ] The three click-through tasks (`wikipedia_infobox_hop`, `wikipedia_link_follow`,
@@ -75,6 +81,12 @@ would measure the same 8 turns and would be the correct answer, not a broken run
       until it looks better
 - [ ] Every trajectory is classified as "used `--with-page`" or "did not", so a flat turn count
       can be attributed to the mechanism or to discoverability
+- [ ] Carried over from [[iteration-211-find-not-guess]] (left unticked there, not reworded): the
+      three extraction tasks (`tabular_data_analysis`, `wikipedia_deep_extraction`,
+      `github_issue_investigation`) have a measured post-211 average turn count recorded —
+      211's own target was ≤ 6 turns for the first two (were 9.3, 10.7) and 3/3 passes for the
+      third, but as with the click-through tasks a number that did NOT improve is a valid,
+      publishable result and must not be re-run until it looks better
 - [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Design notes
@@ -92,6 +104,8 @@ would measure the same 8 turns and would be the correct answer, not a broken run
 
 ## References
 
-- [[iteration-210-act-and-see]] — the change being measured
+- [[iteration-210-act-and-see]] — the click-through change being measured
+- [[iteration-211-find-not-guess]] — the extraction change being measured, whose own benchmark
+  AC was folded in here
 - [[axi-benchmark-comparison]] — the baseline, and where the new table goes
 - [[iteration-212-ambient-context]] — the other candidate answer if discoverability is the problem
