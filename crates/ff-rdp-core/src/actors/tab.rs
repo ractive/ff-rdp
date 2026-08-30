@@ -540,6 +540,44 @@ mod tests {
         );
     }
 
+    /// iter-220: `innerWindowId` and `url` are the two keys that tell a caller
+    /// whether the target it just re-resolved is still the document the action
+    /// was performed on. A real `getTarget` reply, recorded while the outgoing
+    /// docshell was still being handed back after a click.
+    #[test]
+    fn parse_target_response_reads_inner_window_id_and_url() {
+        let response = json!({
+            "frame": {
+                "actor": "server1.conn2.child83/windowGlobalTarget2",
+                "consoleActor": "server1.conn2.child83/consoleActor3",
+                "browsingContextID": 15,
+                "innerWindowId": 15_032_385_539u64,
+                "url": "https://en.wikipedia.org/wiki/Ada_Lovelace"
+            },
+            "from": "server1.conn2.tabDescriptor1"
+        });
+        let info = parse_target_response(&response).unwrap();
+        assert_eq!(info.inner_window_id, Some(15_032_385_539));
+        assert_eq!(
+            info.url.as_deref(),
+            Some("https://en.wikipedia.org/wiki/Ada_Lovelace")
+        );
+    }
+
+    #[test]
+    fn parse_target_response_tolerates_absent_inner_window_id_and_url() {
+        let response = json!({
+            "frame": {
+                "actor": "server1.conn3.child2/windowGlobalTarget2",
+                "consoleActor": "server1.conn3.child2/consoleActor3"
+            },
+            "from": "server1.conn3.tabDescriptor1"
+        });
+        let info = parse_target_response(&response).unwrap();
+        assert!(info.inner_window_id.is_none());
+        assert!(info.url.is_none());
+    }
+
     // --- parse_process_target_response ---
 
     #[test]

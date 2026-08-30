@@ -1485,6 +1485,165 @@ impl Drop for RaisedFrameCap {
 
 #[cfg(test)]
 mod tests {
+
+    // ── iter-220: navigation latch + target guard ────────────────────────
+
+    #[test]
+    fn navigation_start_url_reads_tab_navigated_start() {
+        let msg = serde_json::json!({
+            "type": "tabNavigated",
+            "state": "start",
+            "url": "https://example.com/next",
+            "from": "server1.conn2.child9/windowGlobalTarget2",
+        });
+        assert_eq!(
+            super::navigation_start_url(&msg).as_deref(),
+            Some("https://example.com/next")
+        );
+    }
+
+    #[test]
+    fn navigation_start_url_reads_will_navigate() {
+        let msg = serde_json::json!({"type": "willNavigate", "url": "https://example.com/x"});
+        assert_eq!(
+            super::navigation_start_url(&msg).as_deref(),
+            Some("https://example.com/x")
+        );
+    }
+
+    #[test]
+    fn navigation_start_url_ignores_completed_navigation() {
+        // A `stop` reports a navigation that already finished; treating it as
+        // a start would make every settled page look like one in flight.
+        let msg = serde_json::json!({
+            "type": "tabNavigated",
+            "state": "stop",
+            "url": "https://example.com/next",
+        });
+        assert_eq!(super::navigation_start_url(&msg), None);
+    }
+
+    #[test]
+    fn navigation_start_url_ignores_unrelated_packets() {
+        for msg in [
+            serde_json::json!({"type": "frameUpdate", "url": "https://example.com/iframe"}),
+            serde_json::json!({"type": "evaluationResult", "resultID": "1"}),
+            serde_json::json!({"from": "root"}),
+        ] {
+            assert_eq!(super::navigation_start_url(&msg), None, "for {msg}");
+        }
+    }
+
+    #[test]
+    fn target_guard_fires_on_matching_destroyed_form() {
+        let msg = serde_json::json!({
+            "type": "target-destroyed-form",
+            "target": {"actor": "server1.conn2.watcher2.process7//windowGlobalTarget60",
+                       "innerWindowId": 15_032_385_539u64,
+                       "isTopLevelTarget": true},
+            "from": "server1.conn2.watcher3",
+        });
+        let err = super::target_destroyed_guard_hit(&msg, Some(15_032_385_539))
+            .expect("the guarded document was the one destroyed");
+        assert!(matches!(
+            err,
+            ProtocolError::EvalTargetDestroyed {
+                inner_window_id: 15_032_385_539
+            }
+        ));
+    }
+
+    #[test]
+    fn target_guard_ignores_other_documents_being_destroyed() {
+        // An iframe or a background tab going away must not abort our wait.
+        let msg = serde_json::json!({
+            "type": "target-destroyed-form",
+            "target": {"innerWindowId": 42u64},
+        });
+        assert!(super::target_destroyed_guard_hit(&msg, Some(7)).is_none());
+    }
+
+    #[test]
+    fn target_guard_is_inert_when_disarmed() {
+        let msg = serde_json::json!({
+            "type": "target-destroyed-form",
+            "target": {"innerWindowId": 7u64},
+        });
+        assert!(super::target_destroyed_guard_hit(&msg, None).is_none());
+        let nav = serde_json::json!({"type": "tabNavigated", "state": "start", "url": "u"});
+        assert!(super::target_destroyed_guard_hit(&nav, None).is_none());
+    }
+
+    #[test]
+    fn target_guard_fires_on_a_navigation_starting_mid_request() {
+        // The direct (no-daemon) route never sees `target-destroyed-form` —
+        // nothing subscribed the connection to target watching — so the
+        // navigation announcement is the only warning it gets.
+        let msg = serde_json::json!({
+            "type": "tabNavigated",
+            "state": "start",
+            "url": "https://en.wikipedia.org/wiki/Charles_Babbage",
+        });
+        assert!(matches!(
+            super::target_destroyed_guard_hit(&msg, Some(9)),
+            Some(ProtocolError::EvalTargetDestroyed {
+                inner_window_id: 9
+            })
+        ));
+    }
+
+    #[test]
+    fn recv_latches_navigation_start_and_take_clears_it() {
+        let (mut transport, mut server) = make_transport_pair();
+        let frame = encode_frame(
+            &serde_json::to_string(&serde_json::json!({
+                "type": "tabNavigated",
+                "state": "start",
+                "url": "https://example.com/dest",
+                "from": "server1.conn2.child9/windowGlobalTarget2",
+            }))
+            .unwrap(),
+        );
+        server.write_all(frame.as_bytes()).unwrap();
+
+        assert_eq!(
+            transport.take_navigation_started(),
+            None,
+            "nothing has been received yet"
+        );
+        transport.recv().unwrap();
+        assert_eq!(
+            transport.take_navigation_started().as_deref(),
+            Some("https://example.com/dest")
+        );
+        assert_eq!(
+            transport.take_navigation_started(),
+            None,
+            "take must clear the latch"
+        );
+    }
+
+    #[test]
+    fn recv_event_from_aborts_when_the_guarded_target_is_destroyed() {
+        let (mut transport, mut server) = make_transport_pair();
+        transport.set_target_guard(Some(11));
+        let frame = encode_frame(
+            &serde_json::to_string(&serde_json::json!({
+                "type": "target-destroyed-form",
+                "target": {"innerWindowId": 11u64},
+                "from": "server1.conn2.watcher3",
+            }))
+            .unwrap(),
+        );
+        server.write_all(frame.as_bytes()).unwrap();
+
+        let err = recv_event_from(&mut transport, "server1.conn2.child9/consoleActor3", |_| true)
+            .expect_err("the guarded target went away — the reply is never coming");
+        assert!(
+            matches!(err, ProtocolError::EvalTargetDestroyed { .. }),
+            "unexpected error: {err}"
+        );
+    }
     use std::io::Cursor;
 
     use super::*;
