@@ -71,6 +71,9 @@ pub mod response {
         /// Inner window ID of the document this target is bound to (iter-220).
         #[serde(default)]
         pub inner_window_id: Option<u64>,
+        /// URL of the document this target is bound to (iter-220).
+        #[serde(default)]
+        pub url: Option<String>,
     }
 
     /// Reply for `getTarget` (tab descriptor — wraps target in `"frame"`).

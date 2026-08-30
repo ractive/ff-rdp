@@ -464,6 +464,15 @@ impl From<ff_rdp_core::ProtocolError> for AppError {
             // should not escape to end-user error paths.
             // InvalidState is a programming error (misuse of the API); surface
             // it as Internal so engineers see it in traces.
+            // iter-220: a target destroyed mid-request is not an internal
+            // fault — it is the same "the actor you were talking to is gone"
+            // condition `noSuchActor` reports, and callers that can re-resolve
+            // the target (`page_view::attach`) branch on this variant.
+            ff_rdp_core::ProtocolError::EvalTargetDestroyed { inner_window_id } => {
+                Self::RdpActorDestroyed {
+                    actor: format!("target(innerWindowId {inner_window_id})"),
+                }
+            }
             ff_rdp_core::ProtocolError::EvalNavigatedDuringEval
             | ff_rdp_core::ProtocolError::BulkPacketUnsupported { .. }
             | ff_rdp_core::ProtocolError::BulkPacketUnexpected { .. }

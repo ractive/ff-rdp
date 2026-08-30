@@ -42,6 +42,7 @@ impl DescriptorFront {
             manifest_actor: frame.manifest_actor,
             browsing_context_id: frame.browsing_context_id,
             inner_window_id: frame.inner_window_id,
+            url: frame.url,
         })
     }
 

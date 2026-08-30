@@ -352,6 +352,27 @@ impl ConnectedTab {
         }
     }
 
+    /// Guard the wait loops against the current target being torn down by a
+    /// navigation (iter-220).
+    ///
+    /// Thin forwarder to
+    /// [`RdpTransport::set_target_guard`](ff_rdp_core::RdpTransport::set_target_guard);
+    /// `Some(inner_window_id)` arms it, `None` disarms it.  Callers arm it only
+    /// around a section they are prepared to retry — see
+    /// [`crate::commands::page_view::attach`].
+    pub(crate) fn set_target_guard(&mut self, inner_window_id: Option<u64>) {
+        self.session.transport_mut().set_target_guard(inner_window_id);
+    }
+
+    /// Take (and clear) the destination URL of the most recent top-level
+    /// navigation Firefox announced on this connection (iter-220).
+    ///
+    /// Thin forwarder to
+    /// [`RdpTransport::take_navigation_started`](ff_rdp_core::RdpTransport::take_navigation_started).
+    pub(crate) fn take_navigation_started(&mut self) -> Option<String> {
+        self.session.transport_mut().take_navigation_started()
+    }
+
     /// Build a `ConnectedTab` directly from a transport and console actor ID,
     /// bypassing the connect + `getTarget` handshake.
     ///
@@ -370,6 +391,8 @@ impl ConnectedTab {
             responsive_actor: None,
             manifest_actor: None,
             browsing_context_id: None,
+            inner_window_id: None,
+            url: None,
         };
         Self {
             session: Session::new(transport),

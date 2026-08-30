@@ -251,6 +251,11 @@ pub struct RdpTransport {
     /// See [`set_target_guard`](RdpTransport::set_target_guard).  `None` (the
     /// default) leaves the loops behaving exactly as they did before iter-220.
     target_guard: Option<u64>,
+    /// Destination URL of the most recent top-level navigation Firefox
+    /// announced on this connection, latched by [`recv`](RdpTransport::recv).
+    ///
+    /// See [`take_navigation_started`](RdpTransport::take_navigation_started).
+    navigation_started: Option<String>,
 }
 
 impl std::fmt::Debug for RdpTransport {
@@ -300,6 +305,7 @@ impl RdpTransport {
                         writer: stream,
                         event_sink: None,
                         target_guard: None,
+                        navigation_started: None,
                     });
                 }
                 Err(e) => {
@@ -347,6 +353,7 @@ impl RdpTransport {
             writer,
             event_sink: None,
             target_guard: None,
+            navigation_started: None,
         }
     }
 
@@ -412,6 +419,26 @@ impl RdpTransport {
     /// instead of clobbering an outer one.
     pub fn target_guard(&self) -> Option<u64> {
         self.target_guard
+    }
+
+    /// Take (and clear) the destination URL of the most recent top-level
+    /// navigation Firefox announced on this connection (iter-220).
+    ///
+    /// Firefox pushes `{"type": "tabNavigated", "state": "start", "url": …}`
+    /// — or `willNavigate` — the moment a link click, form submit, or
+    /// `location` assignment starts loading a new top-level document.  That
+    /// announcement is the only *positive* evidence a command has that the
+    /// action it just performed navigated: `getTarget` keeps handing back the
+    /// outgoing docshell for a while afterwards, so comparing target actor IDs
+    /// cannot tell the difference between "nothing happened" and "the document
+    /// is about to be replaced".
+    ///
+    /// [`recv`](Self::recv) latches it because that is the single choke point
+    /// every packet passes through, including the ones the reply/event loops
+    /// forward to the event sink or drop.  Returns `None` when no navigation
+    /// has been announced since the last call.
+    pub fn take_navigation_started(&mut self) -> Option<String> {
+        self.navigation_started.take()
     }
 
     /// Internal accessor used by [`recv_reply_from`] / [`recv_event_from`].
@@ -513,6 +540,13 @@ impl RdpTransport {
                 payload_size = serde_json::to_string(&value).map_or(0, |s| s.len()),
                 body = %serde_json::to_string(&redact(&value)).unwrap_or_default(),
             );
+        }
+
+        // iter-220: latch top-level navigation announcements here — the one
+        // choke point every packet passes through, including the events the
+        // reply/event loops forward to the sink or drop on the floor.
+        if let Some(url) = navigation_start_url(&value) {
+            self.navigation_started = Some(url);
         }
 
         Ok(value)
@@ -970,6 +1004,37 @@ fn recv_bulk_with_handler_from_with_cap<W: Write, R: BufRead>(
 ///
 /// On `error`-bearing replies, the helper converts the packet into a
 /// [`ProtocolError::ActorError`] using [`ActorErrorKind::from_code`].
+/// Extract the destination URL from a top-level navigation-start announcement.
+///
+/// Firefox pushes two shapes for "a new top-level document is on its way":
+/// `{"type": "willNavigate", "url": …}` and
+/// `{"type": "tabNavigated", "state": "start", "url": …}`.  A `tabNavigated`
+/// with `state: "stop"` reports a navigation that has *finished* and is not a
+/// start announcement.  Sub-frame loads travel as `frameUpdate`, not
+/// `tabNavigated`, so this never fires for an iframe.
+///
+/// Returns the URL string when the packet is a start announcement, `None`
+/// otherwise.  A start announcement with no `url` still counts, reported as an
+/// empty string, because the fact that a navigation began is the signal —
+/// the URL only refines it.
+fn navigation_start_url(msg: &Value) -> Option<String> {
+    let ty = msg.get("type").and_then(Value::as_str)?;
+    let is_start = match ty {
+        "willNavigate" => true,
+        "tabNavigated" => msg.get("state").and_then(Value::as_str) != Some("stop"),
+        _ => false,
+    };
+    if !is_start {
+        return None;
+    }
+    Some(
+        msg.get("url")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+    )
+}
+
 /// Recognise Firefox's announcement that the guarded target has been destroyed.
 ///
 /// Returns `Some(ProtocolError::EvalTargetDestroyed)` only when a guard is
@@ -980,6 +1045,17 @@ fn recv_bulk_with_handler_from_with_cap<W: Write, R: BufRead>(
 /// normally.
 fn target_destroyed_guard_hit(msg: &Value, guard: Option<u64>) -> Option<ProtocolError> {
     let guard = guard?;
+    // A top-level navigation started. Whatever the guarded target is still
+    // computing describes a document that is on its way out, and once its
+    // docshell goes Firefox drops the pending request without a word — so stop
+    // waiting now while the caller still has budget to re-resolve and retry.
+    // Only a guarded section asks for this, and a guarded section is by
+    // definition one the caller is prepared to redo.
+    if navigation_start_url(msg).is_some() {
+        return Some(ProtocolError::EvalTargetDestroyed {
+            inner_window_id: guard,
+        });
+    }
     if msg.get("type").and_then(Value::as_str)? != "target-destroyed-form" {
         return None;
     }
@@ -1821,6 +1897,7 @@ mod tests {
             writer,
             event_sink: None,
             target_guard: None,
+            navigation_started: None,
         };
 
         let msg = serde_json::json!({"type": "listTabs", "to": "root"});

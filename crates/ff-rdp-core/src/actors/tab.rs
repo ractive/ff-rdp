@@ -73,6 +73,15 @@ pub struct TargetInfo {
     ///
     /// [`RdpTransport::set_target_guard`]: crate::transport::RdpTransport::set_target_guard
     pub inner_window_id: Option<u64>,
+    /// The URL of the document this target is bound to.
+    ///
+    /// iter-220: the settle loop in `page_view::attach` compares this against
+    /// the destination URL Firefox announced in `tabNavigated` to tell a
+    /// same-document navigation (a `#fragment` link, where the URL flips
+    /// immediately and `innerWindowId` never changes) apart from a real
+    /// document swap.  Without it a hash link would burn the whole settle
+    /// budget waiting for an `innerWindowId` that is never going to change.
+    pub url: Option<String>,
 }
 
 /// Inspect a `tabNavigated` push packet and emit a `tracing::warn!` when the
@@ -281,6 +290,11 @@ fn parse_target_response_inner(
 
     let inner_window_id = inner.get("innerWindowId").and_then(Value::as_u64);
 
+    let url = inner
+        .get("url")
+        .and_then(Value::as_str)
+        .map(std::borrow::ToOwned::to_owned);
+
     Ok(TargetInfo {
         actor: actor.into(),
         console_actor: console_actor.into(),
@@ -292,6 +306,7 @@ fn parse_target_response_inner(
         manifest_actor,
         browsing_context_id,
         inner_window_id,
+        url,
     })
 }
 

@@ -260,7 +260,7 @@ pub enum ProtocolError {
     /// milliseconds, leaving the caller enough budget to re-resolve the target
     /// and retry against the document the action actually produced.
     #[error(
-        "the target was destroyed while the request was in flight (innerWindowId {inner_window_id}) — a navigation replaced the document, so Firefox will never reply"
+        "the document the request was sent to is being replaced by a navigation (innerWindowId {inner_window_id}) — Firefox will not reply; re-resolve the target and retry"
     )]
     EvalTargetDestroyed { inner_window_id: u64 },
 
