@@ -33,6 +33,7 @@
 //!       --test live live_220_navigating_action_with_page -- --nocapture
 
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
@@ -112,7 +113,7 @@ fn heavy_destination(count: usize) -> String {
         "<!doctype html><title>t220 destination</title><body><h1>Charles Babbage</h1>",
     );
     for i in 0..count {
-        body.push_str(&format!("<a href=\"/other#{i}\">difference engine {i}</a> "));
+        let _ = write!(body, "<a href=\"/other#{i}\">difference engine {i}</a> ");
     }
     body.push_str("</body>");
     body

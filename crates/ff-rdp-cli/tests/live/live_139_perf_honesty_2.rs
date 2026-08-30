@@ -317,6 +317,7 @@ fn live_139_audit_opaque_flagged_per_type() {
             content_type: "image/gif",
             body: PIXEL_GIF.to_vec(),
             extra_headers: Vec::new(), // no Timing-Allow-Origin — the point
+            ..FixtureRoute::default()
         },
     )])) else {
         eprintln!("live_139_audit_opaque_flagged_per_type: could not bind image server — skipping");
@@ -405,6 +406,7 @@ fn live_139_third_party_excludes_first_party() {
                 content_type: "image/gif",
                 body: PIXEL_GIF.to_vec(),
                 extra_headers: Vec::new(),
+                ..FixtureRoute::default()
             },
         ),
     ])) else {
@@ -533,6 +535,7 @@ fn live_139_perf_summary_text_bounded() {
                 content_type: "image/gif",
                 body: PIXEL_GIF.to_vec(),
                 extra_headers: Vec::new(),
+                ..FixtureRoute::default()
             },
         ),
     ])) else {

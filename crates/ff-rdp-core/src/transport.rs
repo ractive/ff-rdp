@@ -1586,9 +1586,7 @@ mod tests {
         });
         assert!(matches!(
             super::target_destroyed_guard_hit(&msg, Some(9)),
-            Some(ProtocolError::EvalTargetDestroyed {
-                inner_window_id: 9
-            })
+            Some(ProtocolError::EvalTargetDestroyed { inner_window_id: 9 })
         ));
     }
 
@@ -1637,8 +1635,10 @@ mod tests {
         );
         server.write_all(frame.as_bytes()).unwrap();
 
-        let err = recv_event_from(&mut transport, "server1.conn2.child9/consoleActor3", |_| true)
-            .expect_err("the guarded target went away — the reply is never coming");
+        let err = recv_event_from(&mut transport, "server1.conn2.child9/consoleActor3", |_| {
+            true
+        })
+        .expect_err("the guarded target went away — the reply is never coming");
         assert!(
             matches!(err, ProtocolError::EvalTargetDestroyed { .. }),
             "unexpected error: {err}"

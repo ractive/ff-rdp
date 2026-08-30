@@ -172,6 +172,7 @@ fn live_131_perf_opaque_transfer() {
             content_type: "image/gif",
             body: PIXEL_GIF.to_vec(),
             extra_headers: Vec::new(), // no Timing-Allow-Origin — the point of the test
+            ..FixtureRoute::default()
         },
     )])) else {
         eprintln!("live_131_perf_opaque_transfer: could not bind fixture server — skipping");
@@ -292,6 +293,7 @@ fn live_131_perf_transparent_transfer() {
                 content_type: "image/gif",
                 body: PIXEL_GIF.to_vec(),
                 extra_headers: Vec::new(),
+                ..FixtureRoute::default()
             },
         ),
     ])) else {

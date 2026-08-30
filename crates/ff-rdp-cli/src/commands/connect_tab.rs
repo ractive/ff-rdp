@@ -361,7 +361,9 @@ impl ConnectedTab {
     /// around a section they are prepared to retry — see
     /// [`crate::commands::page_view::attach`].
     pub(crate) fn set_target_guard(&mut self, inner_window_id: Option<u64>) {
-        self.session.transport_mut().set_target_guard(inner_window_id);
+        self.session
+            .transport_mut()
+            .set_target_guard(inner_window_id);
     }
 
     /// Take (and clear) the destination URL of the most recent top-level

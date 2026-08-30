@@ -685,6 +685,15 @@ pub(crate) fn attach(
 /// view of the outgoing page beats no view at all.
 const NAV_SETTLE_BUDGET_MS: u64 = 3_000;
 
+/// What a `phase: recv` timeout during page-view collection most likely means.
+///
+/// Appended to the timeout by [`AppError::with_timeout_hint`]. Written for
+/// someone reading a failed `click --with-page` in a script log, so it names
+/// the mechanism *and* the two things they can actually do about it.
+const TIMEOUT_HINT: &str = "the page view was being collected when the reply stopped coming — \
+     most often the action started a navigation and Firefox tore down the document mid-request. \
+     hint: re-run the read as a separate command (`ff-rdp a11y summary`), or raise --timeout.";
+
 /// Interval between `getTarget` polls while waiting for a navigation to commit.
 const NAV_SETTLE_POLL_MS: u64 = 25;
 
@@ -763,7 +772,11 @@ fn collect_settled(ctx: &mut ConnectedTab, opts: &CollectOptions) -> Result<Page
                 pending = ctx.take_navigation_started().or(pending);
                 last_err = Some(e);
             }
-            Err(e) => return Err(e),
+            // iter-220 Theme C. A recv timeout here means Firefox accepted the
+            // request and never answered, which for a page view has one likely
+            // cause worth naming — the bare "(phase: recv)" names the socket
+            // and leaves the reader to guess.
+            Err(e) => return Err(e.with_timeout_hint(TIMEOUT_HINT)),
         }
     }
 

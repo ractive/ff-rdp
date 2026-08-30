@@ -76,7 +76,20 @@ pub enum AppError {
     /// path the CLI constructs (iter-137 Theme B): a zero would claim the
     /// operation timed out instantly, which is never true and is exactly the
     /// nonsense the daemon-contention bug surfaced.
-    RdpTimeout { phase: String, after_ms: u64 },
+    RdpTimeout {
+        phase: String,
+        after_ms: u64,
+        /// Extra context from the call site about *why* the reply never came
+        /// (iter-220).
+        ///
+        /// The bare "operation timed out after 10000ms (phase: recv)" is true
+        /// and useless: it names the socket, not the cause. A caller that knows
+        /// what it was doing — collecting a page view immediately after an
+        /// action that navigated, say — attaches that here with
+        /// [`AppError::with_timeout_hint`], and it is rendered after the base
+        /// message. `None` renders exactly as before.
+        hint: Option<String>,
+    },
     /// Low-level transport I/O failure — exit 6.
     RdpTransport(String),
     /// Remote peer closed the connection — exit 6.
@@ -127,6 +140,34 @@ pub enum AppError {
 }
 
 impl AppError {
+    /// Attach call-site context to a timeout, explaining what the CLI was doing
+    /// when the reply failed to arrive (iter-220 Theme C).
+    ///
+    /// A bare `operation timed out after 10000ms (phase: recv)` names the
+    /// socket and nothing else — a user reading it cannot tell a slow page from
+    /// a request Firefox silently dropped, and the second is what actually
+    /// happens when a navigation destroys the docshell mid-request. A caller
+    /// that knows which of the two it was in adds that here.
+    ///
+    /// A no-op on every other variant, so callers can apply it to a whole
+    /// `Result` without matching first.
+    #[must_use]
+    pub fn with_timeout_hint(self, hint: impl Into<String>) -> Self {
+        match self {
+            Self::RdpTimeout {
+                phase,
+                after_ms,
+                hint: None,
+            } => Self::RdpTimeout {
+                phase,
+                after_ms,
+                hint: Some(hint.into()),
+            },
+            Self::Timeout(msg) => Self::Timeout(format!("{msg}\n{}", hint.into())),
+            other => other,
+        }
+    }
+
     /// Return the machine-readable discriminant string for JSON error output.
     pub fn error_type(&self) -> &'static str {
         match self {
@@ -288,18 +329,31 @@ impl fmt::Display for AppError {
                     "unexpected packet shape at {path}: expected {expected}, got {got}"
                 )
             }
-            Self::RdpTimeout { phase, after_ms } if *after_ms == 0 => {
+            Self::RdpTimeout {
+                phase,
+                after_ms,
+                hint,
+            } if *after_ms == 0 => {
                 // Defensive: the CLI no longer builds this shape (iter-137
                 // Theme B), but a `0` must never render as a duration claim.
                 write!(
                     f,
                     "operation timed out (phase: {phase}) — no reply arrived before the \
                      socket read deadline.\n\
-                     hint: raise --timeout, or use --no-daemon for a private connection to Firefox."
+                     hint: raise --timeout, or use --no-daemon for a private connection to Firefox.{}",
+                    hint.as_ref().map_or_else(String::new, |h| format!("\n{h}"))
                 )
             }
-            Self::RdpTimeout { phase, after_ms } => {
-                write!(f, "operation timed out after {after_ms}ms (phase: {phase})")
+            Self::RdpTimeout {
+                phase,
+                after_ms,
+                hint,
+            } => {
+                write!(
+                    f,
+                    "operation timed out after {after_ms}ms (phase: {phase}){}",
+                    hint.as_ref().map_or_else(String::new, |h| format!("\n{h}"))
+                )
             }
             Self::DaemonVersionMismatch { daemon, cli } => {
                 write!(
@@ -357,9 +411,11 @@ impl From<ff_rdp_core::RdpError> for AppError {
                 expected,
                 got,
             },
-            ff_rdp_core::RdpError::Timeout { phase, after_ms } => {
-                Self::RdpTimeout { phase, after_ms }
-            }
+            ff_rdp_core::RdpError::Timeout { phase, after_ms } => Self::RdpTimeout {
+                phase,
+                after_ms,
+                hint: None,
+            },
             ff_rdp_core::RdpError::Transport(io_err) => Self::RdpTransport(io_err.to_string()),
             ff_rdp_core::RdpError::RemoteClosed => {
                 Self::RdpRemoteClosed("remote connection closed unexpectedly".to_owned())
@@ -394,6 +450,7 @@ impl From<ff_rdp_core::ProtocolError> for AppError {
             ff_rdp_core::ProtocolError::Timeout => Self::RdpTimeout {
                 phase: "recv".to_owned(),
                 after_ms: socket_timeout_ms().unwrap_or(crate::cli::args::DEFAULT_TIMEOUT_MS),
+                hint: None,
             },
             ff_rdp_core::ProtocolError::ActorError {
                 kind,
@@ -654,6 +711,7 @@ mod tests {
             AppError::RdpTimeout {
                 ref phase,
                 after_ms,
+                ..
             } => {
                 assert_eq!(phase, "recv");
                 assert_eq!(
@@ -693,6 +751,7 @@ mod tests {
     #[test]
     fn unit_zero_after_ms_renders_without_a_duration_claim() {
         let rendered = AppError::RdpTimeout {
+            hint: None,
             phase: "recv".to_owned(),
             after_ms: 0,
         }
@@ -753,6 +812,7 @@ mod tests {
             ),
             (
                 AppError::RdpTimeout {
+                    hint: None,
                     phase: "recv".to_owned(),
                     after_ms: 10,
                 },
