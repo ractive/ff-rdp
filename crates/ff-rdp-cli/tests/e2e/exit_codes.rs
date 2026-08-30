@@ -71,18 +71,43 @@ fn exit_2_unknown_flag() {
     );
 }
 
+/// iter-212 Theme A deliberately retired the old "no subcommand exits 2".
+///
+/// Bare `ff-rdp` is now the home view and exits 0 — a missing browser is state,
+/// not an error (`tests/e2e/home.rs` covers what it prints). What still has to
+/// exit 2 is a genuine usage error, and this pins the pair so the rewrite in
+/// `main::parse_as_home` cannot widen into swallowing real mistakes.
+///
+/// Nothing in this repo scripted the old exit 2: the design note in
+/// `kb/iterations/iteration-212-ambient-context.md` records the
+/// `grep -rnE '(^|[^-alnum_/])ff-rdp[[:space:]]*$' kb tools crates` sweep run
+/// before the change, whose only hits were prose sentences ending in the
+/// product name.
 #[test]
-fn exit_2_missing_subcommand() {
-    // Running with no subcommand should exit 2 (clap usage error).
+fn exit_0_no_subcommand_is_the_home_view() {
     let output = std::process::Command::new(ff_rdp_bin())
         .output()
         .expect("failed to spawn ff-rdp");
 
-    // Clap exits 2 on missing subcommand.
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "bare `ff-rdp` is the home view and must exit 0; stderr: {}",
+        support::output_note(&output)
+    );
+}
+
+#[test]
+fn exit_2_unknown_subcommand() {
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(["no-such-subcommand"])
+        .output()
+        .expect("failed to spawn ff-rdp");
+
     assert_eq!(
         output.status.code(),
         Some(2),
-        "missing subcommand must exit 2; stderr: {}",
+        "an unknown subcommand must still exit 2; stderr: {}",
         support::output_note(&output)
     );
 }

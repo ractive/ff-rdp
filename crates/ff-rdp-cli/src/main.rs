@@ -46,6 +46,8 @@ fn find_subcommand_token(args: &[String]) -> Option<&str> {
         "--fields",
         "--format",
         "--log-level",
+        "--max-frame-mb",
+        "--redact-threshold",
     ];
 
     let mut iter = args.iter().skip(1); // skip program name
@@ -157,13 +159,62 @@ fn init_tracing(cli: &Cli) {
         .init();
 }
 
+/// The hidden subcommand bare `ff-rdp` resolves to (iter-212 Theme A).
+const HOME_SUBCOMMAND: &str = "home";
+
+/// Re-parse `argv` as if the user had typed the home subcommand.
+///
+/// Bare `ff-rdp` used to print clap's usage dump and exit 2 — an agent that
+/// tried it learned nothing about the browser it already had. It now prints
+/// live state and exits 0 (see `commands/home.rs`).
+///
+/// Implemented as a *retry* rather than by making `Cli::command` an `Option`,
+/// so the one behaviour that changes is the one this iteration meant to
+/// change:
+///
+/// * `ff-rdp --help` and `ff-rdp help` still render clap's own help, because
+///   those parse into `DisplayHelp` before this is ever consulted;
+/// * `ff-rdp scroll` (a real subcommand missing its own sub-subcommand) still
+///   errors, because `find_subcommand_token` sees `scroll` and refuses to
+///   rewrite;
+/// * global flags keep working — `ff-rdp --jq '.results.tabs | length'`
+///   becomes `ff-rdp --jq '…' home`.
+///
+/// Returns `None` when the rewritten argv does not parse, so the caller falls
+/// back to rendering clap's original error rather than a confusing one about a
+/// subcommand the user never typed.
+fn parse_as_home(argv: &[String], err: &clap::Error) -> Option<Cli> {
+    use clap::error::ErrorKind;
+    // `arg_required_else_help` (clap's default for a required subcommand)
+    // reports the bare invocation as DisplayHelpOnMissingArgumentOrSubcommand;
+    // MissingSubcommand covers the same case when a global flag was supplied.
+    if !matches!(
+        err.kind(),
+        ErrorKind::MissingSubcommand | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+    ) {
+        return None;
+    }
+    // Only a genuinely subcommand-less invocation is rewritten.
+    if find_subcommand_token(argv).is_some() {
+        return None;
+    }
+    let mut with_home = argv.to_vec();
+    with_home.push(HOME_SUBCOMMAND.to_owned());
+    Cli::try_parse_from(&with_home).ok()
+}
+
 fn main() {
+    use clap::error::ErrorKind;
+
     let argv: Vec<String> = std::env::args().collect();
     let cli = match Cli::try_parse_from(&argv) {
         Ok(cli) => cli,
         Err(err) => {
+            if let Some(cli) = parse_as_home(&argv, &err) {
+                run(&cli);
+                return;
+            }
             // Render clap's normal error (and exit on --help / --version).
-            use clap::error::ErrorKind;
             let kind = err.kind();
             let is_help_or_version =
                 matches!(kind, ErrorKind::DisplayHelp | ErrorKind::DisplayVersion);
@@ -206,7 +257,13 @@ fn main() {
         }
     };
 
-    init_tracing(&cli);
+    run(&cli);
+}
+
+/// Everything `main` does once a [`Cli`] has been parsed — shared by the
+/// normal path and by the bare-invocation home retry above.
+fn run(cli: &Cli) {
+    init_tracing(cli);
 
     // Apply transport knobs from the CLI before opening any RDP connection.
     // --max-frame-mb caps the receive frame size; --redact-threshold tunes
@@ -252,7 +309,7 @@ fn main() {
         eprintln!("warning: FF_RDP_TRACE_RAW is set — raw unredacted trace output enabled");
     }
 
-    let result = dispatch::dispatch(&cli);
+    let result = dispatch::dispatch(cli);
     match result {
         Ok(()) => {}
         Err(AppError::Exit(code)) => {
@@ -335,6 +392,38 @@ mod main_tests {
         assert!(!is_type_invocation(&args));
     }
 
+    /// iter-212 regression: `--max-frame-mb` and `--redact-threshold` are
+    /// value-taking globals (`cli/args.rs`) but were missing from
+    /// `VALUE_GLOBALS`, so `find_subcommand_token` mistook their value for a
+    /// subcommand token and `ff-rdp --max-frame-mb 512` (no real subcommand)
+    /// fell through to clap's usage-error dump instead of the bare-invocation
+    /// home view every other global flag gets.
+    #[test]
+    fn detects_type_after_max_frame_mb_and_redact_threshold() {
+        let args: Vec<String> = [
+            "ff-rdp",
+            "--max-frame-mb",
+            "512",
+            "--redact-threshold",
+            "128",
+            "type",
+            "--bogus",
+        ]
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+        assert!(is_type_invocation(&args));
+    }
+
+    #[test]
+    fn rejects_no_subcommand_after_max_frame_mb() {
+        let args: Vec<String> = ["ff-rdp", "--max-frame-mb", "512"]
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert!(!is_type_invocation(&args));
+    }
+
     // Boolean global flags (`--no-daemon`, `--all`, etc.) must NOT consume the
     // following token; otherwise the heuristic swallows `type` and the hint
     // never fires.
@@ -377,7 +466,7 @@ mod main_tests {
 
     // ── iter-132 Theme D: flag-vs-subcommand traps ───────────────────────────
 
-    use super::{Cli, flag_subcommand_trap_hint};
+    use super::{Cli, flag_subcommand_trap_hint, parse_as_home};
     use clap::Parser as _;
 
     fn args(argv: &[&str]) -> Vec<String> {
@@ -462,5 +551,40 @@ mod main_tests {
         let argv = args(&["ff-rdp", "scroll", "--stats"]);
         let err = expect_parse_err(&argv);
         assert!(flag_subcommand_trap_hint(&argv, &err).is_none());
+    }
+
+    // ── iter-212: bare-invocation home retry ─────────────────────────────────
+
+    /// A bare invocation carrying only value-taking global flags must still
+    /// resolve to the home view — this is the scenario the missing
+    /// `--max-frame-mb`/`--redact-threshold` entries in `VALUE_GLOBALS` broke:
+    /// their value token was mistaken for a subcommand, so `parse_as_home`
+    /// refused to rewrite and the caller fell through to clap's usage dump.
+    #[test]
+    fn parse_as_home_rewrites_bare_invocation_with_max_frame_mb() {
+        let argv = args(&[
+            "ff-rdp",
+            "--max-frame-mb",
+            "512",
+            "--redact-threshold",
+            "128",
+        ]);
+        let err = expect_parse_err(&argv);
+        assert!(
+            parse_as_home(&argv, &err).is_some(),
+            "a bare invocation with only value-taking globals must resolve to the home view"
+        );
+    }
+
+    /// A real subcommand missing its own required argument must NOT be
+    /// rewritten into the home view, even when it follows the same globals.
+    #[test]
+    fn parse_as_home_does_not_rewrite_a_real_subcommand() {
+        let argv = args(&["ff-rdp", "--max-frame-mb", "512", "scroll"]);
+        let err = expect_parse_err(&argv);
+        assert!(
+            parse_as_home(&argv, &err).is_none(),
+            "`scroll` with no sub-subcommand must keep its own error, not become `home`"
+        );
     }
 }

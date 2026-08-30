@@ -179,7 +179,10 @@ fn unit_162b_no_script_is_invoked_anywhere() {
     assert!(offenders.is_empty(), "{}", offenders.join("\n"));
 }
 
-/// The subcommand list after iter-162a (16 → 9) and iter-162b (9 → 8).
+/// The subcommand list after iter-162a (16 → 9), iter-162b (9 → 8) and
+/// iter-212 (8 → 10: `gen-skill` + `check-skill-drift`, which keep the bundled
+/// skill's command reference generated from the CLI's own tables rather than
+/// hand-written and unchecked).
 /// Pinned so a re-added gate has to be a deliberate edit here, not a drive-by.
 const EXPECTED_SUBCOMMANDS: &[&str] = &[
     "check-iteration-plan",
@@ -190,10 +193,12 @@ const EXPECTED_SUBCOMMANDS: &[&str] = &[
     "check-dogfood-script",
     "find-iteration-plan",
     "live-sweep",
+    "gen-skill",
+    "check-skill-drift",
 ];
 
 #[test]
-fn unit_162b_xtask_help_lists_eight() {
+fn unit_162b_xtask_help_matches_the_pinned_list() {
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_xtask"))
         .arg("--help")
         .output()
@@ -201,8 +206,9 @@ fn unit_162b_xtask_help_lists_eight() {
     assert!(out.status.success(), "xtask --help exited non-zero");
     let help = String::from_utf8_lossy(&out.stdout);
 
-    // Parse the `Commands:` block rather than substring-matching, so a NINTH
-    // subcommand — a re-added gate under a new name — fails here instead of
+    // Parse the `Commands:` block rather than substring-matching, so an
+    // unlisted subcommand — a re-added gate under a new name — fails here
+    // instead of
     // slipping through a set of `contains` checks.
     let listed = parse_subcommands(&help);
     let mut expected: Vec<&str> = EXPECTED_SUBCOMMANDS.to_vec();
@@ -243,7 +249,7 @@ fn parse_subcommands(help: &str) -> Vec<String> {
 }
 
 #[test]
-fn ci_162b_discipline_job_two_xtask_steps() {
+fn ci_162b_discipline_job_xtask_steps_are_pinned() {
     let ci = std::fs::read_to_string(workspace_root().join(".github/workflows/ci.yml"))
         .expect("reading ci.yml");
     let invocations: Vec<&str> = ci
@@ -253,10 +259,13 @@ fn ci_162b_discipline_job_two_xtask_steps() {
         .filter(|l| !l.starts_with('#'))
         .filter(|l| l.contains("cargo run -p xtask --"))
         .collect();
+    // 2 after iter-162b, 3 after iter-212 added `check-skill-drift`. The point
+    // of the count is that growing CI's gate list is a deliberate edit here,
+    // not that the number is 2 forever.
     assert_eq!(
         invocations.len(),
-        2,
-        "expected exactly 2 xtask steps in CI, found: {invocations:#?}"
+        3,
+        "expected exactly 3 xtask steps in CI, found: {invocations:#?}"
     );
     for line in &invocations {
         // Take the subcommand only — trailing arguments are legitimate.

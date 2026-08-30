@@ -68,7 +68,53 @@ Standalone `.deb` and `.rpm` packages (x86_64) are attached to each release as w
 
 ## First contact (for AI agents)
 
-If anything goes wrong, run `ff-rdp doctor` first — it pinpoints connection,
+Run `ff-rdp` with no arguments. It prints what is actually true right now —
+which binary you are running, whether a daemon and a browser are up, the open
+tabs, an accessibility view of the current page with `--ref` handles, and up to
+five `-> ff-rdp …` commands that make sense from that state — and exits 0 even
+when nothing is running, because a missing browser is state, not an error:
+
+```text
+ff-rdp 0.3.0 — drive a live Firefox from the shell — inspect, act on, and measure the page …
+bin: ~/.cargo/bin/ff-rdp
+daemon: running (pid 51234, firefox port 6000)
+browser: reachable at localhost:6000 (Firefox 143)
+
+TABS
+  * 1  Example Domain  https://example.com/
+
+HEADINGS
+  h1 Example Domain
+
+INTERACTIVE
+  [e1] link "More information..."
+
+-> ff-rdp click --ref e1
+-> ff-rdp page-text --query "<text>"
+-> ff-rdp snapshot --query "<text>"
+```
+
+`--format json` (or any `--jq` filter) returns the same thing as JSON, and it is
+the one command whose JSON carries `hints` — it is the orientation surface. It
+never starts anything: `launch` starts Firefox and `daemon start` starts the
+daemon.
+
+To get that view automatically at the start of every agent session, install the
+opt-in `SessionStart` hook:
+
+```sh
+ff-rdp install-hook --claude --dry-run   # print the entry, touch nothing
+ff-rdp install-hook --claude             # merge it into ~/.claude/settings.json
+ff-rdp install-hook --claude --uninstall # remove only the entry ff-rdp owns
+```
+
+It is idempotent (a second run reports a no-op and leaves the file
+byte-identical), repairs its own path in place if the binary moves, and never
+touches any hook it does not own. `--codex` and `--opencode` name their file
+locations and exit 1 rather than writing an entry whose format this build cannot
+verify would ever fire.
+
+If anything goes wrong, run `ff-rdp doctor` — it pinpoints connection,
 port, and version issues in one shot. The probes are:
 
 1. **Daemon registry** — is a daemon running and reachable?
@@ -80,6 +126,7 @@ port, and version issues in one shot. The probes are:
 A typical first-time session looks like:
 
 ```bash
+ff-rdp                                    # what's already up? (exit 0 either way)
 ff-rdp launch --headless --temp-profile   # start a fresh Firefox
 ff-rdp doctor                             # confirm everything is healthy
 ff-rdp navigate https://example.com --with-page   # do work, and see the page
@@ -406,6 +453,14 @@ ff-rdp install-skill --claude
 # → installs the ff-rdp-debug skill to ~/.claude/skills/ff-rdp-debug/
 # Skill is then available in any repo on your machine.
 ```
+
+The skill's command reference — its one-line description, quick start, command
+groups, and the `--ref` / `--query` / `--with-page` idioms — is *generated* from
+the CLI's own tables (`crates/ff-rdp-cli/src/commands/skill_doc.rs`), the same
+ones the no-args home view reads. Regenerate the marked region with
+`cargo run -p xtask -- gen-skill`; `cargo run -p xtask -- check-skill-drift`
+fails CI when the committed file and the generator disagree, so the skill cannot
+quietly describe a CLI that no longer exists.
 
 Inside Claude Code, trigger it with `/ff-rdp-debug` or natural-language
 prompts like "debug this page", "login doesn't work", "why is X

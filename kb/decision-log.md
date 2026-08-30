@@ -1857,3 +1857,71 @@ fire on a healthy sweep: a whole tier at default bounds with both env gates ran
 
 **Applies to**: `crates/xtask/src/live_sweep.rs`, `crates/xtask/src/main.rs`,
 `CONTRIBUTING.md`, `.claude/skills/iteration-close/SKILL.md`, iter-197.
+
+---
+
+## DEC-050: bare `ff-rdp` is a content-first view that exits 0; the session hook is opt-in
+
+**Decision** (iter-212): `ff-rdp` with no subcommand prints live state — binary
+path, one-line description, daemon, browser, tabs, an accessibility view of the
+focused page with `--ref` handles, and at most five `-> ff-rdp …` next steps —
+and **exits 0**. It printed clap's usage and exited 2 before.
+
+Three sub-decisions the implementation turns on:
+
+1. **Exit 0, always.** A missing browser is *state*, not an error. The old
+   exit 2 came from clap's `arg_required_else_help`, so nothing chose it. The
+   sweep required by the plan
+   (`grep -rnE '(^|[^-[:alnum:]_/])ff-rdp[[:space:]]*$' kb tools crates`) found
+   no scripted consumer: every hit was prose ending in the product name. The one
+   in-repo consumer was `tests/e2e/exit_codes.rs::exit_2_missing_subcommand`,
+   which this iteration replaced with the pair
+   `exit_0_no_subcommand_is_the_home_view` + `exit_2_unknown_subcommand` so the
+   usage-error path stays pinned.
+
+2. **A parse retry, not `Option<Command>`.** `main` re-parses argv with `home`
+   appended, and only when clap reported `MissingSubcommand` /
+   `DisplayHelpOnMissingArgumentOrSubcommand` *and* `find_subcommand_token`
+   found no subcommand at all. `--help`, `help`, `ff-rdp scroll` (a real
+   subcommand missing its own sub-subcommand) and every unknown-flag error keep
+   their existing behaviour untouched, which making the field optional would
+   have quietly changed.
+
+3. **The home view starts nothing.** It attaches to a daemon that is already
+   running — that is where the ref store lives, so `page` carries usable
+   `--ref` handles — but never auto-starts one. It runs on every agent session
+   through the hook, and a multi-second daemon spawn hidden behind a bare
+   command is a surprise no one asked for. `launch` and `daemon start` remain
+   the commands that start things.
+
+**Hints in JSON, here only.** The home view is the single command whose JSON
+payload carries `hints`. It is the orientation surface and the hook consumes
+it; every other command keeps hints out of JSON because agents read those
+through `--jq` and pipes (the iteration-211 review dropped the proposal to
+generalise it).
+
+**The hook is opt-in, marked, and repairs itself.** `install-hook --claude`
+merges one `SessionStart` entry into `~/.claude/settings.json`, marked
+`"ff_rdp_managed": true`. Ownership is that key and never "the command mentions
+ff-rdp", so a hand-written ff-rdp hook survives `--uninstall`. A second install
+is a no-op that does not open the file for writing (the AC is about *bytes*); a
+moved binary is rewritten in place rather than duplicated.
+
+**`--codex` / `--opencode` exit 1 rather than write.** The plan's rule — "if a
+target's format cannot express a session-start command, say so and exit 1
+rather than writing something inert" — was applied one step wider: neither
+target's entry format could be *verified* from this build, and an entry with
+the wrong shape parses, never fires, and looks installed forever. Both name
+their file location (`~/.codex/hooks.json` with `[features] hooks = true`;
+`~/.config/opencode/plugins/`) and point at `--claude`. This is the plan's
+Theme B third task left deliberately undone, not delivered — see the
+iteration's Outcome section.
+
+**One source for the agent-facing docs.** The command groups, the quick start
+and the `--ref`/`--query`/`--with-page` idioms live in
+`crates/ff-rdp-cli/src/commands/skill_doc.rs`. The home view's description and
+its page-loaded hints are built from those same tables, and the marked region
+of `skills/ff-rdp-debug/SKILL.md` is generated from them by
+`cargo run -p xtask -- gen-skill`. `check-skill-drift` fails CI on a mismatch.
+The rest of `SKILL.md` — the symptom router, the playbooks, the output contract
+— stays hand-written prose, because generating that would have destroyed it.
