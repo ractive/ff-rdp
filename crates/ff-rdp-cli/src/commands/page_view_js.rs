@@ -305,24 +305,46 @@ const READER_BLOCK_JS: &str = r#"
       for (var zi = 0; zi < result.interactive.length; zi++) {
         result.interactive[zi].zone = inContent['k' + zi] ? 'content' : 'chrome';
       }
-      __ffrdpSetText(result, __ffrdpBlockText(contentRoot));
+      // Readability decided the zones; the text may still have to come from
+      // elsewhere. It scores a sign-in form or a dashboard as an "article"
+      // often enough, and on such a page the article element holds labels and
+      // widgets rather than prose blocks — so `__ffrdpBlockText` finds nothing
+      // and the honest answer is the rendered text, labelled as such.
+      var blocks = __ffrdpBlockText(contentRoot);
+      if (blocks) {
+        __ffrdpSetText(result, blocks);
+      } else {
+        result.source = 'innertext';
+        __ffrdpSetText(result, __ffrdpNormLines(__ffrdpRenderedText()));
+      }
     } else {
-      // No article: a dashboard, a form, an SPA without prose. Fall back to
-      // the main region's rendered text and zone against that region, so the
-      // ordering is still better than DOM order wherever a <main> exists.
+      // No article at all: a dashboard, a form, an SPA without prose. Zone
+      // against the main region instead, so the ordering is still better than
+      // DOM order wherever a <main> exists.
       result.source = 'innertext';
-      var fallbackRoot = document.querySelector('main')
-        || document.querySelector('[role="main"]')
-        || document.body;
+      var fallbackRoot = __ffrdpMainRegion();
       for (var fi = 0; fi < result.interactive.length; fi++) {
         var inMain = false;
         try { inMain = !!(fallbackRoot && fallbackRoot.contains(__els[fi])); } catch (e) { inMain = false; }
         result.interactive[fi].zone = inMain ? 'content' : 'chrome';
       }
-      var raw = '';
-      if (fallbackRoot) { raw = fallbackRoot.innerText || fallbackRoot.textContent || ''; }
-      __ffrdpSetText(result, __ffrdpNormLines(raw));
+      __ffrdpSetText(result, __ffrdpNormLines(__ffrdpRenderedText()));
     }
+  }
+
+  // The page's main region, or the body when it declares none.
+  function __ffrdpMainRegion() {
+    return document.querySelector('main')
+      || document.querySelector('[role="main"]')
+      || document.body;
+  }
+
+  // Rendered text of the main region, read off the LIVE document — `innerText`
+  // needs layout, and the detached clone Readability parsed has none.
+  function __ffrdpRenderedText() {
+    var root = __ffrdpMainRegion();
+    if (!root) { return ''; }
+    return root.innerText || root.textContent || '';
   }
 
   // Whitespace normalisation without `String.prototype.replace` or a regex:
@@ -364,10 +386,11 @@ const READER_BLOCK_JS: &str = r#"
       var t = __ffrdpNorm(blocks[bi].textContent);
       if (t) { lines[lines.length] = t; }
     }
-    if (lines.length === 0) {
-      var whole = __ffrdpNorm(root.textContent);
-      return whole ? whole : '';
-    }
+    // No prose blocks at all: say so with an empty string rather than
+    // returning `root.textContent`, which runs every label and widget together
+    // into one unreadable line. The caller falls back to rendered text and
+    // relabels `source` accordingly.
+    if (lines.length === 0) { return ''; }
     var joined = '';
     for (var li = 0; li < lines.length; li++) {
       if (li > 0) { joined += '\n'; }

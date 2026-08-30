@@ -233,14 +233,30 @@ fn live_219_content_links_outrank_chrome_in_the_capped_view() {
         .unwrap_or_else(|| panic!("a content entry must carry a usable ref: {nav}"));
     assert!(ref_id.starts_with('e'), "ref {ref_id:?}: {nav}");
 
-    assert!(
-        entry_named(page, "Jump to content").is_none(),
-        "site chrome must not displace the article inside the cap: {nav}"
-    );
+    let entries = page["interactive"]
+        .as_array()
+        .unwrap_or_else(|| panic!("page.interactive must be an array: {nav}"));
+    assert_eq!(entries.len(), 50, "the cap is unchanged at 50: {nav}");
     assert_eq!(
-        page["interactive"].as_array().map(Vec::len),
-        Some(50),
-        "the cap is unchanged at 50: {nav}"
+        entries[0]["name"], "Charles Babbage",
+        "content leads the list — the cap must fall on the nav, not the article: {nav}"
+    );
+    // Ordering, not membership: this fixture has one content link and 81 nav
+    // links, so 49 chrome entries legitimately fill the rest of the cap. What
+    // must never happen is a content entry sorted *after* a chrome one.
+    let first_chrome = entries
+        .iter()
+        .position(|e| e["zone"] == "chrome")
+        .unwrap_or(entries.len());
+    assert!(
+        entries[first_chrome..]
+            .iter()
+            .all(|e| e["zone"] == "chrome"),
+        "no content entry may sort after a chrome one: {nav}"
+    );
+    assert!(
+        entry_named(page, "Nav item 79").is_none(),
+        "the cap must drop the tail of the navigation bar: {nav}"
     );
     assert_eq!(page["interactive_truncated"], true, "{nav}");
     let omitted = page["chrome_omitted"]
