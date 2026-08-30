@@ -180,7 +180,7 @@ junk-description guard on excerpts port directly; its benchmark lesson — agent
 - [ ] Update `kb/research/axi-benchmark-comparison.md` with the two-task result and the
       `--with-page` adoption count in those six runs
 
-## Acceptance Criteria [4/7]
+## Acceptance Criteria [5/7]
 
 - [x] `ff-rdp navigate https://en.wikipedia.org/wiki/Ada_Lovelace --with-page` returns the
       "Charles Babbage" link with a usable `ref` and `zone: "content"` inside the 50-entry cap,
