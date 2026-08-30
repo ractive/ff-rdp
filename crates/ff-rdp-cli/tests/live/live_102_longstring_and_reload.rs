@@ -124,7 +124,7 @@ fn live_dom_text_longstring_roundtrip() {
         capped_json["meta"]["total_chars"]
             .as_u64()
             .is_some_and(|n| n >= BIG_LEN as u64),
-        "the default cap must still report the whole reassembled LongString in          meta.total_chars: {}",
+        "the default cap must still report the whole reassembled LongString in meta.total_chars: {}",
         crate::common::output_note(&capped)
     );
     assert_eq!(
