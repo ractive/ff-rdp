@@ -1035,14 +1035,39 @@ fn navigation_start_url(msg: &Value) -> Option<String> {
     )
 }
 
-/// Recognise Firefox's announcement that the guarded target has been destroyed.
+/// Recognise Firefox's announcement that the guarded target has been destroyed
+/// — or is about to be.
 ///
-/// Returns `Some(ProtocolError::EvalTargetDestroyed)` only when a guard is
-/// installed (see [`RdpTransport::set_target_guard`]) *and* the incoming packet
-/// is a `target-destroyed-form` naming exactly that `innerWindowId`.  Every
-/// other packet — including `target-destroyed-form` for some *other* document,
-/// which is routine on a page with iframes — returns `None` and is handled
-/// normally.
+/// Fires (`Some(ProtocolError::EvalTargetDestroyed)`) only when a guard is
+/// installed (see [`RdpTransport::set_target_guard`]), on either of two
+/// packet shapes:
+///
+/// - a `target-destroyed-form` naming exactly the guarded `innerWindowId` —
+///   every other one, including one for some *other* document (routine on a
+///   page with iframes), is ignored;
+/// - **any** top-level navigation-start announcement
+///   ([`navigation_start_url`]), regardless of destination. This one does
+///   *not* check the announcement against the guarded document, on the
+///   assumption documented below.
+///
+/// Every other packet returns `None` and is handled normally.
+///
+/// # The "any navigation start" branch relies on one target per connection
+///
+/// A guard is armed for, at most, one in-flight collection against one
+/// document. On the connections this ships against today — one Firefox tab
+/// per `RdpTransport`, no concurrent guarded section on the same connection —
+/// *any* top-level navigation-start seen while a guard is armed can only be
+/// about the guarded document, so not checking the destination costs nothing
+/// and buys the no-daemon route (which never sees `target-destroyed-form` at
+/// all — see [`RdpTransport::set_target_guard`]) its only signal.
+///
+/// This stops holding the moment a connection can carry navigation-start
+/// events for a document *other* than the one guarded — e.g. a future
+/// multi-tab feature sharing one transport, or a daemon-proxied connection
+/// that starts forwarding events for a sibling client's tab. Either would
+/// need this to filter by destination/actor identity before the coarse
+/// fallback fires; nothing here does that today (iter-220 review finding).
 fn target_destroyed_guard_hit(msg: &Value, guard: Option<u64>) -> Option<ProtocolError> {
     let guard = guard?;
     // A top-level navigation started. Whatever the guarded target is still

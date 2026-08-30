@@ -383,6 +383,26 @@ impl ConnectedTab {
         self.session.transport_mut().take_navigation_started()
     }
 
+    /// Arm [`set_target_guard`](Self::set_target_guard) for the returned
+    /// scope's lifetime and disarm it automatically when the scope drops
+    /// (iter-220 review finding).
+    ///
+    /// `set_target_guard`/`take_navigation_started`-style manual arm/clear
+    /// pairs rely on every call site remembering the second half; a `?`
+    /// early-return added between them later — or a panic unwinding out of
+    /// the guarded section — would leave the guard armed for a later,
+    /// unrelated wait on the same connection. This makes clearing it
+    /// structural instead of a doc-comment promise: the scope
+    /// `Deref`/`DerefMut`s to `ConnectedTab`, so a caller passes `&mut scope`
+    /// anywhere a `&mut ConnectedTab` is expected, same as `ctx` itself.
+    pub(crate) fn arm_target_guard(
+        &mut self,
+        inner_window_id: Option<u64>,
+    ) -> TargetGuardScope<'_> {
+        self.set_target_guard(inner_window_id);
+        TargetGuardScope { ctx: self }
+    }
+
     /// Build a `ConnectedTab` directly from a transport and console actor ID,
     /// bypassing the connect + `getTarget` handshake.
     ///
@@ -411,5 +431,35 @@ impl ConnectedTab {
             tab_actor: ActorId::from("conn0/tab1"),
             via_daemon: false,
         }
+    }
+}
+
+/// RAII scope returned by [`ConnectedTab::arm_target_guard`] (iter-220).
+///
+/// Disarms the target guard on drop, however the scope ends — a normal fall
+/// through, an early `return`/`?`, or a panic unwinding out of it — so a
+/// guarded section cannot leave the guard armed for whatever the connection
+/// waits on next. See [`ConnectedTab::arm_target_guard`]'s doc comment.
+pub(crate) struct TargetGuardScope<'a> {
+    ctx: &'a mut ConnectedTab,
+}
+
+impl std::ops::Deref for TargetGuardScope<'_> {
+    type Target = ConnectedTab;
+
+    fn deref(&self) -> &ConnectedTab {
+        self.ctx
+    }
+}
+
+impl std::ops::DerefMut for TargetGuardScope<'_> {
+    fn deref_mut(&mut self) -> &mut ConnectedTab {
+        self.ctx
+    }
+}
+
+impl Drop for TargetGuardScope<'_> {
+    fn drop(&mut self) {
+        self.ctx.set_target_guard(None);
     }
 }

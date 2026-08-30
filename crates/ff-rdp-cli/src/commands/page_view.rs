@@ -674,15 +674,20 @@ pub(crate) fn attach(
     Ok(())
 }
 
-/// How long [`collect_settled`] will wait for a navigation the action started
-/// to hand over a new document before giving up and collecting whatever the
-/// tab reports (iter-220).
+/// Upper bound [`collect_settled`] will wait, per attempt, for a navigation
+/// the action started to hand over a new document before giving up and
+/// collecting whatever the tab reports (iter-220).
 ///
 /// Deliberately far below the default `--timeout` of 10 s: the wait is a
 /// *poll of `getTarget`*, which the parent process answers in a millisecond or
 /// two even while the content process is busy, so 3 s is many times what a
 /// commit needs. Exceeding it means the destination is genuinely slow, and a
 /// view of the outgoing page beats no view at all.
+///
+/// This bounds one call to [`settle_after_navigation`] — `collect_settled`
+/// additionally shrinks it against the caller's own `--timeout` on later
+/// attempts, so `NAV_COLLECT_ATTEMPTS` retries cannot silently add up to far
+/// more settle-polling than the caller asked for (iter-220 review finding).
 const NAV_SETTLE_BUDGET_MS: u64 = 3_000;
 
 /// What a `phase: recv` timeout during page-view collection most likely means.
@@ -753,29 +758,50 @@ fn collect_settled(ctx: &mut ConnectedTab, opts: &CollectOptions) -> Result<Page
     let mut pending = ctx.take_navigation_started();
     let mut last_err = None;
 
-    for _ in 0..NAV_COLLECT_ATTEMPTS {
+    // iter-220 review finding: NAV_COLLECT_ATTEMPTS × NAV_SETTLE_BUDGET_MS is,
+    // uncoordinated, several seconds of settle-polling alone — on top of
+    // collection itself — with nothing tying it to the caller's own
+    // `--timeout`. Track that budget here: stop retrying once it is spent,
+    // and shrink each settle wait to what is actually left of it, so a small
+    // `--timeout` bounds this call the way it bounds everything else instead
+    // of `collect_settled` always running all `NAV_COLLECT_ATTEMPTS` regardless.
+    let overall_deadline = opts
+        .wait_complete_ms
+        .map(|ms| Instant::now() + Duration::from_millis(ms));
+
+    for attempt in 0..NAV_COLLECT_ATTEMPTS {
+        if attempt > 0 && overall_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            break;
+        }
+
         // The document the action ran against. When a navigation is under way
         // this is precisely the docshell that must NOT be collected from.
         let before = ctx.target.inner_window_id;
         if let Some(dest) = pending.as_deref() {
-            settle_after_navigation(ctx, dest, before);
+            let settle_budget =
+                overall_deadline.map_or(Duration::from_millis(NAV_SETTLE_BUDGET_MS), |deadline| {
+                    Duration::from_millis(NAV_SETTLE_BUDGET_MS)
+                        .min(deadline.saturating_duration_since(Instant::now()))
+                });
+            settle_after_navigation(ctx, dest, before, settle_budget);
         } else {
             ctx.refresh_target();
         }
 
         let console_actor = ctx.target.console_actor.clone();
-        // Arm the guard for the collection only. Anything else on this
-        // connection keeps the pre-iter-220 behaviour of waiting for its reply.
-        ctx.set_target_guard(ctx.target.inner_window_id);
-        let outcome = collect(ctx, &console_actor, opts);
-        ctx.set_target_guard(None);
+        // Arm the guard for the collection only — the returned scope disarms
+        // it on drop (end of this iteration) however the attempt ends,
+        // including the early returns below (iter-220 review finding: no
+        // longer a manual arm/clear pair a future call site could unbalance).
+        let mut guarded = ctx.arm_target_guard(ctx.target.inner_window_id);
+        let outcome = collect(&mut guarded, &console_actor, opts);
 
         match outcome {
             Ok(page) => return Ok(page),
             Err(e @ AppError::RdpActorDestroyed { .. }) => {
                 // Another navigation landed while we were collecting. Take its
                 // destination (`recv` latched it) and go round again.
-                pending = ctx.take_navigation_started().or(pending);
+                pending = guarded.take_navigation_started().or(pending);
                 last_err = Some(e);
             }
             // iter-220 Theme C. A recv timeout here means Firefox accepted the
@@ -794,7 +820,7 @@ fn collect_settled(ctx: &mut ConnectedTab, opts: &CollectOptions) -> Result<Page
 }
 
 /// Poll `getTarget` until the tab stops reporting the document the action was
-/// performed on, or [`NAV_SETTLE_BUDGET_MS`] elapses.
+/// performed on, or `budget` elapses.
 ///
 /// Two independent exit conditions, because neither alone covers both kinds of
 /// navigation:
@@ -806,10 +832,34 @@ fn collect_settled(ctx: &mut ConnectedTab, opts: &CollectOptions) -> Result<Page
 ///   `innerWindowId`, so waiting on the id alone would burn the whole budget on
 ///   a page that was ready immediately.
 ///
-/// Returning after the budget is not an error: the caller collects whatever the
-/// tab reports and the view says which document it describes.
-fn settle_after_navigation(ctx: &mut ConnectedTab, destination: &str, before: Option<u64>) {
-    let deadline = Instant::now() + Duration::from_millis(NAV_SETTLE_BUDGET_MS);
+/// When **neither** signal is available — `before` is `None` because this
+/// Firefox build's `getTarget` reply omitted `innerWindowId`
+/// ([`ff_rdp_core::TargetInfo::inner_window_id`] tolerates that; see
+/// `actors::tab`'s "tolerates absent" test), and `destination` is empty because the
+/// navigation announcement carried no `url` — there is nothing here that can
+/// ever flip, so this returns immediately instead of silently spending the
+/// whole `budget` on every navigating collection for a case waiting cannot
+/// help (iter-220 review finding).
+///
+/// Returning after the budget (or immediately, in the no-signal case) is not
+/// an error: the caller collects whatever the tab reports and the view says
+/// which document it describes.
+fn settle_after_navigation(
+    ctx: &mut ConnectedTab,
+    destination: &str,
+    before: Option<u64>,
+    budget: Duration,
+) {
+    if before.is_none() && destination.is_empty() {
+        tracing::debug!(
+            target: "ff_rdp_cli::page_view",
+            "collect_settled: no innerWindowId and no destination URL — cannot detect \
+             settlement, collecting without waiting"
+        );
+        ctx.refresh_target();
+        return;
+    }
+    let deadline = Instant::now() + budget;
     loop {
         ctx.refresh_target();
         let changed_document = before.is_some() && ctx.target.inner_window_id != before;
