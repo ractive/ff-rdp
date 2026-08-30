@@ -315,6 +315,14 @@ ff-rdp navigate <URL> --with-page --query "sign in"
 # `document.readyState == "complete"` — so a click that navigates reports the
 # DESTINATION page. `meta.page_ready` is false if that wait timed out;
 # `meta.page_refs_registered` says whether the refs are usable (daemon only).
+#
+# Since iter-220 that holds on a slow destination too. Firefox keeps handing
+# back the OUTGOING document for a while after a click — same `innerWindowId`,
+# same URL, only a fresh actor prefix — so refreshing the target is not enough:
+# collecting from it returned the page you left, or hung until `--timeout`
+# because Firefox drops a request whose docshell has gone. `--with-page` now
+# waits (up to 3 s) for the navigation the action started to hand over a
+# document. Nothing navigated, nothing waited for.
 
 # Refs no longer come only from `dom <selector>`: `a11y summary` and `snapshot`
 # register them too, so the first thing you read after navigating already

@@ -580,6 +580,69 @@ mod tests {
         );
     }
 
+    // ── with_timeout_hint (iter-220 Theme C) ────────────────────────────────
+
+    #[test]
+    fn with_timeout_hint_appends_to_an_rdp_timeout() {
+        let rendered = AppError::RdpTimeout {
+            phase: "recv".to_owned(),
+            after_ms: 10_000,
+            hint: None,
+        }
+        .with_timeout_hint("the page navigated mid-collection")
+        .to_string();
+        assert!(
+            rendered.contains("operation timed out after 10000ms (phase: recv)"),
+            "the base message must survive: {rendered}"
+        );
+        assert!(
+            rendered.contains("the page navigated mid-collection"),
+            "the hint must be rendered: {rendered}"
+        );
+    }
+
+    #[test]
+    fn with_timeout_hint_does_not_overwrite_an_existing_hint() {
+        // An inner call site's diagnosis is closer to the failure than an
+        // outer one's; the outer must not clobber it.
+        let rendered = AppError::RdpTimeout {
+            phase: "recv".to_owned(),
+            after_ms: 10_000,
+            hint: Some("first diagnosis".to_owned()),
+        }
+        .with_timeout_hint("second diagnosis")
+        .to_string();
+        assert!(rendered.contains("first diagnosis"), "{rendered}");
+        assert!(!rendered.contains("second diagnosis"), "{rendered}");
+    }
+
+    #[test]
+    fn with_timeout_hint_is_a_noop_on_other_variants() {
+        let err = AppError::User("bad selector".to_owned()).with_timeout_hint("irrelevant");
+        let rendered = err.to_string();
+        assert_eq!(rendered, "bad selector");
+        assert_eq!(err.error_type(), "User");
+    }
+
+    #[test]
+    fn eval_target_destroyed_maps_to_actor_destroyed() {
+        // iter-220: `page_view::collect_settled` branches on this variant to
+        // re-resolve the target and retry, so the mapping is load-bearing.
+        let err = AppError::from(ff_rdp_core::ProtocolError::EvalTargetDestroyed {
+            inner_window_id: 15_032_385_539,
+        });
+        match err {
+            AppError::RdpActorDestroyed { ref actor } => {
+                assert!(
+                    actor.contains("15032385539"),
+                    "the destroyed document must be named: {actor}"
+                );
+            }
+            ref other => panic!("expected RdpActorDestroyed, got {other:?}"),
+        }
+        assert_eq!(err.exit_code(), 3);
+    }
+
     // ── RdpActorDestroyed ────────────────────────────────────────────────────
 
     #[test]
