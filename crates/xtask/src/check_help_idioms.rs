@@ -125,6 +125,23 @@ pub fn quick_start_commands(skill_block: &str) -> Vec<String> {
         .collect()
 }
 
+/// The slice of `--help` from its `Quick start` heading to the following
+/// `Usage:` line — the region agents actually read (42/42 benchmark runs
+/// opened with `--help`, several through `head -50`), and the one this gate
+/// pins the idioms into. Falls back to the whole help when either marker is
+/// missing, so a reworded help degrades to the old whole-output match rather
+/// than passing vacuously on an empty region.
+pub fn quick_start_region(help: &str) -> &str {
+    let Some(start) = help.find("Quick start") else {
+        return help;
+    };
+    let tail = &help[start..];
+    match tail.find("\nUsage:") {
+        Some(end) => &tail[..end],
+        None => tail,
+    }
+}
+
 /// Which of `needles` are missing from `help`.
 pub fn missing<'a>(help: &str, needles: &'a [String]) -> Vec<&'a String> {
     needles
@@ -149,9 +166,16 @@ pub fn run(args: Args) -> Result<()> {
         bail!("`ff-rdp skill-doc` produced no Quick start commands");
     }
 
+    // iter-219 review: match idiom flags against the Quick start region only.
+    // `--query` is a real flag on several subcommands, so a whole-help
+    // substring match passes even when the Quick start block dropped the
+    // idiom — exactly the drift this gate exists to catch.
+    let region = quick_start_region(&help);
     let mut failures: Vec<String> = Vec::new();
-    for m in missing(&help, &syntaxes) {
-        failures.push(format!("idiom `{m}` is not mentioned in `ff-rdp --help`"));
+    for m in missing(region, &syntaxes) {
+        failures.push(format!(
+            "idiom `{m}` is not mentioned in `ff-rdp --help`'s Quick start block"
+        ));
     }
     for m in missing(&help, &commands) {
         failures.push(format!(
@@ -227,6 +251,26 @@ Some prose.
         let gaps = missing(stale, &syntaxes);
         assert_eq!(gaps.len(), 1);
         assert_eq!(gaps[0], "--query");
+    }
+
+    /// iter-219 review: the idiom match is scoped to `--help`'s Quick start
+    /// block — a flag mentioned only in some subcommand's summary must not
+    /// satisfy the gate.
+    #[test]
+    fn unit_219_idioms_outside_quick_start_do_not_count() {
+        let syntaxes = idiom_syntaxes(BLOCK);
+        let help = "Quick start:\n  ff-rdp click --ref e3\n  ff-rdp page-text --query \"x\"\n  ff-rdp click --ref e3 --with-page\n\nUsage: ff-rdp <COMMAND>\n  page-text --query elsewhere";
+        assert!(missing(quick_start_region(help), &syntaxes).is_empty());
+
+        // Same flags present, but only *below* Usage: — the region match
+        // must report all three as missing.
+        let drifted =
+            "Quick start:\n  ff-rdp launch\n\nUsage: ff-rdp <COMMAND>\n  --ref --query --with-page";
+        assert_eq!(missing(quick_start_region(drifted), &syntaxes).len(), 3);
+
+        // No markers at all: degrade to the whole-help match, not an empty
+        // region that passes vacuously.
+        assert_eq!(quick_start_region("no markers"), "no markers");
     }
 
     #[test]

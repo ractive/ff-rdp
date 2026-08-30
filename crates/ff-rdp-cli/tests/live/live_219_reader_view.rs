@@ -181,7 +181,10 @@ fn hostile_fixture() -> HashMap<String, FixtureRoute> {
              collector might reasonably have reached for.</p>\
              <p>A second paragraph follows so Readability has enough text to score the \
              article as content rather than as boilerplate chrome.</p>\
-             <a href=\"/deep\">Deep link</a></article></main></body></html>",
+             <a href=\"/deep\">Deep link</a>\
+             <span id=\"hostile-label\" hidden>Labelled link</span>\
+             <a href=\"/labelled\" aria-labelledby=\"hostile-label\">x</a>\
+             </article></main></body></html>",
         ),
     );
     routes
@@ -466,6 +469,12 @@ fn live_219_hostile_builtins_do_not_corrupt_the_view() {
     assert!(
         entry_named(page, "Deep link").is_some(),
         "the in-article link must still be collected: {nav}"
+    );
+    // iter-219 review: the aria-labelledby branch of __ffrdpAccName is the one
+    // acc-name path that used the patched built-ins — exercise it explicitly.
+    assert!(
+        entry_named(page, "Labelled link").is_some(),
+        "an aria-labelledby name must survive the patched built-ins: {nav}"
     );
 
     stop_daemon(port);

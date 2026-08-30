@@ -113,7 +113,14 @@ const JSON_WRITER_JS: &str = r#"
 /// The bundle's two files declare `function Readability` and `function
 /// isProbablyReaderable` at the top level of *this* IIFE, so nothing but the
 /// handle escapes into the page's global scope — a page cannot shadow
-/// `Readability` and change what ff-rdp reports. `performance.now` is captured
+/// `Readability` after a successful injection, and a plain pre-set global
+/// squatting on the handle's name is overwritten rather than trusted (the
+/// bootstrap reuses a handle only if its property descriptor is
+/// non-configurable + non-writable, the object is frozen, and it carries the
+/// two functions). Residual risk, stated plainly: a page that pins its own
+/// non-configurable fake before ff-rdp's first eval keeps the name; the
+/// collector's shape check cannot tell that fake from the real bundle.
+/// `performance.now` is captured
 /// here too: the timing in `meta.page_parse_ms` is measured with the clock the
 /// page had at injection time, not one it swapped in afterwards.
 ///
@@ -127,8 +134,20 @@ pub(crate) fn build_injection_js() -> String {
     format!(
         r#"(function() {{
   try {{
-    var existing = window.{prop};
-    if (existing && existing.v === {version}) {{ return; }}
+    /* Reuse the handle only when it can actually be ours: defined by a
+       defineProperty like the one below (non-configurable, non-writable),
+       frozen, version-matched, and carrying a Readability function. A page
+       that merely pre-set `window.{prop} = {{v: {version}}}` (writable,
+       configurable) is squatting on the name to feed us its own functions —
+       fall through and let defineProperty overwrite it. A page that pins a
+       non-configurable fake wins the name, but the collector's shape check
+       then sees its handle, which is the residual risk documented on
+       build_injection_js. */
+    var d = Object.getOwnPropertyDescriptor(window, '{prop}');
+    if (d && d.configurable === false && d.writable === false &&
+        d.value && d.value.v === {version} && Object.isFrozen(d.value) &&
+        typeof d.value.Readability === 'function' &&
+        typeof d.value.isProbablyReaderable === 'function') {{ return; }}
   }} catch (e) {{ /* a getter that throws is treated as "not injected" */ }}
 {readability}
 ;
@@ -477,16 +496,21 @@ mod tests {
     /// Theme D, the array half: this module's own templates never call a
     /// method a page can replace on `Array.prototype`. The check is scoped to
     /// the templates rather than the assembled script because the shared
-    /// `__ffrdpAccName` helper (iter-211, used by `dom` too) predates the
-    /// rule — hardening it is a change to `js_helpers`, not to this module,
-    /// and would need `dom`'s tests moved with it.
+    /// `__ffrdpAccName` helper (iter-211, used by `dom` too) was hardened to
+    /// the same rule during the iter-219 review, so it is pinned here with
+    /// the templates it gets spliced into.
     #[test]
     fn collector_templates_avoid_mutable_array_builtins() {
+        let acc_name = crate::commands::js_helpers::acc_name_js_fn();
         for (name, template) in [
             ("PAGE_VIEW_JS_TEMPLATE", PAGE_VIEW_JS_TEMPLATE),
             ("LANDMARKS_BLOCK_JS", LANDMARKS_BLOCK_JS),
             ("READER_BLOCK_JS", READER_BLOCK_JS),
             ("JSON_WRITER_JS", JSON_WRITER_JS),
+            // Spliced into the same collector script via __ACC_NAME_FN__, so
+            // the ban applies to it too (iter-219 review: its aria-labelledby
+            // path used .forEach/.push and slipped past this test).
+            ("ACC_NAME_JS_FN", acc_name.as_str()),
         ] {
             for banned in [
                 ".forEach(",
@@ -566,7 +590,13 @@ mod tests {
         let js = build_injection_js();
         assert!(js.contains("Object.defineProperty(window, '__ffrdpReaderView'"));
         assert!(js.contains("writable: false, configurable: false"));
-        assert!(js.contains("if (existing && existing.v === 1) { return; }"));
+        // iter-219 review: the early return trusts only a handle whose
+        // property descriptor a page cannot fake with a plain assignment —
+        // non-configurable, non-writable, frozen, carrying both functions.
+        assert!(js.contains("Object.getOwnPropertyDescriptor(window, '__ffrdpReaderView')"));
+        assert!(js.contains("d.configurable === false && d.writable === false"));
+        assert!(js.contains("d.value && d.value.v === 1 && Object.isFrozen(d.value)"));
+        assert!(js.contains("typeof d.value.Readability === 'function'"));
         // The bundle itself must actually be in there — an `include_str!` that
         // silently resolved to an empty file would otherwise pass every other
         // test in this module.

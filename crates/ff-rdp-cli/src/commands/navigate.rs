@@ -2456,15 +2456,17 @@ pub fn run(
     // runs, matching `run_with_network`'s ordering (consent before
     // `page_view::attach`).
     let defer_with_page = auto_consent && page_args.with_page;
-    let core_args = if defer_with_page {
-        crate::cli::args::PageViewArgs {
+    // Borrow on the common path; clone only when the deferred branch needs an
+    // owned copy with `with_page` flipped off (iter-219 review).
+    let core_args: std::borrow::Cow<'_, crate::cli::args::PageViewArgs> = if defer_with_page {
+        std::borrow::Cow::Owned(crate::cli::args::PageViewArgs {
             with_page: false,
             ..page_args.clone()
-        }
+        })
     } else {
-        page_args.clone()
+        std::borrow::Cow::Borrowed(page_args)
     };
-    let (mut result, via_daemon) = run_core(cli, url, wait_opts, &core_args)?;
+    let (mut result, via_daemon) = run_core(cli, url, wait_opts, core_args.as_ref())?;
     if auto_consent {
         merge_auto_consent(cli, &mut result);
     }

@@ -524,6 +524,12 @@ pub(crate) fn filter_page_view(view: &mut Value, query: &QueryFilter) -> usize {
 /// `chrome_omitted` is the honest counterpart to sorting content first: an
 /// agent that needs a nav link ("Log in") can see the navigation exists and
 /// that `--query` will reach it, instead of concluding the page has none.
+///
+/// It counts chrome entries only, by design: content sorts first, so content
+/// entries land in the truncated tail only when a page has more than `limit`
+/// content links, and that case is deliberately left to `interactive_total`
+/// (the full pre-cap count) rather than a second counter — documented in
+/// `--help`'s act-and-see block so the asymmetry is contract, not accident.
 pub(crate) fn apply_interactive_limit(view: &mut Value, limit: Option<usize>) {
     let Some(limit) = limit else { return };
     let Some(Value::Array(arr)) = view.get_mut("interactive") else {

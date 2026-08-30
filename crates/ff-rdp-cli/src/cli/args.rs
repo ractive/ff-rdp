@@ -53,7 +53,8 @@ COMMAND REFERENCE:
     Mozilla's Readability.js runs on the live page, so every interactive entry
     is tagged zone: 'content' | 'chrome' and content sorts first — the 50-entry
     cap falls on the navigation bar, not on the article, and `chrome_omitted`
-    says how much nav it dropped. --page-chars N sizes the excerpt (default
+    says how much nav it dropped (chrome only — content links past the cap
+    are truncated uncounted; `interactive_total` still has the full count). --page-chars N sizes the excerpt (default
     1500, 0 = structure only); --query TEXT narrows both the excerpt and the
     interactive list. `page.readerable` and `page.source`
     (readability|innertext) say what kind of page you are on.
