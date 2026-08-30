@@ -103,7 +103,7 @@ the next occurrence is just as uninformative.
 ## Out of scope
 
 - The two `live_166` reds from the same sweep — those are
-  [[iteration-221-live-166-cached-example-com]].
+  [[iteration-214-live-166-cache-304]] (filed as 221 by this sweep, reconciled into 214).
 
 ## References
 

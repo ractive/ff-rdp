@@ -2,7 +2,7 @@
 title: "Iteration 221: live_166 asserts HTTP 200 on a URL it has already fetched, and Firefox serves it 304"
 type: iteration
 date: 2026-08-30
-status: planned
+status: obsolete
 branch: iter-221/live-166-cached-example-com
 depends_on: []
 first_call_sites:
@@ -19,6 +19,10 @@ dogfood_path: |
   # a warm cache returns
 tags: [iteration, live-tests, carry-over, flake]
 ---
+
+> **Obsolete (2026-08-31):** duplicate of [[iteration-214-live-166-cache-304]], filed by the
+> iter-220 sweep before checking for an existing plan. Its Tasks B/C and warm-cache AC were
+> folded into 214. Nothing to do here.
 
 # Iteration 221: `live_166` asserts HTTP 200 on a URL it has already fetched
 

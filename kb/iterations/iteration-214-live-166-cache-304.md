@@ -40,6 +40,11 @@ in the document-status path. Filed as its own plan rather than dismissed as envi
 a live test that fails on a warm cache is a defect of ours either way — it will keep costing the
 next iteration's sweep two red lines and an investigation.
 
+Re-confirmed by [[iteration-220-with-page-after-navigating-click]]'s closing sweep on 2026-08-30
+(`executed=313 … 310 passed / 3 failed`): the same two `live_166_*` assertions, same 304. The
+sweep filed it again as iteration-221 before spotting this plan; 221 is now `obsolete` and its
+tasks live here.
+
 ## Themes
 
 - **A — Make the assertion true of what the test actually exercises.** Either stop the fetch being
@@ -60,8 +65,18 @@ next iteration's sweep two red lines and an investigation.
 - [ ] Check the rest of the live suite for the same assumption — any other test asserting a
       literal `200` from a repeatedly-visited public URL has this defect latent
 
-## Acceptance Criteria [0/3]
 
+### B. Reduce the network surface [0/1]
+- [ ] Move the trailing-slash leg to a local fixture route if it can be done without weakening
+      what it asserts; if it cannot, say why in the Outcome
+
+### C. Same shape elsewhere [0/1]
+- [ ] Grep the live suites for a second fetch of the same public URL in one profile; fix or file
+
+## Acceptance Criteria [0/4]
+
+- [ ] Running `live_166_navigate_document_status` twice in a row against the **same** profile
+      passes both times (the warm-cache case is the one that was never exercised)
 - [ ] `live_166_navigate_reports_document_status` and `live_166_navigate_status_direct_parity`
       pass on a **warm** profile — run them twice in a row against the same Firefox, not once
       against a fresh one
