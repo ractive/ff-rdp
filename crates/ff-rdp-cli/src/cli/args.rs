@@ -49,7 +49,9 @@ COMMAND REFERENCE:
     resulting page under results.page — headings, an article `excerpt`, and
     interactive elements carrying `ref` handles for `click --ref` / `type --ref`.
     Collected after the action settles, so a click that navigates reports the
-    destination page.
+    destination page — since iter-220 that holds even when the destination is
+    slow: the collector waits for the navigation the action started to hand over
+    a document (up to 3s) instead of reading the one it is leaving.
     Mozilla's Readability.js runs on the live page, so every interactive entry
     is tagged zone: 'content' | 'chrome' and content sorts first — the 50-entry
     cap falls on the navigation bar, not on the article, and `chrome_omitted`
@@ -1807,6 +1809,13 @@ pub struct PageViewArgs {
     /// after waiting for `document.readyState == "complete"` (bounded by
     /// --timeout). So it describes the document this command produced, not the
     /// one it started from. `meta.page_ready` is false if that wait timed out.
+    ///
+    /// When the action started a navigation (a click on a link, `type
+    /// --submit`), collection first waits up to 3s for the destination to take
+    /// over the tab — Firefox keeps handing back the OUTGOING document for a
+    /// while after the click, and collecting from it either returned the page
+    /// you left or hung until --timeout (iter-220). Nothing is waited for when
+    /// nothing navigated.
     ///
     /// Since iter-219 the view is a reader view: Mozilla's Readability.js runs
     /// on the live page, every `interactive` entry is tagged

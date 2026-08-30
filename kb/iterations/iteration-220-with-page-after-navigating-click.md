@@ -2,7 +2,7 @@
 title: "Iteration 220: --with-page hangs after a click that navigates a heavy page"
 type: iteration
 date: 2026-08-30
-status: planned
+status: in-review
 branch: iter-220/with-page-after-navigating-click
 depends_on: []
 first_call_sites:
@@ -83,26 +83,98 @@ Evidence for that reading, all from the runs above:
 
 ## Tasks
 
-### A. Fix the collection path [0/3]
-- [ ] Reproduce in a test before changing anything (Theme B's fixture)
-- [ ] Make `attach` collect against actors that belong to the document the action produced
-- [ ] Verify on Wikipedia by hand: `click --ref … --with-page` returns the destination view
+### A. Fix the collection path [3/3]
+- [x] Reproduce in a test before changing anything (Theme B's fixture)
+- [x] Make `attach` collect against actors that belong to the document the action produced
+- [x] Verify on Wikipedia by hand: `click --ref … --with-page` returns the destination view
 
-### B. Regression cover [0/2]
-- [ ] `live_220_*`: a click that navigates to a slow-committing route, with `--with-page`
-- [ ] The same for `type --submit --with-page`, which takes the identical path
+### B. Regression cover [2/2]
+- [x] `live_220_*`: a click that navigates to a slow-committing route, with `--with-page`
+- [x] The same for `type --submit --with-page`, which takes the identical path
 
-### C. Error message [0/1]
-- [ ] A recv timeout on a page-view eval names the navigation as the likely cause
+### C. Error message [1/1]
+- [x] A recv timeout on a page-view eval names the navigation as the likely cause
 
-## Acceptance Criteria [0/4]
+## Acceptance Criteria [4/4]
 
-- [ ] `ff-rdp click --ref <link> --with-page` on `en.wikipedia.org/wiki/Ada_Lovelace` returns
+- [x] `ff-rdp click --ref <link> --with-page` on `en.wikipedia.org/wiki/Ada_Lovelace` returns
       the destination page's view in under 5 s, 3 runs out of 3 (recorded in Outcome)
-- [ ] A live test fails on `main`'s collection path and passes after the fix
-- [ ] `type --submit --with-page` covered by the same test shape
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q`
+- [x] A live test fails on `main`'s collection path and passes after the fix
+- [x] `type --submit --with-page` covered by the same test shape
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q`
       clean; live sweep reconciles
+
+## Outcome
+
+### What the wire actually said
+
+The plan's diagnosis was right about the symptom and half right about the mechanism.
+Traces (`--log-level trace`) of the failing call on both routes:
+
+- `refresh_target()` **does** return, and it returns a *fresh* actor prefix
+  (`child81/` → `child83/`) — which is why the existing comment's "refresh first" reasoning
+  looked sound. But the frame it returns carries the **same `innerWindowId` and the same
+  `url`**: `15032385539`, `…/Ada_Lovelace`. Firefox re-forwards the **outgoing** docshell
+  under a new prefix. There is no escaping the doomed document by refreshing.
+- Daemon route: the 12 KB collection eval is accepted, then `target-destroyed-form`
+  (`innerWindowId 15032385539`) arrives 55 ms later and the `evaluationResult` never comes.
+- Direct route (`--no-daemon`): **no `target-destroyed-form` at all** — nothing subscribed
+  that connection to target watching. There the collection *succeeds* against the outgoing
+  document, ships a 251 KB view as a chunked LongString, and hangs on the 52 KB Readability
+  re-injection eval instead. Same defect, one step later.
+- `tabNavigated {state: "start", url: <destination>}` arrives on **both** routes, before the
+  action's own `evaluationResult`. It is the only signal common to both, and it is the one
+  the fix is built on.
+
+### The fix
+
+1. `RdpTransport::recv` — the single choke point every packet passes — latches the
+   destination URL of any `tabNavigated{state:"start"}` / `willNavigate`
+   (`take_navigation_started`).
+2. `page_view::collect_settled` (new, replaces the bare `refresh_target()` in `attach`):
+   when a navigation was announced, poll `getTarget` at 25 ms until the target reports a
+   different `innerWindowId` **or** the announced URL, capped at 3 s; then collect. Nothing
+   announced → collect immediately, as before.
+3. `RdpTransport::set_target_guard(Some(innerWindowId))`, armed **only** around the
+   collection: a `target-destroyed-form` for that document, or a navigation starting
+   mid-collection, becomes `ProtocolError::EvalTargetDestroyed` → `AppError::RdpActorDestroyed`
+   in tens of milliseconds instead of a `--timeout`-long stall. `collect_settled` re-settles
+   and collects again, up to 3 attempts.
+4. Theme C: `AppError::RdpTimeout` gained a `hint` field and `AppError::with_timeout_hint`;
+   a recv timeout out of the page-view path now names the navigation as the likely cause.
+
+`TargetInfo` gained `inner_window_id` and `url` (both already in the `getTarget` frame,
+both previously discarded), which is what makes the settle test possible at all.
+
+### Measured, 2026-08-30, `en.wikipedia.org/wiki/Ada_Lovelace` → `Charles_Babbage`
+
+| route | before | after |
+|---|---|---|
+| daemon, `click --ref e19 --with-page` | recv timeout 3/3 (8 s, 12 s, 15 s budgets) | **0.61 / 0.62 / 0.65 s**, `"Charles Babbage"` 3/3 |
+| direct, `click 'a[href$="/wiki/Charles_Babbage"]' --with-page --no-daemon` | recv timeout 3/3 (8 s, 12 s, 45 s budgets) | **0.54 / 0.51 / 0.49 s**, `"Charles Babbage"` 3/3 |
+| `navigate --with-page` (control) | 0.41 s | 0.41 s |
+
+### AC 2 evidence
+
+`live_220_navigating_action_with_page` — 5 tests, all green after the fix. With
+`collect_settled` swapped back for `main`'s `refresh_target(); collect(…)` (temporary local
+edit, reverted), **3 of the 5 fail**, each reporting `headings[0] == "Ada Lovelace"` —
+the page the action left — not a timeout. The fixture's `/slow` route sleeps 700 ms before
+its first byte and then serves 400 links, which turns the race main loses by luck into the
+one it loses every time.
+
+The two remaining tests are the cost side and pass on both: a non-navigating click and a
+`#fragment` click must return well under the 3 s settle budget. The fragment case is why
+the settle loop has a URL exit as well as an `innerWindowId` exit.
+
+### Residual, deliberately not fixed here
+
+When a navigation starts *and* the outgoing document answers the whole collection before its
+docshell is torn down, the view describes the outgoing page and nothing detects it. The
+window is small (the guard closes it the moment Firefox says anything) and closing it fully
+would mean refusing to collect until every announced navigation resolves — which would make
+a `--with-page` call hostage to a background redirect that never lands. Filed as a note
+here rather than a carry-over iteration: no observed trajectory hits it.
 
 ## Out of scope
 
