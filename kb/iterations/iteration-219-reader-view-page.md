@@ -195,7 +195,9 @@ junk-description guard on excerpts port directly; its benchmark lesson — agent
       start, and `check-skill-drift` (or its sibling) fails when the table and `--help` diverge
       (e2e test)
 - [ ] Benchmark: `wikipedia_link_follow` and `wikipedia_infobox_hop` have a measured 3-repeat
-      average turn count with this binary recorded in Outcome. Target ≤ 5 (were 8.3 / 8.3 on
+      average turn count with this binary recorded in Outcome. **Measured 2026-08-31 on
+      `5a0071d` (219 + 220): 7.7 and 10.3 — not met; agents used the flags in 6/6 runs, the
+      excerpt lacks the infobox (→ 225) and one hop hit a daemon reset (→ 224).** Target ≤ 5 (were 8.3 / 8.3 on
       2026-08-30). A number that did not improve is a valid result and must not be re-run until
       it looks better; if agents still did not use `--with-page`, say so — that reopens
       [[iteration-213-act-and-see-benchmark-rerun]] Theme C's default-on question with evidence

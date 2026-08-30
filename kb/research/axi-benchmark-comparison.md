@@ -270,3 +270,33 @@ A binary built from `main` at `0a87d1d` fails identically, so it is an iter-210 
 than anything iteration 219 introduced; it is filed as
 [[iteration-220-with-page-after-navigating-click]]. Re-measuring the click-through tasks before
 that lands would measure the timeout, not the design.
+
+## Re-measurement 2026-08-31 — two click-through tasks after iter-219 + iter-220
+
+ff-rdp `5a0071d` (reader view + the navigating-click fix), same harness/model/prompt,
+`wikipedia_link_follow` and `wikipedia_infobox_hop` only, `--repeat 3` (6 runs, $1.16).
+
+| Task | axi | ff-rdp @28695d3 (08-30) | **ff-rdp @5a0071d (08-31)** | per run |
+|---|---|---|---|---|
+| wikipedia_link_follow | 4.0 | 8.3 | **7.7** / $0.185 / 3 | 5, 10, 8 |
+| wikipedia_infobox_hop | 4.0 | 8.3 | **10.3** / $0.202 / 3 | 9, 10, 12 |
+
+- **Discoverability is solved**: `--with-page` and `--query` were used in 6/6 runs (2–5 and 3–9
+  times per run); `--help | head -50` shows the idioms on lines 14–16. **No run timed out** —
+  220's fix holds: `click --ref … --with-page` returned the destination in every hop that
+  completed.
+- **The 5-turn trajectory exists** (`link_follow` run 1): `navigate --with-page --query` →
+  `click --ref e1 --with-page --query` → `page-text --query born` → answer. Four commands; the
+  one `page-text` is there because the birth date is an infobox row.
+- **Why the rest are 8–12**: the reader excerpt does not contain the infobox. On the Python
+  article `--with-page --page-chars 4000` never mentions "Stable release" (`page-text --query`
+  finds it 3×); `--with-page --query X` searches reader text only, so a miss is `matches: 0` and
+  the agent's next turn is `page-text --query X` on the page it just fetched — 2–6 `page-text`
+  calls per run. Filed as [[iteration-225-reader-excerpt-infobox]] (facts pass + innerText
+  fallback for `--query`).
+- **A new intermittent failure**: `infobox_hop` run 3's `click --ref e51 --with-page` returned
+  `recv failed: Connection reset by peer` (Transport, exit 6, ~0.45 s) and the agent re-navigated
+  by URL — 12 turns. Reproduced by hand at **1 in 5** on the Python → PSF hop, daemon route.
+  Filed as [[iteration-224-with-page-daemon-connection-reset]].
+- Verdict for 219's AC 6 and 213 Task E: measured, target (≤ 5) **not met**, recorded, not
+  re-run. The mechanism works; the payload still lacks the tabular facts these tasks ask for.
