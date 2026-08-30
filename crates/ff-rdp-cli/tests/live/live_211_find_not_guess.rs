@@ -83,23 +83,30 @@ fn run_json(port: u16, args: &[&str]) -> Value {
         .unwrap_or_else(|e| panic!("output for {args:?} not JSON: {e}\n{stdout}"))
 }
 
-/// 60 `<p>` lines with the needle on line 40 — the AC's fixture shape, and a
+/// 60 lines with the needle on line 40 — the AC's fixture shape, and a
 /// miniature of the "the answer is past `head -100`" failure.
+///
+/// A single `<pre>` rather than 60 `<p>` elements: `innerText` inserts a blank
+/// line between block elements, so a `<p>`-per-line fixture puts source line
+/// 40 on *rendered* line 79 and the AC's line numbers stop meaning anything.
+/// `<pre>` preserves the newlines it was given, one rendered line per source
+/// line.
 fn needle_fixture() -> HashMap<String, FixtureRoute> {
     let body: String = (1..=60)
         .map(|n| {
             if n == 40 {
-                "<p>the needle is here</p>".to_owned()
+                "the needle is here".to_owned()
             } else {
-                format!("<p>filler line {n}</p>")
+                format!("filler line {n}")
             }
         })
-        .collect();
+        .collect::<Vec<_>>()
+        .join("\n");
     let mut routes = HashMap::new();
     routes.insert(
         "/".to_owned(),
         FixtureRoute::html(format!(
-            "<!doctype html><title>t211 needle</title><body>{body}</body>"
+            "<!doctype html><title>t211 needle</title><body><pre>{body}</pre></body>"
         )),
     );
     // 20 000 characters of body text, for the default-cap AC. One long
@@ -108,7 +115,7 @@ fn needle_fixture() -> HashMap<String, FixtureRoute> {
     routes.insert(
         "/long".to_owned(),
         FixtureRoute::html(format!(
-            "<!doctype html><title>t211 long</title><body><p>{}</p></body>",
+            "<!doctype html><title>t211 long</title><body><pre>{}</pre></body>",
             "x".repeat(20_000)
         )),
     );

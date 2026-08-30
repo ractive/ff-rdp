@@ -258,7 +258,7 @@ pub fn run(
     //
     // `--first` reverts to the legacy single-element-object shape for
     // callers who explicitly want it.
-    let items_array: Vec<Value> = match results {
+    let mut items_array: Vec<Value> = match results {
         Value::Null => Vec::new(),
         Value::Array(arr) => arr,
         single => vec![single],
@@ -268,7 +268,6 @@ pub fn run(
     // name / text before any of the output controls run, so `--sort` and
     // `--limit` operate on the filtered set and `total` counts hits rather
     // than raw selector matches. A selector-only call is untouched.
-    let mut items_array = items_array;
     if query.is_active() {
         items_array.retain(|entry| entry_matches_query(entry, query));
         if let Some(obj) = meta.as_object_mut() {
@@ -907,5 +906,32 @@ mod tests {
             !js.contains("return els[0].textContent;"),
             "raw textContent must no longer be the single-match answer: {js}"
         );
+    }
+
+    /// A `<select>`'s descendant text is every `<option>` label concatenated
+    /// — a menu, not a name. The helper must skip the descendant-text step
+    /// for it, or `a11y summary` would report a country picker's name as the
+    /// list of every country.
+    #[test]
+    fn unit_211_accessible_name_js_skips_descendant_text_for_select() {
+        let js = build_js("select", OutputMode::AriaTree);
+        assert!(
+            js.contains("if (el.tagName !== 'SELECT')"),
+            "the <select> guard must be present: {js}"
+        );
+    }
+
+    /// `--count` and `--query` are refused together rather than silently
+    /// returning the *unfiltered* match count — the "flag accepted, nothing
+    /// happened" failure iter-161 Theme D removed for `--fields`/`--sort`.
+    #[test]
+    fn unit_211_count_and_query_are_mutually_exclusive() {
+        use clap::Parser as _;
+        let Err(err) = crate::cli::args::Cli::try_parse_from([
+            "ff-rdp", "dom", "a", "--count", "--query", "x",
+        ]) else {
+            panic!("--count with --query must be refused");
+        };
+        assert_eq!(err.exit_code(), 2, "usage error: {err}");
     }
 }

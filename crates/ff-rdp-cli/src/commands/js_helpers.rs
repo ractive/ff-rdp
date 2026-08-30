@@ -176,7 +176,9 @@ pub(crate) const ACC_NAME_MAX_CHARS: usize = 300;
 /// 4. `alt` (images, `input[type=image]`)
 /// 5. the element's **full** descendant text, whitespace-collapsed — the step
 ///    that makes `<h3><a>Bug: <span>title</span></a></h3>` come back as
-///    `"Bug: title"` instead of the first text node alone
+///    `"Bug: title"` instead of the first text node alone. Skipped for
+///    `<select>`, whose descendant text is the concatenation of every
+///    `<option>` label — a menu, not a name
 /// 6. `placeholder`, then the live `value`, then `title`
 ///
 /// Whitespace is collapsed to single spaces and the result trimmed, because
@@ -212,8 +214,13 @@ const ACC_NAME_JS_FN_TEMPLATE: &str = r"
     }
     n = norm(el.getAttribute && el.getAttribute('alt'));
     if (n) return cap(n);
-    n = norm(el.textContent);
-    if (n) return cap(n);
+    // A <select>'s textContent is the concatenation of every <option> label,
+    // which is a menu, not a name — skip step 5 for it and let the value
+    // fallback below answer instead.
+    if (el.tagName !== 'SELECT') {
+      n = norm(el.textContent);
+      if (n) return cap(n);
+    }
     n = norm(el.getAttribute && el.getAttribute('placeholder'));
     if (n) return cap(n);
     n = norm(el.value);

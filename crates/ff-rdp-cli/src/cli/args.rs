@@ -1771,8 +1771,11 @@ pub struct DomArgs {
     /// Output both text content and attributes per element
     #[arg(long, group = "output_mode")]
     pub text_attrs: bool,
-    /// Return only the count of matching elements
-    #[arg(long, group = "output_mode")]
+    /// Return only the count of matching elements.
+    /// Mutually exclusive with `--query`/`--query-regex`: a count of the
+    /// unfiltered selector matches under a filter flag would be a number
+    /// nobody asked for, so it is refused rather than silently ignored.
+    #[arg(long, group = "output_mode", conflicts_with = "query_filter")]
     pub count: bool,
     /// Return just the first match as a single value (or null) instead of an array.
     /// Provided for callers who want the legacy pre-iter-61i single-element shape.

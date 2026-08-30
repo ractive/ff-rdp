@@ -520,6 +520,14 @@ fn dispatch_inner(
             include_style_limit,
             query,
         }) => match dom_command {
+            // iter-211: `--query` filters `dom <selector>` results only. The
+            // sub-commands produce a stats record and a walker tree, neither
+            // of which the filter applies to — refuse rather than accept the
+            // flag and do nothing with it.
+            Some(_) if QueryFilter::from_query_args(query).is_active() => Err(AppError::User(
+                "--query/--query-regex applies to `dom <selector>`, not to `dom stats` or `dom tree`"
+                    .to_owned(),
+            )),
             Some(DomCommand::Stats) => commands::dom::run_stats(cli),
             Some(DomCommand::Tree {
                 selector,

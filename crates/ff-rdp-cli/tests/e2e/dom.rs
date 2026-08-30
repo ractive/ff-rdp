@@ -578,3 +578,50 @@ fn e2e_invalid_selector_json_envelope() {
         "envelope must carry a non-empty `error` message: {json}"
     );
 }
+
+// ── iter-211: `--query` is refused where it would do nothing ───────────────
+
+/// `dom stats` and `dom tree` produce a stats record and a walker tree, and
+/// `--query` filters neither. Accepting the flag and ignoring it is the
+/// failure iter-161 Theme D removed for `--fields`/`--sort`; both spellings
+/// are refused instead, before any connection is attempted.
+///
+/// The two spellings fail differently and both matter: `dom stats --query x`
+/// never reaches dispatch because the flag lives on the parent `dom` command,
+/// so clap rejects it as an unknown argument (exit 2). `dom --query x stats`
+/// parses cleanly and is refused by dispatch with an error envelope on stdout
+/// (exit 1).
+#[test]
+fn iter_211_dom_subcommands_refuse_query() {
+    for sub in ["stats", "tree"] {
+        // Flag after the subcommand: clap usage error.
+        let output = std::process::Command::new(ff_rdp_bin())
+            .args(base_args(1))
+            .args(["dom", sub, "--query", "anything"])
+            .output()
+            .expect("failed to spawn ff-rdp");
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "dom {sub} --query must be a usage error: {}",
+            support::output_note(&output)
+        );
+
+        // Flag before the subcommand: parses, then dispatch refuses it.
+        let output = std::process::Command::new(ff_rdp_bin())
+            .args(base_args(1))
+            .args(["dom", "--query", "anything", sub])
+            .output()
+            .expect("failed to spawn ff-rdp");
+        assert!(
+            !output.status.success(),
+            "dom --query anything {sub} must fail: {}",
+            support::output_note(&output)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("--query"),
+            "the stdout error envelope must name the flag: {}",
+            support::output_note(&output)
+        );
+    }
+}
