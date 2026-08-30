@@ -27,7 +27,8 @@ pub(crate) const READABILITY_MIN_JS: &str = include_str!("../../js/readability/R
 
 /// `isProbablyReaderable`, the cheap "does this document look like an article"
 /// predicate that becomes `page.readerable`.
-pub(crate) const READERABLE_JS: &str = include_str!("../../js/readability/Readability-readerable.js");
+pub(crate) const READERABLE_JS: &str =
+    include_str!("../../js/readability/Readability-readerable.js");
 
 /// The attribute the collector stamps on every interactive element so the
 /// article-containment test is exact.
@@ -119,6 +120,10 @@ const JSON_WRITER_JS: &str = r#"
 /// Returns nothing useful; callers concatenate it in front of the collector so
 /// injection and collection are one round trip.
 pub(crate) fn build_injection_js() -> String {
+    let prop = HANDLE_PROP;
+    let version = HANDLE_VERSION;
+    let readability = READABILITY_MIN_JS;
+    let readerable = READERABLE_JS;
     format!(
         r#"(function() {{
   try {{
@@ -147,11 +152,7 @@ pub(crate) fn build_injection_js() -> String {
        race. Leave it: re-defining is what would throw, and the existing
        handle is by construction the same bundle. */
   }}
-}})()"#,
-        prop = HANDLE_PROP,
-        version = HANDLE_VERSION,
-        readability = READABILITY_MIN_JS,
-        readerable = READERABLE_JS,
+}})()"#
     )
 }
 
@@ -441,7 +442,10 @@ mod tests {
     #[test]
     fn collector_has_sentinel_and_no_json_stringify() {
         let js = build_page_view_js(true, Some(4000));
-        assert!(js.contains(JSON_SENTINEL), "JS must use the sentinel prefix");
+        assert!(
+            js.contains(JSON_SENTINEL),
+            "JS must use the sentinel prefix"
+        );
         // Theme D: a page that replaced JSON.stringify must not be able to
         // change what ff-rdp reports.
         assert!(js.contains("__ffrdpJson(result)"));
@@ -461,7 +465,13 @@ mod tests {
             ("READER_BLOCK_JS", READER_BLOCK_JS),
             ("JSON_WRITER_JS", JSON_WRITER_JS),
         ] {
-            for banned in [".forEach(", ".push(", ".map(", "Object.keys(", "JSON.stringify"] {
+            for banned in [
+                ".forEach(",
+                ".push(",
+                ".map(",
+                "Object.keys(",
+                "JSON.stringify",
+            ] {
                 assert!(
                     !template.contains(banned),
                     "{name} must not depend on {banned} — a page can replace it"
@@ -510,7 +520,9 @@ mod tests {
     #[test]
     fn reader_block_strips_its_stamp_in_a_finally() {
         let js = build_page_view_js(false, Some(2000));
-        let finally_at = js.find("} finally {").expect("the strip must be in a finally");
+        let finally_at = js
+            .find("} finally {")
+            .expect("the strip must be in a finally");
         let remove_at = js
             .find("removeAttribute(STAMP)")
             .expect("the stamp must be removed");
@@ -540,7 +552,11 @@ mod tests {
             "the vendored bundle must be spliced in"
         );
         assert!(js.contains("function isProbablyReaderable("));
-        assert!(js.len() > 30_000, "unexpectedly small payload: {}", js.len());
+        assert!(
+            js.len() > 30_000,
+            "unexpectedly small payload: {}",
+            js.len()
+        );
     }
 
     /// Nothing but the handle may leak into the page's global scope: the whole

@@ -120,6 +120,13 @@ COMMAND REFERENCE:
     ff-rdp profiles list
     ff-rdp profiles prune [--older-than 7d | --all] [--dry-run]
 
+BUNDLED CODE:
+  Mozilla Readability (@mozilla/readability 0.6.0, Apache-2.0) — the algorithm
+  behind Firefox Reader View. Injected into the live page by --with-page so the
+  article can be told apart from the site chrome. Source and licence ship with
+  the repository under crates/ff-rdp-cli/js/readability/; the committed bytes
+  are pinned by `cargo run -p xtask -- check-vendored-js`.
+
 AI AGENT TIPS:
   - Use --format text instead of JSON for 3-10x fewer tokens
   - Use eval --stringify '<script>' to get actual values instead of actor grip

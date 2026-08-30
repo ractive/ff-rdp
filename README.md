@@ -278,12 +278,38 @@ ff-rdp network --source performance-api # explicit opt-out: fewer fields
 
 # Act and see: return the page the action produced (iter-210). `navigate`,
 # `click`, `type`, `reload`, `back`, `forward` and `scroll` all take it.
-# `results.page` is the `a11y summary` view — headings, landmarks, and
-# interactive elements, each with a `ref` you can pass straight to
-# `click --ref`, so following a link is two commands with no selector guessing.
+# `results.page` carries headings, an article `excerpt`, and interactive
+# elements each with a `ref` you can pass straight to `click --ref`, so
+# following a link is two commands with no selector guessing.
+#
+# Since iter-219 it is a READER view: Mozilla's Readability.js runs on the live
+# page, every entry is tagged `zone: "content" | "chrome"`, and content sorts
+# first — so on a page with 1 659 links the 50-entry cap falls on the
+# navigation bar, not on the article. `chrome_omitted` says how much nav it
+# dropped; `--query` reaches whatever the cap left out.
 ff-rdp navigate https://en.wikipedia.org/wiki/Ada_Lovelace --with-page \
-  --jq '.results.page.interactive[] | select(.name | test("Babbage"))'
-ff-rdp click --ref e12 --with-page --jq '.results.page.headings[0]'
+  --jq '.results.page.interactive[] | select(.name == "Charles Babbage")'
+  # {"role":"link","name":"Charles Babbage","href":"...","zone":"content","ref":"e19"}
+ff-rdp click --ref e19 --with-page --jq '.results.page.excerpt'
+  # the destination article's own text — no page-text round trip
+
+# Size the excerpt, or turn it off and keep only the structure.
+ff-rdp navigate <URL> --with-page --page-chars 4000
+ff-rdp navigate <URL> --with-page --page-chars 0
+
+# Narrow both halves of the view at once: the excerpt becomes the window
+# around each match, `interactive` keeps only the matching entries.
+ff-rdp navigate <URL> --with-page --query "sign in"
+
+# `page.readerable` says whether the page looks like an article at all, and
+# `page.source` is `readability` or `innertext` — the fallback used on
+# dashboards, forms and SPAs with no prose, which never returns an empty
+# excerpt on a page that has visible text. `meta.page_parse_ms` reports what
+# the in-page parse cost (~50 ms on Wikipedia); the ~32 KB bundle is shipped
+# once per document, and `meta.page_readability_injected` says which happened.
+#
+# `a11y summary` keeps the landmark list and stays reader-free: it is the
+# accessibility surface, `--with-page` is the act-and-see one.
 
 # The page is collected LAST — after the command's own wait and after
 # `document.readyState == "complete"` — so a click that navigates reports the
@@ -667,6 +693,17 @@ Package repository hosting is graciously provided by [Cloudsmith](https://clouds
 Cloudsmith is the only fully hosted, cloud-native, universal package management solution, that
 enables your organization to create, store and share packages in any format, to any place, with total
 confidence.
+
+## Third-party code
+
+`ff-rdp` bundles Mozilla's [Readability.js](https://github.com/mozilla/readability)
+(`@mozilla/readability` 0.6.0, Apache-2.0) — the algorithm behind Firefox Reader
+View — in `crates/ff-rdp-cli/js/readability/`. It is injected into the live page
+so `--with-page` can tell the article apart from the site chrome. The files are
+committed rather than downloaded at runtime, and `cargo run -p xtask --
+check-vendored-js` pins each one's SHA-256 against the `VERSION` manifest beside
+them, so an upgrade is a deliberate, reviewable commit. Upstream's licence text
+ships alongside the code as `js/readability/LICENSE`.
 
 ## License
 

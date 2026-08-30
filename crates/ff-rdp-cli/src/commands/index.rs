@@ -383,7 +383,13 @@ fn crawl_page(
     };
     // `index` crawls pages for its own extraction; the page view would be
     // collected and thrown away.
-    navigate_run_core(cli, url, &wait_opts, &crate::cli::args::PageViewArgs::default()).map_err(|e| anyhow::anyhow!("navigate: {e}"))?;
+    navigate_run_core(
+        cli,
+        url,
+        &wait_opts,
+        &crate::cli::args::PageViewArgs::default(),
+    )
+    .map_err(|e| anyhow::anyhow!("navigate: {e}"))?;
 
     // Check if we got redirected to a login page.
     let current_url = eval_js_value(cli, "location.href")

@@ -820,7 +820,8 @@ fn execute_navigate(
         &effective_url,
         &wait_opts,
         &crate::cli::args::PageViewArgs::default(),
-    ).map(|(v, _)| v)
+    )
+    .map(|(v, _)| v)
 }
 
 fn resolve_element_target_selector(

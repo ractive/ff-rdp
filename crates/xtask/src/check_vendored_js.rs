@@ -69,7 +69,10 @@ pub fn parse_pins(manifest: &str) -> Result<Vec<Pin>> {
         };
         let mut parts = rest.split_whitespace();
         let (Some(sha256), Some(file)) = (parts.next(), parts.next()) else {
-            bail!("{VERSION_FILE} line {}: expected `sha256 <hex>  <file>`", n + 1);
+            bail!(
+                "{VERSION_FILE} line {}: expected `sha256 <hex>  <file>`",
+                n + 1
+            );
         };
         if sha256.len() != 64 || !sha256.chars().all(|c| c.is_ascii_hexdigit()) {
             bail!(

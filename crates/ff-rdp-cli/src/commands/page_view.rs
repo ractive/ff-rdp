@@ -414,8 +414,12 @@ fn drop_junk_lead(text: &str) -> String {
 /// appended: the value is consumed as JSON, and `excerpt_truncated` already
 /// says what an ellipsis would.
 pub(crate) fn excerpt_at_boundary(text: &str, max_chars: usize) -> (String, bool) {
-    /// A boundary must leave at least this fraction of the budget filled.
-    const MIN_BOUNDARY_FRACTION: f64 = 0.6;
+    /// A boundary must leave at least this many tenths of the budget filled.
+    ///
+    /// Integer tenths rather than a float fraction so the floor is exact at
+    /// every budget — a `usize as f64` round-trip is both lossy above 2^53 and
+    /// a clippy denial for exactly that reason.
+    const MIN_BOUNDARY_TENTHS: usize = 6;
 
     if max_chars == 0 {
         return (String::new(), !text.is_empty());
@@ -425,8 +429,7 @@ pub(crate) fn excerpt_at_boundary(text: &str, max_chars: usize) -> (String, bool
     }
 
     let head: String = text.chars().take(max_chars).collect();
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let floor = (max_chars as f64 * MIN_BOUNDARY_FRACTION) as usize;
+    let floor = max_chars / 10 * MIN_BOUNDARY_TENTHS;
 
     // 1. Paragraph boundary — the block joins the collector emits.
     if let Some(idx) = head.rfind('\n')
@@ -439,19 +442,17 @@ pub(crate) fn excerpt_at_boundary(text: &str, max_chars: usize) -> (String, bool
     //    trailing space.
     let sentence_end = head
         .char_indices()
-        .filter(|(i, c)| {
-            let terminator = matches!(c, '.' | '!' | '?' | '。' | '！' | '？');
-            if !terminator {
-                return false;
+        .filter_map(|(i, c)| {
+            if !matches!(c, '.' | '!' | '?' | '。' | '！' | '？') {
+                return None;
             }
-            let after = head[i + c.len_utf8()..].chars().next();
-            match after {
+            let end = i + c.len_utf8();
+            let followed_by_break = match head[end..].chars().next() {
                 None => true,
                 Some(next) => next.is_whitespace() || matches!(next, '。' | '！' | '？'),
-            }
+            };
+            (followed_by_break && head[..end].chars().count() >= floor).then_some(end)
         })
-        .map(|(i, c)| i + c.len_utf8())
-        .filter(|end| head[..*end].chars().count() >= floor)
         .next_back();
     if let Some(end) = sentence_end {
         return (head[..end].trim_end().to_owned(), true);
@@ -797,7 +798,10 @@ pub(crate) fn render_text(results: &Value) {
         let source = results.get("source").and_then(Value::as_str).unwrap_or("");
         let truncated = results.get("excerpt_truncated").and_then(Value::as_bool) == Some(true);
         let suffix = if truncated { ", truncated" } else { "" };
-        println!("EXCERPT ({} chars{suffix}) [{source}]", excerpt.chars().count());
+        println!(
+            "EXCERPT ({} chars{suffix}) [{source}]",
+            excerpt.chars().count()
+        );
         println!("{excerpt}");
         println!();
     }
@@ -915,7 +919,9 @@ mod tests {
     #[test]
     fn unit_219_cut_falls_back_to_a_sentence_boundary() {
         let doc = "First sentence here. Second sentence runs on and on and on and on and on.";
-        let (text, truncated) = excerpt_at_boundary(doc, 40);
+        // 32 leaves the full stop past the 60%-of-budget floor, so the
+        // sentence boundary wins over the later word boundary.
+        let (text, truncated) = excerpt_at_boundary(doc, 32);
         assert_eq!(text, "First sentence here.");
         assert!(truncated);
     }
@@ -990,7 +996,10 @@ mod tests {
     /// dropping a real lede is the expensive mistake.
     #[test]
     fn unit_219_a_long_lead_is_never_junk() {
-        let lead = format!("We use cookies in the historical sense: {}", "word ".repeat(60));
+        let lead = format!(
+            "We use cookies in the historical sense: {}",
+            "word ".repeat(60)
+        );
         assert!(!looks_like_junk_lead(&lead));
     }
 
@@ -1027,14 +1036,10 @@ mod tests {
     /// links, and the count of dropped chrome is reported.
     #[test]
     fn unit_219_cap_keeps_content_and_reports_chrome_omitted() {
-        let mut entries: Vec<(String, &str)> = (0..60)
-            .map(|i| (format!("nav-{i}"), "chrome"))
-            .collect();
+        let mut entries: Vec<(String, &str)> =
+            (0..60).map(|i| (format!("nav-{i}"), "chrome")).collect();
         entries.push(("Charles Babbage".to_owned(), "content"));
-        let pairs: Vec<(&str, &str)> = entries
-            .iter()
-            .map(|(n, z)| (n.as_str(), *z))
-            .collect();
+        let pairs: Vec<(&str, &str)> = entries.iter().map(|(n, z)| (n.as_str(), *z)).collect();
         let mut view = zoned_view(&pairs);
 
         sort_interactive_content_first(&mut view);
@@ -1157,7 +1162,10 @@ mod tests {
         finish_reader_view(&mut view, &reader(DEFAULT_PAGE_CHARS, query("Babbage")));
 
         let excerpt = view["excerpt"].as_str().unwrap_or_default();
-        assert!(excerpt.contains("1791"), "excerpt must be the match window: {excerpt:?}");
+        assert!(
+            excerpt.contains("1791"),
+            "excerpt must be the match window: {excerpt:?}"
+        );
         let names: Vec<&str> = view["interactive"]
             .as_array()
             .expect("array")
@@ -1174,7 +1182,10 @@ mod tests {
         assert_eq!(text_budget(&reader(0, no_query())), 0);
         assert_eq!(text_budget(&reader(1500, query("x"))), QUERY_TEXT_BUDGET);
         // A wild --page-chars cannot ask the page for an unbounded string.
-        assert_eq!(text_budget(&reader(usize::MAX, no_query())), QUERY_TEXT_BUDGET);
+        assert_eq!(
+            text_budget(&reader(usize::MAX, no_query())),
+            QUERY_TEXT_BUDGET
+        );
     }
 
     #[test]
@@ -1362,5 +1373,4 @@ mod tests {
     fn render_text_empty_sections_do_not_panic() {
         render_text(&json!({"landmarks": [], "headings": [], "interactive": []}));
     }
-
 }

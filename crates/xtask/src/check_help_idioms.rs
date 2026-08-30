@@ -46,7 +46,9 @@ fn workspace_root() -> PathBuf {
 /// `ff-rdp` from PATH — the same rule `check-skill-drift` follows, for the
 /// same reason.
 fn cli_stdout(bin: Option<&PathBuf>, args: &[&str]) -> Result<String> {
-    let explicit = bin.cloned().or_else(|| std::env::var_os("FF_RDP_BIN").map(PathBuf::from));
+    let explicit = bin
+        .cloned()
+        .or_else(|| std::env::var_os("FF_RDP_BIN").map(PathBuf::from));
     let output = if let Some(path) = explicit {
         Command::new(&path)
             .args(args)
@@ -125,7 +127,10 @@ pub fn quick_start_commands(skill_block: &str) -> Vec<String> {
 
 /// Which of `needles` are missing from `help`.
 pub fn missing<'a>(help: &str, needles: &'a [String]) -> Vec<&'a String> {
-    needles.iter().filter(|n| !help.contains(n.as_str())).collect()
+    needles
+        .iter()
+        .filter(|n| !help.contains(n.as_str()))
+        .collect()
 }
 
 pub fn run(args: Args) -> Result<()> {
@@ -196,7 +201,10 @@ Some prose.
 
     #[test]
     fn unit_219_idioms_are_read_out_of_the_generated_block() {
-        assert_eq!(idiom_syntaxes(BLOCK), vec!["--ref", "--query", "--with-page"]);
+        assert_eq!(
+            idiom_syntaxes(BLOCK),
+            vec!["--ref", "--query", "--with-page"]
+        );
     }
 
     #[test]

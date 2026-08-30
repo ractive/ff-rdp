@@ -486,7 +486,11 @@ fn is_truthy_grip(grip: &ff_rdp_core::Grip) -> bool {
 // scroll text <text>
 // ---------------------------------------------------------------------------
 
-pub fn run_text(cli: &Cli, text: &str, page_args: &crate::cli::args::PageViewArgs) -> Result<(), AppError> {
+pub fn run_text(
+    cli: &Cli,
+    text: &str,
+    page_args: &crate::cli::args::PageViewArgs,
+) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
 
