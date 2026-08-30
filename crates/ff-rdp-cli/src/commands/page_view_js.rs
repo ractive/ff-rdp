@@ -347,11 +347,19 @@ const READER_BLOCK_JS: &str = r#"
   // `innerText` degrades to `textContent`), and `--query`'s ±context window is
   // line-based — so the block structure has to be rebuilt explicitly.
   function __ffrdpBlockText(root) {
-    var SEL = 'p,h1,h2,h3,h4,h5,h6,li,blockquote,pre,td,th,dd,dt,figcaption';
+    // Prose blocks only. Table cells are deliberately excluded: on Wikipedia
+    // the infobox is a 1 000-character run of label/value fragments ("Born /
+    // Augusta Ada Byron / London, England") that would swallow the whole
+    // --page-chars budget before the lede was reached. Infobox *links* are
+    // still in `interactive` with zone "content", and `page-text --query`
+    // still reaches the cells themselves.
+    var SEL = 'p,h1,h2,h3,h4,h5,h6,li,blockquote,pre,dd,dt,figcaption';
     var blocks = root.querySelectorAll(SEL);
     var lines = [];
     for (var bi = 0; bi < blocks.length; bi++) {
       if (blocks[bi].querySelector(SEL)) { continue; }
+      // Anything inside a table is layout or an infobox, not prose.
+      try { if (blocks[bi].closest('table')) { continue; } } catch (e) { /* old engine */ }
       var t = __ffrdpNorm(blocks[bi].textContent);
       if (t) { lines[lines.length] = t; }
     }

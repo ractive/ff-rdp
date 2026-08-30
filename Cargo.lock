@@ -2523,6 +2523,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_norway",
+ "sha2",
  "tempfile",
 ]
 

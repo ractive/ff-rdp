@@ -33,11 +33,13 @@ drive a live Firefox from the shell — inspect, act on, and measure the page ov
 ## Quick start
 
 ```bash
-ff-rdp                       # live state: daemon, browser, tabs, page, next steps
-ff-rdp launch --headless     # no browser yet? start one with the debug port open
-ff-rdp navigate <URL>        # blocks until the document commits
-ff-rdp a11y summary          # landmarks, headings, and interactive entries with refs
-ff-rdp click --ref e3        # act on a ref from the view above
+ff-rdp                             # live state: daemon, browser, tabs, page, next steps
+ff-rdp launch --headless           # no browser yet? start one with the debug port open
+ff-rdp navigate <URL>              # blocks until the document commits
+ff-rdp a11y summary                # landmarks, headings, and interactive entries with refs
+ff-rdp click --ref e3              # act on the element you just saw
+ff-rdp page-text --query "<text>"  # filter a page view down to the entries whose text, label, name, or href match
+ff-rdp click --ref e3 --with-page  # have an action return the page it produced
 ```
 
 Run bare `ff-rdp` before reaching for `--help`: it costs one turn and answers "is there a browser, what is on it, and what can I do next" — `--help` answers none of those.

@@ -41,6 +41,10 @@ serde_json = { version = "1", features = ["preserve_order"] }
 # API-compatible (`from_str`/`to_string` on the same types), so no call-site
 # logic changes and the recorded YAML output stays byte-identical.
 serde_norway = "0.9"
+# sha2 (iter-219 Theme A): `xtask check-vendored-js` recomputes the SHA-256 of
+# the vendored Readability bundle against the hashes pinned in its VERSION
+# manifest. Already a ff-rdp-cli dependency; hoisted here so the two agree.
+sha2 = "0.10"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 dirs = "6"
 fs2 = "0.4"

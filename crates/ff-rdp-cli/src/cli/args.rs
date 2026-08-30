@@ -24,6 +24,7 @@ COMMAND REFERENCE:
   Page content:
     ff-rdp eval <SCRIPT> | --file PATH | --stdin [--stringify] [--no-isolate]
     ff-rdp page-text [--query TEXT [--context N]] [--max-chars N | --full]
+                                   # 8000-char cap by default; --query beats `| head`
     ff-rdp dom <SEL> [--text | --attrs | --text-attrs | --inner-html | --count] [--query TEXT]
     ff-rdp dom stats
     ff-rdp dom tree [SEL] [--depth N] [--max-chars N]
@@ -43,13 +44,21 @@ COMMAND REFERENCE:
     ff-rdp click <SEL> --wait-for selector:<css> --wait-for text:<substr>
     ff-rdp type <SEL> <TEXT> [--submit] [--with-page] [--clear] [--no-wait] [--settle] [--wait-for ...]
 
-  Act and see (iter-210):
+  Act and see (iter-210, reader view since iter-219):
     --with-page on navigate/click/type/reload/back/forward/scroll returns the
-    resulting page under results.page — headings, landmarks, and interactive
-    elements carrying `ref` handles for `click --ref` / `type --ref`. Same view
-    and shape as `ff-rdp a11y summary`, which (with `snapshot`) now registers
-    refs too. Collected after the action settles, so a click that navigates
-    reports the destination page.
+    resulting page under results.page — headings, an article `excerpt`, and
+    interactive elements carrying `ref` handles for `click --ref` / `type --ref`.
+    Collected after the action settles, so a click that navigates reports the
+    destination page.
+    Mozilla's Readability.js runs on the live page, so every interactive entry
+    is tagged zone: 'content' | 'chrome' and content sorts first — the 50-entry
+    cap falls on the navigation bar, not on the article, and `chrome_omitted`
+    says how much nav it dropped. --page-chars N sizes the excerpt (default
+    1500, 0 = structure only); --query TEXT narrows both the excerpt and the
+    interactive list. `page.readerable` and `page.source`
+    (readability|innertext) say what kind of page you are on.
+    `ff-rdp a11y summary` keeps the landmark list and stays reader-free — it is
+    the accessibility surface, --with-page is the act-and-see one.
 
   Scrolling:
     ff-rdp scroll to <SEL> [--block top|center|bottom] [--smooth] [--no-wait] [--settle]
@@ -283,11 +292,18 @@ pub fn build_version_string() -> &'static str {
     }
 }
 
-#[derive(Parser)]
-#[command(
-    name = "ff-rdp",
-    about = "Firefox Remote Debugging Protocol CLI\n\nCommand groups (see `ff-rdp <cmd> --help` for details):\n  Inspect    dom, styles, computed, cascade, a11y, snapshot, page-text, perf\n  Navigate   navigate, reload, click, type, screenshot\n  Trace      console, network, eval\n  Lifecycle  launch, daemon\n\nQuick start:  ff-rdp launch          # start Firefox with debugging enabled\n              ff-rdp navigate <URL>   # open a page",
-    long_about = "Firefox Remote Debugging Protocol CLI
+/// The top-level `--help` body.
+///
+/// Built at runtime rather than written as a literal because its Quick start
+/// block is rendered from `skill_doc`'s tables — the same ones `SKILL.md` and
+/// the home view use (iter-219 Theme E). All 42 runs of the axi benchmark
+/// opened with `ff-rdp --help`, several of them `| head -50`, and `--query`
+/// appeared nowhere in it; a flag an agent cannot see is a flag that does not
+/// exist. `cargo run -p xtask -- check-help-idioms` fails when this block and
+/// the idiom table disagree.
+fn long_about() -> String {
+    format!(
+        "Firefox Remote Debugging Protocol CLI
 
 Command groups (use `ff-rdp <cmd> --help` for details on any command):
   Inspect    dom, styles, computed, cascade, a11y, snapshot, page-text, perf
@@ -295,14 +311,19 @@ Command groups (use `ff-rdp <cmd> --help` for details on any command):
   Trace      console, network, eval
   Lifecycle  launch, daemon
 
-Quick start:
-  ff-rdp launch                   Launch a new Firefox instance with remote debugging
-  ff-rdp launch --headless        Launch headless (no visible window)
-  ff-rdp navigate https://example.com
-
+{}
 'ff-rdp launch' starts a separate Firefox process that won't interfere with
 any already-running Firefox windows — it uses a temporary profile and
 the -no-remote flag automatically.",
+        crate::commands::skill_doc::quick_start_help()
+    )
+}
+
+#[derive(Parser)]
+#[command(
+    name = "ff-rdp",
+    about = "Firefox Remote Debugging Protocol CLI\n\nCommand groups (see `ff-rdp <cmd> --help` for details):\n  Inspect    dom, styles, computed, cascade, a11y, snapshot, page-text, perf\n  Navigate   navigate, reload, click, type, screenshot\n  Trace      console, network, eval\n  Lifecycle  launch, daemon\n\nQuick start:  ff-rdp launch          # start Firefox with debugging enabled\n              ff-rdp navigate <URL>   # open a page",
+    long_about = long_about(),
     after_help = "Tip: Run 'ff-rdp launch' first to start Firefox with remote debugging.\n     It won't affect any existing Firefox windows — safe to run alongside\n     your normal browser.",
     after_long_help = AFTER_LONG_HELP,
     version = build_version_string()
@@ -640,7 +661,7 @@ it will not resize the viewport or change subsequent `innerWidth` reads. For
 a real window size, launch with `ff-rdp launch --window-size WxH` (see its
 --help for the ~500px live-viewport floor).")]
     Eval(EvalArgs),
-    /// Extract visible page text (document.body.innerText)
+    /// Page text, capped at 8000 chars — use --query TEXT to find the part you need
     #[command(long_about = "Extract visible page text (document.body.innerText).
 
 Capped at 8000 characters by default (iter-211): `meta.total_chars` always

@@ -141,6 +141,85 @@ pub(crate) const IDIOMS: &[(&str, &str, &str)] = &[
     ),
 ];
 
+/// The `{ref}` slot [`crate::commands::home`] fills with a ref the page view
+/// actually minted.
+pub(crate) const EXAMPLE_REF_PLACEHOLDER: &str = "{ref}";
+/// What the static surfaces (`--help`, `SKILL.md`) put in that slot: there is
+/// no page loaded when either is rendered, so they show a plausible handle
+/// rather than a live one.
+const EXAMPLE_REF: &str = "e3";
+
+/// The launch half of the Quick start block, as `(command, why)`.
+///
+/// Rendered verbatim into both `SKILL.md` (by [`generate_block`]) and the
+/// top-level `ff-rdp --help` (by [`quick_start_help`]) — iter-219 Theme E.
+/// The benchmark evidence is blunt: all 42 runs open with `ff-rdp --help`,
+/// several of them `| head -50`, and `--query` appeared nowhere in it. A flag
+/// an agent cannot see is a flag that does not exist.
+pub(crate) const QUICK_START_LINES: &[(&str, &str)] = &[
+    (
+        "ff-rdp",
+        "live state: daemon, browser, tabs, page, next steps",
+    ),
+    (
+        "ff-rdp launch --headless",
+        "no browser yet? start one with the debug port open",
+    ),
+    ("ff-rdp navigate <URL>", "blocks until the document commits"),
+    (
+        "ff-rdp a11y summary",
+        "landmarks, headings, and interactive entries with refs",
+    ),
+];
+
+/// The first clause of an idiom's `why`, for the one-line comment forms.
+///
+/// The table's `why` fields are full sentences (the skill renders them as
+/// prose bullets); a `# comment` at the end of a shell line has to fit on one
+/// line, so it takes everything up to the first `, so ` / `: ` boundary.
+fn first_clause(why: &str) -> &str {
+    for sep in [", so ", ": "] {
+        if let Some(idx) = why.find(sep) {
+            return &why[..idx];
+        }
+    }
+    why
+}
+
+/// The Quick start block for the top-level `ff-rdp --help`.
+///
+/// Same two tables the skill renders, in the same order, so `--help`,
+/// `SKILL.md` and the home view cannot disagree about what the three idioms
+/// are — `cargo run -p xtask -- check-help-idioms` fails when they do.
+pub(crate) fn quick_start_help() -> String {
+    let rows = quick_start_rows();
+    let width = rows.iter().map(|(cmd, _)| cmd.len()).max().unwrap_or(0);
+    let mut out = String::from("Quick start:\n");
+    for (command, why) in &rows {
+        let _ = writeln!(out, "  {command:<width$}  {why}");
+    }
+    out
+}
+
+/// The Quick start rows — the launch lines, then the idioms — as
+/// `(command, one-line why)`.
+///
+/// The single ordered source both renderers walk, so `--help` and `SKILL.md`
+/// cannot disagree about which idioms exist or in what order they appear.
+pub(crate) fn quick_start_rows() -> Vec<(String, String)> {
+    let mut rows: Vec<(String, String)> = QUICK_START_LINES
+        .iter()
+        .map(|(line, why)| ((*line).to_owned(), (*why).to_owned()))
+        .collect();
+    for (_, why, command) in IDIOMS {
+        rows.push((
+            command.replace(EXAMPLE_REF_PLACEHOLDER, EXAMPLE_REF),
+            first_clause(why).to_owned(),
+        ));
+    }
+    rows
+}
+
 /// Render the generated section of `SKILL.md` — everything between
 /// [`BLOCK_BEGIN`] and [`BLOCK_END`], markers included.
 ///
@@ -160,17 +239,11 @@ pub(crate) fn generate_block() -> String {
 
     out.push_str("## Quick start\n\n");
     out.push_str("```bash\n");
-    out.push_str(
-        "ff-rdp                       # live state: daemon, browser, tabs, page, next steps\n",
-    );
-    out.push_str(
-        "ff-rdp launch --headless     # no browser yet? start one with the debug port open\n",
-    );
-    out.push_str("ff-rdp navigate <URL>        # blocks until the document commits\n");
-    out.push_str(
-        "ff-rdp a11y summary          # landmarks, headings, and interactive entries with refs\n",
-    );
-    out.push_str("ff-rdp click --ref e3        # act on a ref from the view above\n");
+    let rows = quick_start_rows();
+    let width = rows.iter().map(|(cmd, _)| cmd.len()).max().unwrap_or(0);
+    for (command, why) in &rows {
+        let _ = writeln!(out, "{command:<width$}  # {why}");
+    }
     out.push_str("```\n\n");
     out.push_str(
         "Run bare `ff-rdp` before reaching for `--help`: it costs one turn and answers \

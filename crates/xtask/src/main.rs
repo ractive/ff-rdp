@@ -1,9 +1,11 @@
 mod check_actor_kb_sync;
 mod check_dogfood_script;
 mod check_firefox_refs;
+mod check_help_idioms;
 mod check_iteration_plan;
 mod check_live_test_layout;
 mod check_source_invariants;
+mod check_vendored_js;
 mod find_iteration_plan;
 mod live_sweep;
 mod skill_drift;
@@ -57,6 +59,16 @@ enum Commands {
     /// what the CLI would generate. Wired into CI so the agent-facing skill
     /// cannot silently drift from the command surface it documents.
     CheckSkillDrift(skill_drift::CheckArgs),
+    /// Fail when `ff-rdp --help` no longer carries the idioms and quick-start
+    /// lines the generated skill block lists. `--help` is the surface every
+    /// benchmark agent actually reads (iter-219 Theme E); this is
+    /// `check-skill-drift`'s sibling for it.
+    CheckHelpIdioms(check_help_idioms::Args),
+    /// Recompute the SHA-256 of every vendored JavaScript file against the
+    /// hashes pinned in its VERSION manifest. ff-rdp injects Mozilla's
+    /// Readability bundle into the live page; this is what makes "the output
+    /// is a function of the ff-rdp version alone" true rather than hoped for.
+    CheckVendoredJs(check_vendored_js::Args),
 }
 
 fn main() -> Result<()> {
@@ -72,5 +84,7 @@ fn main() -> Result<()> {
         Commands::LiveSweep(args) => live_sweep::run(args),
         Commands::GenSkill(args) => skill_drift::run_gen(args),
         Commands::CheckSkillDrift(args) => skill_drift::run_check(args),
+        Commands::CheckHelpIdioms(args) => check_help_idioms::run(args),
+        Commands::CheckVendoredJs(args) => check_vendored_js::run(args),
     }
 }
