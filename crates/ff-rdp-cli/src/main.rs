@@ -392,6 +392,38 @@ mod main_tests {
         assert!(!is_type_invocation(&args));
     }
 
+    /// iter-212 regression: `--max-frame-mb` and `--redact-threshold` are
+    /// value-taking globals (`cli/args.rs`) but were missing from
+    /// `VALUE_GLOBALS`, so `find_subcommand_token` mistook their value for a
+    /// subcommand token and `ff-rdp --max-frame-mb 512` (no real subcommand)
+    /// fell through to clap's usage-error dump instead of the bare-invocation
+    /// home view every other global flag gets.
+    #[test]
+    fn detects_type_after_max_frame_mb_and_redact_threshold() {
+        let args: Vec<String> = [
+            "ff-rdp",
+            "--max-frame-mb",
+            "512",
+            "--redact-threshold",
+            "128",
+            "type",
+            "--bogus",
+        ]
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+        assert!(is_type_invocation(&args));
+    }
+
+    #[test]
+    fn rejects_no_subcommand_after_max_frame_mb() {
+        let args: Vec<String> = ["ff-rdp", "--max-frame-mb", "512"]
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert!(!is_type_invocation(&args));
+    }
+
     // Boolean global flags (`--no-daemon`, `--all`, etc.) must NOT consume the
     // following token; otherwise the heuristic swallows `type` and the hint
     // never fires.
@@ -434,7 +466,7 @@ mod main_tests {
 
     // ── iter-132 Theme D: flag-vs-subcommand traps ───────────────────────────
 
-    use super::{Cli, flag_subcommand_trap_hint};
+    use super::{Cli, flag_subcommand_trap_hint, parse_as_home};
     use clap::Parser as _;
 
     fn args(argv: &[&str]) -> Vec<String> {
@@ -519,5 +551,40 @@ mod main_tests {
         let argv = args(&["ff-rdp", "scroll", "--stats"]);
         let err = expect_parse_err(&argv);
         assert!(flag_subcommand_trap_hint(&argv, &err).is_none());
+    }
+
+    // ── iter-212: bare-invocation home retry ─────────────────────────────────
+
+    /// A bare invocation carrying only value-taking global flags must still
+    /// resolve to the home view — this is the scenario the missing
+    /// `--max-frame-mb`/`--redact-threshold` entries in `VALUE_GLOBALS` broke:
+    /// their value token was mistaken for a subcommand, so `parse_as_home`
+    /// refused to rewrite and the caller fell through to clap's usage dump.
+    #[test]
+    fn parse_as_home_rewrites_bare_invocation_with_max_frame_mb() {
+        let argv = args(&[
+            "ff-rdp",
+            "--max-frame-mb",
+            "512",
+            "--redact-threshold",
+            "128",
+        ]);
+        let err = expect_parse_err(&argv);
+        assert!(
+            parse_as_home(&argv, &err).is_some(),
+            "a bare invocation with only value-taking globals must resolve to the home view"
+        );
+    }
+
+    /// A real subcommand missing its own required argument must NOT be
+    /// rewritten into the home view, even when it follows the same globals.
+    #[test]
+    fn parse_as_home_does_not_rewrite_a_real_subcommand() {
+        let argv = args(&["ff-rdp", "--max-frame-mb", "512", "scroll"]);
+        let err = expect_parse_err(&argv);
+        assert!(
+            parse_as_home(&argv, &err).is_none(),
+            "`scroll` with no sub-subcommand must keep its own error, not become `home`"
+        );
     }
 }
