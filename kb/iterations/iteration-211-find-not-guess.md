@@ -2,7 +2,7 @@
 title: "Iteration 211: find, don't guess — --query on the read commands and a cap on page-text"
 type: iteration
 date: 2026-08-29
-status: in-review
+status: done
 branch: iter-211/find-not-guess
 depends_on:
   - 210
