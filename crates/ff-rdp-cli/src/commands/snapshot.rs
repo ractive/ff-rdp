@@ -86,12 +86,7 @@ const SNAPSHOT_JS_TEMPLATE: &str = r"(function() {
   return '__FF_RDP_JSON__' + JSON.stringify(tree);
 })()";
 
-pub fn run(
-    cli: &Cli,
-    depth: u32,
-    max_chars: u32,
-    query: &QueryFilter,
-) -> Result<(), AppError> {
+pub fn run(cli: &Cli, depth: u32, max_chars: u32, query: &QueryFilter) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
 

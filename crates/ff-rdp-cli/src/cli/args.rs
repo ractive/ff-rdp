@@ -23,11 +23,19 @@ COMMAND REFERENCE:
 
   Page content:
     ff-rdp eval <SCRIPT> | --file PATH | --stdin [--stringify] [--no-isolate]
-    ff-rdp page-text
-    ff-rdp dom <SEL> [--text | --attrs | --text-attrs | --inner-html | --count]
+    ff-rdp page-text [--query TEXT [--context N]] [--max-chars N | --full]
+    ff-rdp dom <SEL> [--text | --attrs | --text-attrs | --inner-html | --count] [--query TEXT]
     ff-rdp dom stats
     ff-rdp dom tree [SEL] [--depth N] [--max-chars N]
-    ff-rdp snapshot [--depth N] [--max-chars N]
+    ff-rdp snapshot [--depth N] [--max-chars N] [--query TEXT]
+
+  Find, don't guess (iter-211):
+    --query TEXT (case-insensitive substring) or --query-regex PATTERN on
+    page-text, snapshot, `a11y summary` and dom returns only the matching part
+    of the page, with meta.matches counting the hits. page-text is capped at
+    8000 characters by default — meta.total_chars always reports the full
+    length, --full lifts the cap. Reach for --query instead of piping
+    page-text through `head`: the answer is usually further down.
 
   Interaction:
     ff-rdp click <SEL> | --ref <REF> [--with-page] [--dispatch pointer|legacy|click-only] [--no-wait] [--settle]

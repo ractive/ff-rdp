@@ -35,7 +35,11 @@ pub fn run(cli: &Cli, args: &PageTextArgs) -> Result<(), AppError> {
     let text = resolve_string_result(&mut ctx, &eval_result.result)?;
 
     let query = QueryFilter::from_query_args(&args.query);
-    let cap = if args.full { None } else { Some(args.max_chars) };
+    let cap = if args.full {
+        None
+    } else {
+        Some(args.max_chars)
+    };
     let excerpt = build_excerpt(&text, &query, args.context, cap);
 
     let mut meta = json!({
@@ -332,7 +336,11 @@ mod tests {
         assert_eq!(e.total_chars, 20_000);
         assert_eq!(e.shown_chars, 8_000);
         assert!(e.truncated);
-        assert!(e.hint().contains("showing 8000 of 20000 chars"), "{}", e.hint());
+        assert!(
+            e.hint().contains("showing 8000 of 20000 chars"),
+            "{}",
+            e.hint()
+        );
     }
 
     #[test]

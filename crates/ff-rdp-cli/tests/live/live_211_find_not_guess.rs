@@ -155,8 +155,7 @@ fn names_fixture() -> HashMap<String, FixtureRoute> {
 fn only_child_chain(root: &Value) -> Vec<String> {
     let mut tags = Vec::new();
     let mut node = root;
-    loop {
-        let Some(tag) = node["tag"].as_str() else { break };
+    while let Some(tag) = node["tag"].as_str() {
         tags.push(tag.to_owned());
         let Some(children) = node["children"].as_array() else {
             break;
@@ -216,7 +215,10 @@ fn live_page_text_query_returns_only_matching_lines_with_context() {
     );
     assert_eq!(out["meta"]["matches"], 1, "one matching line: {out}");
     assert_eq!(out["meta"]["shown"], 1, "nothing was cut: {out}");
-    assert_eq!(out["meta"]["context_lines"], 2, "the default context: {out}");
+    assert_eq!(
+        out["meta"]["context_lines"], 2,
+        "the default context: {out}"
+    );
     assert_eq!(
         out["meta"]["match_lines"],
         serde_json::json!([40]),
@@ -417,11 +419,7 @@ fn live_a11y_summary_query_filters_and_keeps_refs() {
     let interactive = out["results"]["interactive"]
         .as_array()
         .unwrap_or_else(|| panic!("results.interactive must be an array: {out}"));
-    assert_eq!(
-        interactive.len(),
-        1,
-        "only the Babbage link matches: {out}"
-    );
+    assert_eq!(interactive.len(), 1, "only the Babbage link matches: {out}");
     let entry = &interactive[0];
     assert_eq!(entry["name"], "Charles Babbage", "{out}");
     let ref_id = entry["ref"]

@@ -858,8 +858,14 @@ mod tests {
     /// directly — the same flag works in every output mode.
     #[test]
     fn unit_211_query_matches_bare_string_entries() {
-        assert!(entry_matches_query(&json!("Bug: crash on save"), &query("crash")));
-        assert!(!entry_matches_query(&json!("something else"), &query("crash")));
+        assert!(entry_matches_query(
+            &json!("Bug: crash on save"),
+            &query("crash")
+        ));
+        assert!(!entry_matches_query(
+            &json!("something else"),
+            &query("crash")
+        ));
         assert!(!entry_matches_query(&json!(42), &query("42")));
     }
 
@@ -892,7 +898,10 @@ mod tests {
     fn unit_211_text_mode_js_uses_the_shared_accessible_name_helper() {
         let js = build_js("h3 a", OutputMode::Text);
         assert!(js.contains("function __ffrdpAccName"), "{js}");
-        assert!(js.contains("__ffrdpAccName(els[0])"), "single-match path: {js}");
+        assert!(
+            js.contains("__ffrdpAccName(els[0])"),
+            "single-match path: {js}"
+        );
         assert!(js.contains("__ffrdpAccName(e)"), "multi-match path: {js}");
         assert!(
             !js.contains("return els[0].textContent;"),

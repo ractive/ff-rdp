@@ -345,8 +345,8 @@ fn compare_values(a: Option<&Value>, b: Option<&Value>) -> std::cmp::Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
     use crate::cli::args::QueryArgs;
+    use serde_json::json;
 
     fn make_controls(
         limit: Option<usize>,
@@ -634,14 +634,20 @@ mod tests {
         assert!(f.is_active());
         assert!(f.matches("8.1 billion people"), "lowercase haystack");
         assert!(f.matches("BILLION"), "uppercase haystack");
-        assert!(f.matches("multibillionaire"), "substring, not word-boundary");
+        assert!(
+            f.matches("multibillionaire"),
+            "substring, not word-boundary"
+        );
         assert!(!f.matches("8.1 million people"));
 
         // Not a regex: metacharacters are literal in the default mode, so a
         // caller pasting a URL or a price does not get a surprise match.
         let f = QueryFilter::from_query_args(&query_args(Some("a.c"), None));
         assert!(f.matches("xxa.cxx"));
-        assert!(!f.matches("abc"), "'.' must be literal without --query-regex");
+        assert!(
+            !f.matches("abc"),
+            "'.' must be literal without --query-regex"
+        );
     }
 
     #[test]
@@ -668,9 +674,12 @@ mod tests {
     #[test]
     fn query_regex_rejects_invalid_pattern_with_exit_2() {
         use clap::Parser as _;
-        let Err(err) =
-            crate::cli::args::Cli::try_parse_from(["ff-rdp", "page-text", "--query-regex", "([unclosed"])
-        else {
+        let Err(err) = crate::cli::args::Cli::try_parse_from([
+            "ff-rdp",
+            "page-text",
+            "--query-regex",
+            "([unclosed",
+        ]) else {
             panic!("an unparseable pattern must not reach the browser");
         };
         assert_eq!(err.exit_code(), 2, "usage error, not runtime error");

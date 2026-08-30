@@ -2,12 +2,15 @@
 title: "Iteration 211: find, don't guess — --query on the read commands and a cap on page-text"
 type: iteration
 date: 2026-08-29
-status: planned
+status: in-progress
 branch: iter-211/find-not-guess
-depends_on: [210]
+depends_on:
+  - 210
 first_call_sites:
   - primitive: ff_rdp_cli::output_controls::QueryFilter
-    site: crates/ff-rdp-cli/src/commands/page_text.rs (--query; also snapshot.rs, a11y_summary.rs, dom.rs)
+    site: >-
+      crates/ff-rdp-cli/src/commands/page_text.rs (--query; also snapshot.rs,
+      a11y_summary.rs, dom.rs)
 dogfood_path: |
   ff-rdp navigate https://en.wikipedia.org/wiki/World_population
   ff-rdp page-text --query "billion" --jq '.meta'
@@ -23,7 +26,11 @@ dogfood_path: |
   # expected: just the matching link(s), each with a ref
   ff-rdp dom "h3 a" --text --jq '.results[0]'
   # on github.com/facebook/react/issues: expected the full issue title, not the "Bug:" prefix
-tags: [iteration, cli, agent-ergonomics, output]
+tags:
+  - iteration
+  - cli
+  - agent-ergonomics
+  - output
 ---
 
 # Iteration 211: find, don't guess
@@ -51,25 +58,25 @@ label span of four GitHub issue titles, and it reported those.
 
 ## Tasks
 
-### A. `--query` [0/5]
-- [ ] `QueryFilter` in `output_controls.rs`: case-insensitive substring by default, `--query-regex`
+### A. `--query` [5/5]
+- [x] `QueryFilter` in `output_controls.rs`: case-insensitive substring by default, `--query-regex`
       for a regex; one implementation shared by the four commands
-- [ ] `page-text --query`: emit matching lines with `--context N` lines either side (default 2),
+- [x] `page-text --query`: emit matching lines with `--context N` lines either side (default 2),
       `meta.matches`, `meta.shown`, and the existing truncation hint when `shown < matches`
-- [ ] `snapshot --query`: keep every node whose text or attribute values match, plus its ancestors;
+- [x] `snapshot --query`: keep every node whose text or attribute values match, plus its ancestors;
       prune everything else; `meta.matches`
-- [ ] `a11y summary --query`: filter `headings`, `landmarks`, `interactive` by `text`/`name`;
+- [x] `a11y summary --query`: filter `headings`, `landmarks`, `interactive` by `text`/`name`;
       refs (from [[iteration-210-act-and-see]]) are still registered for the survivors
-- [ ] `dom <selector> --query`: filter the matched elements by accessible name / text; a
+- [x] `dom <selector> --query`: filter the matched elements by accessible name / text; a
       selector-only call is unchanged
 
-### B. `page-text` cap [0/2]
-- [ ] Default `--max-chars 8000`; output gains `meta.total_chars`, `meta.truncated`, and when
+### B. `page-text` cap [2/2]
+- [x] Default `--max-chars 8000`; output gains `meta.total_chars`, `meta.truncated`, and when
       truncated the hint `showing 8000 of N chars, use --full or --query <text>`
-- [ ] `--full` lifts the cap; `--max-chars 0` is rejected (same rule as `--max-frame-mb`)
+- [x] `--full` lifts the cap; `--max-chars 0` is rejected (same rule as `--max-frame-mb`)
 
-### C. Accessible names [0/1]
-- [ ] `dom --text` and the `name` field use the same accessible-name computation as
+### C. Accessible names [1/1]
+- [x] `dom --text` and the `name` field use the same accessible-name computation as
       `a11y summary` (label, `aria-label`, `aria-labelledby`, then full descendant text), so an
       `<h3><a>Bug: <span>…</span></a></h3>` title comes back whole
 
@@ -87,12 +94,57 @@ label span of four GitHub issue titles, and it reported those.
       match and each carries a `ref` that `click --ref` accepts
 - [ ] `live_dom_text_returns_full_accessible_name`: fixture `<h3><a>Bug: <span>title</span></a></h3>`
       → `dom "h3 a" --text` yields `"Bug: title"`
-- [ ] `query_filter_is_case_insensitive_substring_by_default` (unit) and
+- [x] `query_filter_is_case_insensitive_substring_by_default` (unit) and
       `query_regex_rejects_invalid_pattern_with_exit_2` (unit)
 - [ ] Benchmark: re-run [[axi-benchmark-comparison]] `--repeat 3`; `tabular_data_analysis` and
       `wikipedia_deep_extraction` average ≤ 6 turns (were 9.3, 10.7) and
       `github_issue_investigation` passes 3/3 — record the table in this plan's Outcome section
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+
+## Outcome
+
+Shipped as PR (branch `iter-211/find-not-guess`).
+
+**What landed**
+
+| Theme | Where |
+| --- | --- |
+| A — `--query` / `--query-regex` | `QueryFilter` + `QueryArgs` in `crates/ff-rdp-cli/src/output_controls.rs` and `cli/args.rs`, flattened into `page-text`, `snapshot`, `a11y summary` and `dom` |
+| B — `page-text` cap | `build_excerpt` in `crates/ff-rdp-cli/src/commands/page_text.rs`: `--max-chars 8000` default, `--full`, `meta.total_chars` / `meta.truncated` / `meta.matches` / `meta.shown` / `meta.match_lines` |
+| C — accessible names | `__ffrdpAccName` in `crates/ff-rdp-cli/src/commands/js_helpers.rs`, used by `dom`'s ARIA-tree `name`, `dom --text`, and all four `page_view` sections |
+
+**Decisions taken during implementation**
+
+- **`--query-regex` is compiled by clap's value parser, not by the command.** An unparseable
+  pattern is therefore a *usage* error (exit 2), rejected before any connection to Firefox is
+  opened. Routing it through `AppError::User` would have been exit 1 and would have cost a
+  browser round-trip first.
+- **`--query` is a per-command flag, not a global one.** `--limit`/`--fields` are global, but a
+  global `--query` would be silently inert on `console`, `network`, `perf`, and everything else
+  that does not implement it — the exact "flag accepted, nothing happened" failure iter-161
+  Theme D removed for `--fields`/`--sort`.
+- **`a11y summary --query` collects uncapped and caps after filtering.** The cap defaults to 50
+  interactive entries; capping first would hide precisely the control past entry 50 that the
+  caller queried for. Refs are minted for the uncapped set in that case, leaving
+  registered-but-unreferenced entries in the daemon — the same harmless trade `snapshot` already
+  makes.
+- **`snapshot --query` keeps a matching node *whole*** (subtree included) and keeps
+  non-matching ancestors as a path only. A no-match query prunes to `null`, not to the whole
+  page: handing an agent that asked for "billion" the entire document back would read as "here
+  are your matches".
+- **The accessible-name cap moved from 100 to 300 characters**, not to unbounded —
+  `__ffrdpAccName(document.body)` would otherwise return the whole page. A name that does hit
+  the cap now ends in `…` rather than stopping silently.
+- **`page-text --max-chars` counts characters, not bytes**, so the number matches what
+  `--jq '.results | length'` reports and multi-byte text is never cut mid-codepoint.
+
+**Not done**
+
+- The benchmark re-run (`axi-benchmark-comparison --repeat 3`) is left unticked. It is a
+  multi-hour, many-API-call harness run that this implementation pass could not execute, so the
+  turn-count claim in that AC is unverified — the code changes are in, but nothing here measures
+  whether they moved 9.3 → ≤6. File it as follow-up work against the benchmark harness rather
+  than reading the unticked box as "it failed".
 
 ## Design notes
 

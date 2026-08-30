@@ -119,9 +119,9 @@ fn filter_page_view(view: &mut Value, query: &QueryFilter) -> usize {
             continue;
         };
         entries.retain(|entry| {
-            MATCH_FIELDS.iter().any(|field| {
-                matches!(entry.get(*field), Some(Value::String(s)) if query.matches(s))
-            })
+            MATCH_FIELDS.iter().any(
+                |field| matches!(entry.get(*field), Some(Value::String(s)) if query.matches(s)),
+            )
         });
         kept += entries.len();
     }
