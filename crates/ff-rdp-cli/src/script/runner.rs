@@ -815,7 +815,13 @@ fn execute_navigate(
     };
     // Script steps have no `--with-page` equivalent in the script format; a
     // step that wants the page view runs an `a11y summary` step instead.
-    nav_run_core(cli, &effective_url, &wait_opts, false).map(|(v, _)| v)
+    nav_run_core(
+        cli,
+        &effective_url,
+        &wait_opts,
+        &crate::cli::args::PageViewArgs::default(),
+    )
+    .map(|(v, _)| v)
 }
 
 fn resolve_element_target_selector(

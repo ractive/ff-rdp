@@ -1,4 +1,4 @@
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::cli::args::Cli;
 use crate::error::AppError;
@@ -50,12 +50,18 @@ pub fn run(cli: &Cli, query: &QueryFilter) -> Result<(), AppError> {
         &CollectOptions {
             interactive_limit: collect_limit,
             wait_complete_ms: None,
+            // `a11y summary` is the accessibility surface: it keeps the
+            // landmarks iter-219 dropped from `--with-page`, and it does not
+            // run the Readability pass — an excerpt is not an accessibility
+            // fact, and a clone-and-parse per call would be pure cost here.
+            landmarks: true,
+            reader: None,
         },
     )?;
 
     let mut output_results = page.view;
     let query_matches = if query.is_active() {
-        let matches = filter_page_view(&mut output_results, query);
+        let matches = page_view::filter_page_view(&mut output_results, query);
         page_view::apply_interactive_limit(&mut output_results, interactive_limit);
         Some(matches)
     } else {
@@ -97,40 +103,6 @@ pub fn run(cli: &Cli, query: &QueryFilter) -> Result<(), AppError> {
 
     let hint_ctx = HintContext::new(HintSource::A11ySummary);
     OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
-}
-
-/// Filter `headings`, `landmarks` and `interactive` down to the entries
-/// matching `query`, returning the total number of survivors (iter-211
-/// Theme A).
-///
-/// Each section is judged on its own human-readable field — `text` for
-/// headings, `label` for landmarks, `name` for interactive entries — plus
-/// `href`, so "find the link to /pricing" works as well as "find the link
-/// called Pricing". Entries are kept whole, `ref` included, so a survivor is
-/// immediately usable with `click --ref`.
-fn filter_page_view(view: &mut Value, query: &QueryFilter) -> usize {
-    const MATCH_FIELDS: [&str; 4] = ["text", "label", "name", "href"];
-    let Some(obj) = view.as_object_mut() else {
-        return 0;
-    };
-    let mut kept = 0usize;
-    for section in ["landmarks", "headings", "interactive"] {
-        let Some(Value::Array(entries)) = obj.get_mut(section) else {
-            continue;
-        };
-        entries.retain(|entry| {
-            MATCH_FIELDS.iter().any(
-                |field| matches!(entry.get(*field), Some(Value::String(s)) if query.matches(s)),
-            )
-        });
-        kept += entries.len();
-    }
-    // `interactive_total` / `interactive_truncated` describe the pre-filter
-    // collection and would misreport the filtered list, so drop them here;
-    // `apply_interactive_limit` re-adds them if the cap still bites.
-    obj.remove("interactive_total");
-    obj.remove("interactive_truncated");
-    kept
 }
 
 /// Record how the view was produced under `meta.source`, matching `a11y`'s
@@ -212,7 +184,7 @@ mod tests {
     #[test]
     fn unit_211_query_filters_every_section_and_keeps_refs() {
         let mut view = sample_view();
-        let matches = filter_page_view(&mut view, &query("Babbage"));
+        let matches = page_view::filter_page_view(&mut view, &query("Babbage"));
         assert_eq!(matches, 2, "one heading and one link: {view}");
         assert!(
             view["landmarks"].as_array().expect("array").is_empty(),
@@ -233,7 +205,7 @@ mod tests {
     #[test]
     fn unit_211_query_matches_href_as_well_as_name() {
         let mut view = sample_view();
-        let matches = filter_page_view(&mut view, &query("/engine"));
+        let matches = page_view::filter_page_view(&mut view, &query("/engine"));
         assert_eq!(matches, 1);
         assert_eq!(view["interactive"][0]["ref"], "e2");
     }
@@ -248,7 +220,7 @@ mod tests {
             obj.insert("interactive_total".to_owned(), json!(500));
             obj.insert("interactive_truncated".to_owned(), json!(true));
         }
-        filter_page_view(&mut view, &query("Babbage"));
+        page_view::filter_page_view(&mut view, &query("Babbage"));
         assert!(view.get("interactive_total").is_none(), "{view}");
         assert!(view.get("interactive_truncated").is_none(), "{view}");
     }
@@ -258,7 +230,7 @@ mod tests {
     #[test]
     fn unit_211_no_match_empties_every_section() {
         let mut view = sample_view();
-        let matches = filter_page_view(&mut view, &query("no-such-token"));
+        let matches = page_view::filter_page_view(&mut view, &query("no-such-token"));
         assert_eq!(matches, 0);
         for section in ["landmarks", "headings", "interactive"] {
             assert!(

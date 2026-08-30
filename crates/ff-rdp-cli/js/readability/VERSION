@@ -1,0 +1,31 @@
+# Vendored Mozilla Readability — the algorithm behind Firefox Reader View.
+#
+# ff-rdp injects these files into the live page (see
+# crates/ff-rdp-cli/src/commands/page_view.rs) so `--with-page` can tell the
+# article apart from the site chrome. They are checked in, never downloaded at
+# runtime: the output of `--with-page` must be a function of the ff-rdp version
+# alone, and executing remote code in a user's browser session is not something
+# a debugging CLI should do.
+#
+# `cargo run -p xtask -- check-vendored-js` recomputes the hashes below and
+# fails on any mismatch, so an upgrade is a deliberate, reviewable commit.
+#
+# To upgrade:
+#   1. npm pack @mozilla/readability@<version> (or download the GitHub release)
+#   2. copy Readability.js, Readability-readerable.js and LICENSE.md (-> LICENSE)
+#   3. npx terser@5 Readability.js --compress --mangle --output Readability.min.js
+#   4. update package/version/source and the hashes below, and commit
+#
+# No step of this runs in the build: the repo forbids Node in the build graph
+# (CLAUDE.md, "All code stays in Rust"), and minification happens once, by hand.
+
+package = @mozilla/readability
+version = 0.6.0
+source = https://github.com/mozilla/readability/releases/tag/v0.6.0
+license = Apache-2.0
+minifier = terser 5 (--compress --mangle)
+
+sha256 34dcab3d0832d0019f02990eed6b6124e029e8c32b9f0c6f2550544ff8dff174  Readability.js
+sha256 d4b9e61ed8d18731047b4fac99f7d7b7d6bd7af40a8693bf545220b3ea6107bc  Readability.min.js
+sha256 a98d28805804c1986ceed470678a3f409f150ee7f1d227f8c8239c005d21de65  Readability-readerable.js
+sha256 a5b1e8181751ce05b85b7bfaa832b785e87086250a5148e679d17ca9bdcfa958  LICENSE

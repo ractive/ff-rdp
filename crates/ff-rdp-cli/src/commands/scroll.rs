@@ -26,8 +26,9 @@ pub struct ScrollOptions<'a> {
     pub wait_for_timeout_ms: Option<u64>,
     /// Whether to wait for page settle after scrolling (--settle).
     pub settle: bool,
-    /// iter-210 Theme A: embed the post-scroll page view under `results.page`.
-    pub with_page: bool,
+    /// iter-210 Theme A: embed the post-scroll page view under `results.page`;
+    /// carries `--page-chars` and `--query` since iter-219.
+    pub page: crate::cli::args::PageViewArgs,
 }
 
 /// Serialize a user-supplied string as a JS string literal (double-quoted,
@@ -57,10 +58,10 @@ fn finalize_scroll(
     ctx: &mut ConnectedTab,
     mut result: Value,
     mut meta: Value,
-    with_page: bool,
+    page_args: &crate::cli::args::PageViewArgs,
 ) -> Result<(), AppError> {
-    if with_page {
-        super::page_view::attach(ctx, &mut result, Some(cli.timeout))?;
+    if page_args.with_page {
+        super::page_view::attach(ctx, &mut result, Some(cli.timeout), page_args)?;
     }
     let page_text = super::page_view::lift_meta(cli, &mut result, &mut meta);
     crate::connection_meta::merge_into_if_verbose(
@@ -149,7 +150,7 @@ pub fn run_to(
     if let Some(sm) = settle_method {
         meta["settle_method"] = json!(sm.as_meta_str());
     }
-    finalize_scroll(cli, &mut ctx, result_json, meta, opts.with_page)
+    finalize_scroll(cli, &mut ctx, result_json, meta, &opts.page)
 }
 
 // ---------------------------------------------------------------------------
@@ -158,7 +159,7 @@ pub fn run_to(
 
 /// Flags for [`run_by`], bundled so the four booleans do not become four
 /// positional parameters at the call site.
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone)]
 pub struct ScrollByOptions {
     /// `--page-down`: scroll down by 85% of the viewport height.
     pub page_down: bool,
@@ -166,8 +167,9 @@ pub struct ScrollByOptions {
     pub page_up: bool,
     /// `--smooth`: animate instead of jumping.
     pub smooth: bool,
-    /// `--with-page`: embed the resulting page view (iter-210 Theme A).
-    pub with_page: bool,
+    /// `--with-page` and friends: embed the resulting page view (iter-210
+    /// Theme A, iter-219 Theme C).
+    pub page: crate::cli::args::PageViewArgs,
 }
 
 pub fn run_by(cli: &Cli, dx: i64, dy: Option<i64>, opts: ScrollByOptions) -> Result<(), AppError> {
@@ -175,7 +177,7 @@ pub fn run_by(cli: &Cli, dx: i64, dy: Option<i64>, opts: ScrollByOptions) -> Res
         page_down,
         page_up,
         smooth,
-        with_page,
+        page,
     } = opts;
     // Mutual exclusion: --page-down/--page-up cannot be combined with --dy
     if (page_down || page_up) && dy.is_some() {
@@ -217,19 +219,19 @@ pub fn run_by(cli: &Cli, dx: i64, dy: Option<i64>, opts: ScrollByOptions) -> Res
 
     let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, "scroll by failed")?;
     let result_json = resolve_result(&mut ctx, &eval_result.result)?;
-    finalize_scroll(cli, &mut ctx, result_json, json!({}), with_page)
+    finalize_scroll(cli, &mut ctx, result_json, json!({}), &page)
 }
 
 // ---------------------------------------------------------------------------
 // scroll top / scroll bottom
 // ---------------------------------------------------------------------------
 
-pub fn run_top(cli: &Cli, with_page: bool) -> Result<(), AppError> {
-    run_scroll_absolute(cli, "0", "scroll top failed", with_page)
+pub fn run_top(cli: &Cli, page_args: &crate::cli::args::PageViewArgs) -> Result<(), AppError> {
+    run_scroll_absolute(cli, "0", "scroll top failed", page_args)
 }
 
-pub fn run_bottom(cli: &Cli, with_page: bool) -> Result<(), AppError> {
-    run_scroll_absolute(cli, "root.scrollHeight", "scroll bottom failed", with_page)
+pub fn run_bottom(cli: &Cli, page_args: &crate::cli::args::PageViewArgs) -> Result<(), AppError> {
+    run_scroll_absolute(cli, "root.scrollHeight", "scroll bottom failed", page_args)
 }
 
 /// Shared implementation for `scroll top` and `scroll bottom`.
@@ -240,7 +242,7 @@ fn run_scroll_absolute(
     cli: &Cli,
     y_expr: &str,
     error_label: &str,
-    with_page: bool,
+    page_args: &crate::cli::args::PageViewArgs,
 ) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
@@ -281,7 +283,7 @@ fn run_scroll_absolute(
 
     let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, error_label)?;
     let result_json = resolve_result(&mut ctx, &eval_result.result)?;
-    finalize_scroll(cli, &mut ctx, result_json, json!({}), with_page)
+    finalize_scroll(cli, &mut ctx, result_json, json!({}), page_args)
 }
 
 // ---------------------------------------------------------------------------
@@ -295,7 +297,7 @@ pub fn run_container(
     dy: i64,
     to_end: bool,
     to_start: bool,
-    with_page: bool,
+    page_args: &crate::cli::args::PageViewArgs,
 ) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
@@ -333,7 +335,7 @@ pub fn run_container(
     let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, "scroll container failed")?;
     let result_json = resolve_result(&mut ctx, &eval_result.result)?;
     let meta = json!({"selector": selector});
-    finalize_scroll(cli, &mut ctx, result_json, meta, with_page)
+    finalize_scroll(cli, &mut ctx, result_json, meta, page_args)
 }
 
 // ---------------------------------------------------------------------------
@@ -347,7 +349,7 @@ pub fn run_until(
     selector: &str,
     direction: &str,
     timeout_ms: u64,
-    with_page: bool,
+    page_args: &crate::cli::args::PageViewArgs,
 ) -> Result<(), AppError> {
     if direction != "up" && direction != "down" {
         return Err(AppError::User(format!(
@@ -457,7 +459,7 @@ pub fn run_until(
     }
 
     let meta = json!({"selector": selector, "direction": direction, "timeout_ms": timeout_ms});
-    finalize_scroll(cli, &mut ctx, result_json, meta, with_page)
+    finalize_scroll(cli, &mut ctx, result_json, meta, page_args)
 }
 
 fn is_truthy_grip(grip: &ff_rdp_core::Grip) -> bool {
@@ -484,7 +486,11 @@ fn is_truthy_grip(grip: &ff_rdp_core::Grip) -> bool {
 // scroll text <text>
 // ---------------------------------------------------------------------------
 
-pub fn run_text(cli: &Cli, text: &str, with_page: bool) -> Result<(), AppError> {
+pub fn run_text(
+    cli: &Cli,
+    text: &str,
+    page_args: &crate::cli::args::PageViewArgs,
+) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target.console_actor.clone();
 
@@ -518,7 +524,7 @@ pub fn run_text(cli: &Cli, text: &str, with_page: bool) -> Result<(), AppError> 
     let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, "scroll text failed")?;
     let result_json = resolve_result(&mut ctx, &eval_result.result)?;
     let meta = json!({"text": text});
-    finalize_scroll(cli, &mut ctx, result_json, meta, with_page)
+    finalize_scroll(cli, &mut ctx, result_json, meta, page_args)
 }
 
 #[cfg(test)]

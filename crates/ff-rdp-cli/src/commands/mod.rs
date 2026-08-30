@@ -32,6 +32,7 @@ pub(crate) mod network_events;
 pub(crate) mod network_watch;
 pub(crate) mod page_text;
 pub(crate) mod page_view;
+pub(crate) mod page_view_js;
 pub(crate) mod perf;
 pub(crate) mod perf_compare;
 pub(crate) mod profiles;

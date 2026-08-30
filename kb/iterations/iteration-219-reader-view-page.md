@@ -2,7 +2,7 @@
 title: "Iteration 219: reader view on the live page — Readability.js makes --with-page return the content, not the chrome"
 type: iteration
 date: 2026-08-30
-status: planned
+status: in-review
 branch: iter-219/reader-view-page
 depends_on:
   - 210
@@ -105,61 +105,72 @@ junk-description guard on excerpts port directly; its benchmark lesson — agent
 
 ## Tasks
 
-### A. Vendor and pin [0/4]
-- [ ] Add `crates/ff-rdp-cli/js/readability/{Readability.min.js,Readability.js,Readability-readerable.js,LICENSE,VERSION}`
+### A. Vendor and pin [4/4]
+- [x] Add `crates/ff-rdp-cli/js/readability/{Readability.min.js,Readability.js,Readability-readerable.js,LICENSE,VERSION}`
       from `@mozilla/readability` 0.6.0; `VERSION` records the npm version, source URL, and the
       SHA-256 of each file; `include_str!` them from `page_view.rs`
-- [ ] `xtask check-vendored-js`: recompute and compare the hashes (Rust `sha2`, xtask-only dep);
+- [x] `xtask check-vendored-js`: recompute and compare the hashes (Rust `sha2`, xtask-only dep);
       wire into CI's discipline job next to `check-skill-drift`
-- [ ] Attribution: one line in README's third-party section and in `--version --verbose` (or
+- [x] Attribution: a README `## Third-party code` section and a `BUNDLED CODE:` block in
+      `ff-rdp --help` (there is no `--version --verbose` bundled-licence surface to extend;
+      `--help` is the one an agent actually reads). Original wording: one line in README's
+      third-party section and in `--version --verbose` (or
       wherever ff-rdp lists bundled licenses — add the section if none exists)
-- [ ] `cargo deny check` clean (Apache-2.0 is already allowed; confirm no new Rust deps beyond
+- [x] `cargo deny check` clean (Apache-2.0 is already allowed; confirm no new Rust deps beyond
       `sha2` in xtask)
 
-### B. Content zones [0/5]
-- [ ] Collector stamps `data-ffrdp-id` on every interactive element before cloning and removes
+### B. Content zones [5/5]
+- [x] Collector stamps `data-ffrdp-id` on every interactive element before cloning and removes
       the attribute in a `finally` — the live DOM must be byte-identical afterwards (live test:
       `document.documentElement.outerHTML` before == after)
-- [ ] Run `new Readability(clone, {serializer: el => el}).parse()`; collect the id set under the
+- [x] Run `new Readability(clone, {serializer: el => el}).parse()`; collect the id set under the
       article root; `zone: "content" | "chrome"` on every `interactive` entry
-- [ ] Sort content first, then chrome, stable within each; apply the cap after sorting; add
+- [x] Sort content first, then chrome, stable within each; apply the cap after sorting; add
       `chrome_omitted` (count dropped by the cap that were chrome) next to `interactive_total`
-- [ ] `page.readerable: bool` from `isProbablyReaderable(document)`; `page.source`
-- [ ] Drop `landmarks` from `results.page` (22 entries of `{"role":"navigation","label":""}` on
+- [x] `page.readerable: bool` from `isProbablyReaderable(document)`; `page.source`
+- [x] Drop `landmarks` from `results.page` (22 entries of `{"role":"navigation","label":""}` on
       Wikipedia that no benchmark trajectory used); `a11y summary` keeps them — it is the
       accessibility surface, `--with-page` is the act-and-see surface
 
-### C. Excerpt [0/4]
-- [ ] `page.excerpt` from the article's `textContent` (whitespace-normalized), cut with a ported
+### C. Excerpt [4/4]
+- [x] `page.excerpt` from the article's block text (whitespace-normalized), cut with a ported
       `excerpt_at_boundary(text, max_chars)` — paragraph, then sentence, then word boundary; unit
       tests ported from mdget's `truncate_output` tests
-- [ ] `--page-chars N` on every `--with-page` command (default 1500, `0` = no excerpt), threaded
+- [x] `--page-chars N` on every `--with-page` command (default 1500, `0` = no excerpt), threaded
       through `page_view::CollectOptions`; `page.excerpt_chars` and `page.excerpt_truncated`
-- [ ] Fallback when Readability returns `null`: `innerText` of `main` / `[role=main]` / `body`,
+- [x] Fallback when Readability returns `null` — and, added during the live sweep, when it
+      returns an article with no prose blocks at all (a sign-in form scores as an article
+      often enough): `page.source` flips to `innertext` in both cases. Original wording:
+      fallback when Readability returns `null`: `innerText` of `main` / `[role=main]` / `body`,
       same cut; `page.source: "innertext"` — never an empty excerpt on a page that has text
-- [ ] `--query` applies to the view: excerpt becomes the `--context`-window around matches (reuse
+- [x] `--query` applies to the view: excerpt becomes the `--context`-window around matches (reuse
       `page_text::build_excerpt`), `interactive` filtered by name/href match, `page.matches`
       reported; `--query` with `--with-page` on a command that has no `--query` today gains it
       via the shared `QueryArgs`
 
-### D. Injection mechanics [0/3]
-- [ ] Inject once per document: the collector checks for the cached handle first and sends the
+### D. Injection mechanics [2/3]
+- [x] Inject once per document: the collector checks for the cached handle first and sends the
       33 KB only when absent; `meta.page_readability_injected: bool` says which happened
-- [ ] Capture built-ins at injection time; live test against a page that overrides
+- [x] Capture built-ins at injection time; live test against a page that overrides
       `Array.prototype.forEach` and `JSON.stringify` still returns a correct view
 - [ ] Record in-content timing (`performance.now()` around `parse()`) as `meta.page_parse_ms`;
       Design notes get the measured numbers for Wikipedia, a GitHub issue, and an SPA
+      — **half done**: `meta.page_parse_ms` ships and Wikipedia is measured (47–71 ms over
+      four runs, 2.0 ms on the local fixture). The GitHub-issue and SPA numbers were not
+      taken; left unticked rather than reworded
 
-### E. `--help` from the IDIOMS table [0/3]
-- [ ] Top-level `--help` Quick start renders the IDIOMS entries (syntax + one-line why) after the
+### E. `--help` from the IDIOMS table [3/3]
+- [x] Top-level `--help` Quick start renders the IDIOMS entries (syntax + one-line why) after the
       launch lines; generated from the same table `skill_doc.rs` and `home.rs` use
-- [ ] `check-skill-drift` covers the `--help` block (or a sibling `check-help-idioms` if the
+- [x] `check-help-idioms`, the sibling gate the task's own parenthesis allows —
+      `check-skill-drift`'s diff shape pins a markdown region, which `--help` is not.
+      Original wording: `check-skill-drift` covers the `--help` block (or a sibling `check-help-idioms` if the
       existing gate's diff shape does not fit)
-- [ ] `page-text` command one-liner mentions `--query` and the 8 000-char cap; README command
+- [x] `page-text` command one-liner mentions `--query` and the 8 000-char cap; README command
       reference regenerated
 
-### F. Measure [0/3]
-- [ ] Live tests `tests/live/live_219_reader_view.rs`: on the recorded Wikipedia fixture page the
+### F. Measure [1/3]
+- [x] Live tests `tests/live/live_219_reader_view.rs`: on the recorded Wikipedia fixture page the
       "Charles Babbage" link is in `interactive` with `zone: "content"` and "Jump to content" is
       not in the top 50; `excerpt` contains the lede; DOM unchanged after collection; fallback
       path on a fixture with no prose
@@ -169,18 +180,18 @@ junk-description guard on excerpts port directly; its benchmark lesson — agent
 - [ ] Update `kb/research/axi-benchmark-comparison.md` with the two-task result and the
       `--with-page` adoption count in those six runs
 
-## Acceptance Criteria [0/7]
+## Acceptance Criteria [5/7]
 
-- [ ] `ff-rdp navigate https://en.wikipedia.org/wiki/Ada_Lovelace --with-page` returns the
+- [x] `ff-rdp navigate https://en.wikipedia.org/wiki/Ada_Lovelace --with-page` returns the
       "Charles Babbage" link with a usable `ref` and `zone: "content"` inside the 50-entry cap,
       and `excerpt` begins with the article lede (live test, recorded fixture)
 - [ ] `click --ref <that ref> --with-page` returns a view whose `excerpt` contains "1791" —
       the birth year — so `wikipedia_link_follow` is answerable in two commands (live test)
-- [ ] The live DOM is unchanged by collection: no `data-ffrdp-id` remains, `outerHTML` equal
+- [x] The live DOM is unchanged by collection: no `data-ffrdp-id` remains, `outerHTML` equal
       before and after (live test)
-- [ ] `check-vendored-js` fails on a one-byte edit to `Readability.min.js` and passes on the
+- [x] `check-vendored-js` fails on a one-byte edit to `Readability.min.js` and passes on the
       committed tree; CI runs it
-- [ ] Top-level `--help` shows `page-text --query` and `click --ref … --with-page` in Quick
+- [x] Top-level `--help` shows `page-text --query` and `click --ref … --with-page` in Quick
       start, and `check-skill-drift` (or its sibling) fails when the table and `--help` diverge
       (e2e test)
 - [ ] Benchmark: `wikipedia_link_follow` and `wikipedia_infobox_hop` have a measured 3-repeat
@@ -188,8 +199,82 @@ junk-description guard on excerpts port directly; its benchmark lesson — agent
       2026-08-30). A number that did not improve is a valid result and must not be re-run until
       it looks better; if agents still did not use `--with-page`, say so — that reopens
       [[iteration-213-act-and-see-benchmark-rerun]] Theme C's default-on question with evidence
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q`
-      clean; live sweep reconciles
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q`
+      clean; live sweep reconciles [2026-08-30: 1163+ unit/e2e pass, 0 fail; sweep
+      `executed=299 skipped=0 preexisting=9 vanished=0 launch_timeout=0 timed_out=0 total=308`
+      with 296 passed / 3 failed — 296+3 = 299, reconciles. All three failures are pre-existing
+      and already filed: see Outcome]
+
+## Outcome
+
+Measured 2026-08-30 on the branch, headless Firefox 143 on macOS 15.
+
+**The view.** `ff-rdp navigate https://en.wikipedia.org/wiki/Ada_Lovelace --with-page` now
+returns:
+
+```
+readerable  true
+source      "readability"
+excerpt     "Augusta Ada King, Countess of Lovelace (née Byron; 10 December 1815 – 27 November
+             1852), also known as Ada Lovelace, was an English mathematician and writer …"
+"Charles Babbage"  ref e19, zone "content"   (two entries, both in the top 50)
+"Jump to content"  absent from the top 50    (was entry #1 before this iteration)
+interactive_total 1659    chrome_omitted 530
+meta.page_parse_ms 47–71 ms over four runs (2.0 ms on the local live-test fixture)
+meta.page_readability_injected  true on the first call per document, false on the next
+```
+
+That is the plan's first dogfood line, and its "today this link is truncated away … there is no
+hit" prediction was exactly right about `main`.
+
+**Table cells are not excerpt material.** The first implementation put Wikipedia's infobox in
+the excerpt — "The Right Honourable / Born / Augusta Ada Byron / London, England …" ate the
+whole 1 500-character budget before the lede. The collector now skips any block inside a
+`<table>`. Infobox *links* are unaffected: they are inside the article, so they carry
+`zone: "content"` and keep their refs, which is what `wikipedia_infobox_hop` actually needs.
+
+**Readability calls sign-in forms articles.** On the prose-free fixture it returned an article
+element containing only labels and widgets, and the block-text extractor found nothing —
+producing `"HelpUsernamePassword"` from `textContent`. Fixed during the sweep: an article with
+no prose blocks falls through to the rendered-text path and `page.source` says `innertext`.
+"Never an empty excerpt on a page that has text" now also means "never an unreadable one".
+
+**`click --ref … --with-page` does not work on Wikipedia, and never has.** The third dogfood
+line times out (`phase: recv`) on `en.wikipedia.org`, 3 runs out of 3, at 10 s, 20 s and 30 s
+budgets. **A binary built from `main` (`0a87d1d`) fails the same way**, so this is an iter-210
+defect, not a regression from this work: `page_view::attach` evaluates against the console
+actor of the docshell the click is navigating away from, and Firefox never answers. The local
+fixtures commit too fast to race, which is why three live suites missed it. Filed as
+[[iteration-220-with-page-after-navigating-click]] with the reproduction. AC 2 is therefore
+**left unticked**: the live test passes on the recorded fixture (`live_219_click_ref_with_page
+_returns_the_destination_text`, excerpt contains "1791"), but the criterion's own dogfood path
+is Wikipedia, and there it fails.
+
+**The benchmark was not run.** Theme F's `wikipedia_link_follow` / `wikipedia_infobox_hop`
+re-measurement needs the harness that [[iteration-213-act-and-see-benchmark-rerun]] owns, plus
+API spend, neither of which this iteration had. It is also *blocked* on iteration 220: the
+trajectory it measures is the one that times out. AC 6 is unticked and no number is claimed —
+the honest state is "the two defects the benchmark diagnosed are fixed; whether that moves the
+turn count is unmeasured."
+
+**Live sweep** (`FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1`):
+
+```
+LIVE_SWEEP_SUMMARY executed=299 skipped=0 preexisting=9 vanished=0 launch_timeout=0 timed_out=0 total=308
+296 passed / 3 failed   (296 + 3 = 299 = executed — reconciles)
+```
+
+All three failures are pre-existing and already have plans:
+
+| test | diagnosis | disposition |
+|---|---|---|
+| `live_166_navigate_reports_document_status` | `example.com` served HTTP 304 from cache; the test asserts 200 | already filed as [[iteration-214-live-166-cache-304]] |
+| `live_166_navigate_status_direct_parity` | same cause | same plan |
+| `live_212::live_home_with_page_lists_tabs_and_refs` | load-sensitive; passes in isolation, failed only under the full sweep | already filed as [[iteration-216-sweep-load-misclassification]] |
+
+`preexisting=9` are the `ff-rdp-core` suites that need a browser on the fixed port 6000; a raw
+`firefox --start-debugger-server 6000 --headless` was started for them and never opened the
+port on this machine, so the sweep classified them `ignored` as designed. Nine tests unrun.
 
 ## Design notes
 

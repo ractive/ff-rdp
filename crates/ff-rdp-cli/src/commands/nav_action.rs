@@ -60,7 +60,11 @@ impl NavAction {
 /// used to always return before iter-130 — the escape hatch the Theme B/C
 /// timeout message recommends, which previously didn't exist for these three
 /// verbs at all.
-pub fn run(cli: &Cli, action: NavAction, with_page: bool) -> Result<(), AppError> {
+pub fn run(
+    cli: &Cli,
+    action: NavAction,
+    page_args: &crate::cli::args::PageViewArgs,
+) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let target_actor = ctx.target.actor.clone();
 
@@ -125,8 +129,8 @@ pub fn run(cli: &Cli, action: NavAction, with_page: bool) -> Result<(), AppError
 
     // iter-210 Theme A: `--with-page`, collected after the navigation commit
     // so `back --with-page` describes the page it went back TO.
-    if with_page {
-        super::page_view::attach(&mut ctx, &mut result, Some(cli.timeout))?;
+    if page_args.with_page {
+        super::page_view::attach(&mut ctx, &mut result, Some(cli.timeout), page_args)?;
     }
 
     let mut meta = json!({});
@@ -176,7 +180,7 @@ pub fn run_reload_wait_idle(
     idle_ms: u64,
     timeout_ms: u64,
     force: bool,
-    with_page: bool,
+    page_args: &crate::cli::args::PageViewArgs,
 ) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let target_actor = ctx.target.actor.clone();
@@ -189,7 +193,7 @@ pub fn run_reload_wait_idle(
             idle_ms,
             timeout_ms,
             force,
-            with_page,
+            page_args,
         );
     }
 
@@ -200,7 +204,7 @@ pub fn run_reload_wait_idle(
         idle_ms,
         timeout_ms,
         force,
-        with_page,
+        page_args,
     )
 }
 
@@ -217,7 +221,7 @@ fn run_reload_wait_idle_daemon(
     idle_ms: u64,
     timeout_ms: u64,
     force: bool,
-    with_page: bool,
+    page_args: &crate::cli::args::PageViewArgs,
 ) -> Result<(), AppError> {
     // Tell the daemon to stream network events directly to us.
     crate::daemon::client::start_daemon_stream(ctx.transport_mut(), "network-event")
@@ -251,7 +255,7 @@ fn run_reload_wait_idle_daemon(
         idle_at_ms,
         force,
         true,
-        with_page,
+        page_args,
     )
 }
 
@@ -321,7 +325,7 @@ fn run_reload_wait_idle_direct(
     idle_ms: u64,
     timeout_ms: u64,
     force: bool,
-    with_page: bool,
+    page_args: &crate::cli::args::PageViewArgs,
 ) -> Result<(), AppError> {
     let tab_actor = ctx.target_tab_actor().clone();
     let watcher_actor =
@@ -349,7 +353,7 @@ fn run_reload_wait_idle_direct(
         idle_at_ms,
         force,
         false,
-        with_page,
+        page_args,
     )
 }
 
@@ -442,7 +446,7 @@ fn emit_reload_result(
     idle_at_ms: u64,
     force: bool,
     via_daemon: bool,
-    with_page: bool,
+    page_args: &crate::cli::args::PageViewArgs,
 ) -> Result<(), AppError> {
     let mut result = if force {
         json!({
@@ -470,8 +474,8 @@ fn emit_reload_result(
     // so `reload --wait-idle --with-page` describes the settled document, not
     // whatever was on screen mid-reload. Previously dropped silently by the
     // `dispatch.rs` `wait_idle` branch, which never threaded this flag in.
-    if with_page {
-        super::page_view::attach(ctx, &mut result, Some(cli.timeout))?;
+    if page_args.with_page {
+        super::page_view::attach(ctx, &mut result, Some(cli.timeout), page_args)?;
     }
     let mut meta = json!({});
     let page_text = super::page_view::lift_meta(cli, &mut result, &mut meta);

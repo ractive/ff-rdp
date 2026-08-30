@@ -426,7 +426,7 @@ fn dispatch_inner(
             wait,
             wait_strategy,
             auto_consent,
-            with_page,
+            page,
         }) => {
             let wait_opts = commands::navigate::WaitAfterNav {
                 wait_text: wait_text.as_deref(),
@@ -444,10 +444,10 @@ fn dispatch_inner(
                     &wait_opts,
                     *network_timeout,
                     *auto_consent,
-                    *with_page,
+                    page,
                 )
             } else {
-                commands::navigate::run(cli, url, &wait_opts, *auto_consent, *with_page)
+                commands::navigate::run(cli, url, &wait_opts, *auto_consent, page)
             }
         }
         Command::Eval(EvalArgs {
@@ -480,7 +480,7 @@ fn dispatch_inner(
             reload_timeout,
             hard,
             no_wait,
-            with_page,
+            page,
         }) => {
             if *wait_idle {
                 commands::nav_action::run_reload_wait_idle(
@@ -488,7 +488,7 @@ fn dispatch_inner(
                     *idle_ms,
                     *reload_timeout,
                     *hard,
-                    *with_page,
+                    page,
                 )
             } else {
                 commands::nav_action::run(
@@ -497,15 +497,15 @@ fn dispatch_inner(
                         force: *hard,
                         no_wait: *no_wait,
                     },
-                    *with_page,
+                    page,
                 )
             }
         }
-        Command::Back(BackForwardArgs { no_wait, with_page }) => {
-            commands::nav_action::run(cli, NavAction::Back { no_wait: *no_wait }, *with_page)
+        Command::Back(BackForwardArgs { no_wait, page }) => {
+            commands::nav_action::run(cli, NavAction::Back { no_wait: *no_wait }, page)
         }
-        Command::Forward(BackForwardArgs { no_wait, with_page }) => {
-            commands::nav_action::run(cli, NavAction::Forward { no_wait: *no_wait }, *with_page)
+        Command::Forward(BackForwardArgs { no_wait, page }) => {
+            commands::nav_action::run(cli, NavAction::Forward { no_wait: *no_wait }, page)
         }
         Command::PageText(args) => commands::page_text::run(cli, args),
         Command::Dom(DomArgs {
@@ -663,7 +663,7 @@ fn dispatch_inner(
             frame,
             visible,
             index,
-            with_page,
+            page,
         }) => {
             let selector = resolve_selector_or_ref(
                 selector_pos.as_deref(),
@@ -689,7 +689,7 @@ fn dispatch_inner(
                     settle: *settle,
                     frame: frame.as_deref(),
                     match_policy,
-                    with_page: *with_page,
+                    page: page.clone(),
                     ..Default::default()
                 },
             )
@@ -708,7 +708,7 @@ fn dispatch_inner(
             visible,
             index,
             submit,
-            with_page,
+            page,
         }) => {
             let selector = resolve_selector_or_ref(
                 selector_pos.as_deref(),
@@ -746,7 +746,7 @@ fn dispatch_inner(
                     settle: *settle,
                     match_policy,
                     submit: *submit,
-                    with_page: *with_page,
+                    page: page.clone(),
                     ..Default::default()
                 },
             )
@@ -1021,7 +1021,7 @@ fn dispatch_inner(
                 wait_for,
                 wait_for_timeout,
                 settle,
-                with_page,
+                page,
             } => {
                 let resolved = resolve_selector_or_ref(
                     selector.as_deref(),
@@ -1040,7 +1040,7 @@ fn dispatch_inner(
                         wait_for,
                         wait_for_timeout_ms: *wait_for_timeout,
                         settle: *settle,
-                        with_page: *with_page,
+                        page: page.clone(),
                         ..Default::default()
                     },
                 )
@@ -1051,7 +1051,7 @@ fn dispatch_inner(
                 page_down,
                 page_up,
                 smooth,
-                with_page,
+                page,
             } => commands::scroll::run_by(
                 cli,
                 *dx,
@@ -1060,7 +1060,7 @@ fn dispatch_inner(
                     page_down: *page_down,
                     page_up: *page_up,
                     smooth: *smooth,
-                    with_page: *with_page,
+                    page: page.clone(),
                 },
             ),
             ScrollCommand::Container {
@@ -1069,21 +1069,19 @@ fn dispatch_inner(
                 dy,
                 to_end,
                 to_start,
-                with_page,
+                page,
             } => commands::scroll::run_container(
-                cli, selector, *dx, *dy, *to_end, *to_start, *with_page,
+                cli, selector, *dx, *dy, *to_end, *to_start, page,
             ),
             ScrollCommand::Until {
                 selector,
                 direction,
                 timeout,
-                with_page,
-            } => commands::scroll::run_until(cli, selector, direction, *timeout, *with_page),
-            ScrollCommand::Text { text, with_page } => {
-                commands::scroll::run_text(cli, text, *with_page)
-            }
-            ScrollCommand::Top { with_page } => commands::scroll::run_top(cli, *with_page),
-            ScrollCommand::Bottom { with_page } => commands::scroll::run_bottom(cli, *with_page),
+                page,
+            } => commands::scroll::run_until(cli, selector, direction, *timeout, page),
+            ScrollCommand::Text { text, page } => commands::scroll::run_text(cli, text, page),
+            ScrollCommand::Top { page } => commands::scroll::run_top(cli, page),
+            ScrollCommand::Bottom { page } => commands::scroll::run_bottom(cli, page),
         },
         Command::DaemonInternal => {
             server::run_daemon(&cli.host, cli.port, cli.daemon_timeout).map_err(AppError::Internal)

@@ -84,6 +84,7 @@ mod live_186_launch_record_gc;
 mod live_210_act_and_see;
 mod live_211_find_not_guess;
 mod live_212_ambient_context;
+mod live_219_reader_view;
 mod live_61l;
 mod live_61q_resource_bus;
 mod live_61r_eval;

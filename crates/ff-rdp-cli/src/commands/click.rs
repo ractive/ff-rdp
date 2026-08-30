@@ -49,8 +49,9 @@ pub struct ClickOptions<'a> {
     /// 0, same timing, same JS.
     pub match_policy: Option<MatchPolicy>,
     /// iter-210 Theme A: `--with-page` — embed the page the click produced
-    /// under `results.page`, collected after the click settles.
-    pub with_page: bool,
+    /// under `results.page`, collected after the click settles. Carries
+    /// `--page-chars` and `--query` with it since iter-219.
+    pub page: crate::cli::args::PageViewArgs,
 }
 
 impl Default for ClickOptions<'_> {
@@ -64,7 +65,7 @@ impl Default for ClickOptions<'_> {
             settle: false,
             frame: None,
             match_policy: None,
-            with_page: false,
+            page: crate::cli::args::PageViewArgs::default(),
         }
     }
 }
@@ -246,8 +247,8 @@ pub fn run_core(
     // already owns, and after `--settle`/`--wait-for`/`--wait-for-network` —
     // a click that navigates must report the DESTINATION page, not the one it
     // left, which is the whole reason the flag exists (see `page_view`).
-    if opts.with_page {
-        super::page_view::attach(&mut ctx, &mut result, Some(wait_timeout_ms))?;
+    if opts.page.with_page {
+        super::page_view::attach(&mut ctx, &mut result, Some(wait_timeout_ms), &opts.page)?;
     }
 
     Ok((result, ctx.via_daemon))

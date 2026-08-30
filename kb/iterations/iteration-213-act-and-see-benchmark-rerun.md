@@ -96,6 +96,19 @@ would measure the same 8 turns and would be the correct answer, not a broken run
       output — and if agents never used it, say so and name which discoverability surface to
       change
 
+### E. Re-measure after iter-219's reader-view fix [0/2]
+- [ ] Carried over from [[iteration-219-reader-view-page]] (its own AC 6, left unticked there,
+      not reworded): re-run `wikipedia_link_follow` / `wikipedia_infobox_hop`, `--repeat 3`, same
+      harness/model/prompt, against a binary carrying 219's reader-view fix (content zones +
+      excerpt). 219 fixed the two defects this benchmark's Theme B diagnosed — chrome-truncated
+      `interactive` and no page text — but could not re-measure: the harness this theme owns
+      wasn't available to it, and its own click-through dogfood step times out on Wikipedia
+      (a pre-existing iter-210 defect, not a 219 regression — filed as
+      [[iteration-220-with-page-after-navigating-click]]). **Blocked on 220**: the trajectory this
+      re-measurement needs is exactly the one that times out today.
+- [ ] Update [[axi-benchmark-comparison]] with the new numbers once the above runs, alongside the
+      existing 2026-08-30 table
+
 ## Acceptance Criteria [3/6]
 
 - [ ] `tools/axi-bench/run.sh` runs the comparison from a clean checkout with no scratchpad recovery
@@ -174,3 +187,7 @@ full tables and trajectory analysis in [[axi-benchmark-comparison]] § "Re-measu
   AC was folded in here
 - [[axi-benchmark-comparison]] — the baseline, and where the new table goes
 - [[iteration-212-ambient-context]] — the other candidate answer if discoverability is the problem
+- [[iteration-219-reader-view-page]] — shipped the reader-view fix Theme C recommended (excerpt +
+  `--help` idioms); Task E's re-measurement is carried over from its own unticked AC 6
+- [[iteration-220-with-page-after-navigating-click]] — the `click --ref … --with-page` timeout on
+  Wikipedia that blocks Task E

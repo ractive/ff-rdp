@@ -200,12 +200,20 @@ const ACC_NAME_JS_FN_TEMPLATE: &str = r"
     if (n) return cap(n);
     var lb = el.getAttribute && el.getAttribute('aria-labelledby');
     if (lb) {
-      var parts = [];
-      lb.split(/\s+/).forEach(function(id) {
-        var t = document.getElementById(id);
-        if (t) parts.push(norm(t.textContent));
-      });
-      n = norm(parts.join(' '));
+      // Index loop + string concat, not .forEach/.push/.join: this helper is
+      // spliced into the page-view collector, which promises to keep working
+      // on a page that replaced the mutable Array built-ins (iter-219 review).
+      var ids = lb.split(/\s+/);
+      var joined = '';
+      for (var li = 0; li < ids.length; li++) {
+        if (!ids[li]) continue;
+        var t = document.getElementById(ids[li]);
+        if (t) {
+          var part = norm(t.textContent);
+          if (part) joined += (joined ? ' ' : '') + part;
+        }
+      }
+      n = norm(joined);
       if (n) return cap(n);
     }
     if (el.labels && el.labels.length) {
