@@ -153,16 +153,31 @@ fn unsupported_target(target: Target) -> AppError {
     ))
 }
 
-/// Quote a command path for a POSIX/Windows shell if it contains whitespace.
+/// Quote a command path for a POSIX/Windows shell if it contains whitespace
+/// or a character that is special inside a double-quoted string.
 ///
 /// The hook runner executes the string through a shell, so an unquoted
-/// `C:\\Program Files\\…` would split into two words.
+/// `C:\\Program Files\\…` would split into two words. Backslash is left alone
+/// even when quoting: it is a literal path separator on Windows, not a
+/// POSIX-shell escape, and an install location containing `"`, `$`, or `` ` ``
+/// is exotic enough that surviving unbroken (this function's job) matters
+/// more than surviving unescaped-by-the-shell (out of scope: a path with
+/// those characters was already an unusual choice by whoever created it).
 fn shell_quote(path: &str) -> String {
-    if path.contains(char::is_whitespace) {
-        format!("\"{path}\"")
-    } else {
-        path.to_owned()
+    const NEEDS_ESCAPE: [char; 3] = ['"', '$', '`'];
+    if !path.contains(char::is_whitespace) && !path.contains(NEEDS_ESCAPE) {
+        return path.to_owned();
     }
+    let mut quoted = String::with_capacity(path.len() + 2);
+    quoted.push('"');
+    for c in path.chars() {
+        if NEEDS_ESCAPE.contains(&c) {
+            quoted.push('\\');
+        }
+        quoted.push(c);
+    }
+    quoted.push('"');
+    quoted
 }
 
 /// Whether `candidate` and `current` are the same executable on disk.
@@ -274,6 +289,16 @@ impl Action {
 /// Pure: takes and returns the whole document, so the merge rules — every other
 /// hook survives, key order is preserved, ours is the only group touched — are
 /// unit-testable without a filesystem.
+///
+/// Deliberately asymmetric with [`read_settings`]: a `hooks` or `SessionStart`
+/// value of the wrong JSON *type* (e.g. `"hooks": "nonsense"`, covered by
+/// `unit_212_install_survives_a_malformed_hooks_value`) is coerced into an
+/// empty container rather than refused. `read_settings` refuses on invalid
+/// *syntax* because that could be arbitrary content worth preserving; a
+/// `hooks` value of the wrong type is already schema-invalid for Claude
+/// Code's own settings format, so there is nothing valid there to lose by
+/// replacing it, and refusing would turn "the file has one unrelated bad
+/// field" into "this command cannot ever install."
 fn apply_install(settings: &mut Value, command: &str) -> Action {
     if !settings.is_object() {
         *settings = Value::Object(Map::new());
@@ -365,17 +390,46 @@ fn serialize_settings(settings: &Value) -> String {
     text
 }
 
+/// Write `settings` to `path` atomically: build the new content in a sibling
+/// temp file, then `rename` it over `path`.
+///
+/// `path` is `~/.claude/settings.json` — Claude Code's own configuration,
+/// read at the start of every session. A plain truncate-then-write leaves a
+/// window where a crash, a full disk, or Claude Code itself reading the file
+/// mid-write would see a truncated or empty document; a same-directory
+/// `rename` is atomic on both POSIX and Windows (NTFS), so any reader always
+/// sees either the old complete file or the new one, never a partial write.
+/// This does not close the separate race of two `install-hook` invocations
+/// running concurrently and each reading-modifying-writing — last writer
+/// wins, same as it would with a plain write — but that window is far
+/// narrower and does not corrupt the file.
 fn write_settings(path: &Path, settings: &Value) -> Result<(), AppError> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            AppError::Internal(anyhow::anyhow!(
-                "failed to create {}: {e}",
-                parent.display()
-            ))
-        })?;
-    }
-    std::fs::write(path, serialize_settings(settings))
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("failed to write {}: {e}", path.display())))
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent).map_err(|e| {
+        AppError::Internal(anyhow::anyhow!(
+            "failed to create {}: {e}",
+            parent.display()
+        ))
+    })?;
+    let mut tmp = tempfile::NamedTempFile::new_in(parent).map_err(|e| {
+        AppError::Internal(anyhow::anyhow!(
+            "failed to create a temp file next to {}: {e}",
+            path.display()
+        ))
+    })?;
+    std::io::Write::write_all(&mut tmp, serialize_settings(settings).as_bytes()).map_err(|e| {
+        AppError::Internal(anyhow::anyhow!(
+            "failed to write temp file for {}: {e}",
+            path.display()
+        ))
+    })?;
+    tmp.persist(path).map_err(|e| {
+        AppError::Internal(anyhow::anyhow!(
+            "failed to replace {} with the updated settings: {e}",
+            path.display()
+        ))
+    })?;
+    Ok(())
 }
 
 /// Which target the flags selected. Exactly one is required — defaulting to
@@ -651,6 +705,25 @@ mod tests {
             shell_quote("C:\\Program Files\\ff-rdp.exe"),
             "\"C:\\Program Files\\ff-rdp.exe\""
         );
+    }
+
+    /// A code-review catch (iter-212): the original `shell_quote` wrapped in
+    /// `"..."` on whitespace but never escaped an embedded `"`, so a path
+    /// containing one would break out of the quoting and corrupt the written
+    /// `command` string. `$` and `` ` `` are the same problem one level down
+    /// (still special inside POSIX double quotes) and are escaped for the
+    /// same reason, without touching backslash — a literal separator on
+    /// Windows paths, not a shell escape.
+    #[test]
+    fn unit_212_shell_quote_escapes_dangerous_characters() {
+        assert_eq!(
+            shell_quote("/tmp/weird\"name/ff-rdp"),
+            "\"/tmp/weird\\\"name/ff-rdp\""
+        );
+        assert_eq!(shell_quote("/tmp/$HOME/ff-rdp"), "\"/tmp/\\$HOME/ff-rdp\"");
+        assert_eq!(shell_quote("/tmp/`id`/ff-rdp"), "\"/tmp/\\`id\\`/ff-rdp\"");
+        // No whitespace and no dangerous characters: unchanged, as before.
+        assert_eq!(shell_quote("/usr/bin/ff-rdp"), "/usr/bin/ff-rdp");
     }
 
     /// The written form is deterministic — the idempotence AC is about bytes,

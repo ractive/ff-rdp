@@ -879,4 +879,25 @@ mod tests {
             );
         }
     }
+
+    /// A code-review catch (iter-212): the `--with-page` idiom's `command`
+    /// field was a copy of the `--query` idiom's shape and never actually
+    /// contained `--with-page` — so the session hook demonstrated `--query`
+    /// twice and `--with-page` never, and `unit_212_hints_cover_the_shared_idioms`
+    /// above did not catch it because it derives its expectation from the same
+    /// table. This pins the missing half: each idiom's own flag must appear in
+    /// its own example command.
+    #[test]
+    fn unit_212_each_idiom_command_demonstrates_its_own_flag() {
+        for (syntax, why, command) in IDIOMS {
+            let flag = syntax
+                .split_whitespace()
+                .next()
+                .expect("syntax has a leading flag token");
+            assert!(
+                command.contains(flag),
+                "idiom {syntax:?} ({why:?}) has command {command:?}, which never uses {flag}"
+            );
+        }
+    }
 }
