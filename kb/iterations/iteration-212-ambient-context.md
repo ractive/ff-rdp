@@ -2,12 +2,15 @@
 title: "Iteration 212: ambient context — a content-first no-args view and a session hook that prints it"
 type: iteration
 date: 2026-08-29
-status: in-review
+status: done
 branch: iter-212/ambient-context
-depends_on: [210]
+depends_on:
+  - 210
 first_call_sites:
   - primitive: ff_rdp_cli::commands::home::run
-    site: crates/ff-rdp-cli/src/main.rs (no-subcommand dispatch; also commands/install_hook.rs)
+    site: >-
+      crates/ff-rdp-cli/src/main.rs (no-subcommand dispatch; also
+      commands/install_hook.rs)
 dogfood_path: |
   ff-rdp
   # no browser: exit 0, prints bin path, one-line description, daemon/port state, and the
@@ -27,7 +30,11 @@ dogfood_path: |
   # second call: "already installed (no-op)", exit 0; settings.json byte-identical
   cargo run -p xtask -- check-skill-drift
   # expected: exit 0 — the committed SKILL.md matches the generator's output
-tags: [iteration, cli, agent-ergonomics, skills]
+tags:
+  - iteration
+  - cli
+  - agent-ergonomics
+  - skills
 ---
 
 # Iteration 212: ambient context
@@ -95,7 +102,7 @@ is hand-written and nothing checks it against what the CLI actually does.
 - [x] `cargo run -p xtask -- check-skill-drift` diffs committed vs generated and fails on
       mismatch; wired into `.github/workflows/ci.yml`
 
-## Acceptance Criteria [7/8]
+## Acceptance Criteria [8/9]
 
 - [x] `home_without_browser_exits_zero_and_names_launch` (unit, no daemon): `ff-rdp` → exit 0,
       `results.browser.reachable == false`, hints include `ff-rdp launch`
