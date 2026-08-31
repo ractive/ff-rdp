@@ -2,7 +2,7 @@
 title: "Iteration 225: the reader excerpt drops the infobox — the fact the task asks for is not in --with-page"
 type: iteration
 date: 2026-08-31
-status: in-progress
+status: in-review
 branch: iter-225/reader-excerpt-infobox
 depends_on:
   - 219
