@@ -627,10 +627,19 @@ fn live_219_query_narrows_the_embedded_page_view() {
             "every survivor must match the query: {entry} in {nav}"
         );
     }
+    // iter-225 widened `matches`: it counts matching excerpt lines as well as
+    // matching entries. Under iter-219 it counted entries only, which reported
+    // `matches: 0` beside a perfectly good excerpt window whenever the hit was
+    // in the prose — the signal an agent reads to decide whether to spend
+    // another turn. So the entry count is now a lower bound, not the total.
+    assert!(
+        page["matches"].as_u64().unwrap_or(0) >= interactive.len() as u64,
+        "every surviving entry must be counted: {nav}"
+    );
     assert_eq!(
-        page["matches"].as_u64(),
-        Some(interactive.len() as u64),
-        "{nav}"
+        page["query_source"].as_str(),
+        Some("readability"),
+        "the hit is in the article text, and the view must attribute it there: {nav}"
     );
     let excerpt = page["excerpt"].as_str().unwrap_or_default();
     assert!(
