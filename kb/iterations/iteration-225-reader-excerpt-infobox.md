@@ -81,9 +81,10 @@ The 5-turn run that did happen (`link_follow` run 1: `navigate --with-page` → 
 - [x] `--query` with zero hits anywhere → `matches: 0`, `excerpt: ""`, and a `hint` naming
       `page-text --full --query` as the exhaustive next step
 
-### C. Measure [0/1]
-- [ ] `wikipedia_link_follow` + `wikipedia_infobox_hop`, `--repeat 3`, recorded in Outcome and in
-      [[axi-benchmark-comparison]]
+### C. Measure [1/1]
+- [x] `wikipedia_link_follow` + `wikipedia_infobox_hop`, `--repeat 3`, recorded in Outcome and in
+      [[axi-benchmark-comparison]] — run by [[iteration-228-two-task-benchmark-after-facts]] on
+      2026-09-01: **9.0** and **11.3** turns (per run 13/10/4 and 14/8/12), 6/6 pass
 
 ## Acceptance Criteria [3/4]
 
@@ -93,6 +94,12 @@ The 5-turn run that did happen (`link_follow` run 1: `navigate --with-page` → 
       `query_source` set)
 - [ ] Two-task benchmark average ≤ 5 turns on both tasks — or the measured number recorded and
       the AC left unticked, never reworded
+      [2026-09-01, [[iteration-228-two-task-benchmark-after-facts]], ff-rdp `cf99c84`, exclusive
+      browser: `wikipedia_link_follow` **9.0**, `wikipedia_infobox_hop` **11.3**. Target not met,
+      so this box stays empty. The facts pass itself is not the reason — the one run that used
+      `navigate --with-page` finished in 4 turns with zero `page-text` calls; it was used in 1 run
+      of 6 because the idiom sits at line 333 of `--help` and 5 of 6 runs read only the first 50.
+      Filed as [[iteration-230-quickstart-navigate-with-page]].]
 - [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q`
       clean; live sweep reconciles [2026-08-31: FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 →
       LIVE_SWEEP_SUMMARY executed=320 skipped=0 preexisting=0 vanished=0 launch_timeout=0
@@ -164,12 +171,22 @@ The 5-turn run that did happen (`link_follow` run 1: `navigate --with-page` → 
 - Acceptance criterion 3 ("two-task benchmark average ≤ 5 turns on both tasks") is therefore
   **unticked**, with its premise intact: nothing here says the target was met or that the
   criterion was wrong.
+- **Update 2026-09-01.** [[iteration-228-two-task-benchmark-after-facts]] ran it on an exclusive
+  browser: **9.0** turns on `wikipedia_link_follow` and **11.3** on `wikipedia_infobox_hop`, 6/6
+  pass. The target is not met and AC 3 stays unticked. What the trajectories add is that this
+  iteration's payload is not the reason: the single run that reached it —
+  `navigate --with-page --query` then `click --ref --with-page --query` — took **4 turns with zero
+  `page-text` calls**. `navigate --with-page` was used in 1 run of 6 because the idiom is at line
+  333 of a 441-line `--help` and 5 of 6 runs read `--help | head -50`. Filed as
+  [[iteration-230-quickstart-navigate-with-page]].
 
 ### Carry-over
 
 - [[iteration-228-two-task-benchmark-after-facts]] — the measurement, on a browser the run owns.
 - [[iteration-229-resource-bus-subscribe-timeout]] — the load-sensitive subscribe timeout this
   iteration's first sweep surfaced.
+- [[iteration-230-quickstart-navigate-with-page]] — what 228's trajectories showed is actually in
+  the way: the act-and-see idiom is below the fold of the only help text these agents read.
 
 ### The sweep, and what it caught
 
