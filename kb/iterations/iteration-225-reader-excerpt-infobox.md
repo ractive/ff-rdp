@@ -85,7 +85,7 @@ The 5-turn run that did happen (`link_follow` run 1: `navigate --with-page` → 
 - [ ] `wikipedia_link_follow` + `wikipedia_infobox_hop`, `--repeat 3`, recorded in Outcome and in
       [[axi-benchmark-comparison]]
 
-## Acceptance Criteria [2/4]
+## Acceptance Criteria [3/4]
 
 - [x] Python article `--with-page` returns a `facts` row with key matching /Stable release/ (live
       test on the recorded fixture)
@@ -93,8 +93,10 @@ The 5-turn run that did happen (`link_follow` run 1: `navigate --with-page` → 
       `query_source` set)
 - [ ] Two-task benchmark average ≤ 5 turns on both tasks — or the measured number recorded and
       the AC left unticked, never reworded
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q`
-      clean; live sweep reconciles
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q`
+      clean; live sweep reconciles [2026-08-31: FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 →
+      LIVE_SWEEP_SUMMARY executed=320 skipped=0 preexisting=0 vanished=0 launch_timeout=0
+      timed_out=0 total=320, 320 passed / 0 failed, P+F == executed, exit 0]
 
 ## Design notes
 
@@ -166,3 +168,26 @@ The 5-turn run that did happen (`link_follow` run 1: `navigate --with-page` → 
 ### Carry-over
 
 - [[iteration-228-two-task-benchmark-after-facts]] — the measurement, on a browser the run owns.
+- [[iteration-229-resource-bus-subscribe-timeout]] — the load-sensitive subscribe timeout this
+  iteration's first sweep surfaced.
+
+### The sweep, and what it caught
+
+`FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo run -p xtask -- live-sweep` →
+`LIVE_SWEEP_SUMMARY executed=320 skipped=0 preexisting=0 vanished=0 launch_timeout=0 timed_out=0
+total=320`, 320 passed / 0 failed (P + F reconciles with `executed`), exit 0. All five
+`live_225_reader_facts` tests executed and passed.
+
+The **first** sweep of this branch was red, twice over, and both are recorded rather than re-run
+away:
+
+- `live_219_query_narrows_the_embedded_page_view` asserted `matches == interactive.len()`, which
+  is iter-219's entries-only counting. Widening `matches` to include excerpt-line hits made it
+  see 3 where the entry count was 1. Fixed in this iteration: the assertion now treats the entry
+  count as a lower bound and additionally pins `query_source`. The semantics change is the
+  deliberate one, not the test.
+- `live_61q_resource_bus::live_resource_dedupe` timed out on its first `subscribe` — one failure
+  in 311 tests at `--test-threads=6`, green alone in 2.6 s and green in the second full sweep.
+  Nothing here touches the resource bus. Filed as
+  [[iteration-229-resource-bus-subscribe-timeout]]; "environmental" is a diagnosis, not a
+  disposition.
