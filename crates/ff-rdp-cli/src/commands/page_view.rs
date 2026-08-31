@@ -89,6 +89,25 @@ const QUERY_TEXT_BUDGET: usize = 200_000;
 /// `innertext`), a different question from how the *view* was produced.
 pub(crate) const PAGE_SOURCE_JS_FALLBACK: &str = "js-fallback";
 
+/// `page.query_source` when the `--query` window came from the page's
+/// rendered text rather than from the reader article or the facts table.
+const QUERY_SOURCE_INNERTEXT: &str = "innertext";
+
+/// `page.query_source` when the only hits were `facts` rows.
+const QUERY_SOURCE_FACTS: &str = "facts";
+
+/// `page.hint` when `--query` found nothing anywhere in the view (iter-225
+/// Theme B).
+///
+/// Names the one command that is genuinely more exhaustive than what was just
+/// searched — `page-text --full --query` reads the whole `innerText` with no
+/// cap, where the view searched a bounded window. Without this the agent's
+/// next move on a miss is a `page-text --query` that searches *less* than the
+/// view already did, spends a turn, and comes back empty too.
+const NO_MATCH_HINT: &str =
+    "no match in the article text, the facts or the page's rendered text — \
+     try `ff-rdp page-text --full --query <text>` to search the whole document";
+
 /// A collected page view.
 pub struct PageView {
     /// `{headings, interactive, …}` — plus `landmarks` when the caller asked
@@ -223,8 +242,16 @@ pub fn collect(
     //    cap so the cap sees content-first order, and before refs so a ref is
     //    minted for exactly the entries the caller receives.
     let parse_ms = view.get("parse_ms").and_then(Value::as_f64);
-    if let Some(reader) = opts.reader.as_ref() {
-        finish_reader_view(&mut view, reader);
+    if let Some(reader) = opts.reader.as_ref()
+        && finish_reader_view(&mut view, reader) == QueryOutcome::NeedsPageText
+    {
+        // iter-225 Theme B. `--query` matched neither the article text nor a
+        // fact, and before this the agent's next move was `page-text --query`
+        // on the page it had just fetched — one more turn on the same
+        // document. Pay for the rendered text here instead: it costs a round
+        // trip only on the miss, and the command still answers in one call.
+        let rendered = fetch_rendered_text(ctx, console_actor)?;
+        apply_innertext_fallback(&mut view, reader, &rendered);
     }
     apply_interactive_limit(&mut view, opts.interactive_limit);
 
@@ -273,10 +300,31 @@ fn reader_missing(view: &Value) -> bool {
 // Reader post-processing (iter-219 Themes B and C)
 // ---------------------------------------------------------------------------
 
+/// Whether `--query` was answered from the collected view, or still needs the
+/// page's rendered text (iter-225 Theme B).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum QueryOutcome {
+    /// Nothing more to fetch: either no `--query` was active, or it hit the
+    /// article text, or it hit a fact, or `--page-chars 0` left no excerpt for
+    /// a fallback to fill.
+    Resolved,
+    /// `--query` matched neither the article text nor a fact. The caller must
+    /// fetch `document.body.innerText` and hand it to
+    /// [`apply_innertext_fallback`].
+    NeedsPageText,
+}
+
 /// Turn the collector's raw reader keys into the published ones: build
 /// `excerpt`, sort `interactive` content-first, apply `--query`, and drop the
 /// internal scratch keys.
-pub(crate) fn finish_reader_view(view: &mut Value, reader: &ReaderOptions) {
+///
+/// The return value drives iter-225's `--query` fallback chain, which is
+/// ordered cheapest-first: the article text is already on the wire, `facts`
+/// came with it, and only a miss on both is worth a second round trip.
+/// `page.query_source` records which link of that chain answered, so a caller
+/// never has to guess whether an empty excerpt means "not on this page" or
+/// "not in the part of the page the reader kept".
+pub(crate) fn finish_reader_view(view: &mut Value, reader: &ReaderOptions) -> QueryOutcome {
     let text = view
         .get("text")
         .and_then(Value::as_str)
@@ -284,7 +332,7 @@ pub(crate) fn finish_reader_view(view: &mut Value, reader: &ReaderOptions) {
         .to_owned();
 
     let Some(obj) = view.as_object_mut() else {
-        return;
+        return QueryOutcome::Resolved;
     };
     // Scratch keys: useful to the JS, noise in the output.
     obj.remove("text");
@@ -292,8 +340,10 @@ pub(crate) fn finish_reader_view(view: &mut Value, reader: &ReaderOptions) {
     obj.remove("reader_missing");
     obj.remove("parse_ms");
 
+    let mut text_matches = 0usize;
     if reader.page_chars > 0 {
         let excerpt = build_page_excerpt(&text, reader);
+        text_matches = excerpt.matches;
         obj.insert("excerpt".to_owned(), json!(excerpt.text));
         obj.insert("excerpt_chars".to_owned(), json!(excerpt.chars));
         obj.insert("excerpt_truncated".to_owned(), json!(excerpt.truncated));
@@ -301,19 +351,164 @@ pub(crate) fn finish_reader_view(view: &mut Value, reader: &ReaderOptions) {
 
     sort_interactive_content_first(view);
 
-    if reader.query.is_active() {
-        let matches = filter_page_view(view, &reader.query);
-        if let Some(obj) = view.as_object_mut() {
-            obj.insert("matches".to_owned(), json!(matches));
-        }
+    if !reader.query.is_active() {
+        return QueryOutcome::Resolved;
+    }
+
+    let entry_matches = filter_page_view(view, &reader.query);
+    let fact_matches = view
+        .get("facts")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    // How the *excerpt* was extracted (iter-219's `source`) is also what a
+    // reader-text hit should be attributed to: on a dashboard that fell back
+    // to rendered text, "readability" would be a lie.
+    let excerpt_source = view
+        .get("source")
+        .and_then(Value::as_str)
+        .unwrap_or(QUERY_SOURCE_INNERTEXT)
+        .to_owned();
+
+    let Some(obj) = view.as_object_mut() else {
+        return QueryOutcome::Resolved;
+    };
+    // `matches` counts every hit the caller can see: matching lines in the
+    // excerpt plus matching entries (headings, landmarks, interactive, facts).
+    // Counting entries alone — iter-219's rule — reported `matches: 0` beside
+    // a non-empty excerpt window, which is exactly the signal an agent uses to
+    // decide whether to spend another turn.
+    obj.insert(
+        "matches".to_owned(),
+        json!(entry_matches.saturating_add(text_matches)),
+    );
+
+    if text_matches > 0 {
+        obj.insert("query_source".to_owned(), json!(excerpt_source));
+        QueryOutcome::Resolved
+    } else if fact_matches > 0 {
+        // The answer is a fact row, not a sentence. Say so rather than
+        // falling through to a rendered-text window that would repeat it.
+        obj.insert("query_source".to_owned(), json!(QUERY_SOURCE_FACTS));
+        QueryOutcome::Resolved
+    } else if reader.page_chars == 0 {
+        // `--page-chars 0` is the structure-only knob: there is no excerpt for
+        // a fallback window to land in, so fetching the text would be pure
+        // cost.
+        QueryOutcome::Resolved
+    } else {
+        QueryOutcome::NeedsPageText
     }
 }
 
-/// The excerpt and the two numbers that describe it.
+/// Fill `page.excerpt` from the page's rendered text after `--query` missed
+/// both the article text and the facts (iter-225 Theme B).
+///
+/// Uses [`super::page_text::build_excerpt`] — the same ±context window
+/// `page-text --query` produces — so the fallback is not an approximation of
+/// the follow-up command it replaces but literally the same selection over the
+/// same string.
+///
+/// On a miss here too, the view says so plainly: `matches` stays at whatever
+/// the entries contributed (`0` in the ordinary case), the excerpt stays
+/// empty, and `hint` names the one command that searches more than this did.
+pub(crate) fn apply_innertext_fallback(view: &mut Value, reader: &ReaderOptions, page_text: &str) {
+    // The same two cleanups the reader excerpt gets, for the same reasons:
+    // MediaWiki's `[edit]` anchors are in `innerText` too, and a cookie banner
+    // is no more useful as a fallback lead than as a reader lead.
+    let cleaned = drop_junk_lead(&strip_edit_links(page_text));
+    let excerpt = super::page_text::build_excerpt(
+        &cleaned,
+        &reader.query,
+        reader.context,
+        Some(reader.page_chars),
+    );
+
+    let Some(obj) = view.as_object_mut() else {
+        return;
+    };
+    if excerpt.matches > 0 {
+        obj.insert("excerpt".to_owned(), json!(excerpt.text));
+        obj.insert("excerpt_chars".to_owned(), json!(excerpt.shown_chars));
+        obj.insert("excerpt_truncated".to_owned(), json!(excerpt.truncated));
+        obj.insert(
+            "query_source".to_owned(),
+            json!(QUERY_SOURCE_INNERTEXT.to_owned()),
+        );
+        let prior = obj
+            .get("matches")
+            .and_then(Value::as_u64)
+            .and_then(|n| usize::try_from(n).ok())
+            .unwrap_or(0);
+        obj.insert(
+            "matches".to_owned(),
+            json!(prior.saturating_add(excerpt.matches)),
+        );
+    } else if obj.get("matches").and_then(Value::as_u64) == Some(0) {
+        // Nothing anywhere. An entry hit with no text hit is not a dead end —
+        // the caller has a `ref` to click — so the hint is reserved for the
+        // case where the view really has nothing to offer.
+        obj.insert("hint".to_owned(), json!(NO_MATCH_HINT));
+    }
+}
+
+/// Read the page's rendered text for the `--query` fallback, bounded by
+/// [`QUERY_TEXT_BUDGET`] and normalised to one non-empty line per block.
+///
+/// `document.body.innerText` is exactly what `page-text` evaluates, so the
+/// fallback window is the one that command would have produced. The bound is
+/// applied in the page rather than in Rust: an unbounded `innerText` on a long
+/// document is a multi-megabyte long-string fetch, and the window has to come
+/// out of a bounded prefix anyway.
+fn fetch_rendered_text(
+    ctx: &mut ConnectedTab,
+    console_actor: &ActorId,
+) -> Result<String, AppError> {
+    let js = format!(
+        "(function() {{ var b = document.body; \
+         var t = b ? (b.innerText || b.textContent || '') : ''; \
+         return t.length > {QUERY_TEXT_BUDGET} ? t.substring(0, {QUERY_TEXT_BUDGET}) : t; }})()"
+    );
+    let eval_result = eval_or_bail(
+        ctx,
+        console_actor,
+        &js,
+        "page text fetch for the --query fallback failed",
+    )?;
+    let value = resolve_result(ctx, &eval_result.result)?;
+    Ok(normalize_rendered_lines(
+        value.as_str().unwrap_or_default(),
+    ))
+}
+
+/// Collapse `innerText` into the shape the reader text already has: one
+/// non-empty, trimmed line per block.
+///
+/// `--query`'s ±context window is line-based, so the blank lines `innerText`
+/// emits between blocks would otherwise eat the context budget and return
+/// whitespace where the caller asked for neighbouring sentences.
+fn normalize_rendered_lines(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(trimmed);
+    }
+    out
+}
+
+/// The excerpt and the numbers that describe it.
 struct PageExcerpt {
     text: String,
     chars: usize,
     truncated: bool,
+    /// Lines of the article text the `--query` matched — `0` without a query.
+    /// Feeds `page.matches` (iter-225).
+    matches: usize,
 }
 
 /// Build `page.excerpt` from the article text.
@@ -347,6 +542,7 @@ fn build_page_excerpt(text: &str, reader: &ReaderOptions) -> PageExcerpt {
         return PageExcerpt {
             chars: e.shown_chars,
             truncated: e.truncated,
+            matches: e.matches,
             text: e.text,
         };
     }
@@ -355,6 +551,7 @@ fn build_page_excerpt(text: &str, reader: &ReaderOptions) -> PageExcerpt {
     PageExcerpt {
         chars: text.chars().count(),
         truncated,
+        matches: 0,
         text,
     }
 }
@@ -489,17 +686,21 @@ pub(crate) fn sort_interactive_content_first(view: &mut Value) {
 /// Theme A, generalised to `--with-page` by iter-219 Theme C).
 ///
 /// Each section is judged on its own human-readable field — `text` for
-/// headings, `label` for landmarks, `name` for interactive entries — plus
-/// `href`, so "find the link to /pricing" works as well as "find the link
-/// called Pricing". Entries are kept whole, `ref` included, so a survivor is
-/// immediately usable with `click --ref`.
+/// headings, `label` for landmarks, `name` for interactive entries, `key` and
+/// `value` for facts (iter-225) — plus `href`, so "find the link to /pricing"
+/// works as well as "find the link called Pricing". Entries are kept whole,
+/// `ref` included, so a survivor is immediately usable with `click --ref`.
+///
+/// Matching a fact on its `value` as well as its `key` is what makes
+/// `--query 3.13` answer "which version" without the caller having to know
+/// that the row is labelled "Stable release".
 pub(crate) fn filter_page_view(view: &mut Value, query: &QueryFilter) -> usize {
-    const MATCH_FIELDS: [&str; 4] = ["text", "label", "name", "href"];
+    const MATCH_FIELDS: [&str; 6] = ["text", "label", "name", "href", "key", "value"];
     let Some(obj) = view.as_object_mut() else {
         return 0;
     };
     let mut kept = 0usize;
-    for section in ["landmarks", "headings", "interactive"] {
+    for section in ["landmarks", "headings", "interactive", "facts"] {
         let Some(Value::Array(entries)) = obj.get_mut(section) else {
             continue;
         };
@@ -516,6 +717,10 @@ pub(crate) fn filter_page_view(view: &mut Value, query: &QueryFilter) -> usize {
     obj.remove("interactive_total");
     obj.remove("interactive_truncated");
     obj.remove("chrome_omitted");
+    // Same rule for the facts counters (iter-225): "3 of 40" beside a
+    // three-row filtered list would read as a truncation that did not happen.
+    obj.remove("facts_total");
+    obj.remove("facts_truncated");
     kept
 }
 
@@ -1127,7 +1332,14 @@ pub(crate) fn render_text(results: &Value) {
     if let Some(excerpt) = results.get("excerpt").and_then(Value::as_str)
         && !excerpt.is_empty()
     {
-        let source = results.get("source").and_then(Value::as_str).unwrap_or("");
+        // With a `--query` the interesting label is where the *window* came
+        // from (iter-225): "innertext" on a readability page means the article
+        // did not have the answer and the fallback did.
+        let source = results
+            .get("query_source")
+            .and_then(Value::as_str)
+            .or_else(|| results.get("source").and_then(Value::as_str))
+            .unwrap_or("");
         let truncated = results.get("excerpt_truncated").and_then(Value::as_bool) == Some(true);
         let suffix = if truncated { ", truncated" } else { "" };
         println!(
@@ -1135,6 +1347,37 @@ pub(crate) fn render_text(results: &Value) {
             excerpt.chars().count()
         );
         println!("{excerpt}");
+        println!();
+    }
+
+    // Facts (iter-225 Theme A). After the excerpt because the excerpt answers
+    // "what is this page"; the facts answer "what does it say about X", which
+    // is the question you ask second.
+    if let Some(facts) = results.get("facts").and_then(Value::as_array)
+        && !facts.is_empty()
+    {
+        let total = results
+            .get("facts_total")
+            .and_then(Value::as_u64)
+            .and_then(|n| usize::try_from(n).ok())
+            .unwrap_or_else(|| facts.len());
+        if total > facts.len() {
+            println!("FACTS ({} of {total})", facts.len());
+        } else {
+            println!("FACTS ({})", facts.len());
+        }
+        for fact in facts {
+            let key = fact.get("key").and_then(Value::as_str).unwrap_or("");
+            let value = fact.get("value").and_then(Value::as_str).unwrap_or("");
+            println!("  {key}: {value}");
+        }
+        println!();
+    }
+
+    // The `--query`-found-nothing hint, printed where a reader looking for the
+    // answer will be looking (iter-225 Theme B).
+    if let Some(hint) = results.get("hint").and_then(Value::as_str) {
+        println!("{hint}");
         println!();
     }
 
@@ -1505,7 +1748,12 @@ mod tests {
             .filter_map(|e| e["name"].as_str())
             .collect();
         assert_eq!(names, ["Charles Babbage"]);
-        assert_eq!(view["matches"], json!(1));
+        // One matching link plus one matching line of article text. iter-219
+        // counted only the entries, which reported `matches: 0` beside a
+        // perfectly good excerpt window whenever the hit was in the prose;
+        // iter-225 counts both halves of what the caller can see.
+        assert_eq!(view["matches"], json!(2));
+        assert_eq!(view["query_source"], json!("readability"));
     }
 
     #[test]
@@ -1816,5 +2064,275 @@ mod tests {
             }),
             "only the daemon may claim to have closed the daemon connection"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests_225 {
+    use super::*;
+    use crate::cli::args::QueryArgs;
+
+    fn no_query() -> QueryFilter {
+        QueryFilter::from_query_args(&QueryArgs::default())
+    }
+
+    fn query(text: &str) -> QueryFilter {
+        QueryFilter::from_query_args(&QueryArgs {
+            query: Some(text.to_owned()),
+            query_regex: None,
+        })
+    }
+
+    fn reader(page_chars: usize, q: QueryFilter) -> ReaderOptions {
+        ReaderOptions {
+            page_chars,
+            query: q,
+            context: 2,
+        }
+    }
+
+    /// The shape the collector returns on a Wikipedia-like article: prose that
+    /// Readability kept, plus the infobox rows it threw away. "Stable release"
+    /// exists ONLY as a fact — which is the entire defect iter-225 exists for.
+    fn raw_view_with_facts() -> Value {
+        json!({
+            "headings": [{"level": 1, "text": "Python (programming language)"}],
+            "interactive": [
+                {"role": "link", "name": "Guido van Rossum", "href": "/wiki/Guido", "zone": "content"}
+            ],
+            "source": "readability",
+            "readerable": true,
+            "parse_ms": 18.0,
+            "facts": [
+                {"key": "Designed by", "value": "Guido van Rossum"},
+                {"key": "Stable release", "value": "3.13.5 / 11 June 2025"},
+                {"key": "Typing discipline", "value": "duck, dynamic, gradual"}
+            ],
+            "facts_total": 21,
+            "facts_truncated": true,
+            "text": "Python is a high-level, general-purpose programming language.\n\
+                     Its design philosophy emphasizes code readability with the use of \
+                     significant indentation.",
+            "text_chars": 160
+        })
+    }
+
+    // ── Theme A: facts survive to the published view ────────────────────────
+
+    /// Facts are output, not scratch: `finish_reader_view` strips the reader's
+    /// internal keys and must leave `facts` (and its counters) alone.
+    #[test]
+    fn unit_225_facts_reach_the_published_view() {
+        let mut view = raw_view_with_facts();
+        assert_eq!(
+            finish_reader_view(&mut view, &reader(DEFAULT_PAGE_CHARS, no_query())),
+            QueryOutcome::Resolved
+        );
+        let facts = view["facts"].as_array().expect("facts array");
+        assert_eq!(facts.len(), 3, "{view}");
+        assert_eq!(facts[1]["key"], json!("Stable release"));
+        assert_eq!(view["facts_total"], json!(21));
+        assert_eq!(view["facts_truncated"], json!(true));
+        // …and the excerpt is still the prose, unchanged by the facts pass.
+        assert!(
+            view["excerpt"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("Python is a high-level"),
+            "{view}"
+        );
+    }
+
+    /// `--page-chars 0` is "structure only" — and structure now includes the
+    /// facts, which cost no excerpt budget at all.
+    #[test]
+    fn unit_225_facts_survive_page_chars_zero() {
+        let mut view = raw_view_with_facts();
+        finish_reader_view(&mut view, &reader(0, no_query()));
+        assert!(view.get("excerpt").is_none(), "{view}");
+        assert_eq!(view["facts"].as_array().map(Vec::len), Some(3), "{view}");
+    }
+
+    // ── Theme A: --query reaches the facts ──────────────────────────────────
+
+    /// The acceptance criterion in one unit: a query whose only hit is an
+    /// infobox row answers from the view, with `matches` counting it and
+    /// `query_source` naming where it came from.
+    #[test]
+    fn unit_225_query_matching_only_a_fact_resolves_from_the_view() {
+        let mut view = raw_view_with_facts();
+        let outcome = finish_reader_view(&mut view, &reader(DEFAULT_PAGE_CHARS, query("Stable release")));
+
+        assert_eq!(
+            outcome,
+            QueryOutcome::Resolved,
+            "a fact hit must not cost a second round trip: {view}"
+        );
+        let facts = view["facts"].as_array().expect("facts array");
+        assert_eq!(facts.len(), 1, "only the matching row survives: {view}");
+        assert_eq!(facts[0]["value"], json!("3.13.5 / 11 June 2025"));
+        assert_eq!(view["matches"], json!(1));
+        assert_eq!(view["query_source"], json!("facts"));
+        // Pre-filter counters would misdescribe the filtered list.
+        assert!(view.get("facts_total").is_none(), "{view}");
+        assert!(view.get("facts_truncated").is_none(), "{view}");
+    }
+
+    /// A fact is matched on its value too, so `--query 3.13` works without
+    /// knowing that the row is labelled "Stable release".
+    #[test]
+    fn unit_225_a_fact_matches_on_its_value() {
+        let mut view = raw_view_with_facts();
+        finish_reader_view(&mut view, &reader(DEFAULT_PAGE_CHARS, query("3.13.5")));
+        let facts = view["facts"].as_array().expect("facts array");
+        assert_eq!(facts.len(), 1, "{view}");
+        assert_eq!(facts[0]["key"], json!("Stable release"));
+        assert_eq!(view["query_source"], json!("facts"));
+    }
+
+    // ── Theme B: the innerText fallback ─────────────────────────────────────
+
+    /// A query that hits neither the article text nor a fact is not answered
+    /// yet — the collector has to go back to the page for its rendered text.
+    #[test]
+    fn unit_225_a_miss_everywhere_asks_for_the_page_text() {
+        let mut view = raw_view_with_facts();
+        let outcome =
+            finish_reader_view(&mut view, &reader(DEFAULT_PAGE_CHARS, query("Formation")));
+        assert_eq!(outcome, QueryOutcome::NeedsPageText, "{view}");
+        assert_eq!(view["matches"], json!(0));
+        assert!(view.get("query_source").is_none(), "{view}");
+    }
+
+    /// …and with the rendered text in hand, the excerpt becomes the same ±2
+    /// line window `page-text --query` would have returned — one command, not
+    /// two.
+    #[test]
+    fn unit_225_fallback_fills_the_excerpt_from_the_rendered_text() {
+        let mut view = raw_view_with_facts();
+        let opts = reader(DEFAULT_PAGE_CHARS, query("Formation"));
+        assert_eq!(
+            finish_reader_view(&mut view, &opts),
+            QueryOutcome::NeedsPageText
+        );
+
+        let rendered = "Python Software Foundation\n\
+                        Abbreviation PSF\n\
+                        Formation March 6, 2001\n\
+                        Type 501(c)(3) nonprofit\n\
+                        Headquarters Beaverton, Oregon";
+        apply_innertext_fallback(&mut view, &opts, rendered);
+
+        let excerpt = view["excerpt"].as_str().unwrap_or_default();
+        assert!(
+            excerpt.contains("Formation March 6, 2001"),
+            "the fallback window must carry the answer: {excerpt:?}"
+        );
+        assert_eq!(view["query_source"], json!("innertext"));
+        assert_eq!(view["matches"], json!(1));
+        assert!(view.get("hint").is_none(), "a hit needs no hint: {view}");
+    }
+
+    /// Zero hits anywhere is reported as zero hits — an empty excerpt, no
+    /// invented `query_source`, and a hint naming the one command that
+    /// searches more than this one just did.
+    #[test]
+    fn unit_225_no_match_anywhere_yields_an_empty_excerpt_and_a_hint() {
+        let mut view = raw_view_with_facts();
+        let opts = reader(DEFAULT_PAGE_CHARS, query("no-such-token"));
+        assert_eq!(
+            finish_reader_view(&mut view, &opts),
+            QueryOutcome::NeedsPageText
+        );
+        apply_innertext_fallback(&mut view, &opts, "nothing relevant here at all");
+
+        assert_eq!(view["matches"], json!(0));
+        assert_eq!(view["excerpt"], json!(""));
+        assert!(view.get("query_source").is_none(), "{view}");
+        let hint = view["hint"].as_str().unwrap_or_default();
+        assert!(
+            hint.contains("page-text --full --query"),
+            "the hint must name the exhaustive next step: {hint:?}"
+        );
+    }
+
+    /// An entry hit with no text hit still gets a fallback window, and the two
+    /// counts add up — but it is not a dead end, so it gets no hint.
+    #[test]
+    fn unit_225_entry_hit_plus_fallback_window_sums_the_matches() {
+        let mut view = raw_view_with_facts();
+        let opts = reader(DEFAULT_PAGE_CHARS, query("Guido"));
+        // "Guido van Rossum" is a link name AND a fact value, so this resolves
+        // from the facts. Drop the facts to isolate the entry-only case.
+        view.as_object_mut().expect("object").remove("facts");
+        assert_eq!(
+            finish_reader_view(&mut view, &opts),
+            QueryOutcome::NeedsPageText,
+            "{view}"
+        );
+        assert_eq!(view["matches"], json!(1), "the link matched: {view}");
+
+        apply_innertext_fallback(&mut view, &opts, "Created by Guido van Rossum in 1991.");
+        assert_eq!(view["matches"], json!(2), "{view}");
+        assert!(view.get("hint").is_none(), "{view}");
+    }
+
+    /// `--page-chars 0` asked for no text at all, so a miss must not spend a
+    /// round trip fetching text there is nowhere to put.
+    #[test]
+    fn unit_225_structure_only_never_fetches_the_page_text() {
+        let mut view = raw_view_with_facts();
+        assert_eq!(
+            finish_reader_view(&mut view, &reader(0, query("no-such-token"))),
+            QueryOutcome::Resolved
+        );
+    }
+
+    /// A hit in the article text keeps iter-219's attribution: the fallback is
+    /// for misses, and `query_source` must not claim otherwise.
+    #[test]
+    fn unit_225_a_text_hit_is_attributed_to_the_excerpt_source() {
+        let mut view = raw_view_with_facts();
+        assert_eq!(
+            finish_reader_view(&mut view, &reader(DEFAULT_PAGE_CHARS, query("readability"))),
+            QueryOutcome::Resolved
+        );
+        assert_eq!(view["query_source"], json!("readability"));
+        assert_eq!(view["matches"], json!(1));
+
+        // On a page with no article, the same hit is honestly labelled.
+        let mut dash = raw_view_with_facts();
+        dash["source"] = json!("innertext");
+        finish_reader_view(&mut dash, &reader(DEFAULT_PAGE_CHARS, query("readability")));
+        assert_eq!(dash["query_source"], json!("innertext"));
+    }
+
+    // ── Theme B: rendered-text normalisation ────────────────────────────────
+
+    /// `innerText` emits blank lines between blocks; `--query`'s ±context
+    /// window is line-based, so they would be spent on whitespace instead of
+    /// on the neighbouring sentences the caller asked for.
+    #[test]
+    fn unit_225_rendered_text_is_collapsed_to_non_empty_lines() {
+        let raw = "  Title  \n\n\n  Body line  \n   \nLast\n\n";
+        assert_eq!(normalize_rendered_lines(raw), "Title\nBody line\nLast");
+        assert_eq!(normalize_rendered_lines(""), "");
+        assert_eq!(normalize_rendered_lines("\n \n"), "");
+    }
+
+    /// The fallback runs the same two cleanups the reader excerpt gets: a
+    /// MediaWiki `[edit]` anchor must not end up inside the answer.
+    #[test]
+    fn unit_225_fallback_strips_mediawiki_edit_anchors() {
+        let mut view = raw_view_with_facts();
+        let opts = reader(DEFAULT_PAGE_CHARS, query("Releases"));
+        assert_eq!(
+            finish_reader_view(&mut view, &opts),
+            QueryOutcome::NeedsPageText
+        );
+        apply_innertext_fallback(&mut view, &opts, "Releases[edit]\n3.13.5 was released in 2025.");
+        let excerpt = view["excerpt"].as_str().unwrap_or_default();
+        assert!(!excerpt.contains("[edit]"), "{excerpt:?}");
+        assert!(excerpt.contains("Releases"), "{excerpt:?}");
     }
 }
