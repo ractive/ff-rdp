@@ -115,3 +115,54 @@ The 5-turn run that did happen (`link_follow` run 1: `navigate --with-page` → 
 - [[axi-benchmark-comparison]] — 2026-08-31 two-task numbers and trajectories
 - [[iteration-219-reader-view-page]] — the reader view this extends
 - [[main-content-extraction-crates]] — why Readability, and its known blind spot for tabular facts
+- [[iteration-228-two-task-benchmark-after-facts]] — the carry-over measurement (Theme C)
+
+## Outcome
+
+**Themes A and B shipped; Theme C was not run, and its acceptance criterion is left unticked.**
+
+### What landed
+
+- `results.page.facts` — up to 40 `{key, value}` rows harvested by a separate DOM pass
+  (`FACTS_BLOCK_JS` in `crates/ff-rdp-cli/src/commands/page_view_js.rs`) over `table.infobox` /
+  `.infobox` / `table[class*=infobox]` rows, `dl > dt` + its following `dd`s, and `[itemprop]`
+  microdata, in one document-order query. Keys are capped at 120 characters and values at 300;
+  a raw cell longer than 1 200 is prose in a table and is dropped rather than truncated.
+  `facts_total` / `facts_truncated` report what the cap hid. Readability is not consulted, and
+  the pass writes nothing to the DOM — `live_225_the_facts_pass_leaves_the_dom_untouched` pins
+  that.
+- `--query` now matches facts (on `key` *and* `value`), and `page.matches` counts **matching
+  excerpt lines as well as matching entries**. iter-219 counted entries only, which reported
+  `matches: 0` beside a perfectly good excerpt window whenever the hit was in the prose — the
+  exact signal an agent uses to decide whether to spend another turn.
+- `page.query_source` — `readability` | `innertext` | `facts` — says which of the three searched
+  places answered. On a miss in the article text *and* the facts, `collect` fetches
+  `document.body.innerText` (bounded by `QUERY_TEXT_BUDGET`, normalised to one non-blank line per
+  block) and builds the window with `page_text::build_excerpt`, i.e. literally the selection the
+  follow-up `page-text --query` would have produced. That second round trip is paid only on the
+  miss.
+- A miss in all three leaves `matches: 0`, `excerpt: ""` and sets `page.hint` naming
+  `page-text --full --query` — the one command that genuinely searches more than the view just
+  did.
+- `--format text` renders a `FACTS (n of total)` block after the excerpt, and labels the excerpt
+  with `query_source` when a query is active.
+
+### What was measured, and what was not
+
+- Gates: `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings` and
+  `cargo test --workspace -q` all clean (1 189 unit tests + 39 suites green), plus every `xtask
+  check-*` gate.
+- **Theme C was not run.** The harness (`axi/bench-browser matrix --condition ff-rdp --task
+  wikipedia_link_follow,wikipedia_infobox_hop --repeat 3`) drives its agent through a browser on
+  port 6000, and at that point the port was held by a headless Firefox started four hours earlier
+  that this run had not launched. `CLAUDE.md` forbids tearing down a browser this run did not
+  start, and sharing one makes every turn count meaningless — so the number is unmeasured rather
+  than wrong. Filed as [[iteration-228-two-task-benchmark-after-facts]], which is a measurement
+  iteration with no product change in it.
+- Acceptance criterion 3 ("two-task benchmark average ≤ 5 turns on both tasks") is therefore
+  **unticked**, with its premise intact: nothing here says the target was met or that the
+  criterion was wrong.
+
+### Carry-over
+
+- [[iteration-228-two-task-benchmark-after-facts]] — the measurement, on a browser the run owns.
