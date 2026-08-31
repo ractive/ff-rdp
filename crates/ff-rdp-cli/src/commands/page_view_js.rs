@@ -53,6 +53,26 @@ pub(crate) const HANDLE_PROP: &str = "__ffrdpReaderView";
 /// of being read through a stale handle.
 pub(crate) const HANDLE_VERSION: u32 = 1;
 
+/// Most `{key, value}` rows the facts pass returns (iter-225 Theme A).
+///
+/// Forty short rows is a Wikipedia infobox with room to spare and roughly a
+/// tenth of what the default `--page-chars` excerpt costs. The cap is the same
+/// token discipline `--with-page` has kept since iter-210: `facts` is a lookup
+/// table beside the excerpt, never a second excerpt. `facts_total` reports how
+/// many the page actually had.
+pub(crate) const FACTS_CAP: usize = 40;
+
+/// Longest fact key kept, in characters. A label longer than this is not a
+/// label.
+pub(crate) const FACT_KEY_MAX_CHARS: usize = 120;
+
+/// Longest fact value kept, in characters — the same order as
+/// [`super::js_helpers::ACC_NAME_MAX_CHARS`], for the same reason: a value is
+/// a name-shaped thing, not a paragraph. A raw cell more than four times this
+/// long is prose that happens to sit in a table and is dropped outright rather
+/// than truncated into a misleading half-sentence.
+pub(crate) const FACT_VALUE_MAX_CHARS: usize = 300;
+
 /// A tamper-proof JSON writer for the shapes this collector builds.
 ///
 /// Only strings, finite numbers, booleans, null, arrays and plain objects
@@ -226,6 +246,8 @@ __LANDMARKS_BLOCK__
   }
 
 __READER_BLOCK__
+
+__FACTS_BLOCK__
 
   return '__FF_RDP_JSON__' + __ffrdpJson(result);
 })()"#;
@@ -444,6 +466,102 @@ const READER_BLOCK_JS: &str = r#"
   }
 "#;
 
+/// The facts pass: key/value rows the reader view throws away (iter-225).
+///
+/// # Why this exists
+///
+/// Readability scores `table.infobox` as boilerplate, which is right for
+/// *reading* and wrong for *answering*. The 2026-08-31 two-task benchmark
+/// (`kb/research/axi-benchmark-comparison.md`) spent 2–6 turns per run on
+/// `page-text --query` round trips for exactly this: "Stable release" on the
+/// Python article and "Formation 2001" on the Python Software Foundation one
+/// are infobox rows, so `--with-page --page-chars 4000` never contained them
+/// however large the excerpt got.
+///
+/// # What it is not
+///
+/// It is not a second excerpt and it does not touch Readability. Forcing
+/// tables *through* Readability (`keepClasses`, `classesToPreserve`) would
+/// drag navboxes and reference tables back into the article element — the
+/// exact chrome iter-219 removed. This is a separate `querySelectorAll` over
+/// the live document, capped at [`FACTS_CAP`] rows, and it cannot change the
+/// excerpt or the zones by construction.
+///
+/// Three row shapes, harvested in one document-order query so `facts` reads
+/// top-to-bottom the way the page does:
+///
+/// * `tr` inside an infobox table — `th` is the key, `td` the value. A row
+///   with no `th` (a section header, an image) contributes nothing.
+/// * `dt` in a definition list — the key, with every following `dd` joined as
+///   the value. MDN's "Baseline"/"Inheritance" blocks are this shape.
+/// * `[itemprop]` microdata — the attribute is the key, `content` (or the
+///   rendered text) the value. GitHub, product pages and recipe sites carry
+///   these where they carry no table at all.
+///
+/// `__STAMP__`-free on purpose: nothing here mutates the document, so the
+/// "live DOM is byte-identical" property `live_219_reader_view` asserts holds
+/// without a `finally`.
+const FACTS_BLOCK_JS: &str = r#"
+  result.facts = [];
+  var __ffrdpFactSeen = {};
+  var __ffrdpFactTotal = 0;
+
+  function __ffrdpAddFact(rawKey, rawValue) {
+    var key = __ffrdpNorm(rawKey);
+    var val = __ffrdpNorm(rawValue);
+    if (!key || !val) { return; }
+    // Prose in a table cell is still prose: drop it rather than truncate it
+    // into a half-sentence that reads like a fact.
+    if (val.length > __FACT_VALUE_MAX__ * 4) { return; }
+    if (key.length > __FACT_KEY_MAX__) { key = key.substring(0, __FACT_KEY_MAX__); }
+    if (val.length > __FACT_VALUE_MAX__) { val = val.substring(0, __FACT_VALUE_MAX__); }
+    // 'f' prefix so a key of "constructor" or "__proto__" cannot collide with
+    // something already on Object.prototype.
+    var seenKey = 'f' + key + ' ' + val;
+    if (__ffrdpFactSeen[seenKey]) { return; }
+    __ffrdpFactSeen[seenKey] = true;
+    __ffrdpFactTotal++;
+    if (result.facts.length < __FACT_CAP__) {
+      result.facts[result.facts.length] = {key: key, value: val};
+    }
+  }
+
+  try {
+    var FACT_SEL = 'table.infobox tr, table[class*="infobox"] tr, .infobox tr, ' +
+                   'dl > dt, [itemprop]';
+    var factNodes = document.querySelectorAll(FACT_SEL);
+    for (var fq = 0; fq < factNodes.length; fq++) {
+      var fnode = factNodes[fq];
+      var ftag = fnode.tagName ? fnode.tagName.toUpperCase() : '';
+      if (ftag === 'TR') {
+        var fth = fnode.querySelector('th');
+        var ftd = fnode.querySelector('td');
+        if (fth && ftd) { __ffrdpAddFact(fth.textContent, ftd.textContent); }
+      } else if (ftag === 'DT') {
+        var fvals = '';
+        var fsib = fnode.nextElementSibling;
+        while (fsib && fsib.tagName && fsib.tagName.toUpperCase() === 'DD') {
+          var fpart = __ffrdpNorm(fsib.textContent);
+          if (fpart) { fvals += (fvals ? '; ' : '') + fpart; }
+          fsib = fsib.nextElementSibling;
+        }
+        __ffrdpAddFact(fnode.textContent, fvals);
+      } else {
+        var fprop = fnode.getAttribute('itemprop');
+        var fcontent = fnode.getAttribute('content');
+        __ffrdpAddFact(fprop, fcontent || fnode.textContent);
+      }
+    }
+  } catch (e) {
+    // A page can make querySelectorAll throw with an exotic selector engine
+    // override. Report it rather than failing the whole view: the excerpt and
+    // the refs are still good.
+    result.facts_error = String((e && e.message) || e);
+  }
+  result.facts_total = __ffrdpFactTotal;
+  if (__ffrdpFactTotal > result.facts.length) { result.facts_truncated = true; }
+"#;
+
 /// Build the collector JS.
 ///
 /// `landmarks` and `reader` are independent: `a11y summary` takes landmarks
@@ -462,6 +580,18 @@ pub(crate) fn build_page_view_js(landmarks: bool, reader: Option<usize>) -> Stri
             .replace("__TEXT_BUDGET__", &budget.to_string()),
         None => String::new(),
     };
+    // iter-225: the facts pass ships with the reader block and only with it.
+    // It leans on `__ffrdpNorm` (a hoisted function declaration inside the
+    // same IIFE), and `a11y summary` — the only caller that passes
+    // `reader: None` — is the accessibility surface, which has no more use for
+    // infobox rows than it had for an excerpt.
+    let facts_block = match reader {
+        Some(_) => FACTS_BLOCK_JS
+            .replace("__FACT_CAP__", &FACTS_CAP.to_string())
+            .replace("__FACT_KEY_MAX__", &FACT_KEY_MAX_CHARS.to_string())
+            .replace("__FACT_VALUE_MAX__", &FACT_VALUE_MAX_CHARS.to_string()),
+        None => String::new(),
+    };
     PAGE_VIEW_JS_TEMPLATE
         .replace(
             "__UNIQUE_SELECTOR_FN__",
@@ -474,6 +604,7 @@ pub(crate) fn build_page_view_js(landmarks: bool, reader: Option<usize>) -> Stri
             if landmarks { LANDMARKS_BLOCK_JS } else { "" },
         )
         .replace("__READER_BLOCK__", &reader_block)
+        .replace("__FACTS_BLOCK__", &facts_block)
 }
 
 #[cfg(test)]
@@ -506,6 +637,7 @@ mod tests {
             ("PAGE_VIEW_JS_TEMPLATE", PAGE_VIEW_JS_TEMPLATE),
             ("LANDMARKS_BLOCK_JS", LANDMARKS_BLOCK_JS),
             ("READER_BLOCK_JS", READER_BLOCK_JS),
+            ("FACTS_BLOCK_JS", FACTS_BLOCK_JS),
             ("JSON_WRITER_JS", JSON_WRITER_JS),
             // Spliced into the same collector script via __ACC_NAME_FN__, so
             // the ban applies to it too (iter-219 review: its aria-labelledby
@@ -537,9 +669,13 @@ mod tests {
                 "__JSON_WRITER__",
                 "__LANDMARKS_BLOCK__",
                 "__READER_BLOCK__",
+                "__FACTS_BLOCK__",
                 "__STAMP__",
                 "__HANDLE_VERSION__",
                 "__TEXT_BUDGET__",
+                "__FACT_CAP__",
+                "__FACT_KEY_MAX__",
+                "__FACT_VALUE_MAX__",
             ] {
                 assert!(
                     !js.contains(placeholder),
@@ -562,6 +698,54 @@ mod tests {
             "a11y summary must not pay for the reader pass"
         );
         assert!(!a11y.contains(STAMP_ATTR), "no stamping without the reader");
+    }
+
+    /// iter-225: the facts pass rides with the reader block, never alone — it
+    /// calls `__ffrdpNorm`, which only the reader block defines.
+    #[test]
+    fn facts_ship_with_the_reader_block_and_only_with_it() {
+        let with_page = build_page_view_js(false, Some(2000));
+        assert!(with_page.contains("result.facts"), "facts must be collected");
+        assert!(
+            with_page.contains("__ffrdpNorm"),
+            "the facts pass depends on the reader block's normaliser"
+        );
+        assert!(
+            with_page.contains("dl > dt, [itemprop]"),
+            "all three fact shapes must be queried"
+        );
+
+        let a11y = build_page_view_js(true, None);
+        assert!(
+            !a11y.contains("result.facts"),
+            "a11y summary must not pay for the facts pass"
+        );
+    }
+
+    /// The caps are contract, not magic numbers buried in a template: they are
+    /// spliced from the Rust constants the docs and the renderer quote.
+    #[test]
+    fn fact_caps_are_spliced_from_the_rust_constants() {
+        let js = build_page_view_js(false, Some(2000));
+        assert!(
+            js.contains(&format!("result.facts.length < {FACTS_CAP}")),
+            "the row cap must be spliced in"
+        );
+        assert!(js.contains(&format!("key.length > {FACT_KEY_MAX_CHARS}")));
+        assert!(js.contains(&format!("val.length > {FACT_VALUE_MAX_CHARS}")));
+    }
+
+    /// The facts pass reads the document and never writes to it — no stamping,
+    /// no attribute removal, so the "live DOM is byte-identical" property costs
+    /// it nothing.
+    #[test]
+    fn facts_pass_does_not_mutate_the_document() {
+        for banned in ["setAttribute", "removeAttribute", "appendChild", ".remove("] {
+            assert!(
+                !FACTS_BLOCK_JS.contains(banned),
+                "the facts pass must not mutate the DOM ({banned})"
+            );
+        }
     }
 
     #[test]
