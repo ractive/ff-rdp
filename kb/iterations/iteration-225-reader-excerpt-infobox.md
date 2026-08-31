@@ -2,7 +2,7 @@
 title: "Iteration 225: the reader excerpt drops the infobox — the fact the task asks for is not in --with-page"
 type: iteration
 date: 2026-08-31
-status: planned
+status: in-progress
 branch: iter-225/reader-excerpt-infobox
 depends_on:
   - 219
@@ -19,7 +19,12 @@ dogfood_path: |
   # expected AFTER: the key/value facts from the page's infobox/definition lists appear under
   #   results.page.facts (or in the excerpt), and --query with no reader-text hit falls back to
   #   the page's innerText window so a one-command answer exists
-tags: [iteration, act-and-see, page-view, readability, agent-ergonomics]
+tags:
+  - iteration
+  - act-and-see
+  - page-view
+  - readability
+  - agent-ergonomics
 ---
 
 # Iteration 225: the reader excerpt drops the infobox
@@ -64,27 +69,27 @@ The 5-turn run that did happen (`link_follow` run 1: `navigate --with-page` → 
 
 ## Tasks
 
-### A. Facts [0/3]
-- [ ] Collector: harvest `{key, value}` rows from `table.infobox` / `.infobox` / `table[class*=infobox]`,
+### A. Facts [3/3]
+- [x] Collector: harvest `{key, value}` rows from `table.infobox` / `.infobox` / `table[class*=infobox]`,
       `dl` (`dt`/`dd`), and `[itemprop]`; cap at 40; values via `__ffrdpAccName`-style
       normalization; `facts_total` / `facts_truncated` when the cap bites
-- [ ] `render_text` shows facts as `key: value` lines after the excerpt
-- [ ] `--query` matches facts too (`page.matches` counts them)
+- [x] `render_text` shows facts as `key: value` lines after the excerpt
+- [x] `--query` matches facts too (`page.matches` counts them)
 
-### B. Fallback [0/2]
-- [ ] `--query` with zero reader/facts hits → innerText window, `query_source: "innertext"`
-- [ ] `--query` with zero hits anywhere → `matches: 0`, `excerpt: ""`, and a `hint` naming
+### B. Fallback [2/2]
+- [x] `--query` with zero reader/facts hits → innerText window, `query_source: "innertext"`
+- [x] `--query` with zero hits anywhere → `matches: 0`, `excerpt: ""`, and a `hint` naming
       `page-text --full --query` as the exhaustive next step
 
 ### C. Measure [0/1]
 - [ ] `wikipedia_link_follow` + `wikipedia_infobox_hop`, `--repeat 3`, recorded in Outcome and in
       [[axi-benchmark-comparison]]
 
-## Acceptance Criteria [0/4]
+## Acceptance Criteria [2/4]
 
-- [ ] Python article `--with-page` returns a `facts` row with key matching /Stable release/ (live
+- [x] Python article `--with-page` returns a `facts` row with key matching /Stable release/ (live
       test on the recorded fixture)
-- [ ] `--with-page --query 'Stable release'` on that page answers in one command (`matches ≥ 1`,
+- [x] `--with-page --query 'Stable release'` on that page answers in one command (`matches ≥ 1`,
       `query_source` set)
 - [ ] Two-task benchmark average ≤ 5 turns on both tasks — or the measured number recorded and
       the AC left unticked, never reworded

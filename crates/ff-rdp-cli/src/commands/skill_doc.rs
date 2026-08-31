@@ -135,8 +135,8 @@ pub(crate) const IDIOMS: &[(&str, &str, &str)] = &[
     ),
     (
         "--with-page",
-        "have an action return the page it produced, so a click and the look at its result are \
-         one round trip instead of two",
+        "have an action return the page it produced — text, infobox facts and refs, so a click \
+         and the look at its result are one round trip instead of two",
         "ff-rdp click --ref {ref} --with-page",
     ),
 ];
