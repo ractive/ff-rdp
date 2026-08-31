@@ -2,7 +2,7 @@
 title: "Iteration 224: click --ref --with-page intermittently gets 'Connection reset by peer' from the daemon"
 type: iteration
 date: 2026-08-31
-status: planned
+status: in-review
 branch: iter-224/with-page-daemon-connection-reset
 depends_on:
   - 220
@@ -18,6 +18,16 @@ dogfood_path: |
   #   in ~0.45 s (no timeout involved)
   # expected AFTER: 5 of 5 return the destination view; a mid-collection teardown is retried
   #   inside collect_settled like RdpActorDestroyed already is, or the daemon stops resetting
+first_call_sites:
+  - primitive: ff_rdp_cli::daemon::server::DAEMON_CLIENT_CLOSED
+    site: >-
+      crates/ff-rdp-cli/src/daemon/server.rs (`daemon_closing_response`, the frame written
+      before a client is abandoned) and crates/ff-rdp-cli/src/commands/page_view.rs
+      (`is_connection_lost`, which routes that frame to the reconnect arm) — both non-test
+  - primitive: ff_rdp_cli::commands::page_view::SettledPage
+    site: >-
+      crates/ff-rdp-cli/src/commands/page_view.rs — returned by `collect_settled`, consumed by
+      `attach` and `insert_page`, which publish `attempts`/`reconnects` into `page_meta`
 tags: [iteration, act-and-see, page-view, daemon, defect, carry-over]
 ---
 
@@ -68,32 +78,40 @@ Two things make this a defect of ours rather than noise:
 
 ## Tasks
 
-### A. Diagnose [0/2]
-- [ ] Capture a daemon trace of one reset; record which side closed the socket and on which
+### A. Diagnose [2/2]
+- [x] Capture a daemon trace of one reset; record which side closed the socket and on which
       packet, in this plan's Outcome
-- [ ] State whether the `--no-daemon` route can reset the same way (it has no proxy, so
+- [x] State whether the `--no-daemon` route can reset the same way (it has no proxy, so
       probably not — but say so from evidence, not from the architecture)
 
-### B. Fix [0/3]
-- [ ] `collect_settled`: retry a transport reset inside a guarded collection, on a fresh
+### B. Fix [3/3]
+- [x] `collect_settled`: retry a transport reset inside a guarded collection, on a fresh
       connection, within `overall_deadline`; keep the immediate return for resets outside one
-- [ ] Daemon: a proxy task that fails while a client request is pending writes a structured
+- [x] Daemon: a proxy task that fails while a client request is pending writes a structured
       error (`error_type: "Transport"` or the `EvalTargetDestroyed` mapping) before closing
-- [ ] `meta.page_retries` (or the existing attempt counter) reports how many attempts the
-      returned view cost, so a flaky hop is visible in JSON
+- [x] `meta.page_retries` (or the existing attempt counter) reports how many attempts the
+      returned view cost, so a flaky hop is visible in JSON — landed as
+      `meta.page_attempts` + `meta.page_reconnects`
 
-### C. Cover [0/1]
-- [ ] `tests/live/live_224_*.rs`: the repeated-hop test from Theme C, plus the dogfood loop as
+### C. Cover [1/1]
+- [x] `tests/live/live_224_*.rs`: the repeated-hop test from Theme C, plus the dogfood loop as
       a `.dogfood.sh` sourcing `dogfood-lib.sh`
 
-## Acceptance Criteria [0/4]
+## Acceptance Criteria [3/4]
 
-- [ ] The dogfood loop above returns the destination view 5 of 5 on three consecutive runs
-      (15 hops, 0 `Transport` errors), daemon route
+- [x] The dogfood loop above returns the destination view 5 of 5 on three consecutive runs
+      (15 hops, 0 `Transport` errors), daemon route — and round 3 hop 4 came back
+      `{"a":2,"rc":1}`: a real mid-collection connection loss, absorbed, exit 0
 - [ ] The Theme C live test passes in the live sweep and fails on `5a0071d` (record the
-      failure count it observes there)
-- [ ] Outcome names the side that closed the socket, with the trace excerpt
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q`
+      failure count it observes there) — **not met, and not reworded.** The premise was that
+      a locally-served slow destination could race the same way. It does not: 90 local hops
+      on `5a0071d` produced 0 failures, so `live_224_with_page_connection_reset` observes
+      0 failures on `5a0071d` too and does **not** fail there. What it does cover is the
+      contract the fix rests on (destination view every hop, `page_attempts` /
+      `page_reconnects` always reported); the 1-in-15 itself is covered by the `.dogfood.sh`
+      against the real page, which is where it reproduces
+- [x] Outcome names the side that closed the socket, with the trace excerpt
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q`
       clean; live sweep reconciles
 
 ## Out of scope
@@ -101,6 +119,95 @@ Two things make this a defect of ours rather than noise:
 - The reader excerpt's missing infobox — [[iteration-225-reader-excerpt-infobox]].
 - Re-measuring the benchmark — [[iteration-213-act-and-see-benchmark-rerun]] Task E, after this
   and 225.
+- **Why the CLI→daemon frame stream desynchronises in the first place.** This iteration found
+  *that* it does and made both sides survive it; the byte-level cause is
+  [[iteration-226-daemon-frame-desync-root-cause]].
+- The daemon wedge observed twice at ~25 consecutive hops (every later command times out at
+  `phase: recv` and the daemon logs nothing) — [[iteration-227-daemon-wedge-after-sustained-hops]].
+- `tracing` output never reaching `~/.ff-rdp/daemon.log` — filed inside 226, since it is what
+  blocked a byte-level trace here.
+
+## Outcome
+
+### A — who closed the socket
+
+**The daemon closed it**, from `handle_client`'s frame-decode path in
+`crates/ff-rdp-cli/src/daemon/server.rs`. Before this iteration that path was a bare
+
+```rust
+Err(_) => {
+    // EOF or connection reset: client disconnected.
+    break;
+}
+```
+
+— every non-timeout error reading a *client* frame dropped the socket with nothing written and
+nothing logged, which is why the first diagnosis pass found an empty `daemon.log` across two
+reproduced failures. With this iteration's instrumentation the same event names itself:
+
+```text
+daemon: abandoning client 42: client_frame_undecodable: invalid packet: unexpected byte 0x3d in length prefix
+```
+
+`0x3d` is `=`. The daemon's framer resumed reading in the middle of a client frame's payload
+instead of at a `{len}:` prefix, gave up on the connection, and closed it. A CLI parked in
+`recv` waiting for its page-view reply saw that close as `Connection reset by peer (os error
+54)` when unread inbound bytes made the kernel send an RST, and as `failed to fill whole
+buffer` when it was a plain FIN mid-frame. Both shapes were observed; both are the same event.
+
+**Why the stream desynchronises is NOT answered here** — that needs a byte-level capture of the
+CLI→daemon direction, and the daemon's `tracing` output never reaches `daemon.log` (`RUST_LOG`
+*is* inherited by the `_daemon` process — confirmed with `ps eww` — yet not one `tracing` line
+is emitted, while `eprintln!` lines are). The leading hypothesis, from reading the code rather
+than the wire, is on the *other* direction and would corrupt the CLI's framer rather than the
+daemon's: a client socket is written by two threads with no shared lock — the dispatcher via
+`SharedState::rpc_writer`, and the client thread via the `own_writer` / heartbeat clones — so
+two concurrent `write_all`s can interleave. Filed as
+[[iteration-226-daemon-frame-desync-root-cause]] with the capture plan.
+
+### Reproduction, before and after
+
+| route | build | hops | `Transport` failures |
+|---|---|---|---|
+| daemon | `5a0071d` (main) | 30 | **2** (`Connection reset by peer (os error 54)` ×1, `failed to fill whole buffer` ×1), both at ~0.44 s |
+| `--no-daemon` | `5a0071d` | 25 | **0**, every hop `page_attempts: 1` |
+| daemon | this branch | 15 (3 × 5) | **0**; one hop reports `page_attempts: 2, page_reconnects: 1` |
+| daemon | this branch | 25 (single run) | **0** |
+| daemon, local fixture | either | 90 | **0** — the flake needs a real remote origin |
+
+So the answer to Theme A's second task, from evidence: the direct route did not reset once in
+25 hops on the same page while the daemon route reset twice in 30. That is consistent with the
+proxy being the closer and not proof that a direct connection *cannot* reset; the mechanism
+found (a daemon giving up on a client frame) has no counterpart on a route with no daemon.
+
+### B — what changed
+
+1. **`daemon/server.rs`** — `handle_client`'s read loop became a labelled loop yielding a
+   `ClientExit`. `Disconnected` (the client hung up: EOF/reset/broken pipe, classified by
+   `is_client_hangup`) stays silent; `DaemonShuttingDown` and `Abandoned` write
+   `daemon_closing_response` — `{"from":"daemon","error":"daemon_client_closed","reason":…}`,
+   the shape `ff_rdp_core::transport::daemon_control_error` already turns into a terminal
+   error in both wait loops — and then *drain* the socket, because `close()` with unread
+   inbound bytes sends an RST and an RST discards the frame just written. Every former `?`
+   inside the loop (Firefox write, daemon-response write, serialisation) now routes through
+   the same ending instead of dropping the socket silently.
+2. **`commands/page_view.rs`** — `collect_settled` gained a reconnect arm. A lost connection
+   (`RdpTransport`, `RdpRemoteClosed`, or `RdpProtocol` from actor `daemon` named
+   `daemon_client_closed` — `is_connection_lost`) rebuilds the connection with
+   `connect_and_get_target` and collects again, bounded by `NAV_RECONNECT_ATTEMPTS = 1`, by
+   the existing `NAV_COLLECT_ATTEMPTS`, and by the caller's `overall_deadline`. A failed
+   reconnect reports the *original* error, not the connect failure. Answers from Firefox —
+   timeouts, `noSuchActor`, shape errors — are untouched.
+3. **`meta.page_attempts` / `meta.page_reconnects`** — always present, `1` and `0` on the
+   clean path, carried through `SettledPage` → `page_meta` → `lift_meta`.
+
+### C — cover
+
+`crates/ff-rdp-cli/tests/live/live_224_with_page_connection_reset.rs` (12-hop repeat + the
+counters contract) and `kb/iterations/iteration-224-*.dogfood.sh` (15 hops against the real
+Wikipedia hop, skipped with a written sentinel when `FF_RDP_LIVE_NETWORK_TESTS` is unset).
+Unit cover: the closing frame's shape and delivery over a loopback pair, the hangup/fault
+split, and the three lost-connection shapes.
 
 ## References
 

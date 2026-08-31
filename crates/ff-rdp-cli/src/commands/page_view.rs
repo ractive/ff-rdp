@@ -831,8 +831,8 @@ fn collect_settled(
         .wait_complete_ms
         .map(|ms| Instant::now() + Duration::from_millis(ms));
 
-    for attempt in 0..NAV_COLLECT_ATTEMPTS {
-        if attempt > 0 && overall_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+    while attempts < NAV_COLLECT_ATTEMPTS {
+        if attempts > 0 && overall_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             break;
         }
         attempts += 1;

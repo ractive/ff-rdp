@@ -420,7 +420,13 @@ pub fn run_core(
     // iter-210 Theme A: `--with-page`, collected after `--submit` so a form
     // that navigated reports the page it landed on.
     if opts.page.with_page {
-        super::page_view::attach(cli, &mut ctx, &mut result, Some(wait_timeout_ms), &opts.page)?;
+        super::page_view::attach(
+            cli,
+            &mut ctx,
+            &mut result,
+            Some(wait_timeout_ms),
+            &opts.page,
+        )?;
     }
 
     Ok((result, ctx.via_daemon))

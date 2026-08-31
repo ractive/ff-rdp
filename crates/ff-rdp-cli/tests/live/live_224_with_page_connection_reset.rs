@@ -221,9 +221,11 @@ fn live_repeated_hop_never_loses_the_connection() {
             Some("Charles Babbage"),
             "hop {hop}: click --with-page must report the destination: {click}"
         );
-        reconnects += click["meta"]["page_reconnects"].as_u64().unwrap_or_else(|| {
-            panic!("hop {hop}: meta.page_reconnects must always be reported: {click}")
-        });
+        reconnects += click["meta"]["page_reconnects"]
+            .as_u64()
+            .unwrap_or_else(|| {
+                panic!("hop {hop}: meta.page_reconnects must always be reported: {click}")
+            });
     }
 
     assert!(
@@ -281,7 +283,9 @@ fn live_page_view_reports_what_it_cost() {
     };
     let click = run_json(port, &["click", "--ref", &ref_id, "--with-page"]);
     assert!(
-        click["meta"]["page_attempts"].as_u64().is_some_and(|a| a >= 1),
+        click["meta"]["page_attempts"]
+            .as_u64()
+            .is_some_and(|a| a >= 1),
         "meta.page_attempts must be reported on a navigating click: {click}"
     );
     assert!(

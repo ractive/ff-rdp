@@ -2161,13 +2161,14 @@ fn drain_client_socket(stream: &TcpStream) {
     let mut scratch = [0_u8; 4096];
     while Instant::now() < deadline {
         match sock.read(&mut scratch) {
-            // Clean EOF — the client is gone, nothing is stranded.
-            Ok(0) => return,
+            Ok(0) | Err(_) => {
+                // `Ok(0)` is a clean EOF — the client is gone, nothing is
+                // stranded. An error is either the read timeout (the receive
+                // buffer is empty, which is the state we were draining
+                // towards) or a socket too broken to protect anything on.
+                return;
+            }
             Ok(_) => {}
-            // A read timeout means the receive buffer is empty, which is the
-            // state we were draining towards; any other error means the socket
-            // is unusable and there is nothing left to protect.
-            Err(_) => return,
         }
     }
 }
@@ -2406,13 +2407,12 @@ fn handle_client(
                     // owns it, so route the ack to the client directly.
                     if let Ok(mut own_writer) =
                         reader.try_clone_stream().map(FramedWriter::from_stream)
+                        && let Err(e) = own_writer.send_raw(&resp_json)
                     {
-                        if let Err(e) = own_writer.send_raw(&resp_json) {
-                            break 'client ClientExit::Abandoned {
-                                reason: "client_write_failed",
-                                detail: format!("sending daemon response: {e}"),
-                            };
-                        }
+                        break 'client ClientExit::Abandoned {
+                            reason: "client_write_failed",
+                            detail: format!("sending daemon response: {e}"),
+                        };
                     }
                 } else if matches!(teardown, ResourceTeardown::DropEntirely) {
                     // iter-164: swallow it. See `classify_client_resource_teardown`
@@ -2528,11 +2528,7 @@ fn handle_client(
             // but traced, because "which client hung up when" is the only
             // daemon-side record of a connection ending, and iter-224 spent a
             // diagnosis session without it.
-            tracing::debug!(
-                client_id,
-                owns_rpc_slot,
-                "daemon: client disconnected"
-            );
+            tracing::debug!(client_id, owns_rpc_slot, "daemon: client disconnected");
         }
         ClientExit::DaemonShuttingDown => {
             if let Ok(sock) = reader.try_clone_stream() {
