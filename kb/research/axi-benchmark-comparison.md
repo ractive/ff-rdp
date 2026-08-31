@@ -331,3 +331,97 @@ number of record, and 225's acceptance criterion for it is unticked rather than 
 re-measurement is [[iteration-228-two-task-benchmark-after-facts]]; the thing to read there is not
 only the average but the count of `page-text` calls per run, which is the quantity 225 set out to
 drive to zero.
+
+## Re-measurement 2026-09-01 — the same two tasks after iteration 225's facts pass
+
+[[iteration-228-two-task-benchmark-after-facts]]. ff-rdp `cf99c84` (`main` at the merge of
+[[iteration-225-reader-excerpt-infobox]]), same harness, same two tasks, `--repeat 3`, same agent
+and judge (`claude-sonnet-4-6`) and the same one-paragraph system prompt. Port 6000 was verified
+free before the run (`lsof -ti :6000` empty) and the browser was started and torn down by
+`ffrdp-bench.sh` alone, so this is the exclusive-browser run 225 could not get. Preconditions were
+hand-checked first: on the Python article `--with-page` returns
+`facts[0] = {"Stable release": "3.14.7[3] / 5 August 2026…"}`, and `--query 'Filename extensions'`
+answers with `query_source: "facts"`. The facts pass works.
+
+| Task | axi | ff-rdp @28695d3 (08-30) | ff-rdp @5a0071d (08-31) | **ff-rdp @cf99c84 (09-01)** | per run |
+|---|---|---|---|---|---|
+| wikipedia_link_follow | 4.0 | 8.3 | 7.7 | **9.0** / $0.164 / 3 | 13, 10, **4** |
+| wikipedia_infobox_hop | 4.0 | 8.3 | 10.3 | **11.3** / $0.229 / 3 | 14, 8, 12 |
+
+6/6 pass. Averaged over both tasks: 10.2 turns, $0.196, 41.8 s. Against the 08-31 run the averages
+moved +1.3 and +1.0 — at n = 3 that is inside noise, so **the honest reading is "unchanged", not
+"worse"**. The target for both ([[iteration-219-reader-view-page]] AC 6, 225's AC 3, and this
+iteration's AC 3) was ≤ 5 turns. **Not met.**
+
+### The `page-text` count — the quantity 225 set out to drive to zero
+
+| | run 1 | run 2 | run 3 |
+|---|---|---|---|
+| `link_follow` — `page-text` calls | 2 | 2 | **0** |
+| `infobox_hop` — `page-text` calls | 5 | 2 | 2 |
+
+Mean 2.2 per run, range 0–5, against the 2–6 the 08-31 run showed. Essentially unmoved.
+`query_source` appears in the tool output of **1 of 6 runs** (`link_follow` run 3, twice, both
+`readability`). The facts pass is not being exercised.
+
+### Why: `navigate --with-page` was used in 1 run of 6
+
+| task | run | turns | first command | used `navigate --with-page` |
+|---|---|---|---|---|
+| link_follow | 1 | 13 | `ff-rdp --help \| head -50` | no |
+| link_follow | 2 | 10 | `ff-rdp --help \| head -50` | no |
+| link_follow | 3 | **4** | `ff-rdp --help` (whole file) | **yes** |
+| infobox_hop | 1 | 14 | `ff-rdp --help \| head -50` | no |
+| infobox_hop | 2 | 8 | `ff-rdp --help \| head -50` | no |
+| infobox_hop | 3 | 12 | `ff-rdp --help \| head -50` | no |
+
+The one run that used it is the whole trajectory, verbatim:
+
+```
+ff-rdp --help
+ff-rdp navigate "https://en.wikipedia.org/wiki/Ada_Lovelace" --with-page --query "Charles Babbage"
+ff-rdp click --ref e1 --with-page --query "born"
+```
+
+**Four turns, three commands, zero `page-text` calls — target met, axi matched.** The mechanism
+225 shipped does exactly what it was built to do. It was reached once.
+
+The other five runs share one shape: bare `navigate` → `page-text --query "<thing>"` (which
+answers, but returns no ref) → a ref hunt across `a11y summary | grep`, `dom <guessed selector>`
+and 1–3 `eval` scripts → `click --ref` → `page-text --query` again on the destination. That hunt
+is where the 4–9 extra turns live. `infobox_hop` run 1 (14 turns) never used `--with-page` at all.
+
+**The cause is the first 50 lines of `--help`.** Five of six runs read `ff-rdp --help | head -50`
+and nothing else. In that window the `navigate` line (line 12) is bare —
+`ff-rdp navigate <URL>  blocks until the document commits` — and `--with-page` appears only on
+line 16, attached to `click --ref e3`. An agent that has not navigated yet has no ref, so line 16
+is not yet actionable and line 15 (`page-text --query`) is. The idiom that wins,
+`ff-rdp navigate <URL> --with-page --query "…"`, is at **line 333 of a 441-line `--help`** — and
+the single run that read the whole file is the single run that used it.
+
+So the 08-31 conclusion ("discoverability is solved") was measured on `--with-page` usage anywhere
+in a run. Split by *where* it is used, discoverability is solved for `click` and not for
+`navigate`, and `navigate` is the turn that decides whether the ref hunt happens at all.
+
+Filed as [[iteration-230-quickstart-navigate-with-page]].
+
+### Two smaller observations
+
+- **A missed selector costs ten seconds of wall clock, silently.** `link_follow` runs 1 and 2 both
+  guessed `click … 'a[href="/wiki/Charles_Babbage"]'` and got
+  `selector … not ready — 0 elements matched (not found) after 10000ms`. Verified by hand: this
+  Wikipedia render writes the attribute absolute
+  (`https://en.wikipedia.org/wiki/Charles_Babbage`), so zero elements really do match — an
+  agent-side guess, not an ff-rdp defect. But `click` polls the full `--timeout` before saying so,
+  which is where `link_follow` run 1's 70 s went. Turn cost is 1 either way; wall-clock cost is not.
+- **No transport failures.** The `recv failed: Connection reset by peer` that cost `infobox_hop`
+  run 3 four turns on 08-31 ([[iteration-224-with-page-daemon-connection-reset]]) did not recur in
+  these six runs. That is an absence at n = 6 against a hand-reproduced 1-in-5, not a fix.
+
+### Verdict
+
+The measurement 225 was gated on is now taken, on a browser this run owned. `results.page.facts`
+is correct and, when reached, produces the four-turn trajectory. It is reached once in six runs.
+**The remaining gap on these two tasks is not the payload any more — it is which line of `--help`
+the agent reads.** That is a one-line change to the Quick start block, and it must be measured the
+same way before anyone claims it worked.
