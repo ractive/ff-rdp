@@ -114,3 +114,26 @@ say so and fix the assertion; do not reword it to match whatever the run produce
 - `crates/ff-rdp-cli/src/util/profile_dir.rs` — `owner_liveness`,
   `profile_is_owned_by_live_process`
 - `crates/ff-rdp-cli/src/commands/profiles.rs` — `select_prune_targets`, `removed_live`
+
+## Additional observation — `daemon stop` leaves the profile behind (iter-224 close, 2026-08-31)
+
+A second reclamation path shows the same "unstable across one run" shape, so it belongs to this
+plan rather than a new one. `live_96_profile_cleanup::live_daemon_stop_profile_path_matches_launch_json`
+failed in **both** live sweeps taken on `iter-224/with-page-daemon-connection-reset`:
+
+```text
+profile_removed must be true — got
+  {"stopped":true,"pid":18379,"port":57624,"profile_removed":false,"profile_removed_path":null}
+```
+
+`stopped: true` means the escalation ladder reported the process gone and the port free, so
+`stop_daemon_and_build_result_with` did call `cleanup_profile_dir` — and got no removed path back.
+It **passed alone** (`--test-threads=1`, 2 passed in 2.86 s) immediately after sweep 1. Same
+predicate family as Theme B/C above (`profile_is_owned_by_live_process` guards
+`cleanup_profile_dir`'s refusal), same "true once, false once, one run apart" signature, so whatever
+makes the liveness read unstable is the thing to find. Worth checking whether a content process
+still holding the profile dir open is enough to make the removal fail silently — the JSON reports
+`profile_removed: false` with no reason attached, which is its own honesty gap.
+
+Carried over from [[iteration-224-with-page-daemon-connection-reset]]; nothing in that iteration
+touches profile reclamation.

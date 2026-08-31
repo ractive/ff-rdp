@@ -130,7 +130,7 @@ pub fn run(
     // iter-210 Theme A: `--with-page`, collected after the navigation commit
     // so `back --with-page` describes the page it went back TO.
     if page_args.with_page {
-        super::page_view::attach(&mut ctx, &mut result, Some(cli.timeout), page_args)?;
+        super::page_view::attach(cli, &mut ctx, &mut result, Some(cli.timeout), page_args)?;
     }
 
     let mut meta = json!({});
@@ -475,7 +475,7 @@ fn emit_reload_result(
     // whatever was on screen mid-reload. Previously dropped silently by the
     // `dispatch.rs` `wait_idle` branch, which never threaded this flag in.
     if page_args.with_page {
-        super::page_view::attach(ctx, &mut result, Some(cli.timeout), page_args)?;
+        super::page_view::attach(cli, ctx, &mut result, Some(cli.timeout), page_args)?;
     }
     let mut meta = json!({});
     let page_text = super::page_view::lift_meta(cli, &mut result, &mut meta);

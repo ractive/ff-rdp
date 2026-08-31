@@ -50,6 +50,9 @@ open plan:
 | iter-197 sweep (contaminated: overlapped `cargo fmt`/`clippy`/`cargo test -p xtask` on the same box), 2026-08-24 | default (6) | `live_137_…consent_accept_via_daemon` | `daemon never reported live frame targets` — status showed `target_count: 1, live_target_count: 0` after 17 s uptime |
 | iter-197 sweep (same contaminated run), 2026-08-24 | default (6) | `live_165_eval_call_scope::live_165_repeated_const_matches_help` | **a second signature**: `daemon did not respond within the timeout after auth — the daemon may be overloaded or the connection is stale` (`error_type: Timeout`). Not a frame-target assertion at all — the daemon stopped answering after a successful auth. The clean re-run of the same sweep was **276 passed / 0 failed**, so both are load-sensitive, not deterministic |
 
+| iter-224 sweep 1, 2026-08-31 | default (6) | `live_171_recycled_owner_pid::live_171_recycled_owner_pid_no_longer_reads_as_live` | `would_remove=[]` — the recycled-PID profile read as owned. **Passed alone** immediately afterwards (`--test-threads=1`, 2 passed in 2.86 s), and passed in sweep 2 of the same branch |
+| iter-224 sweep 2, 2026-08-31 | default (6) | `live_160_envelope_honesty::live_160_type_emits_key_events` | **the second signature again**: `daemon did not respond within the timeout after auth — the daemon may be overloaded or the connection is stale` (`error_type: Timeout`), on the `eval JSON.stringify(window.__keys)` step. Passed in sweep 1 of the same branch. This is the `live_165` row's message on a different test, which is evidence the signature belongs to the daemon under load and not to any one test |
+
 **No test failed twice in the same way in consecutive runs, and no run repeated another's failure
 set** — but three of the seven failures carry the *same* message, which is the thread to pull.
 

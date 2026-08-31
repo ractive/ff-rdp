@@ -2073,6 +2073,152 @@ fn accept_loop(
     }
 }
 
+/// The `error` code the daemon writes to a client before closing its socket
+/// mid-request (iter-224).
+///
+/// Recognised by `ff_rdp_core::transport`'s `daemon_control_error` — a frame
+/// with `from == "daemon"` and an `error` field is turned into a terminal
+/// `ProtocolError::ActorError` by both wait loops — so a client blocked in
+/// `recv` fails with a named cause instead of `recv failed: Connection reset
+/// by peer (os error 54)`.
+pub(crate) const DAEMON_CLIENT_CLOSED: &str = "daemon_client_closed";
+
+/// How long [`drain_client_socket`] keeps reading before giving up.
+///
+/// Bounded because it runs on the way out of a client thread: a client that
+/// keeps talking forever must not pin the thread.
+const CLIENT_DRAIN_BUDGET: Duration = Duration::from_millis(250);
+
+/// One slice of that budget — how long a single drain read blocks.
+const CLIENT_DRAIN_SLICE: Duration = Duration::from_millis(25);
+
+/// The structured frame the daemon sends before closing a client connection
+/// it is abandoning (iter-224).
+///
+/// `reason` is a stable machine-readable discriminant for *why* the daemon
+/// gave up on this client (`client_frame_undecodable`, `firefox_write_failed`,
+/// …); `detail` is the underlying error, rendered for a human reading a script
+/// log.
+fn daemon_closing_response(reason: &str, detail: &str) -> Value {
+    json!({
+        "from": "daemon",
+        "error": DAEMON_CLIENT_CLOSED,
+        "error_type": DAEMON_CLIENT_CLOSED,
+        "reason": reason,
+        "message": format!(
+            "the daemon closed this connection while a request was in flight \
+             ({reason}): {detail}. \
+             hint: retry the command, or use --no-daemon for a private \
+             connection to Firefox."
+        ),
+    })
+}
+
+/// Write [`daemon_closing_response`] to `stream`, then drain it so the close
+/// is a FIN rather than an RST (iter-224).
+///
+/// Before this, every abnormal exit from [`handle_client`] simply dropped the
+/// socket. A client parked in `recv` waiting for a Firefox reply saw
+/// `recv failed: Connection reset by peer (os error 54)` — `error_type:
+/// "Transport"`, exit 6, no cause — which is exactly what
+/// `click --ref … --with-page` hit roughly once in fifteen against a page
+/// that navigates (iter-224 Outcome). Naming the cause on the way out costs
+/// one frame and turns an unattributable transport failure into an error a
+/// caller can read and a retry can key on.
+///
+/// Best-effort throughout: if the socket is already gone there is nothing to
+/// say and nothing to say it over.
+fn close_client_with_error(stream: &TcpStream, reason: &str, detail: &str) {
+    if let Ok(write_half) = stream.try_clone() {
+        // A client that has stopped reading fills its receive window, and a
+        // write into a full window blocks *forever* — client sockets carry no
+        // write timeout otherwise. That would pin this thread on its way out,
+        // so `ClientCleanupGuard` would never run and the RPC-writer slot would
+        // never be released: one dead client, and the daemon serves nobody.
+        // The goodbye is worth a bounded wait and nothing more.
+        let _ = write_half.set_write_timeout(Some(CLIENT_DRAIN_BUDGET));
+        let mut writer = FramedWriter::from_stream(write_half);
+        if let Err(e) = writer.send(&daemon_closing_response(reason, detail)) {
+            tracing::debug!(
+                reason,
+                error = %e,
+                "daemon: could not deliver the closing error frame to the client"
+            );
+        }
+    }
+    drain_client_socket(stream);
+}
+
+/// Read and discard whatever the client has already sent, briefly.
+///
+/// `close()` on a socket that still holds unread inbound bytes makes the
+/// kernel send an RST instead of a FIN, and an RST *discards* data the peer
+/// has not yet read — including the closing error frame written a moment
+/// earlier. Draining first is what makes that frame survive the close.
+fn drain_client_socket(stream: &TcpStream) {
+    use std::io::Read as _;
+
+    let Ok(mut sock) = stream.try_clone() else {
+        return;
+    };
+    if sock.set_read_timeout(Some(CLIENT_DRAIN_SLICE)).is_err() {
+        return;
+    }
+    let deadline = Instant::now() + CLIENT_DRAIN_BUDGET;
+    let mut scratch = [0_u8; 4096];
+    while Instant::now() < deadline {
+        match sock.read(&mut scratch) {
+            Ok(0) | Err(_) => {
+                // `Ok(0)` is a clean EOF — the client is gone, nothing is
+                // stranded. An error is either the read timeout (the receive
+                // buffer is empty, which is the state we were draining
+                // towards) or a socket too broken to protect anything on.
+                return;
+            }
+            Ok(_) => {}
+        }
+    }
+}
+
+/// Why [`handle_client`] stopped serving a client (iter-224).
+///
+/// Split out of the read loop so that *every* exit writes an honest ending:
+/// a client that simply hung up gets silence, and a client the daemon
+/// abandoned gets [`daemon_closing_response`] naming the cause. The loop used
+/// to `break` on any non-timeout read error and `?` out on any write error,
+/// both of which dropped the socket with nothing written.
+enum ClientExit {
+    /// The client hung up (EOF or a reset from its side). Expected and silent.
+    Disconnected,
+    /// The daemon is going away; the client did nothing wrong.
+    DaemonShuttingDown,
+    /// The daemon gave up on this connection. `reason` is the discriminant,
+    /// `detail` the underlying error.
+    Abandoned {
+        reason: &'static str,
+        detail: String,
+    },
+}
+
+/// Is this the ordinary "the client hung up" shape rather than a real fault?
+///
+/// A CLI process exiting closes its socket, which surfaces here as EOF or a
+/// reset. Everything else — a frame the daemon could not decode, an oversize
+/// announcement — is a fault worth naming to whoever is still listening.
+fn is_client_hangup(e: &ProtocolError) -> bool {
+    match e {
+        ProtocolError::RecvFailed(io) => matches!(
+            io.kind(),
+            std::io::ErrorKind::UnexpectedEof
+                | std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::BrokenPipe
+                | std::io::ErrorKind::NotConnected
+        ),
+        _ => false,
+    }
+}
+
 /// Send a single "daemon shutting down" error frame to a freshly-accepted
 /// client and drop the connection (iter-100 Theme A).
 ///
@@ -2218,9 +2364,14 @@ fn handle_client(
 
     let mut reader = FramedReader::from_stream(stream);
 
-    loop {
+    // iter-224: every path out of this loop names itself, and the abnormal
+    // ones write `daemon_closing_response` to the client before the socket
+    // closes.  Previously an abandoned client got a bare RST — `recv failed:
+    // Connection reset by peer`, `error_type: "Transport"`, no cause — while
+    // the daemon logged nothing at all.
+    let exit = 'client: loop {
         if state.shutdown.load(Ordering::Relaxed) || termination_requested() {
-            break;
+            break 'client ClientExit::DaemonShuttingDown;
         }
 
         match reader.recv() {
@@ -2246,8 +2397,15 @@ fn handle_client(
                         .ok()
                         .map(FramedWriter::from_stream);
                     let response = handle_daemon_message(state, &msg, client_id, writer_for_sub);
-                    let resp_json =
-                        serde_json::to_string(&response).context("serialising daemon response")?;
+                    let resp_json = match serde_json::to_string(&response) {
+                        Ok(j) => j,
+                        Err(e) => {
+                            break 'client ClientExit::Abandoned {
+                                reason: "daemon_response_unserialisable",
+                                detail: e.to_string(),
+                            };
+                        }
+                    };
                     // iter-101 Theme B: daemon-local responses go back over
                     // *this* client's own connection, not the shared rpc_writer
                     // slot.  Previously they were written through rpc_writer,
@@ -2256,10 +2414,12 @@ fn handle_client(
                     // owns it, so route the ack to the client directly.
                     if let Ok(mut own_writer) =
                         reader.try_clone_stream().map(FramedWriter::from_stream)
+                        && let Err(e) = own_writer.send_raw(&resp_json)
                     {
-                        own_writer.send_raw(&resp_json).map_err(|e| {
-                            anyhow::anyhow!("sending daemon response to CLI client: {e}")
-                        })?;
+                        break 'client ClientExit::Abandoned {
+                            reason: "client_write_failed",
+                            detail: format!("sending daemon response: {e}"),
+                        };
                     }
                 } else if matches!(teardown, ResourceTeardown::DropEntirely) {
                     // iter-164: swallow it. See `classify_client_resource_teardown`
@@ -2311,11 +2471,21 @@ fn handle_client(
                                     reader.try_clone_stream().map(FramedWriter::from_stream)
                                 {
                                     let busy = daemon_busy_response(waited_ms);
-                                    let busy_json = serde_json::to_string(&busy)
-                                        .context("serialising daemon_busy response")?;
-                                    own_writer.send_raw(&busy_json).map_err(|e| {
-                                        anyhow::anyhow!("sending daemon_busy to CLI client: {e}")
-                                    })?;
+                                    let busy_json = match serde_json::to_string(&busy) {
+                                        Ok(j) => j,
+                                        Err(e) => {
+                                            break 'client ClientExit::Abandoned {
+                                                reason: "daemon_response_unserialisable",
+                                                detail: e.to_string(),
+                                            };
+                                        }
+                                    };
+                                    if let Err(e) = own_writer.send_raw(&busy_json) {
+                                        break 'client ClientExit::Abandoned {
+                                            reason: "client_write_failed",
+                                            detail: format!("sending daemon_busy: {e}"),
+                                        };
+                                    }
                                 }
                                 // Skip forwarding — the slot belongs to a peer.
                                 continue;
@@ -2330,23 +2500,70 @@ fn handle_client(
                         ResourceTeardown::Forward(rewritten) => rewritten,
                         _ => msg,
                     };
-                    lock_or_recover!(firefox_writer)
-                        .send(&outbound)
-                        .context("forwarding CLI message to Firefox")?;
+                    if let Err(e) = lock_or_recover!(firefox_writer).send(&outbound) {
+                        break 'client ClientExit::Abandoned {
+                            reason: "firefox_write_failed",
+                            detail: e.to_string(),
+                        };
+                    }
                 }
             }
             Err(ProtocolError::Timeout) => {
                 // Expected poll timeout — re-check shutdown and continue.
             }
-            Err(_) => {
-                // EOF or connection reset: client disconnected.
-                break;
+            Err(e) if is_client_hangup(&e) => {
+                // EOF or a reset from the client's side: it hung up.
+                break 'client ClientExit::Disconnected;
+            }
+            Err(e) => {
+                // iter-224: anything else is a frame the daemon could not
+                // decode.  This arm used to be a silent `break`, which is why
+                // the daemon log was empty on both reproduced resets.
+                break 'client ClientExit::Abandoned {
+                    reason: "client_frame_undecodable",
+                    detail: e.to_string(),
+                };
+            }
+        }
+    };
+
+    // iter-224: say goodbye before the socket closes.  `Disconnected` is the
+    // one silent case — nobody is listening.
+    match exit {
+        ClientExit::Disconnected => {
+            // Silent on stderr — a CLI process exiting is the normal ending —
+            // but traced, because "which client hung up when" is the only
+            // daemon-side record of a connection ending, and iter-224 spent a
+            // diagnosis session without it.
+            tracing::debug!(client_id, owns_rpc_slot, "daemon: client disconnected");
+        }
+        ClientExit::DaemonShuttingDown => {
+            if let Ok(sock) = reader.try_clone_stream() {
+                close_client_with_error(
+                    &sock,
+                    "daemon_shutting_down",
+                    "the daemon is shutting down",
+                );
+            }
+        }
+        ClientExit::Abandoned { reason, detail } => {
+            // stderr-ok: (b) debug/diagnostic — the daemon log is the only
+            // place this is recoverable from after the client is gone.
+            eprintln!("daemon: abandoning client {client_id}: {reason}: {detail}");
+            tracing::warn!(
+                client_id,
+                reason,
+                detail = %detail,
+                "daemon: abandoning client connection"
+            );
+            if let Ok(sock) = reader.try_clone_stream() {
+                close_client_with_error(&sock, reason, &detail);
             }
         }
     }
 
     // Cleanup is performed by `_cleanup` (ClientCleanupGuard) on drop — it
-    // runs here on the normal path AND on any early `?` return above.
+    // runs here on every path above.
     Ok(())
 }
 
@@ -3101,6 +3318,89 @@ mod tests {
         assert!(
             raw.contains("daemon_shutting_down"),
             "refused client must receive a daemon_shutting_down error frame; got: {raw}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // iter-224 — say goodbye before closing a client
+    // -----------------------------------------------------------------------
+
+    /// A client the daemon abandons must receive a structured frame naming the
+    /// cause, not a bare socket close.
+    ///
+    /// The frame shape is load-bearing: `ff_rdp_core::transport`'s
+    /// `daemon_control_error` only recognises `from == "daemon"` plus an
+    /// `error` field, and only then does a client parked in `recv` fail fast
+    /// with a named cause instead of `recv failed: Connection reset by peer`.
+    #[test]
+    fn abandoned_client_receives_a_named_closing_frame() {
+        use std::io::Read;
+
+        let (server_side, mut client_side) = loopback_pair();
+        close_client_with_error(&server_side, "client_frame_undecodable", "boom");
+        drop(server_side);
+
+        client_side
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .expect("set read timeout");
+        let mut buf = Vec::new();
+        let _ = client_side.read_to_end(&mut buf);
+        let raw = String::from_utf8_lossy(&buf);
+        assert!(
+            raw.contains(DAEMON_CLIENT_CLOSED),
+            "an abandoned client must be told the daemon closed it; got: {raw}"
+        );
+        assert!(
+            raw.contains("client_frame_undecodable") && raw.contains("boom"),
+            "the closing frame must name the reason and the underlying error; got: {raw}"
+        );
+    }
+
+    /// The closing frame is exactly the shape the core wait loops treat as a
+    /// terminal daemon control error.
+    #[test]
+    fn closing_response_is_a_daemon_control_error() {
+        let frame = daemon_closing_response("firefox_write_failed", "broken pipe");
+        assert_eq!(frame["from"], "daemon");
+        assert_eq!(frame["error"], DAEMON_CLIENT_CLOSED);
+        assert_eq!(frame["error_type"], DAEMON_CLIENT_CLOSED);
+        assert_eq!(frame["reason"], "firefox_write_failed");
+        assert!(
+            frame["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("broken pipe")),
+            "the message must carry the underlying error: {frame}"
+        );
+    }
+
+    /// A CLI process exiting is not a fault, and must stay silent — otherwise
+    /// every ordinary command would log an abandonment on its way out.
+    #[test]
+    fn client_hangup_is_distinguished_from_a_fault() {
+        for kind in [
+            std::io::ErrorKind::UnexpectedEof,
+            std::io::ErrorKind::ConnectionReset,
+            std::io::ErrorKind::ConnectionAborted,
+            std::io::ErrorKind::BrokenPipe,
+            std::io::ErrorKind::NotConnected,
+        ] {
+            assert!(
+                is_client_hangup(&ProtocolError::RecvFailed(std::io::Error::new(
+                    kind, "hung up"
+                ))),
+                "{kind:?} is a client hangup"
+            );
+        }
+        assert!(
+            !is_client_hangup(&ProtocolError::InvalidPacket("no colon".to_owned())),
+            "a frame the daemon could not decode is a fault, not a hangup"
+        );
+        assert!(
+            !is_client_hangup(&ProtocolError::FrameTooLarge {
+                declared: 1,
+                max: 0,
+            }),
+            "an oversize frame is a fault, not a hangup"
         );
     }
 
