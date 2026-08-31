@@ -2,7 +2,7 @@
 title: "Iteration 228: re-measure the two click-through tasks now that --with-page carries the facts"
 type: iteration
 date: 2026-08-31
-status: planned
+status: in-progress
 branch: iter-228/two-task-benchmark-after-facts
 depends_on:
   - 225
@@ -14,7 +14,12 @@ dogfood_path: |
   # AFTER iter-225: {"matches": 1, "query_source": "facts"} — verify by hand before spending
   # $1+ of harness time, because a broken facts pass makes the turn counts meaningless.
   ff-rdp daemon stop
-tags: [iteration, benchmark, act-and-see, measurement, carry-over]
+tags:
+  - iteration
+  - benchmark
+  - act-and-see
+  - measurement
+  - carry-over
 ---
 
 # Iteration 228: re-measure the two click-through tasks after the facts pass
