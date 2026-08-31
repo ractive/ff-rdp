@@ -51,7 +51,10 @@ COMMAND REFERENCE:
     Collected after the action settles, so a click that navigates reports the
     destination page — since iter-220 that holds even when the destination is
     slow: the collector waits for the navigation the action started to hand over
-    a document (up to 3s) instead of reading the one it is leaving.
+    a document (up to 3s) instead of reading the one it is leaving. Since
+    iter-224 a connection that dies mid-collection is rebuilt and the view
+    collected again inside --timeout; meta.page_attempts / meta.page_reconnects
+    report what it cost.
     Mozilla's Readability.js runs on the live page, so every interactive entry
     is tagged zone: 'content' | 'chrome' and content sorts first — the 50-entry
     cap falls on the navigation bar, not on the article, and `chrome_omitted`
@@ -1816,6 +1819,14 @@ pub struct PageViewArgs {
     /// while after the click, and collecting from it either returned the page
     /// you left or hung until --timeout (iter-220). Nothing is waited for when
     /// nothing navigated.
+    ///
+    /// Collection is retried when the document is torn down under it, and
+    /// since iter-224 also when the connection itself dies mid-collection —
+    /// the CLI rebuilds it and collects again inside --timeout rather than
+    /// failing the whole command with a transport error and losing the click.
+    /// `meta.page_attempts` and `meta.page_reconnects` report what the
+    /// returned view cost; both are always present, `1` and `0` on the clean
+    /// path.
     ///
     /// Since iter-219 the view is a reader view: Mozilla's Readability.js runs
     /// on the live page, every `interactive` entry is tagged

@@ -323,6 +323,16 @@ ff-rdp navigate <URL> --with-page --query "sign in"
 # because Firefox drops a request whose docshell has gone. `--with-page` now
 # waits (up to 3 s) for the navigation the action started to hand over a
 # document. Nothing navigated, nothing waited for.
+#
+# And since iter-224 a connection that dies mid-collection no longer costs you
+# the action. On the daemon route, roughly one hop in fifteen used to come back
+# `{"error":"recv failed: Connection reset by peer (os error 54)",
+# "error_type":"Transport"}` — exit 6, in under half a second, with the click
+# already performed and no view of where it landed. The daemon now writes a
+# named `daemon_client_closed` frame before it abandons a client, and
+# `--with-page` rebuilds the connection and collects again inside `--timeout`.
+# `meta.page_attempts` and `meta.page_reconnects` report what the returned view
+# cost — `1` and `0` when nothing went wrong.
 
 # Refs no longer come only from `dom <selector>`: `a11y summary` and `snapshot`
 # register them too, so the first thing you read after navigating already
