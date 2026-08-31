@@ -415,8 +415,10 @@ Filed as [[iteration-230-quickstart-navigate-with-page]].
   agent-side guess, not an ff-rdp defect. But `click` polls the full `--timeout` before saying so,
   which is where `link_follow` run 1's 70 s went. Turn cost is 1 either way; wall-clock cost is not.
 - **No transport failures.** The `recv failed: Connection reset by peer` that cost `infobox_hop`
-  run 3 four turns on 08-31 ([[iteration-224-with-page-daemon-connection-reset]]) did not recur in
-  these six runs. That is an absence at n = 6 against a hand-reproduced 1-in-5, not a fix.
+  run 3 four turns on 08-31 did not recur in these six runs.
+  [[iteration-224-with-page-daemon-connection-reset]] shipped the fix for it and is in `cf99c84`,
+  so the absence is *consistent with* that fix — but six runs against a hand-reproduced 1-in-5
+  would miss a surviving defect about a third of the time, so it is corroboration, not proof.
 
 ### Verdict
 

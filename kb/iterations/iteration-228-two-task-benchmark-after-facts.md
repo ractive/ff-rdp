@@ -152,9 +152,10 @@ coarsely: it counted `--with-page` anywhere in a run. Solved for `click`; not fo
   `a[href="/wiki/Charles_Babbage"]`; hand-checked in the page's own JS, this Wikipedia render
   writes that attribute absolute, so zero elements really do match. Agent-side guess, not an
   ff-rdp defect — but it is where run 1's 70 s went. No turn cost.
-- The `recv failed: Connection reset by peer` of 08-31
-  ([[iteration-224-with-page-daemon-connection-reset]]) did not recur in these 6 runs. An absence
-  at n = 6 against a hand-reproduced 1-in-5, not evidence of a fix.
+- The `recv failed: Connection reset by peer` of 08-31 did not recur in these 6 runs.
+  [[iteration-224-with-page-daemon-connection-reset]]'s fix is in `cf99c84`, so this is consistent
+  with it — but 6 runs against a hand-reproduced 1-in-5 would miss a surviving defect roughly a
+  third of the time. Corroboration, not proof; if it reappears it needs its own plan.
 
 ### Scope held
 
