@@ -201,6 +201,58 @@ found (a daemon giving up on a client frame) has no counterpart on a route with 
 3. **`meta.page_attempts` / `meta.page_reconnects`** — always present, `1` and `0` on the
    clean path, carried through `SettledPage` → `page_meta` → `lift_meta`.
 
+### Live sweep
+
+Two sweeps, both `FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo run -p xtask -- live-sweep`,
+port-6000 browser started raw (`firefox -no-remote -profile <tmp> --start-debugger-server 6000
+--headless`, with the three devtools prefs in `user.js` — a fresh profile has none and the debug
+port never opens without them).
+
+```text
+sweep 1 (before the goodbye-write timeout commit)
+LIVE_SWEEP_SUMMARY executed=315 skipped=0 preexisting=0 vanished=0 launch_timeout=0 timed_out=0 total=315
+  ff-rdp-cli --test live: 304 passed / 2 failed
+  ff-rdp-core tiers:        1 + 3 + 3 + 2 passed / 0 failed
+  → 313 passed + 2 failed = 315 = executed ✓
+  failures: live_171_recycled_owner_pid::live_171_recycled_owner_pid_no_longer_reads_as_live
+            live_96_profile_cleanup::live_daemon_stop_profile_path_matches_launch_json
+
+sweep 2 (branch head, 522fc01)
+LIVE_SWEEP_SUMMARY executed=315 skipped=0 preexisting=0 vanished=0 launch_timeout=0 timed_out=0 total=315
+  ff-rdp-cli --test live: 304 passed / 2 failed
+  ff-rdp-core tiers:        1 + 3 + 3 + 2 passed / 0 failed
+  → 313 passed + 2 failed = 315 = executed ✓
+  failures: live_160_envelope_honesty::live_160_type_emits_key_events
+            live_96_profile_cleanup::live_daemon_stop_profile_path_matches_launch_json
+```
+
+Both sweeps reconcile (`passed + failed == executed`). `live_224_with_page_connection_reset`'s two
+tests passed in both.
+
+The live suite also produced two more instances of the desync this iteration diagnosed, with
+different bad bytes — which is what a framer resuming at an arbitrary offset in a JSON payload
+looks like:
+
+```text
+daemon: abandoning client 3: client_frame_undecodable: invalid packet: unexpected byte 0x20 in length prefix
+daemon: abandoning client 24: client_frame_undecodable: invalid packet: unexpected byte 0x6c in length prefix
+```
+
+Before this branch those two events were silent closes.
+
+### Carry-over
+
+| # | item | disposition |
+|---|---|---|
+| 1 | AC 2 unmet — the Theme C live test does not fail on `5a0071d`, because the flake does not reproduce against a local fixture (0 in 90 hops) | **no plan.** Nothing measured is left to act on: the contract cover exists and passes, and the reproduction lives in the `.dogfood.sh` against the real page. What would change that: a local fixture that *does* reproduce the desync — [[iteration-226-daemon-frame-desync-root-cause]] Theme A is what would find one |
+| 2 | Why the CLI↔daemon frame stream desynchronises (`unexpected byte 0x3d/0x20/0x6c in length prefix`) — diagnosed as far as "the daemon's framer resumed mid-payload", not to a writer | **filed:** [[iteration-226-daemon-frame-desync-root-cause]] |
+| 3 | The daemon emits no `tracing` output at all (`RUST_LOG` reaches the `_daemon` process — `ps eww` — but no `tracing` line reaches `~/.ff-rdp/daemon.log`, while `eprintln!` lines do). This blocked the byte-level trace Theme A asked for | **filed:** [[iteration-226-daemon-frame-desync-root-cause]] Theme A, task 1 — it is the thing standing in front of that iteration |
+| 4 | The daemon wedges after ~25 sustained hops: every later command times out at `phase: recv`, the daemon logs nothing, only a restart clears it. Seen twice, on two daemon processes and two Firefox instances | **filed:** [[iteration-227-daemon-wedge-after-sustained-hops]] |
+| 5 | `live_96_profile_cleanup::live_daemon_stop_profile_path_matches_launch_json` — failed in **both** sweeps (`profile_removed: false` after `stopped: true`); passes alone | **folded** into [[iteration-204-profile-liveness-flake-in-prune-all]] with the evidence. Not environmental-and-dismissed: a reclamation that reports `false` with no reason is a defect of ours |
+| 6 | `live_171_recycled_owner_pid::live_171_recycled_owner_pid_no_longer_reads_as_live` — failed in sweep 1, passed in sweep 2 and alone | **folded** into [[iteration-198-live-tests-red-only-under-concurrency]]'s table |
+| 7 | `live_160_envelope_honesty::live_160_type_emits_key_events` — failed in sweep 2 with `daemon did not respond within the timeout after auth`, passed in sweep 1 | **folded** into [[iteration-198-live-tests-red-only-under-concurrency]]'s table; it is that plan's second signature (`live_165`'s message) on a different test, which is new information for it |
+| 8 | Two client sockets are written by two threads with no shared lock (dispatcher via `rpc_writer`, client thread via its `own_writer`/heartbeat clones) — found by reading the code, not measured | **filed:** [[iteration-226-daemon-frame-desync-root-cause]] Theme B, as the leading hypothesis with a capture plan rather than a fix applied blind |
+
 ### C — cover
 
 `crates/ff-rdp-cli/tests/live/live_224_with_page_connection_reset.rs` (12-hop repeat + the
