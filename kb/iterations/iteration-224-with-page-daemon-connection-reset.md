@@ -18,6 +18,7 @@ dogfood_path: |
   #   in ~0.45 s (no timeout involved)
   # expected AFTER: 5 of 5 return the destination view; a mid-collection teardown is retried
   #   inside collect_settled like RdpActorDestroyed already is, or the daemon stops resetting
+dogfood_script: iteration-224-with-page-daemon-connection-reset.dogfood.sh
 first_call_sites:
   - primitive: ff_rdp_cli::daemon::server::DAEMON_CLIENT_CLOSED
     site: >-
@@ -102,6 +103,9 @@ Two things make this a defect of ours rather than noise:
 - [x] The dogfood loop above returns the destination view 5 of 5 on three consecutive runs
       (15 hops, 0 `Transport` errors), daemon route — and round 3 hop 4 came back
       `{"a":2,"rc":1}`: a real mid-collection connection loss, absorbed, exit 0
+      [2026-08-31: also through the gate — `cargo run -p xtask -- check-dogfood-script` with both
+      env gates set: `iter-224 dogfood: 15/15 hops returned the destination view
+      (0 absorbed a reconnect)`, `check-dogfood-script: OK`]
 - [ ] The Theme C live test passes in the live sweep and fails on `5a0071d` (record the
       failure count it observes there) — **not met, and not reworded.** The premise was that
       a locally-served slow destination could race the same way. It does not: 90 local hops
