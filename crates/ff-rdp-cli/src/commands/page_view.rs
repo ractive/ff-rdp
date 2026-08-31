@@ -104,8 +104,7 @@ const QUERY_SOURCE_FACTS: &str = "facts";
 /// cap, where the view searched a bounded window. Without this the agent's
 /// next move on a miss is a `page-text --query` that searches *less* than the
 /// view already did, spends a turn, and comes back empty too.
-const NO_MATCH_HINT: &str =
-    "no match in the article text, the facts or the page's rendered text — \
+const NO_MATCH_HINT: &str = "no match in the article text, the facts or the page's rendered text — \
      try `ff-rdp page-text --full --query <text>` to search the whole document";
 
 /// A collected page view.
@@ -475,9 +474,7 @@ fn fetch_rendered_text(
         "page text fetch for the --query fallback failed",
     )?;
     let value = resolve_result(ctx, &eval_result.result)?;
-    Ok(normalize_rendered_lines(
-        value.as_str().unwrap_or_default(),
-    ))
+    Ok(normalize_rendered_lines(value.as_str().unwrap_or_default()))
 }
 
 /// Collapse `innerText` into the shape the reader text already has: one
@@ -1360,7 +1357,7 @@ pub(crate) fn render_text(results: &Value) {
             .get("facts_total")
             .and_then(Value::as_u64)
             .and_then(|n| usize::try_from(n).ok())
-            .unwrap_or_else(|| facts.len());
+            .unwrap_or(facts.len());
         if total > facts.len() {
             println!("FACTS ({} of {total})", facts.len());
         } else {
@@ -2161,7 +2158,10 @@ mod tests_225 {
     #[test]
     fn unit_225_query_matching_only_a_fact_resolves_from_the_view() {
         let mut view = raw_view_with_facts();
-        let outcome = finish_reader_view(&mut view, &reader(DEFAULT_PAGE_CHARS, query("Stable release")));
+        let outcome = finish_reader_view(
+            &mut view,
+            &reader(DEFAULT_PAGE_CHARS, query("Stable release")),
+        );
 
         assert_eq!(
             outcome,
@@ -2330,7 +2330,11 @@ mod tests_225 {
             finish_reader_view(&mut view, &opts),
             QueryOutcome::NeedsPageText
         );
-        apply_innertext_fallback(&mut view, &opts, "Releases[edit]\n3.13.5 was released in 2025.");
+        apply_innertext_fallback(
+            &mut view,
+            &opts,
+            "Releases[edit]\n3.13.5 was released in 2025.",
+        );
         let excerpt = view["excerpt"].as_str().unwrap_or_default();
         assert!(!excerpt.contains("[edit]"), "{excerpt:?}");
         assert!(excerpt.contains("Releases"), "{excerpt:?}");

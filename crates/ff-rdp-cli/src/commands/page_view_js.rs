@@ -705,7 +705,10 @@ mod tests {
     #[test]
     fn facts_ship_with_the_reader_block_and_only_with_it() {
         let with_page = build_page_view_js(false, Some(2000));
-        assert!(with_page.contains("result.facts"), "facts must be collected");
+        assert!(
+            with_page.contains("result.facts"),
+            "facts must be collected"
+        );
         assert!(
             with_page.contains("__ffrdpNorm"),
             "the facts pass depends on the reader block's normaliser"
