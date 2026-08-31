@@ -63,6 +63,14 @@ COMMAND REFERENCE:
     1500, 0 = structure only); --query TEXT narrows both the excerpt and the
     interactive list. `page.readerable` and `page.source`
     (readability|innertext) say what kind of page you are on.
+    Since iter-225 the view also carries `page.facts` — up to 40 {key, value}
+    rows harvested from infobox tables, definition lists and [itemprop]
+    microdata, the tabular facts Readability scores as boilerplate (Stable
+    release, Formation, Born). --query searches them too, and on a miss in
+    both the article text and the facts it falls back to a window over the
+    page's rendered text, so one command answers or says the page has no
+    answer: `page.query_source` is readability|facts|innertext, and a total
+    miss sets `page.hint` naming `page-text --full --query`.
     `ff-rdp a11y summary` keeps the landmark list and stays reader-free — it is
     the accessibility surface, --with-page is the act-and-see one.
 
@@ -153,6 +161,11 @@ COOKBOOK:
   ff-rdp navigate https://example.com --wait-text \"Welcome\"
   ff-rdp eval \"document.title\"
   ff-rdp dom \"h1\" --text
+
+  # Answer a question about a page in ONE command (act and see)
+  ff-rdp navigate <URL> --with-page --query \"Stable release\" --jq '.results.page'
+  # query_source says where the answer came from: readability | facts | innertext
+  ff-rdp navigate <URL> --with-page --jq '.results.page.facts'   # the infobox, as key/value
 
   # Fill and submit a form (auto-wait + pointer events by default)
   ff-rdp type \"input[name=email]\" \"user@example.com\" --clear
@@ -1837,6 +1850,14 @@ pub struct PageViewArgs {
     /// whether the page looks like an article at all, and `page.source` is
     /// `readability` or `innertext` (the fallback for dashboards, forms and
     /// SPAs without prose).
+    ///
+    /// iter-225 adds `page.facts`: up to 40 `{key, value}` rows read straight
+    /// off the page's infobox tables, definition lists and `[itemprop]`
+    /// microdata, in document order, with `facts_total` / `facts_truncated`
+    /// when the cap bites. Readability scores those tables as boilerplate —
+    /// right for reading, wrong for answering, because "Stable release",
+    /// "Formation" and "Born" live nowhere else. The facts pass does not
+    /// consult Readability and cannot change the excerpt.
     #[arg(long)]
     pub with_page: bool,
     /// Characters of article text to return in `page.excerpt` (default 1500).
@@ -1848,10 +1869,21 @@ pub struct PageViewArgs {
           default_value_t = crate::commands::page_view::DEFAULT_PAGE_CHARS)]
     pub page_chars: usize,
     /// Narrow the embedded page view: `page.excerpt` becomes the window around
-    /// each match and `page.interactive` keeps only the entries whose name or
-    /// href matches, with `page.matches` counting the hits. The same `--query`
-    /// / `--query-regex` pair `page-text` and `a11y summary` take, and the way
-    /// to reach a control the 50-entry cap dropped.
+    /// each match, `page.interactive` keeps only the entries whose name or
+    /// href matches and `page.facts` only the rows whose key or value does,
+    /// with `page.matches` counting every hit — matching excerpt lines
+    /// included. The same `--query` / `--query-regex` pair `page-text` and
+    /// `a11y summary` take, and the way to reach a control the 50-entry cap
+    /// dropped.
+    ///
+    /// Three places are searched, cheapest first, and `page.query_source` says
+    /// which answered (iter-225): the article text (`readability` /
+    /// `innertext`), then `facts`, then — only if both missed — a window over
+    /// the page's rendered text, fetched for this query alone and labelled
+    /// `innertext`. That last step is the `page-text --query` round trip you
+    /// would otherwise have spent a turn on. A miss in all three leaves
+    /// `matches: 0` with an empty excerpt and sets `page.hint` to the one
+    /// command that searches more: `page-text --full --query`.
     #[command(flatten)]
     pub query: QueryArgs,
     /// Lines of context to keep either side of each `--query` match inside
@@ -2892,7 +2924,9 @@ produced. A navigation clears them.
 
 The same view is what `--with-page` embeds under `results.page` on
 navigate/click/type/reload/back/forward/scroll — identical keys, so a recipe
-written against one works on the other.
+written against one works on the other. Two keys are act-and-see only, because
+they are reader-view work this command deliberately does not pay for: the
+article `excerpt` (iter-219) and the infobox `facts` (iter-225).
 
 Output: {\"results\": {\"landmarks\": [...], \"headings\": [...], \"interactive\": [{\"role\": \"link\", \"name\": \"...\", \"href\": \"...\", \"ref\": \"e3\"}]}, \"total\": 1, \"meta\": {\"refs_registered\": bool, \"source\": \"js-fallback\", ...}}"
     )]

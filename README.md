@@ -297,9 +297,36 @@ ff-rdp click --ref e19 --with-page --jq '.results.page.excerpt'
 ff-rdp navigate <URL> --with-page --page-chars 4000
 ff-rdp navigate <URL> --with-page --page-chars 0
 
-# Narrow both halves of the view at once: the excerpt becomes the window
-# around each match, `interactive` keeps only the matching entries.
+# Narrow every part of the view at once: the excerpt becomes the window
+# around each match, `interactive` keeps only the matching entries, `facts`
+# only the matching rows.
 ff-rdp navigate <URL> --with-page --query "sign in"
+
+# `page.facts` (iter-225) — the key/value rows Readability throws away.
+#
+# Readability scores `table.infobox` as boilerplate, which is right for reading
+# and wrong for answering: on the Python article "Stable release" is an infobox
+# row and appears in no paragraph, so `--page-chars 4000` never contained it
+# and every benchmark run paid a `page-text --query` turn to find it. A
+# separate DOM pass now harvests up to 40 `{key, value}` rows from infobox
+# tables, `<dl>` definition lists and `[itemprop]` microdata, in document
+# order, with `facts_total` / `facts_truncated` when the cap bites. It does not
+# consult Readability and cannot change the excerpt.
+ff-rdp navigate https://en.wikipedia.org/wiki/Python_\(programming_language\) \
+  --with-page --jq '.results.page.facts[] | select(.key == "Stable release")'
+  # {"key":"Stable release","value":"3.13.5 / 11 June 2025"}
+
+# `--query` searches three places, cheapest first, and `page.query_source`
+# names the one that answered: the article text (`readability` / `innertext`),
+# then `facts`, then — only if both missed — a window over the page's rendered
+# text, fetched for that query alone. That last step is the `page-text --query`
+# round trip you would otherwise have spent a turn on, folded into the command
+# you already ran. `page.matches` counts every hit, matching excerpt lines
+# included; a miss in all three leaves `matches: 0`, an empty excerpt, and a
+# `page.hint` naming `page-text --full --query` as the exhaustive next step.
+ff-rdp navigate <URL> --with-page --query "Stable release" \
+  --jq '.results.page | {matches, query_source}'
+  # {"matches":1,"query_source":"facts"}
 
 # `page.readerable` says whether the page looks like an article at all, and
 # `page.source` is `readability` or `innertext` — the fallback used on

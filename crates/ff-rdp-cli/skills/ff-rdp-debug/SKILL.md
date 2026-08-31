@@ -39,7 +39,7 @@ ff-rdp navigate <URL>              # blocks until the document commits
 ff-rdp a11y summary                # landmarks, headings, and interactive entries with refs
 ff-rdp click --ref e3              # act on the element you just saw
 ff-rdp page-text --query "<text>"  # filter a page view down to the entries whose text, label, name, or href match
-ff-rdp click --ref e3 --with-page  # have an action return the page it produced
+ff-rdp click --ref e3 --with-page  # have an action return the page it produced — text, infobox facts and refs
 ```
 
 Run bare `ff-rdp` before reaching for `--help`: it costs one turn and answers "is there a browser, what is on it, and what can I do next" — `--help` answers none of those.
@@ -61,7 +61,7 @@ Run bare `ff-rdp` before reaching for `--help`: it costs one turn and answers "i
 
 - `--ref <ref>` — act on the element you just saw: `a11y summary` and `--with-page` mint a `ref` for every interactive entry, and `click --ref e3` needs no selector guess
 - `--query "<text>"` — filter a page view down to the entries whose text, label, name, or href match, so a control past the 50-entry cap is still reachable
-- `--with-page` — have an action return the page it produced, so a click and the look at its result are one round trip instead of two
+- `--with-page` — have an action return the page it produced — text, infobox facts and refs, so a click and the look at its result are one round trip instead of two
 
 <!-- ff-rdp:generated:end -->
 

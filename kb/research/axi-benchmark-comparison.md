@@ -300,3 +300,34 @@ ff-rdp `5a0071d` (reader view + the navigating-click fix), same harness/model/pr
   Filed as [[iteration-224-with-page-daemon-connection-reset]].
 - Verdict for 219's AC 6 and 213 Task E: measured, target (≤ 5) **not met**, recorded, not
   re-run. The mechanism works; the payload still lacks the tabular facts these tasks ask for.
+
+## 2026-08-31 — what iteration 225 changed, and what is still unmeasured
+
+[[iteration-225-reader-excerpt-infobox]] answers the *mechanism* half of the section above: the
+reason the six runs paid 2–6 `page-text --query` round trips was that the fact each task asked for
+was not in the view at all.
+
+Shipped, and verified by unit and live tests:
+
+- `results.page.facts` — up to 40 `{key, value}` rows read straight off the page's infobox tables,
+  `<dl>` definition lists and `[itemprop]` microdata in one document-order pass. Readability is not
+  consulted (forcing tables *through* it would drag navboxes back into the article element, which
+  is the chrome iter-219 removed). On the Python article "Stable release" is now a fact; the
+  excerpt still does not contain it, which is the point.
+- `--query` searches three places, cheapest first — article text, then `facts`, then a window over
+  `document.body.innerText` fetched *only* on a miss in both — and `page.query_source`
+  (`readability` | `facts` | `innertext`) says which answered. A miss everywhere returns
+  `matches: 0`, an empty excerpt, and a `hint` naming `page-text --full --query`. So the
+  "`matches: 0` → spend a turn on `page-text --query` on the page you just fetched" loop no longer
+  has a reason to happen.
+- `page.matches` now counts matching excerpt lines as well as matching entries. Under iter-219 it
+  counted entries only, so a hit in the prose reported `matches: 0` beside a good excerpt window.
+
+**Not measured.** Iteration 225's Theme C — the same two tasks at `--repeat 3` — did not run: the
+harness drives its agent through a browser on port 6000, and that port was held by a headless
+Firefox this run had not launched (`CLAUDE.md` forbids tearing down someone else's browser, and
+sharing one makes the turn counts meaningless). So the 7.7 / 10.3 above is still the current
+number of record, and 225's acceptance criterion for it is unticked rather than reworded. The
+re-measurement is [[iteration-228-two-task-benchmark-after-facts]]; the thing to read there is not
+only the average but the count of `page-text` calls per run, which is the quantity 225 set out to
+drive to zero.
