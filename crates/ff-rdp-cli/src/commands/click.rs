@@ -248,7 +248,7 @@ pub fn run_core(
     // a click that navigates must report the DESTINATION page, not the one it
     // left, which is the whole reason the flag exists (see `page_view`).
     if opts.page.with_page {
-        super::page_view::attach(&mut ctx, &mut result, Some(wait_timeout_ms), &opts.page)?;
+        super::page_view::attach(cli, &mut ctx, &mut result, Some(wait_timeout_ms), &opts.page)?;
     }
 
     Ok((result, ctx.via_daemon))

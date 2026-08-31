@@ -61,7 +61,7 @@ fn finalize_scroll(
     page_args: &crate::cli::args::PageViewArgs,
 ) -> Result<(), AppError> {
     if page_args.with_page {
-        super::page_view::attach(ctx, &mut result, Some(cli.timeout), page_args)?;
+        super::page_view::attach(cli, ctx, &mut result, Some(cli.timeout), page_args)?;
     }
     let page_text = super::page_view::lift_meta(cli, &mut result, &mut meta);
     crate::connection_meta::merge_into_if_verbose(

@@ -2367,7 +2367,7 @@ pub fn run_core(
     // the view describes the document this command produced rather than the
     // one it left. See `page_view::collect`.
     if page_args.with_page {
-        super::page_view::attach(&mut ctx, &mut result, Some(cli.timeout), page_args)?;
+        super::page_view::attach(cli, &mut ctx, &mut result, Some(cli.timeout), page_args)?;
     }
 
     Ok((result, ctx.via_daemon))
@@ -2482,7 +2482,7 @@ pub fn run(
     }
     if defer_with_page {
         let mut ctx = connect_and_get_target(cli)?;
-        super::page_view::attach(&mut ctx, &mut result, Some(cli.timeout), page_args)?;
+        super::page_view::attach(cli, &mut ctx, &mut result, Some(cli.timeout), page_args)?;
     }
     let mut meta = json!({});
     let page_text = super::page_view::lift_meta(cli, &mut result, &mut meta);
@@ -2769,7 +2769,7 @@ pub fn run_with_network(
             obj.insert("consent".to_string(), c);
         }
         if page_args.with_page {
-            super::page_view::attach(&mut ctx, &mut result, Some(cli.timeout), page_args)?;
+            super::page_view::attach(cli, &mut ctx, &mut result, Some(cli.timeout), page_args)?;
         }
         let mut meta = json!({});
         let page_text = super::page_view::lift_meta(cli, &mut result, &mut meta);
@@ -2962,7 +2962,7 @@ pub fn run_with_network(
         obj.insert("consent".to_string(), c);
     }
     if page_args.with_page {
-        super::page_view::attach(&mut ctx, &mut result, Some(cli.timeout), page_args)?;
+        super::page_view::attach(cli, &mut ctx, &mut result, Some(cli.timeout), page_args)?;
     }
     let mut meta = json!({});
     let page_text = super::page_view::lift_meta(cli, &mut result, &mut meta);

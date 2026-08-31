@@ -648,6 +648,7 @@ fn strip_ref_fields(view: &mut Value) {
 ///   a *different* function from the one holding the connection — the same
 ///   reason `settle_method` already travels this way.
 pub(crate) fn attach(
+    cli: &Cli,
     ctx: &mut ConnectedTab,
     results: &mut Value,
     wait_complete_ms: Option<u64>,
@@ -666,11 +667,11 @@ pub(crate) fn attach(
     if args.query.query.is_some() || args.query.query_regex.is_some() {
         opts.interactive_limit = None;
     }
-    let mut page = collect_settled(ctx, &opts)?;
+    let mut settled = collect_settled(cli, ctx, &opts)?;
     if opts.interactive_limit.is_none() {
-        apply_interactive_limit(&mut page.view, limit);
+        apply_interactive_limit(&mut settled.page.view, limit);
     }
-    insert_page(results, page);
+    insert_page(results, settled);
     Ok(())
 }
 
@@ -716,6 +717,61 @@ const NAV_SETTLE_POLL_MS: u64 = 50;
 /// collection, so this is not a knob to raise casually.
 const NAV_COLLECT_ATTEMPTS: usize = 3;
 
+/// How many times [`collect_settled`] will throw away a dead connection and
+/// build a fresh one before giving up (iter-224).
+///
+/// One is the observed need: the reset arrives once, mid-collection, and the
+/// very next connection collects the destination without trouble. A second
+/// reconnect would mean the daemon is dropping every client it gets, which is
+/// a condition to report rather than to paper over — and `NAV_COLLECT_ATTEMPTS`
+/// still caps the total work either way.
+const NAV_RECONNECT_ATTEMPTS: usize = 1;
+
+/// What [`collect_settled`] produced, and what it cost.
+///
+/// The cost half exists because the retries are invisible in the view itself:
+/// a hop that needed three attempts and a reconnect looks exactly like one
+/// that succeeded first try, so a flaky page is indistinguishable from a
+/// healthy one in the JSON. [`insert_page`] reports both counts under
+/// `page_meta`, which [`lift_meta`] lifts to `meta.page_attempts` /
+/// `meta.page_reconnects` (iter-224 Theme B).
+pub(crate) struct SettledPage {
+    pub(crate) page: PageView,
+    /// Collection attempts made, including the one that succeeded. Always ≥ 1.
+    pub(crate) attempts: usize,
+    /// How many of those attempts ran on a connection this function had to
+    /// rebuild after the previous one died mid-collection.
+    pub(crate) reconnects: usize,
+}
+
+/// Did this error mean "the connection is gone", as opposed to "Firefox said
+/// no"? (iter-224)
+///
+/// Three shapes, all of them the same event seen from different distances:
+///
+/// - [`AppError::RdpTransport`] — the socket errored. `recv failed: Connection
+///   reset by peer (os error 54)` and `recv failed: failed to fill whole
+///   buffer` (a FIN mid-frame) are the two reproduced on the daemon route.
+/// - [`AppError::RdpRemoteClosed`] — a clean EOF between frames.
+/// - [`AppError::RdpProtocol`] from actor `daemon` with name
+///   [`DAEMON_CLIENT_CLOSED`] — the daemon telling us, in words, that it is
+///   about to do the above. This is the shape the daemon half of iter-224
+///   produces; the first two are what a daemon that never got to speak leaves
+///   behind.
+///
+/// Deliberately narrow: an actor error from Firefox, a timeout, a shape
+/// mismatch are all *answers*, and reconnecting would only ask the same
+/// question again on a healthier socket.
+fn is_connection_lost(e: &AppError) -> bool {
+    match e {
+        AppError::RdpTransport(_) | AppError::RdpRemoteClosed(_) => true,
+        AppError::RdpProtocol { actor, name, .. } => {
+            actor == "daemon" && name == crate::daemon::server::DAEMON_CLIENT_CLOSED
+        }
+        _ => false,
+    }
+}
+
 /// Collect the page view against the document the action actually produced.
 ///
 /// # The bug this exists for (iter-220)
@@ -754,9 +810,15 @@ const NAV_COLLECT_ATTEMPTS: usize = 3;
 ///   settles and collects again.
 ///
 /// [`RdpTransport::take_navigation_started`]: ff_rdp_core::RdpTransport::take_navigation_started
-fn collect_settled(ctx: &mut ConnectedTab, opts: &CollectOptions) -> Result<PageView, AppError> {
+fn collect_settled(
+    cli: &Cli,
+    ctx: &mut ConnectedTab,
+    opts: &CollectOptions,
+) -> Result<SettledPage, AppError> {
     let mut pending = ctx.take_navigation_started();
     let mut last_err = None;
+    let mut reconnects = 0_usize;
+    let mut attempts = 0_usize;
 
     // iter-220 review finding: NAV_COLLECT_ATTEMPTS × NAV_SETTLE_BUDGET_MS is,
     // uncoordinated, several seconds of settle-polling alone — on top of
@@ -773,6 +835,7 @@ fn collect_settled(ctx: &mut ConnectedTab, opts: &CollectOptions) -> Result<Page
         if attempt > 0 && overall_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             break;
         }
+        attempts += 1;
 
         // The document the action ran against. When a navigation is under way
         // this is precisely the docshell that must NOT be collected from.
@@ -790,19 +853,76 @@ fn collect_settled(ctx: &mut ConnectedTab, opts: &CollectOptions) -> Result<Page
 
         let console_actor = ctx.target.console_actor.clone();
         // Arm the guard for the collection only — the returned scope disarms
-        // it on drop (end of this iteration) however the attempt ends,
-        // including the early returns below (iter-220 review finding: no
-        // longer a manual arm/clear pair a future call site could unbalance).
-        let mut guarded = ctx.arm_target_guard(ctx.target.inner_window_id);
-        let outcome = collect(&mut guarded, &console_actor, opts);
+        // it on drop (end of this block) however the attempt ends (iter-220
+        // review finding: no longer a manual arm/clear pair a future call site
+        // could unbalance). iter-224 scopes it to a block rather than the loop
+        // body so the reconnect arm below can take `ctx` again.
+        let (outcome, latched) = {
+            let mut guarded = ctx.arm_target_guard(ctx.target.inner_window_id);
+            let outcome = collect(&mut guarded, &console_actor, opts);
+            // Only meaningful when the collection lost its document: `recv`
+            // latched the destination of the navigation that took it away.
+            let latched = if matches!(outcome, Err(AppError::RdpActorDestroyed { .. })) {
+                guarded.take_navigation_started()
+            } else {
+                None
+            };
+            (outcome, latched)
+        };
 
         match outcome {
-            Ok(page) => return Ok(page),
+            Ok(page) => {
+                return Ok(SettledPage {
+                    page,
+                    attempts,
+                    reconnects,
+                });
+            }
             Err(e @ AppError::RdpActorDestroyed { .. }) => {
                 // Another navigation landed while we were collecting. Take its
                 // destination (`recv` latched it) and go round again.
-                pending = guarded.take_navigation_started().or(pending);
+                pending = latched.or(pending);
                 last_err = Some(e);
+            }
+            // iter-224. The connection died under us mid-collection. On the
+            // daemon route this is a ~1-in-15 event on a page that navigates,
+            // and it used to end the command at exit 6 with `error_type:
+            // "Transport"` and nothing a caller could do but re-navigate by
+            // URL and lose the click. The document is fine; only the socket is
+            // gone — so build a new one and collect again inside the budget
+            // the caller already granted. Retrying on the *same* connection is
+            // not an option: every subsequent send would fail the same way.
+            Err(e) if is_connection_lost(&e) => {
+                if reconnects >= NAV_RECONNECT_ATTEMPTS
+                    || overall_deadline.is_some_and(|deadline| Instant::now() >= deadline)
+                {
+                    return Err(e.with_timeout_hint(TIMEOUT_HINT));
+                }
+                match super::connect_tab::connect_and_get_target(cli) {
+                    Ok(fresh) => {
+                        tracing::debug!(
+                            target: "ff_rdp_cli::page_view",
+                            error = %e,
+                            "collect_settled: connection lost mid-collection — \
+                             reconnected and retrying"
+                        );
+                        *ctx = fresh;
+                        reconnects += 1;
+                        last_err = Some(e);
+                    }
+                    // The reconnect failed too: report the ORIGINAL failure,
+                    // which is the one that describes what went wrong. A
+                    // "could not connect" on top of it would send the reader
+                    // hunting a Firefox that is running fine.
+                    Err(conn_err) => {
+                        tracing::debug!(
+                            target: "ff_rdp_cli::page_view",
+                            error = %conn_err,
+                            "collect_settled: reconnect after a lost connection failed"
+                        );
+                        return Err(e.with_timeout_hint(TIMEOUT_HINT));
+                    }
+                }
             }
             // iter-220 Theme C. A recv timeout here means Firefox accepted the
             // request and never answered, which for a page view has one likely
@@ -878,10 +998,15 @@ fn settle_after_navigation(
 /// Firefox: the `page` object must be the collected view **verbatim**. Nothing
 /// describing how the view was produced may be added to it — that all belongs
 /// in `page_meta`, which [`lift_meta`] moves into the envelope's `meta`.
-fn insert_page(results: &mut Value, page: PageView) {
+fn insert_page(results: &mut Value, settled: SettledPage) {
     let Some(obj) = results.as_object_mut() else {
         return;
     };
+    let SettledPage {
+        page,
+        attempts,
+        reconnects,
+    } = settled;
     obj.insert("page".to_owned(), page.view);
     obj.insert(
         "page_meta".to_owned(),
@@ -891,6 +1016,13 @@ fn insert_page(results: &mut Value, page: PageView) {
             "refs_registered": page.refs_registered,
             "parse_ms": page.parse_ms,
             "readability_injected": page.readability_injected,
+            // iter-224: what the view cost. `attempts > 1` means a navigation
+            // landed mid-collection (or the connection died) and the view you
+            // are reading came from a later pass; `reconnects > 0` means the
+            // daemon dropped this client and the CLI rebuilt the connection
+            // rather than failing the command.
+            "attempts": attempts,
+            "reconnects": reconnects,
         }),
     );
 }
@@ -916,6 +1048,8 @@ pub(crate) fn lift_meta(cli: &Cli, results: &mut Value, meta: &mut Value) -> Opt
             ("refs_registered", "page_refs_registered"),
             ("parse_ms", "page_parse_ms"),
             ("readability_injected", "page_readability_injected"),
+            ("attempts", "page_attempts"),
+            ("reconnects", "page_reconnects"),
         ] {
             match page_meta.get(from) {
                 // A null `parse_ms` means the reader pass did not run; an
