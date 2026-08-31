@@ -2523,7 +2523,17 @@ fn handle_client(
     // iter-224: say goodbye before the socket closes.  `Disconnected` is the
     // one silent case — nobody is listening.
     match exit {
-        ClientExit::Disconnected => {}
+        ClientExit::Disconnected => {
+            // Silent on stderr — a CLI process exiting is the normal ending —
+            // but traced, because "which client hung up when" is the only
+            // daemon-side record of a connection ending, and iter-224 spent a
+            // diagnosis session without it.
+            tracing::debug!(
+                client_id,
+                owns_rpc_slot,
+                "daemon: client disconnected"
+            );
+        }
         ClientExit::DaemonShuttingDown => {
             if let Ok(sock) = reader.try_clone_stream() {
                 close_client_with_error(
