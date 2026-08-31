@@ -1597,6 +1597,15 @@ mod tests {
         }
     }
 
+    /// The first-try shape: one attempt, no reconnect.
+    fn sample_settled(page: PageView) -> SettledPage {
+        SettledPage {
+            page,
+            attempts: 1,
+            reconnects: 0,
+        }
+    }
+
     /// `results.page` is the collected view verbatim: the realistic regression
     /// is someone folding `source`/`ready`/`refs_registered` into `page`
     /// because it is convenient, which would put provenance in the payload.
@@ -1606,7 +1615,7 @@ mod tests {
         let collected = page.view.clone();
 
         let mut results = json!({"clicked": true});
-        insert_page(&mut results, page);
+        insert_page(&mut results, sample_settled(page));
 
         assert_eq!(
             results["page"], collected,
@@ -1619,7 +1628,7 @@ mod tests {
     #[test]
     fn lift_meta_moves_provenance_out_of_results() {
         let mut results = json!({"clicked": true});
-        insert_page(&mut results, sample_page());
+        insert_page(&mut results, sample_settled(sample_page()));
         let mut meta = json!({});
         let cli = test_cli(&["ff-rdp", "tabs"]);
 
@@ -1651,11 +1660,11 @@ mod tests {
         let mut results = json!({"clicked": true});
         insert_page(
             &mut results,
-            PageView {
+            sample_settled(PageView {
                 parse_ms: None,
                 readability_injected: false,
                 ..sample_page()
-            },
+            }),
         );
         let mut meta = json!({});
         let cli = test_cli(&["ff-rdp", "tabs"]);
@@ -1670,7 +1679,7 @@ mod tests {
     #[test]
     fn lift_meta_takes_the_page_out_in_text_mode() {
         let mut results = json!({"clicked": true});
-        insert_page(&mut results, sample_page());
+        insert_page(&mut results, sample_settled(sample_page()));
         let mut meta = json!({});
         let cli = test_cli(&["ff-rdp", "--format", "text", "tabs"]);
 
@@ -1704,5 +1713,108 @@ mod tests {
     #[test]
     fn render_text_empty_sections_do_not_panic() {
         render_text(&json!({"landmarks": [], "headings": [], "interactive": []}));
+    }
+
+    // -----------------------------------------------------------------------
+    // iter-224 — a connection that dies mid-collection
+    // -----------------------------------------------------------------------
+
+    /// `attempts` / `reconnects` reach `meta` as `page_attempts` /
+    /// `page_reconnects`.
+    ///
+    /// Without them a hop that cost three collections and a rebuilt connection
+    /// is indistinguishable in the JSON from one that succeeded on the first
+    /// try, which is precisely the signal iter-224 needed and did not have
+    /// while diagnosing the daemon reset.
+    #[test]
+    fn lift_meta_reports_what_the_view_cost() {
+        let mut results = json!({"clicked": true});
+        insert_page(
+            &mut results,
+            SettledPage {
+                page: sample_page(),
+                attempts: 3,
+                reconnects: 1,
+            },
+        );
+        let mut meta = json!({});
+        let cli = test_cli(&["ff-rdp", "tabs"]);
+
+        lift_meta(&cli, &mut results, &mut meta);
+
+        assert_eq!(meta["page_attempts"], json!(3), "{meta}");
+        assert_eq!(meta["page_reconnects"], json!(1), "{meta}");
+    }
+
+    /// The first-try case still reports the counts — an absent key would make
+    /// "collected cleanly" and "this build is too old to say" look identical.
+    #[test]
+    fn lift_meta_reports_the_cost_even_when_it_was_one() {
+        let mut results = json!({"clicked": true});
+        insert_page(&mut results, sample_settled(sample_page()));
+        let mut meta = json!({});
+        let cli = test_cli(&["ff-rdp", "tabs"]);
+
+        lift_meta(&cli, &mut results, &mut meta);
+
+        assert_eq!(meta["page_attempts"], json!(1), "{meta}");
+        assert_eq!(meta["page_reconnects"], json!(0), "{meta}");
+    }
+
+    /// The three shapes a dead connection arrives in, all of which must send
+    /// `collect_settled` to the reconnect arm.
+    #[test]
+    fn connection_lost_covers_reset_eof_and_the_daemon_saying_so() {
+        assert!(
+            is_connection_lost(&AppError::RdpTransport(
+                "recv failed: Connection reset by peer (os error 54)".to_owned()
+            )),
+            "an ECONNRESET mid-collection is a lost connection"
+        );
+        assert!(
+            is_connection_lost(&AppError::RdpTransport(
+                "recv failed: failed to fill whole buffer".to_owned()
+            )),
+            "a FIN mid-frame is a lost connection"
+        );
+        assert!(
+            is_connection_lost(&AppError::RdpRemoteClosed("closed".to_owned())),
+            "a clean EOF between frames is a lost connection"
+        );
+        assert!(
+            is_connection_lost(&AppError::RdpProtocol {
+                actor: "daemon".to_owned(),
+                name: crate::daemon::server::DAEMON_CLIENT_CLOSED.to_owned(),
+                message: "the daemon closed this connection".to_owned(),
+            }),
+            "the daemon's own closing frame is a lost connection"
+        );
+    }
+
+    /// Answers are not lost connections. Retrying on a fresh socket would ask
+    /// Firefox the same question and get the same answer, one connect slower.
+    #[test]
+    fn connection_lost_rejects_answers_from_firefox() {
+        assert!(!is_connection_lost(&AppError::RdpTimeout {
+            phase: "recv".to_owned(),
+            after_ms: 10_000,
+            hint: None,
+        }));
+        assert!(!is_connection_lost(&AppError::RdpActorDestroyed {
+            actor: "target(innerWindowId 7)".to_owned(),
+        }));
+        assert!(!is_connection_lost(&AppError::RdpProtocol {
+            actor: "conn0/consoleActor1".to_owned(),
+            name: "noSuchActor".to_owned(),
+            message: String::new(),
+        }));
+        assert!(
+            !is_connection_lost(&AppError::RdpProtocol {
+                actor: "conn0/consoleActor1".to_owned(),
+                name: crate::daemon::server::DAEMON_CLIENT_CLOSED.to_owned(),
+                message: String::new(),
+            }),
+            "only the daemon may claim to have closed the daemon connection"
+        );
     }
 }

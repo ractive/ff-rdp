@@ -3308,6 +3308,89 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // iter-224 — say goodbye before closing a client
+    // -----------------------------------------------------------------------
+
+    /// A client the daemon abandons must receive a structured frame naming the
+    /// cause, not a bare socket close.
+    ///
+    /// The frame shape is load-bearing: `ff_rdp_core::transport`'s
+    /// `daemon_control_error` only recognises `from == "daemon"` plus an
+    /// `error` field, and only then does a client parked in `recv` fail fast
+    /// with a named cause instead of `recv failed: Connection reset by peer`.
+    #[test]
+    fn abandoned_client_receives_a_named_closing_frame() {
+        use std::io::Read;
+
+        let (server_side, mut client_side) = loopback_pair();
+        close_client_with_error(&server_side, "client_frame_undecodable", "boom");
+        drop(server_side);
+
+        client_side
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .expect("set read timeout");
+        let mut buf = Vec::new();
+        let _ = client_side.read_to_end(&mut buf);
+        let raw = String::from_utf8_lossy(&buf);
+        assert!(
+            raw.contains(DAEMON_CLIENT_CLOSED),
+            "an abandoned client must be told the daemon closed it; got: {raw}"
+        );
+        assert!(
+            raw.contains("client_frame_undecodable") && raw.contains("boom"),
+            "the closing frame must name the reason and the underlying error; got: {raw}"
+        );
+    }
+
+    /// The closing frame is exactly the shape the core wait loops treat as a
+    /// terminal daemon control error.
+    #[test]
+    fn closing_response_is_a_daemon_control_error() {
+        let frame = daemon_closing_response("firefox_write_failed", "broken pipe");
+        assert_eq!(frame["from"], "daemon");
+        assert_eq!(frame["error"], DAEMON_CLIENT_CLOSED);
+        assert_eq!(frame["error_type"], DAEMON_CLIENT_CLOSED);
+        assert_eq!(frame["reason"], "firefox_write_failed");
+        assert!(
+            frame["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("broken pipe")),
+            "the message must carry the underlying error: {frame}"
+        );
+    }
+
+    /// A CLI process exiting is not a fault, and must stay silent — otherwise
+    /// every ordinary command would log an abandonment on its way out.
+    #[test]
+    fn client_hangup_is_distinguished_from_a_fault() {
+        for kind in [
+            std::io::ErrorKind::UnexpectedEof,
+            std::io::ErrorKind::ConnectionReset,
+            std::io::ErrorKind::ConnectionAborted,
+            std::io::ErrorKind::BrokenPipe,
+            std::io::ErrorKind::NotConnected,
+        ] {
+            assert!(
+                is_client_hangup(&ProtocolError::RecvFailed(std::io::Error::new(
+                    kind, "hung up"
+                ))),
+                "{kind:?} is a client hangup"
+            );
+        }
+        assert!(
+            !is_client_hangup(&ProtocolError::InvalidPacket("no colon".to_owned())),
+            "a frame the daemon could not decode is a fault, not a hangup"
+        );
+        assert!(
+            !is_client_hangup(&ProtocolError::FrameTooLarge {
+                declared: 1,
+                max: 0,
+            }),
+            "an oversize frame is a fault, not a hangup"
+        );
+    }
+
     /// A supervised worker that returns *without* panicking (an abnormal early
     /// exit for an infinite loop) must also flip the daemon into shutdown.
     #[test]
