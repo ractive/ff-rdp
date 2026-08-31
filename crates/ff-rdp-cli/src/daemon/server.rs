@@ -2130,6 +2130,13 @@ fn daemon_closing_response(reason: &str, detail: &str) -> Value {
 /// say and nothing to say it over.
 fn close_client_with_error(stream: &TcpStream, reason: &str, detail: &str) {
     if let Ok(write_half) = stream.try_clone() {
+        // A client that has stopped reading fills its receive window, and a
+        // write into a full window blocks *forever* — client sockets carry no
+        // write timeout otherwise. That would pin this thread on its way out,
+        // so `ClientCleanupGuard` would never run and the RPC-writer slot would
+        // never be released: one dead client, and the daemon serves nobody.
+        // The goodbye is worth a bounded wait and nothing more.
+        let _ = write_half.set_write_timeout(Some(CLIENT_DRAIN_BUDGET));
         let mut writer = FramedWriter::from_stream(write_half);
         if let Err(e) = writer.send(&daemon_closing_response(reason, detail)) {
             tracing::debug!(
