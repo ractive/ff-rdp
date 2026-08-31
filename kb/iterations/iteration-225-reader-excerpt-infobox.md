@@ -178,6 +178,13 @@ The 5-turn run that did happen (`link_follow` run 1: `navigate --with-page` → 
 total=320`, 320 passed / 0 failed (P + F reconciles with `executed`), exit 0. All five
 `live_225_reader_facts` tests executed and passed.
 
+Re-run at branch head before opening the PR (same two gates, same command, port-6000 browser
+started by this session as a raw `firefox -no-remote --start-debugger-server 6000 --headless`):
+identical line — `LIVE_SWEEP_SUMMARY executed=320 skipped=0 preexisting=0 vanished=0
+launch_timeout=0 timed_out=0 total=320`, 320 passed / 0 failed, exit 0. The
+`live_61q_resource_bus::live_resource_dedupe` timeout below did **not** reproduce in this third
+sweep either, which is why its row is "file a plan", not "fixed".
+
 The **first** sweep of this branch was red, twice over, and both are recorded rather than re-run
 away:
 
