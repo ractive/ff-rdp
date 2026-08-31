@@ -2,7 +2,7 @@
 title: "Iteration 224: click --ref --with-page intermittently gets 'Connection reset by peer' from the daemon"
 type: iteration
 date: 2026-08-31
-status: in-review
+status: done
 branch: iter-224/with-page-daemon-connection-reset
 depends_on:
   - 220
@@ -22,14 +22,22 @@ dogfood_script: iteration-224-with-page-daemon-connection-reset.dogfood.sh
 first_call_sites:
   - primitive: ff_rdp_cli::daemon::server::DAEMON_CLIENT_CLOSED
     site: >-
-      crates/ff-rdp-cli/src/daemon/server.rs (`daemon_closing_response`, the frame written
-      before a client is abandoned) and crates/ff-rdp-cli/src/commands/page_view.rs
-      (`is_connection_lost`, which routes that frame to the reconnect arm) — both non-test
+      crates/ff-rdp-cli/src/daemon/server.rs (`daemon_closing_response`, the frame
+      written before a client is abandoned) and
+      crates/ff-rdp-cli/src/commands/page_view.rs (`is_connection_lost`, which routes that frame to the reconnect arm) — both
+      non-test
   - primitive: ff_rdp_cli::commands::page_view::SettledPage
     site: >-
-      crates/ff-rdp-cli/src/commands/page_view.rs — returned by `collect_settled`, consumed by
-      `attach` and `insert_page`, which publish `attempts`/`reconnects` into `page_meta`
-tags: [iteration, act-and-see, page-view, daemon, defect, carry-over]
+      crates/ff-rdp-cli/src/commands/page_view.rs — returned by `collect_settled`,
+      consumed by `attach` and `insert_page`, which publish `attempts`/`reconnects` into
+      `page_meta`
+tags:
+  - iteration
+  - act-and-see
+  - page-view
+  - daemon
+  - defect
+  - carry-over
 ---
 
 # Iteration 224: `click --ref --with-page` intermittently gets `Connection reset by peer`
