@@ -2,7 +2,7 @@
 title: "Iteration 228: re-measure the two click-through tasks now that --with-page carries the facts"
 type: iteration
 date: 2026-08-31
-status: in-review
+status: done
 branch: iter-228/two-task-benchmark-after-facts
 depends_on:
   - 225
