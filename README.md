@@ -129,7 +129,7 @@ A typical first-time session looks like:
 ff-rdp                                    # what's already up? (exit 0 either way)
 ff-rdp launch --headless --temp-profile   # start a fresh Firefox
 ff-rdp doctor                             # confirm everything is healthy
-ff-rdp navigate https://example.com --with-page   # do work, and see the page
+ff-rdp navigate https://example.com --with-page --query "<text>"   # go there and read it in one turn
 ```
 
 `launch` is idempotent (iter-210). If the requested port is already held by a
