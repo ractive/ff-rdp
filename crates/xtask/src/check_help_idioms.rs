@@ -142,6 +142,61 @@ pub fn quick_start_region(help: &str) -> &str {
     }
 }
 
+/// How many lines of `--help` an agent is assumed to read.
+///
+/// Not a round number picked for tidiness: five of the six iter-228 benchmark
+/// trajectories ran `ff-rdp --help | head -50` and read nothing else.
+pub const HEAD_LINES: usize = 50;
+
+/// What a Quick-start `navigate` line has to carry to be the act-and-see entry
+/// point rather than a bare landing.
+const NAVIGATE_TOKENS: &[&str] = &["--with-page", "--query"];
+
+/// Does `help` teach `navigate … --with-page --query` inside its first
+/// [`HEAD_LINES`] lines? Returns the failures to report, empty when it does.
+///
+/// Deliberately hard-coded rather than derived from the `skill-doc` output the
+/// rest of this gate compares against: an expectation read out of the table is
+/// an expectation that disappears the moment someone deletes the row, which is
+/// precisely the drift iter-230 exists to prevent. The gate asserts the
+/// *shape* — a `navigate` line carrying both flags, in the window agents read
+/// — so deleting the row goes red instead of quietly passing.
+///
+/// Both tokens must sit on the *same* line: `--query` already appears in the
+/// head window on the `page-text` row, so a whole-window match would be
+/// satisfied by a bare `navigate <URL>` line next to it.
+pub fn navigate_idiom_failures(help: &str) -> Vec<String> {
+    let candidates: Vec<&str> = help
+        .lines()
+        .take(HEAD_LINES)
+        .filter(|line| line.contains("ff-rdp navigate"))
+        .collect();
+    if candidates.is_empty() {
+        return vec![format!(
+            "no `ff-rdp navigate` line in the first {HEAD_LINES} lines of `ff-rdp --help`"
+        )];
+    }
+    if candidates
+        .iter()
+        .any(|line| NAVIGATE_TOKENS.iter().all(|token| line.contains(token)))
+    {
+        return Vec::new();
+    }
+    vec![format!(
+        "the `ff-rdp navigate` line in the first {HEAD_LINES} lines of `ff-rdp --help` \
+         carries neither `{}` nor `{}` together — an agent that lands without asking for \
+         the page spends 4-9 extra turns hunting for a ref (iter-228 measured 9.0/11.3 \
+         turns against 4 for the one run that used it); found: {}",
+        NAVIGATE_TOKENS[0],
+        NAVIGATE_TOKENS[1],
+        candidates
+            .iter()
+            .map(|l| format!("`{}`", l.trim()))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )]
+}
+
 /// Which of `needles` are missing from `help`.
 pub fn missing<'a>(help: &str, needles: &'a [String]) -> Vec<&'a String> {
     needles
@@ -182,10 +237,13 @@ pub fn run(args: Args) -> Result<()> {
             "Quick start line `{m}` is in SKILL.md but not in `ff-rdp --help`"
         ));
     }
+    // iter-230: the navigate row specifically, in the window agents read.
+    failures.extend(navigate_idiom_failures(&help));
 
     if failures.is_empty() {
         println!(
-            "check-help-idioms: `ff-rdp --help` carries all {} idioms and all {} quick-start lines",
+            "check-help-idioms: `ff-rdp --help` carries all {} idioms, all {} quick-start lines, \
+             and the act-and-see navigate line within {HEAD_LINES} lines",
             syntaxes.len(),
             commands.len()
         );
@@ -271,6 +329,73 @@ Some prose.
         // No markers at all: degrade to the whole-help match, not an empty
         // region that passes vacuously.
         assert_eq!(quick_start_region("no markers"), "no markers");
+    }
+
+    /// A `--help` whose Quick start carries the act-and-see navigate line.
+    fn help_with(navigate_line: &str) -> String {
+        format!(
+            "Firefox Remote Debugging Protocol CLI\n\nQuick start:\n  ff-rdp\n  \
+             ff-rdp launch --headless\n  {navigate_line}\n  ff-rdp a11y summary\n  \
+             ff-rdp page-text --query \"<text>\"\n  ff-rdp click --ref e3 --with-page\n\n\
+             Usage: ff-rdp <COMMAND>\n"
+        )
+    }
+
+    /// AC: `ff-rdp --help | head -50` contains a `navigate` line carrying both
+    /// `--with-page` and `--query`.
+    #[test]
+    fn unit_230_the_act_and_see_navigate_line_satisfies_the_gate() {
+        let help = help_with("ff-rdp navigate <URL> --with-page --query \"<text>\"");
+        assert!(navigate_idiom_failures(&help).is_empty(), "{help}");
+    }
+
+    /// AC: the gate fails if that line is removed — this is the deletion the
+    /// plan asks to be proven, without touching the tree.
+    #[test]
+    fn unit_230_a_bare_navigate_line_fails_the_gate() {
+        let help = help_with("ff-rdp navigate <URL>");
+        let failures = navigate_idiom_failures(&help);
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(failures[0].contains("--with-page"), "{failures:?}");
+
+        // Half the idiom is still a failure: landing and asking for the page
+        // without a query returns a capped view the agent then has to re-read.
+        let half = help_with("ff-rdp navigate <URL> --with-page");
+        assert_eq!(navigate_idiom_failures(&half).len(), 1);
+    }
+
+    /// The navigate row deleted outright — the refactor the gate exists for —
+    /// is reported, not passed over for lack of a line to inspect.
+    #[test]
+    fn unit_230_no_navigate_line_at_all_is_reported() {
+        let help = "Quick start:\n  ff-rdp\n  ff-rdp page-text --query \"<text>\"\n\nUsage:\n";
+        let failures = navigate_idiom_failures(help);
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(
+            failures[0].contains("no `ff-rdp navigate` line"),
+            "{failures:?}"
+        );
+    }
+
+    /// Both flags have to be on the *same* line, and both have to be inside the
+    /// head window: `--query` sits on the `page-text` row a line away, and a
+    /// Quick start pushed past line 50 is one no benchmark run ever read.
+    #[test]
+    fn unit_230_the_flags_must_share_the_navigate_line_inside_the_window() {
+        // `--query` present in the window, but on the page-text row.
+        let split = "Quick start:\n  ff-rdp navigate <URL> --with-page\n  \
+                     ff-rdp page-text --query \"<text>\"\n\nUsage:\n";
+        assert_eq!(navigate_idiom_failures(split).len(), 1);
+
+        // The right line, but below the fold.
+        let mut buried = "filler\n".repeat(HEAD_LINES);
+        buried.push_str("  ff-rdp navigate <URL> --with-page --query \"<text>\"\n");
+        let failures = navigate_idiom_failures(&buried);
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(
+            failures[0].contains("no `ff-rdp navigate` line"),
+            "{failures:?}"
+        );
     }
 
     #[test]

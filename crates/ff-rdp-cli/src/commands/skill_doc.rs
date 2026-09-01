@@ -149,6 +149,26 @@ pub(crate) const EXAMPLE_REF_PLACEHOLDER: &str = "{ref}";
 /// rather than a live one.
 const EXAMPLE_REF: &str = "e3";
 
+/// The act-and-see entry point, as `(command, why)` — the one Quick start row
+/// that decides an agent's whole trajectory (iter-230).
+///
+/// [[iteration-228-two-task-benchmark-after-facts]] read six benchmark
+/// trajectories: the single run that spelled `navigate … --with-page --query`
+/// answered in 4 turns, and the five that ran bare `navigate` then hunted for
+/// a ref took 9–11. Those five all read `ff-rdp --help | head -50` and nothing
+/// else, and in that window `--with-page` appeared only on `click --ref e3`,
+/// which an agent that has not navigated yet holds no ref for. So the flag was
+/// not unpersuasive — it was below the fold.
+///
+/// Named separately from [`QUICK_START_LINES`] because
+/// [`crate::commands::home`] prints the same line as its "no page loaded" hint:
+/// the two surfaces that answer "how do I get onto a page" must not teach
+/// different answers.
+pub(crate) const NAVIGATE_IDIOM: (&str, &str) = (
+    "ff-rdp navigate <URL> --with-page --query \"<text>\"",
+    "go there and read it in one turn: matching text, facts, refs",
+);
+
 /// The launch half of the Quick start block, as `(command, why)`.
 ///
 /// Rendered verbatim into both `SKILL.md` (by [`generate_block`]) and the
@@ -165,7 +185,7 @@ pub(crate) const QUICK_START_LINES: &[(&str, &str)] = &[
         "ff-rdp launch --headless",
         "no browser yet? start one with the debug port open",
     ),
-    ("ff-rdp navigate <URL>", "blocks until the document commits"),
+    NAVIGATE_IDIOM,
     (
         "ff-rdp a11y summary",
         "landmarks, headings, and interactive entries with refs",

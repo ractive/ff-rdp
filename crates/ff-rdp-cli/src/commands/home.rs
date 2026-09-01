@@ -33,7 +33,7 @@ use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::{connect_and_get_target, connect_direct};
 use super::page_view::{self, CollectOptions, DEFAULT_INTERACTIVE_LIMIT};
-use super::skill_doc::{DESCRIPTION, IDIOMS};
+use super::skill_doc::{DESCRIPTION, IDIOMS, NAVIGATE_IDIOM};
 
 /// Interactive entries kept in the `page` block when the view runs as a
 /// session hook.
@@ -144,8 +144,17 @@ fn hints_for(state: HintState<'_>) -> Vec<String> {
     }
 
     if !state.has_loaded_page {
-        hints.push("ff-rdp navigate <URL>           # blocks until the document commits".into());
-        hints.push("ff-rdp tabs                     # list every open tab".into());
+        // iter-230: the same act-and-see navigate line the Quick start and the
+        // skill teach, not a bare `navigate <URL>` — an agent that lands
+        // without asking for the page spends 4–9 extra turns hunting for a ref.
+        //
+        // Padded to a common column like the other branches: the two commands
+        // differ by nearly 40 characters, so an unaligned `#` reads as two
+        // unrelated lines rather than one menu.
+        let (command, why) = NAVIGATE_IDIOM;
+        let width = command.chars().count().max("ff-rdp tabs".chars().count());
+        hints.push(format!("{command:<width$}  # {why}"));
+        hints.push(format!("{:<width$}  # list every open tab", "ff-rdp tabs"));
         return hints;
     }
 
@@ -864,6 +873,49 @@ mod tests {
         assert!(
             super::super::skill_doc::generate_block().contains(DESCRIPTION),
             "the home view and the skill must quote the same description"
+        );
+    }
+
+    /// iter-230: the "no page loaded" hint is the home view's answer to "how do
+    /// I get onto a page", and it must be the *same* answer the Quick start
+    /// gives — the act-and-see form, not a bare landing.
+    ///
+    /// iter-228 measured what a bare landing costs: five of six benchmark runs
+    /// took 9-11 turns hunting for a ref that `--with-page --query` would have
+    /// handed them, against 4 for the one run that used the idiom. A home view
+    /// that still suggested `ff-rdp navigate <URL>` would teach the expensive
+    /// shape at exactly the moment an agent is deciding it.
+    #[test]
+    fn unit_230_the_no_page_hint_is_the_shared_navigate_idiom() {
+        let hints = hints_for(HintState {
+            browser_reachable: true,
+            has_loaded_page: false,
+            first_ref: None,
+        });
+        let navigate = hints
+            .iter()
+            .find(|h| h.contains("ff-rdp navigate"))
+            .unwrap_or_else(|| panic!("no navigate hint when no page is loaded: {hints:?}"));
+        let (command, why) = NAVIGATE_IDIOM;
+        assert!(
+            navigate.starts_with(command),
+            "the no-page hint must be the shared idiom verbatim, not a variant: {navigate:?}"
+        );
+        assert!(navigate.contains(why), "{navigate:?}");
+        for flag in ["--with-page", "--query"] {
+            assert!(navigate.contains(flag), "{navigate:?} is missing {flag}");
+        }
+        // Both hints line their `#` up, like the other two branches do.
+        let columns: Vec<_> = hints
+            .iter()
+            .map(|h| {
+                h.find(" # ")
+                    .unwrap_or_else(|| panic!("no comment in {h:?}"))
+            })
+            .collect();
+        assert!(
+            columns.windows(2).all(|w| w[0] == w[1]),
+            "no-page hints are not aligned: {hints:?}"
         );
     }
 
