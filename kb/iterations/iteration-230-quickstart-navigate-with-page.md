@@ -2,7 +2,7 @@
 title: "Iteration 230: put `navigate --with-page --query` in the Quick start — 5 of 6 benchmark runs never see it"
 type: iteration
 date: 2026-09-01
-status: in-progress
+status: done
 branch: iter-230/quickstart-navigate-with-page
 depends_on:
   - 228
