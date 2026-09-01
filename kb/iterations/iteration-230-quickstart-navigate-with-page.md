@@ -2,7 +2,7 @@
 title: "Iteration 230: put `navigate --with-page --query` in the Quick start — 5 of 6 benchmark runs never see it"
 type: iteration
 date: 2026-09-01
-status: planned
+status: in-progress
 branch: iter-230/quickstart-navigate-with-page
 depends_on:
   - 228
@@ -19,7 +19,12 @@ dogfood_path: |
   ff-rdp navigate 'https://en.wikipedia.org/wiki/Ada_Lovelace' --with-page --query 'Charles Babbage' \
     --jq '.results.page | {matches, query_source, first_ref: .interactive[0].ref}'
   ff-rdp daemon stop
-tags: [iteration, agent-ergonomics, help, discoverability, carry-over]
+tags:
+  - iteration
+  - agent-ergonomics
+  - help
+  - discoverability
+  - carry-over
 ---
 
 # Iteration 230: the Quick start's `navigate` line is the one that decides the trajectory

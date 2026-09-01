@@ -371,7 +371,10 @@ Some prose.
         let help = "Quick start:\n  ff-rdp\n  ff-rdp page-text --query \"<text>\"\n\nUsage:\n";
         let failures = navigate_idiom_failures(help);
         assert_eq!(failures.len(), 1, "{failures:?}");
-        assert!(failures[0].contains("no `ff-rdp navigate` line"), "{failures:?}");
+        assert!(
+            failures[0].contains("no `ff-rdp navigate` line"),
+            "{failures:?}"
+        );
     }
 
     /// Both flags have to be on the *same* line, and both have to be inside the
@@ -389,7 +392,10 @@ Some prose.
         buried.push_str("  ff-rdp navigate <URL> --with-page --query \"<text>\"\n");
         let failures = navigate_idiom_failures(&buried);
         assert_eq!(failures.len(), 1, "{failures:?}");
-        assert!(failures[0].contains("no `ff-rdp navigate` line"), "{failures:?}");
+        assert!(
+            failures[0].contains("no `ff-rdp navigate` line"),
+            "{failures:?}"
+        );
     }
 
     #[test]
