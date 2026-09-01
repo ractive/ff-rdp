@@ -649,6 +649,28 @@ mod tests {
         );
     }
 
+    /// iter-230: `launch` is the command an agent runs immediately before its
+    /// first `navigate`, so its follow-up hint is one of the few surfaces that
+    /// can still reach a run which read only `ff-rdp --help | head -50`. It has
+    /// to teach the act-and-see form, not a bare landing — iter-228 measured
+    /// the bare landing at 9-11 turns against 4.
+    #[test]
+    fn unit_230_launch_hints_teach_the_act_and_see_navigate() {
+        let ctx = HintContext::new(HintSource::Launch);
+        let hints = generate_hints(&ctx);
+        let navigate = hints
+            .iter()
+            .find(|h| h.cmd.contains("ff-rdp navigate"))
+            .unwrap_or_else(|| panic!("launch should hint at navigate; got: {hints:?}"));
+        for flag in ["--with-page", "--query"] {
+            assert!(
+                navigate.cmd.contains(flag),
+                "the navigate hint after launch must carry {flag}; got: {:?}",
+                navigate.cmd
+            );
+        }
+    }
+
     #[test]
     fn inspect_hints_are_empty() {
         let ctx = HintContext::new(HintSource::Inspect);
