@@ -188,7 +188,14 @@ fn hints_launch(_ctx: &HintContext) -> Vec<Hint> {
     vec![
         Hint::new("Verify the connection is healthy", "ff-rdp doctor"),
         Hint::new("List open tabs", "ff-rdp tabs"),
-        Hint::new("Navigate to a URL", "ff-rdp navigate <URL>"),
+        // iter-230: the act-and-see form, not a bare landing. `launch` is the
+        // command an agent runs immediately before its first `navigate`, so
+        // this hint is one of the few places the idiom can still reach a run
+        // that read only `--help | head -50`.
+        Hint::new(
+            "Navigate to a URL and read the page it lands on",
+            "ff-rdp navigate <URL> --with-page --query \"<text>\"",
+        ),
     ]
 }
 

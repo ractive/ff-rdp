@@ -95,3 +95,31 @@ fn cli_help_page_text_one_liner_mentions_the_cap_and_query() {
         "page-text's one-liner must name the cap: {line:?}"
     );
 }
+
+/// iter-230 AC: `ff-rdp --help | head -50` contains a `navigate` line carrying
+/// both `--with-page` and `--query`.
+///
+/// The e2e half of `xtask check-help-idioms`' new assertion. iter-228 read six
+/// benchmark trajectories: the one run that spelled
+/// `navigate … --with-page --query` answered in 4 turns, the five that ran bare
+/// `navigate` and then hunted for a ref took 9-11 — and all five read only
+/// `--help | head -50`, where the flag appeared on `click --ref e3` alone, a
+/// line an agent holding no ref cannot use.
+#[test]
+fn cli_help_head_50_carries_the_act_and_see_navigate_line() {
+    let stdout = help();
+    let line = stdout
+        .lines()
+        .take(50)
+        .find(|l| l.contains("ff-rdp navigate"))
+        .unwrap_or_else(|| {
+            panic!("the first 50 lines of --help must show an `ff-rdp navigate` line:\n{stdout}")
+        });
+    for flag in ["--with-page", "--query"] {
+        assert!(
+            line.contains(flag),
+            "the navigate line an agent reads must carry {flag:?}, or it teaches the \
+             bare landing that cost 5 of 6 benchmark runs 4-9 extra turns: {line:?}"
+        );
+    }
+}
