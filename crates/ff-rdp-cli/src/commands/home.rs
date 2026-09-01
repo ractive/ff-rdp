@@ -33,7 +33,7 @@ use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::{connect_and_get_target, connect_direct};
 use super::page_view::{self, CollectOptions, DEFAULT_INTERACTIVE_LIMIT};
-use super::skill_doc::{DESCRIPTION, IDIOMS};
+use super::skill_doc::{DESCRIPTION, IDIOMS, NAVIGATE_IDIOM};
 
 /// Interactive entries kept in the `page` block when the view runs as a
 /// session hook.
@@ -144,8 +144,12 @@ fn hints_for(state: HintState<'_>) -> Vec<String> {
     }
 
     if !state.has_loaded_page {
-        hints.push("ff-rdp navigate <URL>           # blocks until the document commits".into());
-        hints.push("ff-rdp tabs                     # list every open tab".into());
+        // iter-230: the same act-and-see navigate line the Quick start and the
+        // skill teach, not a bare `navigate <URL>` — an agent that lands
+        // without asking for the page spends 4–9 extra turns hunting for a ref.
+        let (command, why) = NAVIGATE_IDIOM;
+        hints.push(format!("{command}  # {why}"));
+        hints.push("ff-rdp tabs  # list every open tab".into());
         return hints;
     }
 
