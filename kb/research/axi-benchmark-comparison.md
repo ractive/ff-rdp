@@ -427,3 +427,83 @@ is correct and, when reached, produces the four-turn trajectory. It is reached o
 **The remaining gap on these two tasks is not the payload any more — it is which line of `--help`
 the agent reads.** That is a one-line change to the Quick start block, and it must be measured the
 same way before anyone claims it worked.
+
+---
+
+## Re-measurement 2026-09-01 (second) — after the Quick-start `navigate` line
+
+[[iteration-230-quickstart-navigate-with-page]]. ff-rdp `30f7e7a` (branch
+`iter-230/quickstart-navigate-with-page`, release build). Same harness, same two tasks,
+`--repeat 3`, same agent and judge (`claude-sonnet-4-6`), same one-paragraph system prompt.
+Port 6000 was verified free before the run and the browser was started and torn down by
+`ffrdp-bench.sh` alone, so this is comparable to the run above. The only product change between
+`cf99c84` and `30f7e7a` is which text `--help` shows: the Quick start's `navigate` row went from
+`ff-rdp navigate <URL>` to `ff-rdp navigate <URL> --with-page --query "<text>"`, and
+`xtask check-help-idioms` now fails if it leaves. No behaviour changed.
+
+| Task | axi | @cf99c84 (09-01, pre) | **@30f7e7a (09-01, post)** | per run |
+|---|---|---|---|---|
+| wikipedia_link_follow | 4.0 | 9.0 | **4.7** / $0.109 / 3 | 5, 5, 4 |
+| wikipedia_infobox_hop | 4.0 | 11.3 | **8.0** / $0.199 / 3 | 6, 9, 9 |
+
+6/6 pass. Averaged over both tasks: **6.3 turns** (was 10.2), **$0.154** (was $0.196), 30.6 s
+(was 41.8 s). `link_follow` meets the ≤ 5 target and matches axi within noise. `infobox_hop`
+does not — 8.0 against a target of 5. **The target is met on one task of two; iteration 230's
+AC 4 is left unticked** rather than reworded.
+
+### Adoption — the quantity this iteration set out to move
+
+| task | run | turns | first command | used `navigate --with-page` |
+|---|---|---|---|---|
+| link_follow | 1 | 5 | `ff-rdp --help \| head -50` | **yes** |
+| link_follow | 2 | 5 | `ff-rdp --help \| head -50` | **yes** |
+| link_follow | 3 | 4 | `ff-rdp --help` (whole file) | **yes** |
+| infobox_hop | 1 | 6 | `ff-rdp --help` (whole file) | **yes** |
+| infobox_hop | 2 | 9 | `ff-rdp --help \| head -50` | **yes** |
+| infobox_hop | 3 | 9 | `ff-rdp --help \| head -50` | **yes** |
+
+**6 of 6, against 1 of 6 before.** Every run that read only `head -50` now uses the idiom, which
+is the mechanism the change predicted. `page-text` calls fell from a mean of 2.2 per run (range
+0–5) to **1.5** (range 0–3). The hypothesis that adoption rather than payload was the gap is
+confirmed on `link_follow` and only partly on `infobox_hop`.
+
+### Why `infobox_hop` is still 8 turns — a different defect
+
+`link_follow`'s winning shape is now the norm — three commands, no ref hunt:
+
+```
+ff-rdp --help | head -50
+ff-rdp navigate ".../Ada_Lovelace" --with-page --query "Charles Babbage"
+ff-rdp click --ref e1 --with-page --query "born birth"
+```
+
+`infobox_hop` runs 2 and 3 are byte-for-byte the same trajectory as each other, and they show
+two costs the Quick-start line cannot touch:
+
+```
+ff-rdp navigate ".../Python_(programming_language)" --with-page --query "stable release"
+ff-rdp page-text --query "Python Software Foundation"        # ref hunt, turn 1
+ff-rdp a11y summary | grep -i "python software foundation"   # ref hunt, turn 2
+ff-rdp dom "a[href*='Python_Software_Foundation']"           # ref hunt, turn 3 → e52
+ff-rdp click --ref e52 --with-page --query "founded formed"
+ff-rdp page-text --query "founded formed"                    # query miss, turn 1
+ff-rdp page-text --full | head -100                          # query miss, turn 2
+```
+
+1. **Infobox `facts` carry no `ref`.** `--query "stable release"` answers from `facts`, and the
+   same infobox holds `Developer: Python Software Foundation` — but `facts` is key→*text*, so the
+   link the task must follow has no handle. Three turns go to recovering a ref that the payload
+   that just answered the question already knew about. This is exactly the ref hunt 230 removed
+   for body links (`interactive[0].ref` = `e1` on Ada Lovelace), still present for infobox links.
+2. **`--query` misses a morphological near-match.** The PSF infobox key is `Formation`;
+   `--query "founded formed"` matches nothing and the agent falls through to `page-text --full`.
+   Two more turns.
+
+Run 1 avoids the second cost only because it queried `"Formation"` by luck.
+
+### Verdict
+
+The Quick-start line did what it was measured to do: adoption 1/6 → 6/6, overall 10.2 → 6.3 turns,
+`link_follow` at target and level with axi. It did **not** get `infobox_hop` to target, and the
+reason is now specific and measured rather than suspected. Filed as
+[[iteration-231-infobox-facts-refs-and-query-matching]].
