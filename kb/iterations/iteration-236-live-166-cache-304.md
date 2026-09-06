@@ -2,7 +2,7 @@
 title: "Iteration 236: live_166 asserts HTTP 200 on a response Firefox caches as 304"
 type: iteration
 date: 2026-08-29
-status: planned
+status: obsolete
 branch: iter-236/live-166-cache-304
 depends_on: []
 dogfood_path: |
@@ -12,6 +12,8 @@ dogfood_path: |
   # second call on a warm cache: expected 304, not 200 — the behaviour live_166 mis-asserts
 tags: [iteration, live-tests, test-reliability]
 ---
+
+> **Merged into [[iteration-235-live-bulk-cap-shrinks-a-process-global]] on 2026-09-06 (DEC-051 addendum):** its themes, tasks and acceptance criteria moved there verbatim as Part B. This file is kept only so inbound links resolve — do not work from it, do not tick anything here.
 
 # Iteration 236: live_166 asserts HTTP 200 on a response Firefox caches as 304
 

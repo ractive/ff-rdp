@@ -2,7 +2,7 @@
 title: "Iteration 251: the daemon's frame-target subscription misses a fixed 15 s bound under a parallel sweep"
 type: iteration
 date: 2026-08-23
-status: planned
+status: obsolete
 branch: iter-251/live-tests-red-under-concurrency
 depends_on: [kb/iterations/iteration-188-live-sweep-cost-and-parallelism.md]
 first_call_sites: []
@@ -27,6 +27,8 @@ dogfood_path: |
   # Record the failure set per run. A fix means three runs with neither name in it.
 tags: [iteration, testing, live-tests, flaky, daemon, carry-over]
 ---
+
+> **Merged into [[iteration-246-sweep-load-misclassification]] on 2026-09-06 (DEC-051 addendum):** its themes, tasks and acceptance criteria moved there verbatim as Part D. This file is kept only so inbound links resolve — do not work from it, do not tick anything here.
 
 # Iteration 251: "passes alone, fails under load" for two daemon-route tests
 

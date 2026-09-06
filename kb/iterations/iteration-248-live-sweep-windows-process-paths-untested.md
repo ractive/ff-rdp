@@ -2,7 +2,7 @@
 title: "Iteration 248: live-sweep's Windows process-tree paths compile but have never run"
 type: iteration
 date: 2026-08-24
-status: planned
+status: obsolete
 branch: iter-248/live-sweep-windows-process-paths
 depends_on: [197]
 first_call_sites: []
@@ -28,6 +28,8 @@ dogfood_path: |
   #    whatever live tests can run there, and say plainly if none can.)
 tags: [iteration, testing, live-tests, windows, tooling, xtask, carry-over]
 ---
+
+> **Merged into [[iteration-245-live-sweep-lost-its-real-root-orphan-guarantee]] on 2026-09-06 (DEC-051 addendum):** its themes, tasks and acceptance criteria moved there verbatim as Part C. This file is kept only so inbound links resolve — do not work from it, do not tick anything here.
 
 # Iteration 248: three Windows-only branches nothing has ever exercised
 

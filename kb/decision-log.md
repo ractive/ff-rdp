@@ -1984,3 +1984,33 @@ them in commit subjects; the new run starts at 233 so no number is reused and
 `iter-N/` merge-commit matching (the loop's done-ness ledger) cannot
 false-positive. 256 was `in-progress` with no branch and no PR; it is `planned`
 again.
+
+### DEC-051 addendum (2026-09-06): the 24-plan run is consolidated into 13 iterations
+
+Twenty-four single-purpose plans meant twenty-four implement/review/merge
+cycles for work that shares files and premises. Plans in the same theme are
+merged: the lowest number in each group survives and gains the others as
+`## Part B/C/D` sections with their themes, tasks and acceptance criteria moved
+verbatim; the absorbed plans are `status: obsolete` with a pointer and are kept
+only so inbound links resolve. `preflight.sh` now treats `obsolete` as
+nothing-to-run, so `/new-ralph-loop 233 256` still covers the range.
+
+| runs as | absorbs | theme |
+|---|---|---|
+| 233 | 234 | tooling: plan-linter CI; hyalo plan-84 disposition |
+| 235 | 236 | the two standing live-suite reds: frame cap, live_166 304 |
+| 237 | 238 | act-and-see timing: submit grace, click not-found |
+| 239 | — | home view single connect |
+| 240 | 241 | daemon: frame desync root cause, wedge, write deadlines |
+| 242 | 243, 244 | live-suite ownership: liveness flake, guard coverage, sweep-only failures |
+| 245 | 247, 248 | live-sweep harness: orphan guarantee, live_158 stack capture, Windows paths |
+| 246 | 249, 250, 251 | live tests red only under sweep load |
+| 252 | — | content-process resources on the direct route |
+| 253 | — | --with-page outgoing-document race |
+| 254 | — | install-hook for Codex and OpenCode |
+| 255 | — | infobox facts refs and --query matching |
+| 256 | — | benchmark harness and re-measurement |
+
+Rules kept: no acceptance criterion was reworded; duplicates across parts are
+marked "tick together" rather than deleted; each merged plan is still one
+branch, one PR, one carry-over sweep.

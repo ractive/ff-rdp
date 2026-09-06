@@ -2,7 +2,7 @@
 title: "Iteration 234: one iteration plan is invisible to hyalo, and every vault sweep has been silently skipping it"
 type: iteration
 date: 2026-08-24
-status: planned
+status: obsolete
 branch: iter-234/plan-84-invisible-to-hyalo
 depends_on: [195]
 first_call_sites: []
@@ -29,6 +29,8 @@ dogfood_path: |
   #    expected AFTER: 0 (or only "skipping cleanly")
 tags: [iteration, tooling, hyalo, process, carry-over]
 ---
+
+> **Merged into [[iteration-233-nothing-runs-the-plan-linter-sweep]] on 2026-09-06 (DEC-051 addendum):** its themes, tasks and acceptance criteria moved there verbatim as Part B. This file is kept only so inbound links resolve — do not work from it, do not tick anything here.
 
 # Iteration 234: `iteration-84` is invisible to every hyalo sweep
 

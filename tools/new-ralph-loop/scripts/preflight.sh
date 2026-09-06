@@ -202,9 +202,11 @@ extract_title() {
   echo "$title"
 }
 
-# --- Check completion status. Echoes one of: pending|done|skipped ---
+# --- Check completion status. Echoes one of: pending|done|skipped|obsolete ---
 # skipped: a merge commit on origin/main references the iteration's branch
 # done:    plan frontmatter status is "completed" or "done"
+# obsolete: plan frontmatter status is "obsolete" (merged into another plan or
+#          withdrawn) — nothing to run, counted with the complete ones
 # pending: otherwise
 check_completion() {
   local n="$1" plan="$2"
@@ -238,6 +240,7 @@ check_completion() {
     fi
     case "${status:-}" in
       completed|done) echo "done"; return ;;
+      obsolete) echo "obsolete"; return ;;
     esac
   fi
 
@@ -312,7 +315,7 @@ if [[ ${#MISSING[@]} -gt 0 ]]; then
   say "WARN: missing plan files for iterations: ${MISSING[*]}"
 fi
 
-SKIPPED=$(jq -r '[.[] | select(.status=="skipped" or .status=="done")] | length' <<<"$ITER_JSON")
+SKIPPED=$(jq -r '[.[] | select(.status=="skipped" or .status=="done" or .status=="obsolete")] | length' <<<"$ITER_JSON")
 PENDING=$(jq -r '[.[] | select(.status=="pending")] | length' <<<"$ITER_JSON")
 say "Summary: $PENDING pending, $SKIPPED already complete"
 

@@ -2,7 +2,7 @@
 title: "Iteration 241: the daemon wedges after ~25 sustained hops and never recovers"
 type: iteration
 date: 2026-08-31
-status: planned
+status: obsolete
 branch: iter-241/daemon-wedge-after-sustained-hops
 depends_on:
   - 224
@@ -21,6 +21,8 @@ dogfood_path: |
   # expected AFTER: 45/45 hops succeed, or the daemon fails loudly and recovers.
 tags: [iteration, daemon, reliability, defect, carry-over]
 ---
+
+> **Merged into [[iteration-240-daemon-frame-desync-root-cause]] on 2026-09-06 (DEC-051 addendum):** its themes, tasks and acceptance criteria moved there verbatim as Part B. This file is kept only so inbound links resolve — do not work from it, do not tick anything here.
 
 # Iteration 241: the daemon wedges after sustained use
 

@@ -10,12 +10,14 @@ dogfood_path: |
   # → after BOTH chunks exit, `count` must be 0, and every profile that does survive must
   #   name its spawning test via the .ff-rdp-owner-test marker (never "unknown test").
 first_call_sites: []
-status: planned
+status: obsolete
 title: "Iteration 243: close the remaining live-suite guard-coverage gaps"
 type: iteration
 tags:
   - iteration
 ---
+
+> **Merged into [[iteration-242-profile-liveness-flake-in-prune-all]] on 2026-09-06 (DEC-051 addendum):** its themes, tasks and acceptance criteria moved there verbatim as Part B. This file is kept only so inbound links resolve — do not work from it, do not tick anything here.
 
 # Iteration 243: close the remaining live-suite guard-coverage gaps
 

@@ -2,7 +2,7 @@
 title: "Iteration 238: click's missed selector waits the full --timeout before reporting not-found"
 type: iteration
 date: 2026-09-01
-status: planned
+status: obsolete
 branch: iter-238/click-not-found-poll-timeout
 depends_on: []
 dogfood_path: |
@@ -19,6 +19,8 @@ tags:
   - carry-over
   - click
 ---
+
+> **Merged into [[iteration-237-submit-navigation-grace-period]] on 2026-09-06 (DEC-051 addendum):** its themes, tasks and acceptance criteria moved there verbatim as Part B. This file is kept only so inbound links resolve — do not work from it, do not tick anything here.
 
 # Iteration 238: `click`'s not-found poll costs a full timeout on a guessed selector
 

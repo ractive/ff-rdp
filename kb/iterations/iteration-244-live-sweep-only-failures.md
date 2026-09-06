@@ -2,7 +2,7 @@
 title: "Iteration 244: live tests that assert on third-party page content, so a slow or changed site reds the sweep"
 type: iteration
 date: 2026-08-23
-status: planned
+status: obsolete
 branch: iter-244/live-sweep-only-failures
 depends_on: [iteration-175-failed-launch-leaks-unmarked-profile-dir]
 first_call_sites: []
@@ -36,6 +36,8 @@ dogfood_path: |
   #   of "Hacker News". Green in isolation 3 minutes later.
 tags: [iteration, live-tests, sweep, carry-over]
 ---
+
+> **Merged into [[iteration-242-profile-liveness-flake-in-prune-all]] on 2026-09-06 (DEC-051 addendum):** its themes, tasks and acceptance criteria moved there verbatim as Part C. This file is kept only so inbound links resolve — do not work from it, do not tick anything here.
 
 # Iteration 244: live tests that only fail under sweep conditions
 

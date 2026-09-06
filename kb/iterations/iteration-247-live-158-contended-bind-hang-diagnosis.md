@@ -2,7 +2,7 @@
 title: "Iteration 247: capture a stack the next time live_158_launch_survives_contended_bind hangs"
 type: iteration
 date: 2026-08-24
-status: planned
+status: obsolete
 branch: iter-247/live-158-contended-bind-hang-diagnosis
 depends_on: [197]
 first_call_sites: []
@@ -23,6 +23,8 @@ dogfood_path: |
   #      thread `live_158_launch_survives_contended_bind` had running.
 tags: [iteration, testing, live-tests, flaky, carry-over]
 ---
+
+> **Merged into [[iteration-245-live-sweep-lost-its-real-root-orphan-guarantee]] on 2026-09-06 (DEC-051 addendum):** its themes, tasks and acceptance criteria moved there verbatim as Part B. This file is kept only so inbound links resolve — do not work from it, do not tick anything here.
 
 # Iteration 247: the hang iteration 197 could not reproduce, made catchable next time
 

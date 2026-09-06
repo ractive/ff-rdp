@@ -2,7 +2,7 @@
 title: "Iteration 249: live_123's decoy-port eval fails under sweep contention and the assertion says nothing about why"
 type: iteration
 date: 2026-08-30
-status: planned
+status: obsolete
 branch: iter-249/live-123-daemon-autostart-under-load
 depends_on: []
 first_call_sites:
@@ -19,6 +19,8 @@ dogfood_path: |
   # expected: ok — it always is alone. That gap is the thing to close.
 tags: [iteration, live-tests, daemon, carry-over, flake]
 ---
+
+> **Merged into [[iteration-246-sweep-load-misclassification]] on 2026-09-06 (DEC-051 addendum):** its themes, tasks and acceptance criteria moved there verbatim as Part B. This file is kept only so inbound links resolve — do not work from it, do not tick anything here.
 
 # Iteration 249: `live_123`'s decoy-port eval fails under sweep contention
 

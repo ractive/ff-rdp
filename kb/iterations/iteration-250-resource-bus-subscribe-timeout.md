@@ -2,7 +2,7 @@
 title: "Iteration 250: live_resource_dedupe times out on its first subscribe under sweep load"
 type: iteration
 date: 2026-08-31
-status: planned
+status: obsolete
 branch: iter-250/resource-bus-subscribe-timeout
 depends_on:
   - 225
@@ -17,6 +17,8 @@ dogfood_path: |
   # ok in 2.6s — which is exactly why this needs its own plan rather than a re-run
 tags: [iteration, live-tests, resource-bus, flake, carry-over]
 ---
+
+> **Merged into [[iteration-246-sweep-load-misclassification]] on 2026-09-06 (DEC-051 addendum):** its themes, tasks and acceptance criteria moved there verbatim as Part C. This file is kept only so inbound links resolve — do not work from it, do not tick anything here.
 
 # Iteration 250: `live_resource_dedupe`'s first subscribe times out under load
 
