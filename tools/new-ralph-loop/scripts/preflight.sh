@@ -117,6 +117,21 @@ SLUG=$(basename "$REPO_ROOT")
 CACHE_DIR="${RALPH_CACHE_DIR:-$HOME/.cache/new-ralph-loop/$SLUG}"
 mkdir -p "$CACHE_DIR"
 
+# --- hyalo vault dir, resolved once -----------------------------------------
+# `hyalo find` prints paths relative to the vault (`dir` in .hyalo.toml), so
+# discover_plan() needs the vault's absolute location to turn a hit into a file.
+# Empty when hyalo is absent or unconfigured; discover_plan then falls back to
+# shell find.
+HYALO_DIR=""
+if command -v hyalo >/dev/null 2>&1; then
+  _hd=$(cd "$REPO_ROOT" && hyalo config --jq '.dir // empty' 2>/dev/null || true)
+  if [[ -n "$_hd" ]]; then
+    if [[ "$_hd" == /* ]]; then HYALO_DIR="$_hd"; else HYALO_DIR="$REPO_ROOT/$_hd"; fi
+    [[ -d "$HYALO_DIR" ]] || HYALO_DIR=""
+  fi
+  unset _hd
+fi
+
 # --- Working-tree cleanliness check ---------------------------------------
 # The workflow's agents operate directly in THIS working tree (branch, commit,
 # switch, merge). Uncommitted changes or untracked files can be swept into an
@@ -145,18 +160,26 @@ discover_plan() {
   if command -v hyalo >/dev/null 2>&1; then
     path=$(cd "$REPO_ROOT" && hyalo find --glob "**/${PLAN_PREFIX}-${n}-*.md" \
              --jq '.results[0].file // empty' 2>/dev/null || true)
-    # hyalo returns paths relative to its auto-detected knowledgebase root,
-    # which may be a subdirectory of $REPO_ROOT. If the path doesn't resolve
-    # under $REPO_ROOT, drop it so shell-find takes over.
+    # hyalo returns paths relative to its vault dir (`dir` in .hyalo.toml,
+    # e.g. "kb"), NOT to $REPO_ROOT. Resolve through $HYALO_DIR before giving
+    # up on the hit — dropping a valid vault-relative path here sent every
+    # lookup into the shell-find fallback, which walked an 18 GB target/ tree
+    # once per iteration (minutes per preflight, 2026-09-06).
     if [[ -n "$path" && ! -f "$REPO_ROOT/$path" ]]; then
-      path=""
+      if [[ -n "$HYALO_DIR" && -f "$HYALO_DIR/$path" ]]; then
+        path="$HYALO_DIR/$path"
+      else
+        path=""
+      fi
     fi
   fi
 
   if [[ -z "$path" ]]; then
-    # Fallback: shell find. Take first match without piping to head (SIGPIPE
-    # interacts badly with set -o pipefail).
-    path=$(cd "$REPO_ROOT" && find . -type f -name "${PLAN_PREFIX}-${n}-*.md" 2>/dev/null \
+    # Fallback: shell find, pruning build/VCS trees so it stays sub-second.
+    # Take first match without piping to head (SIGPIPE interacts badly with
+    # set -o pipefail).
+    path=$(cd "$REPO_ROOT" && find . \( -name target -o -name .git -o -name node_modules \) -prune \
+             -o -type f -name "${PLAN_PREFIX}-${n}-*.md" -print 2>/dev/null \
              | sed -n '1p' | sed 's|^\./||' || true)
   fi
 

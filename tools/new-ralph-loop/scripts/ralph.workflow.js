@@ -15,6 +15,11 @@ export const meta = {
 //     agentCaps: { agentTool: false, sendMessage: true, agentType: null },  // smoke-probed 2026-07-04
 //     skipMissing: false,
 //     startedAt: '<date -u +%FT%TZ>',   // Date.now() is unavailable in workflow scripts
+//     mergeAuthorization: '<text>',     // optional: the repo owner's standing merge authorization, quoted
+//                                       //   verbatim (repo CLAUDE.md or the launch words). Appended to the
+//                                       //   review+merge and ci-wait prompts ONLY — never to implement.
+//     extraContext: '<text>',           // optional: binding run-wide instructions from the user, appended
+//                                       //   to the implement and review+merge prompts.
 //   }
 // Git (merge commits on origin/main) is the only durable ledger. Stop on first failure.
 //
@@ -35,6 +40,12 @@ const copilot = A.copilot === true
 const models = Object.assign({ implement: 'opus', review: 'sonnet', verify: 'haiku' }, A.models || {})
 const caps = Object.assign({ agentTool: false, sendMessage: true, agentType: null }, A.agentCaps || {})
 const skipMissing = A.skipMissing === true
+const mergeAuthorization = typeof A.mergeAuthorization === 'string' && A.mergeAuthorization.trim()
+  ? `\n\n${A.mergeAuthorization.trim()}`
+  : ''
+const extraContext = typeof A.extraContext === 'string' && A.extraContext.trim()
+  ? `\n\nRUN-WIDE INSTRUCTIONS FROM THE USER (binding for every iteration of this run):\n${A.extraContext.trim()}`
+  : ''
 const startedAt = A.startedAt || null
 
 // ---------------------------------------------------------------- schemas
@@ -58,7 +69,7 @@ const REVIEW_SCHEMA = {
   type: 'object',
   required: ['ok', 'merged'],
   properties: {
-    ok: { type: 'boolean', description: 'xtask gates + review + plan-update + carry-over sweep all completed' },
+    ok: { type: 'boolean', description: 'xtask gates + review + plan-update + carry-over sweep + coherence pass all completed' },
     merged: { type: 'boolean', description: 'true only if /merge-pr actually merged and pushed main' },
     blocked_on_ci: { type: 'boolean', description: 'true when ALL review work is complete and ONLY still-pending PR checks prevent the merge — this is a hand-off, not a failure' },
     head_sha: { type: ['string', 'null'], description: 'git rev-parse HEAD of the PR branch — REQUIRED when blocked_on_ci=true' },
@@ -68,6 +79,7 @@ const REVIEW_SCHEMA = {
     xtask_gates: { enum: ['passed', 'fixed-then-passed', 'failed', 'no-xtask'] },
     carry_over_items: { type: ['integer', 'null'], description: 'count of unticked ACs / deferrals / findings placed by the carry-over sweep' },
     next_plan_adapted: { type: 'boolean' },
+    plans_recoherenced: { type: ['integer', 'null'], description: 'count of LATER plans whose stale statements the coherence pass corrected (0 when every later plan still held)' },
     failure_reason: { type: ['string', 'null'], description: 'REQUIRED when ok=false, or when merged=false and blocked_on_ci is not true' },
   },
 }
@@ -101,7 +113,11 @@ confirms" (e.g. /create-pr's test-coverage gate, /merge-pr's pre-flight checks),
 or wait. Instead: resolve the issue autonomously when safely possible (write the missing tests,
 merge main into the branch, fix the conflict, re-run the gates), or — if genuinely unresolvable —
 abandon the remaining steps and return your final structured result with ok=false and a precise
-failure_reason. Never call AskUserQuestion. Never idle waiting for input. Never force-push.`
+failure_reason. Never call AskUserQuestion. Never idle waiting for input. Never force-push.
+STALL WATCHDOG: the harness kills you after ~180 s without a new transcript event. Any command that
+can run quietly longer than ~2 minutes (dependency install, cold build, test suite, gh --watch) must
+be started with run_in_background: true and polled with short cheap checks so events keep flowing —
+never sit in one long silent foreground Bash call.`
 
 function milestoneHow(cap) {
   return cap.sendMessage
@@ -131,10 +147,10 @@ You are implementing iteration ${it.n} of this project${it.title ? ` — "${it.t
 8) Invoke the /create-pr skill (via the Skill tool). Its gates fall under the unattended rule above: satisfy them autonomously (e.g. write missing tests) — never wait for a user. If a PR already exists for this branch (retry scenario), /create-pr updates it; that is fine.
 ${copilotStep}
 10) Milestone: "iter-${it.n} PR #<number> created: <url> — <N> files, +<ins>/−<del>; <one-line headline of the main changes>".
-11) Finish by returning ONLY the structured result. Do NOT write any sentinel or done file — your structured return IS the completion signal.`
+11) Finish by returning ONLY the structured result. Do NOT write any sentinel or done file — your structured return IS the completion signal.${extraContext}`
 }
 
-function reviewPrompt(it, next, impl) {
+function reviewPrompt(it, next, later, impl) {
   const prRef = impl.pr_number
     ? `The PR is #${impl.pr_number}.`
     : `Find the PR number with: gh pr view --json number (on the branch).`
@@ -145,13 +161,20 @@ function reviewPrompt(it, next, impl) {
     ? `the next iteration in this run is ${next.n}, plan at ${next.plan_path}. IMPORTANT: edit that file in place — do NOT rename or move it; the running workflow references this exact path.`
     : `this is the last iteration of the run, so every carry-over item needs a NEW plan file — there is no next plan to fold into.`
   const nextStep = `4) CARRY-OVER SWEEP — do this explicitly, item by item; it is the only thing standing between "not finished" and "silently forgotten". Enumerate, from this iteration: every AC still unticked, every [deferred …] annotation, and every out-of-scope finding you or the implement agent flagged in the plan, the PR body or a milestone. For EACH item, do one of two things and do it now: fold it into the next iteration's plan, or file a new iteration plan for it (same directory and naming convention, validated with the repo's plan checker if it has one). Then list every item and its disposition in the PR body under "## Carry-over". An item you cannot place is not a reason to skip the sweep — file it as its own plan. Here, ${nextTarget}`
-  return `${UNATTENDED}
+  const laterList = later.filter(l => l.plan_path).map(l => `${l.n} at ${l.plan_path}`).join('; ')
+  const laterScope = laterList
+    ? `the later iterations in this run are: ${laterList}. Read each of those, plus any plan outside the run whose depends-on or related list names iteration ${it.n} (hyalo find or grep for the plan's name in the plans directory).`
+    : `there is no later iteration in this run, so the pass covers only plans outside the run whose depends-on or related list names iteration ${it.n} (hyalo find or grep for the plan's name in the plans directory).`
+  const coherenceStep = `4b) COHERENCE PASS over LATER plans — different from the sweep: the sweep moves work forward, this checks that plans written before this merge still describe the repo truthfully. Plans are written against a snapshot of the code and this PR just changed it; a later plan that still says "the console is on the Pages Router" or lists a file this PR deleted will send its implement agent down a dead path. Here, ${laterScope} For each plan, compare its descriptive sections ("What exists", "The reference", conventions, file paths, versions, names of functions/routes/tables) against the real diff of this PR (git diff main...HEAD --stat and the files it touches). Correct every statement this PR made false, in place, in the same style, and say in the sentence what changed it ("since iteration ${it.n}, ..."). DO NOT change any later plan's goal, scope, acceptance criteria or done-when — if a later plan's premise is now wrong in a way that changes its scope, do not rewrite it: add a short "## Needs re-planning after iteration ${it.n}" note at the top of that plan stating what broke and leave the rest untouched; a person decides scope. Edit files in place, never rename or move them. Commit onto the PR branch and push. List every plan you touched and the one-line reason under "## Plan coherence" in the PR body; if nothing needed changing, write that under the same heading so the reader knows the pass ran. Report the count as plans_recoherenced.`
+  return `${UNATTENDED}${mergeAuthorization}
 
 You are reviewing and merging iteration ${it.n}. A PR has already been created. ${prRef} Steps, in order:
 1) cd ${pf.repo_root} && git switch ${impl.branch}. If the repo has crates/xtask: list its subcommands (cargo run -p xtask -- --help) and do not proceed until every check-* gate it actually offers exits 0. Do NOT invent subcommand names not in the help output.
 2) Milestone (${milestoneHow(caps)}): "iter-${it.n} review: running /review-pr on PR #<number>". ${reviewStep} Make the judgment calls yourself; commit and push fixes onto the PR branch.
+   THE LOCAL REVIEW IS BINDING. /review-pr obtains a fresh-context, read-only review (the Agent tool when you have it, otherwise the headless \`claude -p\` subprocess the skill describes; never the /code-review skill, which forks your context and delivers elsewhere). Every finding it returns is either fixed on the branch with a test or answered in the PR body under "## Review" with the specific reason; your own read of the diff does not replace the list. If no fresh-context review could be obtained after one retry, finish steps 3, 4 and 4b, push, and return ok=false with failure_reason "review subagent unavailable" instead of merging: the launching session reviews the PR itself.
 3) Update the plan at ${it.plan_path}: tick every "- [ ]" scope checkbox whose work actually landed in this PR (verify against the real diff — never tick speculatively), update each section heading's [N/M] count, and leave genuinely incomplete boxes unchecked with a short note. NOTHING CHECKS TICK STATE — no gate reads these boxes, so the only thing making them worth anything is that you tick them honestly. Never reword an acceptance criterion to make it fit what happened: if the AC's premise turned out wrong, leave it unticked and say why. Commit onto the PR branch and push.
 ${nextStep}
+${coherenceStep}
 5) Invoke the /merge-pr skill (via the Skill tool). Its pre-flight gates (dirty tree, unpushed commits, behind main, conflicts) fall under the unattended rule: fix the condition (commit, push, merge main into the branch, resolve conflicts) and retry, or fail cleanly with merged=false and a precise failure_reason.
    PENDING PR CHECKS ARE A SPECIAL CASE — never report them as a failure:
    - If the merge is blocked only because PR checks are still running, wait for them: run gh pr checks <PR> --watch (re-run the command if it hits a tool timeout) for up to ~20 minutes total, then retry /merge-pr.
@@ -159,12 +182,12 @@ ${nextStep}
    - If checks are STILL pending when your ~20 minutes are up: return ok=true, merged=false, blocked_on_ci=true, head_sha=$(git rev-parse HEAD), pr_number set. The workflow hands the merge off — do NOT keep waiting past that and do NOT let a forced cutoff catch you mid-wait; return the structured result with time to spare.
    Once /merge-pr's pre-flight passes it merges into main, pushes, and deletes the branch automatically — do not redo its cleanup.
 6) Milestone (${milestoneHow(caps)}): "iter-${it.n} merged: PR #<number> (<findings_fixed> review fixes, merge <sha>)" — or "iter-${it.n} waiting on CI: PR #<number>" — or, if blocked, "iter-${it.n} BLOCKED: <reason>". Up to 3 milestones this phase (the review-start one from step 2, this one, and at most one more if the merge takes a notable detour).
-7) Return ONLY the structured result. "merged" must reflect what /merge-pr actually did, not what you intended. No sentinel files.`
+7) Return ONLY the structured result. "merged" must reflect what /merge-pr actually did, not what you intended. No sentinel files.${extraContext}`
 }
 
 function ciWaitPrompt(it, prNumber, branch) {
   const prRef = prNumber ? `#${prNumber}` : `for branch ${branch} (find it: gh pr view --json number)`
-  return `${UNATTENDED}
+  return `${UNATTENDED}${mergeAuthorization}
 
 Iteration ${it.n}'s review is COMPLETE. PR ${prRef} (branch ${branch}) is ready to merge; only its CI checks were still running. Steps:
 1) cd ${pf.repo_root}. Wait for the checks: run gh pr checks ${prNumber || ''} --watch (re-run the command if it hits a tool timeout) for up to ~25 minutes total.
@@ -215,6 +238,7 @@ phase('Run')
 for (let i = 0; i < pf.iterations.length; i++) {
   const it = pf.iterations[i]
   const next = pf.iterations[i + 1] || null
+  const later = pf.iterations.slice(i + 1).filter(x => x.status === 'pending')
 
   if (it.status !== 'pending') {
     log(`iter-${it.n}: already ${it.status} — skipping`)
@@ -252,7 +276,7 @@ for (let i = 0; i < pf.iterations.length; i++) {
 
   // ---- review + merge ----
   log(`iter-${it.n}: PR ${impl.pr_number ? '#' + impl.pr_number : '(number unknown)'} on ${impl.branch}`)
-  const rev = await agent(reviewPrompt(it, next, impl), {
+  const rev = await agent(reviewPrompt(it, next, later, impl), {
     label: `iter-${it.n} review+merge`,
     phase: 'Run',
     schema: REVIEW_SCHEMA,
