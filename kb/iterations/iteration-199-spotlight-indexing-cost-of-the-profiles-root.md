@@ -52,7 +52,7 @@ wall-clock variance. Immediately after one `--jobs 6` run, load average was 99 o
 with `mds_stores` at 45.9% and `mds` at 20.7%.
 
 Theme D was **not run** in 188: every candidate quiet window on that machine was consumed by a run
-that either carried failures worth chasing on their own ([[iteration-198-live-tests-red-only-under-concurrency]])
+that either carried failures worth chasing on their own ([[iteration-251-live-tests-red-only-under-concurrency]])
 or hung outright ([[iteration-197-live-sweep-has-no-per-test-timeout]]), and the theme's own rule —
 do not publish a superstition — forbids acting on Spotlight without a comparison against the noise
 band. This iteration is that comparison, now that it can be done for the cost of one environment
@@ -122,7 +122,7 @@ contributor's machine the way an env var is.
 
 - Any change to what the sweep asserts. This is a measurement iteration, same as Theme A of 188.
 - Fixing anything in [[iteration-197-live-sweep-has-no-per-test-timeout]] or
-  [[iteration-198-live-tests-red-only-under-concurrency]] — those are their own plans, filed from
+  [[iteration-251-live-tests-red-only-under-concurrency]] — those are their own plans, filed from
   the same source iteration, and their failure signatures must not be allowed to contaminate this
   A/B. If a quiet run cannot be had without one of them firing, wait for a machine/window where it
   can, rather than publishing a comparison with a known confound in it (188 Theme D's own mistake).
@@ -132,7 +132,7 @@ contributor's machine the way an env var is.
 - [[iteration-188-live-sweep-cost-and-parallelism]] — Theme D, filed unmeasured; this plan is that
   measurement
 - [[iteration-197-live-sweep-has-no-per-test-timeout]] — a confound to avoid, not a subject here
-- [[iteration-198-live-tests-red-only-under-concurrency]] — same
+- [[iteration-251-live-tests-red-only-under-concurrency]] — same
 
 ## Closed as obsolete (2026-08-23)
 

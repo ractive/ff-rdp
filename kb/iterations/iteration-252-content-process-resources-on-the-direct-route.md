@@ -1,9 +1,9 @@
 ---
-title: "Iteration 189: audit every other content-process resource subscription on the direct route — iteration 174 fixed only the two navigation waits"
+title: "Iteration 252: audit every other content-process resource subscription on the direct route — iteration 174 fixed only the two navigation waits"
 type: iteration
 date: 2026-08-23
 status: planned
-branch: iter-189/content-process-resources-direct-route
+branch: iter-252/content-process-resources-direct-route
 depends_on:
   - iteration-174-direct-route-reload-never-sees-dom-complete
 first_call_sites: []
@@ -62,7 +62,11 @@ dogfood_path: |
 tags: [iteration, rdp, daemon-parity, carry-over, investigation]
 ---
 
-# Iteration 189: does anything else on the direct route starve on content-process resources?
+# Iteration 252: does anything else on the direct route starve on content-process resources?
+
+> **Renumbered 189 → 252 on 2026-09-06** so the pending queue runs as one contiguous sweep (DEC-051). Older PRs, commits and sweep logs cite it as iteration 189.
+
+> **Premise check (2026-09-06):** the call-site table below is stale. `commands/click.rs`'s site has moved (~:90) and two further `getWatcher` sites omit the flag: `commands/navigate.rs` (~:2796) and `commands/network_watch.rs` (~:118). Re-derive the table with `grep -rn getWatcher crates/ff-rdp-cli/src/commands` before classifying; "all clean, close obsolete" remains a valid outcome.
 
 Carry-over from [[iteration-174-direct-route-reload-never-sees-dom-complete]], filed before that
 PR merges per CLAUDE.md's carry-over rule.

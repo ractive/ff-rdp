@@ -291,7 +291,7 @@ tests failed across the three clean runs, one to three per run, and three of tho
 the identical message `daemon never reported live frame targets` — a fixed 15 s bound in
 `live_137_daemon_mode_parity.rs:116`'s `wait_for_live_targets`, exceeded under sweep load.
 That is one signature, not five flakes, and it is filed as
-[[iteration-198-live-tests-red-only-under-concurrency]] with the measurement it needs.
+[[iteration-251-live-tests-red-only-under-concurrency]] with the measurement it needs.
 
 **Why 6 ships anyway, stated plainly.** Theme A's rule was that a gate must not manufacture reds.
 The comparison that rule needs is against the *serial* sweep, and the serial sweep is not reliably
@@ -299,7 +299,7 @@ green either: A2's own serial row failed `live_160` — the same test run 6 fail
 159's serial sweep was 225 passed / 3 failed. The background flake rate of this corpus is 0-3 per
 run at *any* concurrency, and 6 does not visibly raise it while it removes 33 minutes from every
 iteration's closing gate. Choosing a lower N to buy a green would hide the same race more slowly.
-If [[iteration-198-live-tests-red-only-under-concurrency]] shows that concurrency, not a fixed
+If [[iteration-251-live-tests-red-only-under-concurrency]] shows that concurrency, not a fixed
 poll bound, is the cause, the default comes back down — `--jobs` exists precisely so that is a
 one-flag change and `--jobs 1` restores the pre-188 sweep exactly.
 
@@ -344,7 +344,7 @@ for a file seeded there), so the A/B is one env var, not an `mdutil` change.
 - [x] A concurrency chosen from **three clean runs**, not one, with the failure set at that
       concurrency empty apart from known-open plans [runs 4-6 at `--jobs 6`, each orphan-checked
       before and after; every failure in those runs is owned by
-      [[iteration-198-live-tests-red-only-under-concurrency]], filed from this sweep. Read the
+      [[iteration-251-live-tests-red-only-under-concurrency]], filed from this sweep. Read the
       run table before treating this tick as "it was green" — it was not, and the paragraph under
       the table says why 6 ships regardless.]
 - [x] `live-sweep` runs the CLI tier in parallel, preserving `executed`/`skipped`/`preexisting`/
@@ -358,7 +358,7 @@ for a file seeded there), so the A/B is one env var, not an `mdutil` change.
       `tests/e2e/profiles.rs::profiles_prune_is_scoped_to_ff_rdp_home`. It was deleted rather than
       kept as dead weight in the live tier; the whole-suite real-root guarantee it stood in for is
       unticked below and filed as
-      [[iteration-202-live-sweep-lost-its-real-root-orphan-guarantee]]. `live_175` is unaffected —
+      [[iteration-245-live-sweep-lost-its-real-root-orphan-guarantee]]. `live_175` is unaffected —
       its isolated assertion still exercises a real launch and a real failure mode.]
 - [x] The new wall clock is recorded in this plan next to the 2280 s baseline [282 s / 285 s at
       `--jobs 6` = 8.1×]
@@ -390,10 +390,10 @@ for a file seeded there), so the A/B is one env var, not an `mdutil` change.
       honestly: the whole-suite claim that a completed live sweep leaves no live-owned managed
       profile in the *real* per-user root, which the old precondition stood in for but which
       isolation made untestable from inside that one test. Filed as
-      [[iteration-202-live-sweep-lost-its-real-root-orphan-guarantee]] rather than left silent.]
+      [[iteration-245-live-sweep-lost-its-real-root-orphan-guarantee]] rather than left silent.]
 - [x] The chosen concurrency is backed by three clean runs recorded in this plan, and the failure
       set at that concurrency contains nothing that is not already an open plan
-      [runs 4-6; failure set owned by [[iteration-198-live-tests-red-only-under-concurrency]].
+      [runs 4-6; failure set owned by [[iteration-251-live-tests-red-only-under-concurrency]].
       "Clean" here is the plan's own sense — hygienically clean, orphan-checked — **not**
       failure-free. No `--jobs 6` run was failure-free.]
 - [x] `FF_RDP_HOME` resolves the profiles root, documented in the same terms as `registry_dir()`
@@ -420,7 +420,7 @@ for a file seeded there), so the A/B is one env var, not an `mdutil` change.
 
 - [[iteration-197-live-sweep-has-no-per-test-timeout]] — filed from this iteration's run 3: a
   hung test hangs the sweep forever, and re-opens the nextest question with that evidence
-- [[iteration-198-live-tests-red-only-under-concurrency]] — filed from runs 1-6: the
+- [[iteration-251-live-tests-red-only-under-concurrency]] — filed from runs 1-6: the
   `daemon never reported live frame targets` signature and the four other load-only reds
 - [[iteration-155-live-skip-reports-green]] — why the sweep exists at all
 - [[iteration-173-live-sweep-port-6000-firefox-does-not-survive]] — the accounting this must preserve
@@ -440,6 +440,6 @@ for a file seeded there), so the A/B is one env var, not an `mdutil` change.
   from this iteration's own review/carry-over sweep now that parallelism alone is measured.
 - [[iteration-201-live-tests-onto-recorded-fixtures]] — the "Out of scope" fixture re-tiering
   lever, filed from the same sweep.
-- [[iteration-202-live-sweep-lost-its-real-root-orphan-guarantee]] — the whole-suite real-root
+- [[iteration-245-live-sweep-lost-its-real-root-orphan-guarantee]] — the whole-suite real-root
   orphan guarantee `live_96`'s deleted test used to stand in for, filed when the PR review that
   deleted it noticed the guarantee itself was not replaced.

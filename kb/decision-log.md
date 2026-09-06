@@ -1668,7 +1668,7 @@ only xtask's typed view of it failed, and the error text —
 YAML, wrong shape". Exactly one plan in the tree is genuinely unreadable by
 `hyalo`: `iteration-84-dogfood-56-real-real-fixes.md`, whose `dogfood_path`
 block scalar is 9086 bytes and breaches hyalo's scalar budget. That is a
-separate defect, filed as iteration 205.
+separate defect, filed as iteration 205 (renumbered 234 by DEC-051).
 
 **Applies to**: `crates/xtask/src/check_iteration_plan.rs`, `CONTRIBUTING.md`,
 `kb/iterations/iteration-80-ff-rdp-ergonomics-bundle.md`,
@@ -1729,7 +1729,7 @@ outside the raise lock, 35/200) — one green run proves nothing about a
 `set_max_frame_bytes(1024)` on the process-global cell. It lives in a different
 test binary (the live suite, `--test-threads=1`, env-gated), so it cannot
 affect `cargo test --workspace`; it has nonetheless already broken a sibling
-live test once (DEC-022, iter-114). Filed as iteration 207.
+live test once (DEC-022, iter-114). Filed as iteration 207 (renumbered 235 by DEC-051).
 
 **Applies to**: `crates/ff-rdp-core/src/transport.rs`,
 `crates/ff-rdp-core/src/specs/types.rs`, iter-196.
@@ -1925,3 +1925,62 @@ of `skills/ff-rdp-debug/SKILL.md` is generated from them by
 `cargo run -p xtask -- gen-skill`. `check-skill-drift` fails CI on a mismatch.
 The rest of `SKILL.md` — the symptom router, the playbooks, the output contract
 — stays hand-written prose, because generating that would have destroyed it.
+
+## DEC-051: the pending iteration queue is renumbered 233–256 so one loop run covers it
+
+**Decision** (2026-09-06, kb-only): the 24 pending plans that were scattered
+across 152–232 are renumbered into one contiguous, dependency-ordered run,
+233–256, so `/new-ralph-loop 233 256` drives the whole backlog. The number
+stays in the filename, `title:`, `branch:` and H1; every wikilink and branch
+reference in the repo was rewritten to the new slug, and each moved plan
+carries a `Renumbered N → M` note under its H1 for readers of older PRs.
+
+| new | old | plan |
+|---|---|---|
+| 233 | 206 | nothing runs the plan-linter sweep |
+| 234 | 205 | plan 84 is invisible to hyalo |
+| 235 | 207 | live_bulk_cap shrinks a process global |
+| 236 | 214 | live_166 asserts 200 on a 304 |
+| 237 | 215 | submit navigation grace period |
+| 238 | 232 | click not-found poll timeout |
+| 239 | 218 | home view single connect |
+| 240 | 226 | daemon frame desync root cause |
+| 241 | 227 | daemon wedge after sustained hops |
+| 242 | 204 | profile liveness flake in prune --all |
+| 243 | 152 | live guard coverage sweep |
+| 244 | 190 | live sweep-only failures |
+| 245 | 202 | live-sweep real-root orphan guarantee |
+| 246 | 216 | sweep load misclassification |
+| 247 | 208 | live_158 contended-bind hang diagnosis |
+| 248 | 209 | live-sweep Windows process paths |
+| 249 | 222 | live_123 daemon autostart under load |
+| 250 | 229 | resource bus subscribe timeout |
+| 251 | 198 | live tests red only under concurrency |
+| 252 | 189 | content-process resources on the direct route |
+| 253 | 223 | --with-page outgoing-doc race detection |
+| 254 | 217 | install-hook for Codex and OpenCode |
+| 255 | 231 | infobox facts refs and query matching |
+| 256 | 213 | act-and-see benchmark re-run (harness + measurement) |
+
+**Why this order.** Tooling first (233 gates every later plan file). Then the
+cheap truth fixes whose absence trips later "clean sweep" ACs: 235's 1 KiB
+process-global frame cap is live in every concurrent sweep, 236 is a standing
+two-red-line tax. Daemon root causes (240, 241 — 241 is blocked on 240's
+tracing) before the load-sensitive diagnoses (249–251) whose signatures they
+likely explain. Ownership/liveness prerequisites (242–244) before the sweep
+harness plans (245–248), which all edit `crates/xtask/src/live_sweep.rs` and
+are serialized for that reason. Product changes that alter what the benchmark
+measures (237, 238, 239, 253, 255) before the single paid measurement, 256,
+which lands the harness and re-measures everything above at once.
+
+**Left outside the run.** 147 (console locale) needs a non-English Firefox
+this environment does not have; its own AC says re-defer. 203 (watch
+conditions, third holder) is bookkeeping whose closing AC is a human
+disposition on whether a fourth holder exists; it should be read after the run,
+against the tree the run leaves. Both keep their numbers and `planned` status.
+
+**Not renumbered.** 231/232 were filed five days ago and the merge log names
+them in commit subjects; the new run starts at 233 so no number is reused and
+`iter-N/` merge-commit matching (the loop's done-ness ledger) cannot
+false-positive. 256 was `in-progress` with no branch and no PR; it is `planned`
+again.

@@ -117,11 +117,11 @@ entry point is below the fold of the only text these agents read.
       turns recovering a ref for an infobox link whose text the `facts` payload already returned,
       and two more because `--query "founded formed"` does not match the infobox key `Formation`.
       Neither is reachable from a `--help` line. Filed as
-      [[iteration-231-infobox-facts-refs-and-query-matching]].
+      [[iteration-255-infobox-facts-refs-and-query-matching]].
 
 ## Out of scope
 
-- Changing `--with-page`'s default. That decision ([[iteration-213-act-and-see-benchmark-rerun]]
+- Changing `--with-page`'s default. That decision ([[iteration-256-act-and-see-benchmark-rerun]]
   Theme C) stays gated on a measurement where the flag is actually adopted; this iteration is what
   makes such a measurement possible.
 - Any further change to the page-view payload. 228 showed the payload is not the gap.

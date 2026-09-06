@@ -82,7 +82,7 @@ What to take from mdget regardless of extractor: `mdget-core/src/extract.rs`'s
 post-processing — sentence-boundary `truncate_output`, Wikipedia `[edit]`-link stripping,
 degenerate-table cleanup — for the excerpt.
 
-Decision to be taken in the plan that implements it (see [[iteration-213-act-and-see-benchmark-rerun]]
+Decision to be taken in the plan that implements it (see [[iteration-256-act-and-see-benchmark-rerun]]
 Theme C follow-up): prototype both routes in the dogfood script on Wikipedia/Ada_Lovelace,
 GitHub issues, and a `<main>`-less SPA; record in-content time and whether the Babbage link
 lands in the top 50. Sources: Schwartz "Comparing 13 Rust crates for extracting text from HTML"

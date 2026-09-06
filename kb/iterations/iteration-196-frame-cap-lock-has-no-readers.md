@@ -240,7 +240,7 @@ the carry-over table below.
 
 | item | disposition |
 |---|---|
-| `live_bulk_cap.rs` still calls `set_max_frame_bytes(1024)` on the process-global cell (found while enumerating writers; different test binary, so it cannot redden `cargo test --workspace`) | **file** — [[iteration-207-live-bulk-cap-shrinks-a-process-global]], `check-iteration-plan: OK` |
+| `live_bulk_cap.rs` still calls `set_max_frame_bytes(1024)` on the process-global cell (found while enumerating writers; different test binary, so it cannot redden `cargo test --workspace`) | **file** — [[iteration-235-live-bulk-cap-shrinks-a-process-global]], `check-iteration-plan: OK` |
 | `raised_frame_cap_restores_previous_value_on_drop` was flaky at 35/200 when first written | **closed in this PR** — the snapshot moved inside the raise lock; 200/200 green after |
 | `transport_rejects_deep_json` (1204 B) was a second unguarded victim in `transport.rs`, never previously identified | **closed in this PR** — it no longer depends on any test-mutated cap; its stale comment was corrected |
 | DEC-029's read-guard contract is now unenforceable prose | **closed in this PR** — DEC-029 marked superseded, DEC-048 added |
@@ -252,7 +252,7 @@ the carry-over table below.
   [[iteration-195-check-iteration-plan-fails-on-85-of-222-plans]].
 - **Auditing other process-global test state.** If this iteration finds more, file it; do not
   absorb it. Found one and filed it:
-  [[iteration-207-live-bulk-cap-shrinks-a-process-global]] — `live_bulk_cap.rs` still shrinks the
+  [[iteration-235-live-bulk-cap-shrinks-a-process-global]] — `live_bulk_cap.rs` still shrinks the
   cap to 1 KiB inside the *live* test binary.
 
 ## References

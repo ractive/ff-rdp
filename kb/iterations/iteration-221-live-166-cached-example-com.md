@@ -20,7 +20,7 @@ dogfood_path: |
 tags: [iteration, live-tests, carry-over, flake]
 ---
 
-> **Obsolete (2026-08-31):** duplicate of [[iteration-214-live-166-cache-304]], filed by the
+> **Obsolete (2026-08-31):** duplicate of [[iteration-236-live-166-cache-304]], filed by the
 > iter-220 sweep before checking for an existing plan. Its Tasks B/C and warm-cache AC were
 > folded into 214. Nothing to do here.
 

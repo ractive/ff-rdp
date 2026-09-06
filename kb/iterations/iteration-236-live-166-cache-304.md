@@ -1,9 +1,9 @@
 ---
-title: "Iteration 214: live_166 asserts HTTP 200 on a response Firefox caches as 304"
+title: "Iteration 236: live_166 asserts HTTP 200 on a response Firefox caches as 304"
 type: iteration
 date: 2026-08-29
 status: planned
-branch: iter-214/live-166-cache-304
+branch: iter-236/live-166-cache-304
 depends_on: []
 dogfood_path: |
   ff-rdp launch --headless
@@ -13,7 +13,9 @@ dogfood_path: |
 tags: [iteration, live-tests, test-reliability]
 ---
 
-# Iteration 214: live_166 asserts HTTP 200 on a response Firefox caches as 304
+# Iteration 236: live_166 asserts HTTP 200 on a response Firefox caches as 304
+
+> **Renumbered 214 → 236 on 2026-09-06** so the pending queue runs as one contiguous sweep (DEC-051). Older PRs, commits and sweep logs cite it as iteration 214.
 
 Found by [[iteration-210-act-and-see]]'s closing live sweep
 (`FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1`, 279 passed / 4 failed). Two of the four:

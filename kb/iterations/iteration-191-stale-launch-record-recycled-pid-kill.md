@@ -180,7 +180,7 @@ PID. The ESRCH luck that saved this machine does not exist there.
       reconciles); `live_110_kill_scoping::live_110_replace_never_kills_foreign_firefox ... ok`,
       with the phase-B stale record planted for the port. The one failure,
       `live_174_nav_verbs_resolve_from_events_daemon`, passes alone in 5.41 s — carried to
-      iteration 198]
+      iteration 198, renumbered 251]
 - [x] The dogfood path above runs to its "EXPECTED AFTER" outcome: the sacrificial pid is still
       alive after `launch --replace`, and the envelope is the refusal
       [2026-08-23: victim pid 57281 `kill -0` OK after the command; envelope was

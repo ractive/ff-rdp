@@ -1,9 +1,9 @@
 ---
-title: "Iteration 226: the CLI↔daemon frame stream desynchronises — find the byte that starts it"
+title: "Iteration 240: the CLI↔daemon frame stream desynchronises — find the byte that starts it"
 type: iteration
 date: 2026-08-31
 status: planned
-branch: iter-226/daemon-frame-desync-root-cause
+branch: iter-240/daemon-frame-desync-root-cause
 depends_on:
   - 224
 dogfood_path: |
@@ -22,7 +22,9 @@ dogfood_path: |
 tags: [iteration, daemon, framing, defect, carry-over]
 ---
 
-# Iteration 226: the CLI↔daemon frame stream desynchronises
+# Iteration 240: the CLI↔daemon frame stream desynchronises
+
+> **Renumbered 226 → 240 on 2026-09-06** so the pending queue runs as one contiguous sweep (DEC-051). Older PRs, commits and sweep logs cite it as iteration 226.
 
 ## Why
 
@@ -108,7 +110,7 @@ in a proxy.
 
 - The client-side reconnect from 224 — it stays as defence in depth even once the desync is
   gone.
-- The daemon wedge — [[iteration-227-daemon-wedge-after-sustained-hops]].
+- The daemon wedge — [[iteration-241-daemon-wedge-after-sustained-hops]].
 
 ## References
 

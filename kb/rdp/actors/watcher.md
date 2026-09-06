@@ -486,7 +486,7 @@ those two already did. Suites that subscribe to other content-process
 resources on a direct connection (`console --follow`'s `console-message`, and
 whatever `click.rs` / `emulate.rs` subscribe to) were **not** audited by
 iter-174 — that audit is
-`kb/iterations/iteration-189-content-process-resources-on-the-direct-route.md`,
+`kb/iterations/iteration-252-content-process-resources-on-the-direct-route.md`,
 which claims no defect, only an open question. Plain `console` (no `--follow`)
 is known-good on the direct route: it primes via `startListeners` on the legacy
 target actor, measured working during iter-174.

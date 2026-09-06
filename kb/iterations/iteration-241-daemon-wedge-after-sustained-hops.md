@@ -1,9 +1,9 @@
 ---
-title: "Iteration 227: the daemon wedges after ~25 sustained hops and never recovers"
+title: "Iteration 241: the daemon wedges after ~25 sustained hops and never recovers"
 type: iteration
 date: 2026-08-31
 status: planned
-branch: iter-227/daemon-wedge-after-sustained-hops
+branch: iter-241/daemon-wedge-after-sustained-hops
 depends_on:
   - 224
 dogfood_path: |
@@ -22,7 +22,9 @@ dogfood_path: |
 tags: [iteration, daemon, reliability, defect, carry-over]
 ---
 
-# Iteration 227: the daemon wedges after sustained use
+# Iteration 241: the daemon wedges after sustained use
+
+> **Renumbered 227 → 241 on 2026-09-06** so the pending queue runs as one contiguous sweep (DEC-051). Older PRs, commits and sweep logs cite it as iteration 227.
 
 ## Why
 
@@ -61,7 +63,7 @@ old one.
 ## Themes
 
 - **A — Reproduce and instrument.** Drive 60 hops with the daemon traceable (blocked on
-  [[iteration-226-daemon-frame-desync-root-cause]] Theme A) and a thread dump / heartbeat log,
+  [[iteration-240-daemon-frame-desync-root-cause]] Theme A) and a thread dump / heartbeat log,
   and record where the dispatcher is when the wedge starts.
 - **B — Make a stuck client unable to stop the daemon.** A write deadline on every
   daemon→client write, and a dispatcher that drops a client it cannot write to within it
@@ -97,7 +99,7 @@ old one.
 
 ## Out of scope
 
-- The frame desync — [[iteration-226-daemon-frame-desync-root-cause]].
+- The frame desync — [[iteration-240-daemon-frame-desync-root-cause]].
 
 ## References
 

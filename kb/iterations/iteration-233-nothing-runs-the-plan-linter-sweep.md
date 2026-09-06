@@ -1,9 +1,9 @@
 ---
-title: "Iteration 206: the plan-linter sweep is green for the first time and nothing runs it"
+title: "Iteration 233: the plan-linter sweep is green for the first time and nothing runs it"
 type: iteration
 date: 2026-08-24
 status: planned
-branch: iter-206/enforce-plan-linter-sweep
+branch: iter-233/enforce-plan-linter-sweep
 depends_on: [195]
 first_call_sites: []
 dogfood_path: |
@@ -31,7 +31,9 @@ dogfood_path: |
 tags: [iteration, tooling, ci, process, carry-over]
 ---
 
-# Iteration 206: a green sweep that nobody runs
+# Iteration 233: a green sweep that nobody runs
+
+> **Renumbered 206 → 233 on 2026-09-06** so the pending queue runs as one contiguous sweep (DEC-051). Older PRs, commits and sweep logs cite it as iteration 206.
 
 ## Where this came from
 

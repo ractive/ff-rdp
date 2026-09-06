@@ -1,9 +1,9 @@
 ---
-title: "Iteration 208: capture a stack the next time live_158_launch_survives_contended_bind hangs"
+title: "Iteration 247: capture a stack the next time live_158_launch_survives_contended_bind hangs"
 type: iteration
 date: 2026-08-24
 status: planned
-branch: iter-208/live-158-contended-bind-hang-diagnosis
+branch: iter-247/live-158-contended-bind-hang-diagnosis
 depends_on: [197]
 first_call_sites: []
 dogfood_path: |
@@ -24,7 +24,9 @@ dogfood_path: |
 tags: [iteration, testing, live-tests, flaky, carry-over]
 ---
 
-# Iteration 208: the hang iteration 197 could not reproduce, made catchable next time
+# Iteration 247: the hang iteration 197 could not reproduce, made catchable next time
+
+> **Renumbered 208 → 247 on 2026-09-06** so the pending queue runs as one contiguous sweep (DEC-051). Older PRs, commits and sweep logs cite it as iteration 208.
 
 ## Where this came from
 
@@ -62,7 +64,7 @@ about the four-launch shape without a live repro:
    `slow_flagged_tests`/`unreported_tests` matches `live_158_launch_survives_contended_bind`
    specifically, run a platform stack sampler (`sample <pid> 5` on macOS, `gdb -p <pid> -batch -ex
    'thread apply all bt'` or a `/proc/<pid>/stack`-based dump on Linux — Windows is out of scope,
-   see [[iteration-209-live-sweep-windows-process-paths-untested]]) against the test binary's pid
+   see [[iteration-248-live-sweep-windows-process-paths-untested]]) against the test binary's pid
    **before** the kill, and write it next to wherever the sweep already writes its own output.
    This must not become a second general-purpose feature: gate it to fire only for this one named
    test, so a routine timeout on an unrelated test does not start shelling out to a debugger.
@@ -97,7 +99,7 @@ about the four-launch shape without a live repro:
 - A general stack-capture facility for any timed-out test. Scoped to this one name until a second
   test demonstrates the same failure shape.
 - The Windows side of any of this — no stack sampler is chosen here for that platform; see
-  [[iteration-209-live-sweep-windows-process-paths-untested]].
+  [[iteration-248-live-sweep-windows-process-paths-untested]].
 
 ## References
 

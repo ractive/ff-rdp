@@ -1,9 +1,9 @@
 ---
-title: "Iteration 216: load-sensitive live tests report as product defects"
+title: "Iteration 246: load-sensitive live tests report as product defects"
 type: iteration
 date: 2026-08-30
 status: planned
-branch: iter-216/sweep-load-misclassification
+branch: iter-246/sweep-load-misclassification
 depends_on: []
 dogfood_path: |
   # 1. The launch-timeout misclassification, reproduced under load.
@@ -22,7 +22,11 @@ dogfood_path: |
 tags: [iteration, live-tests, test-reliability, xtask]
 ---
 
-# Iteration 216: load-sensitive live tests report as product defects
+# Iteration 246: load-sensitive live tests report as product defects
+
+> **Renumbered 216 → 246 on 2026-09-06** so the pending queue runs as one contiguous sweep (DEC-051). Older PRs, commits and sweep logs cite it as iteration 216.
+
+> **Scope note (2026-09-06):** Theme D's `live_61q_live_resource_dedupe` row duplicates iteration 250, which runs after this plan and owns that test. Leave that row to 250. AC 5 (two consecutive sweeps failing on the same set or none) assumes 235/236 have landed; they precede this plan in the run.
 
 Found by [[iteration-211-find-not-guess]]'s closing live sweeps. It ran the sweep **twice** —
 gates `FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1` both times, on trees that differ only by
@@ -36,7 +40,7 @@ three test fixes — and both runs reported the same score against a **different
 The first two of run 1 were iter-211's own business (a `page-text` cap that a pre-existing test
 had not been told about, and a fixture whose `<p>`-per-line HTML made `innerText` line numbers
 disagree with source line numbers); both are closed in that PR, and both passed in run 2. The
-`live_166` pair is [[iteration-214-live-166-cache-304]], already filed.
+`live_166` pair is [[iteration-236-live-166-cache-304]], already filed.
 
 What is left is **four tests that failed in one run and passed in the other**, none of which
 touches the surface iter-211 changed. That is the subject of this plan. One green run is not
@@ -171,13 +175,13 @@ reader's time the same way it wasted this one's.
 ## Out of scope
 
 - The `live_166` HTTP 304 failures from the same sweep — already filed as
-  [[iteration-214-live-166-cache-304]].
+  [[iteration-236-live-166-cache-304]].
 - Changing `live_186`'s own assertions. The test is measuring the right thing; the sweep is
   reporting its failure under the wrong heading.
 
 ## References
 
 - [[iteration-211-find-not-guess]] — the two sweeps that found these
-- [[iteration-214-live-166-cache-304]] — the other outstanding live-suite honesty item
+- [[iteration-236-live-166-cache-304]] — the other outstanding live-suite honesty item
 - `crates/xtask/src/live_sweep.rs` — where `vanished`/`launch_timeout`/`timed_out` are classified
 - `crates/ff-rdp-cli/tests/iter_179_harness_stdout_evidence.rs` — `scanned_roots`, Theme C

@@ -1,9 +1,9 @@
 ---
-title: "Iteration 207: live_bulk_cap still shrinks the process-global frame cap for every other live test"
+title: "Iteration 235: live_bulk_cap still shrinks the process-global frame cap for every other live test"
 type: iteration
 date: 2026-08-24
 status: planned
-branch: iter-207/live-bulk-cap-process-global
+branch: iter-235/live-bulk-cap-process-global
 depends_on: [196]
 first_call_sites: []
 dogfood_path: |
@@ -32,7 +32,11 @@ dogfood_path: |
 tags: [iteration, testing, flaky, ff-rdp-cli, live-tests, carry-over]
 ---
 
-# Iteration 207: the live suite still has the writer iteration 196 removed everywhere else
+# Iteration 235: the live suite still has the writer iteration 196 removed everywhere else
+
+> **Renumbered 207 → 235 on 2026-09-06** so the pending queue runs as one contiguous sweep (DEC-051). Older PRs, commits and sweep logs cite it as iteration 207.
+
+> **Premise check (2026-09-06):** the "today the suite runs `--test-threads=1`, so the window is empty" statement below is no longer true. `crates/xtask/src/live_sweep.rs` runs the CLI tier with `--test-threads={jobs}` since iteration 188, so the 1 KiB process-global window is open in every sweep. This is why the plan sits at the front of the run: it is a live confound for 249–251.
 
 ## Where this came from
 
@@ -58,7 +62,7 @@ routinely far larger.
 The RAII guard added in iter-114 (DEC-022) restores the cap afterwards, which fixes the *leak*.
 It does nothing about the *window*. Today the live suite runs `--test-threads=1`, so the window is
 empty in practice — but that is an accident of the runner's flags, not a property of the test, and
-[[iteration-198-live-tests-red-only-under-concurrency]] is explicitly about raising live-suite
+[[iteration-251-live-tests-red-only-under-concurrency]] is explicitly about raising live-suite
 parallelism.
 
 ## What this iteration must decide
@@ -99,7 +103,7 @@ about the 1 KiB cap turns out to be load-bearing.
 
 ## Out of scope
 
-- **Raising live-suite parallelism.** That is [[iteration-198-live-tests-red-only-under-concurrency]];
+- **Raising live-suite parallelism.** That is [[iteration-251-live-tests-red-only-under-concurrency]];
   this iteration only removes one reason it would be unsafe.
 - **Other process-global state in the live binary.** File it, do not absorb it.
 

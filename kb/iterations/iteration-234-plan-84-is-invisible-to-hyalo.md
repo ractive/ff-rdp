@@ -1,9 +1,9 @@
 ---
-title: "Iteration 205: one iteration plan is invisible to hyalo, and every vault sweep has been silently skipping it"
+title: "Iteration 234: one iteration plan is invisible to hyalo, and every vault sweep has been silently skipping it"
 type: iteration
 date: 2026-08-24
 status: planned
-branch: iter-205/plan-84-invisible-to-hyalo
+branch: iter-234/plan-84-invisible-to-hyalo
 depends_on: [195]
 first_call_sites: []
 dogfood_path: |
@@ -30,7 +30,11 @@ dogfood_path: |
 tags: [iteration, tooling, hyalo, process, carry-over]
 ---
 
-# Iteration 205: `iteration-84` is invisible to every hyalo sweep
+# Iteration 234: `iteration-84` is invisible to every hyalo sweep
+
+> **Renumbered 205 → 234 on 2026-09-06** so the pending queue runs as one contiguous sweep (DEC-051). Older PRs, commits and sweep logs cite it as iteration 205.
+
+> **Premise check (2026-09-06):** `hyalo 0.22.0 (2026-09-05)` reads `iteration-84` without a skip warning — Tasks A/B and ACs 1–2 are already satisfied by an upstream hyalo change, not by a merged iteration. Only Task C (a written disposition on whether a silent hyalo skip should be detectable) survives; verify with `hyalo find --file kb/iterations/iteration-84-*.md` on arrival and close `obsolete` if that holds, recording the version.
 
 ## Where this came from
 

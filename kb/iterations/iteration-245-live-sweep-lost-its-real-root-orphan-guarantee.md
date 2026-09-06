@@ -1,9 +1,9 @@
 ---
-title: "Iteration 202: restore the whole-run guarantee that a live sweep leaves no owned profile in the real per-user root"
+title: "Iteration 245: restore the whole-run guarantee that a live sweep leaves no owned profile in the real per-user root"
 type: iteration
 date: 2026-08-23
 status: planned
-branch: iter-202/live-sweep-real-root-orphan-guarantee
+branch: iter-245/live-sweep-real-root-orphan-guarantee
 depends_on: [kb/iterations/iteration-188-live-sweep-cost-and-parallelism.md, kb/iterations/iteration-146-live-suite-reliability.md]
 first_call_sites: []
 dogfood_path: |
@@ -24,7 +24,9 @@ dogfood_path: |
 tags: [iteration, testing, live-tests, tooling, xtask, carry-over]
 ---
 
-# Iteration 202: the guarantee iteration 188's review deleted the test for
+# Iteration 245: the guarantee iteration 188's review deleted the test for
+
+> **Renumbered 202 → 245 on 2026-09-06** so the pending queue runs as one contiguous sweep (DEC-051). Older PRs, commits and sweep logs cite it as iteration 202.
 
 ## Where this came from
 

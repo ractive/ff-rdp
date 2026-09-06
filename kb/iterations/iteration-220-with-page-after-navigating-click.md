@@ -189,8 +189,8 @@ Reconciles: 301 + 3 + 1 + 3 + 3 + 2 = 313 = `executed`. Port 6000 carried a raw
 why `preexisting=0`.
 
 All three reds are carried over — see the PR's `## Carry-over` table.
-[[iteration-214-live-166-cache-304]] (filed as 221 by this sweep, reconciled into 214) and
-[[iteration-222-live-123-daemon-autostart-under-load]] are filed.
+[[iteration-236-live-166-cache-304]] (filed as 221 by this sweep, reconciled into 214, now 236) and
+[[iteration-249-live-123-daemon-autostart-under-load]] are filed.
 
 ### Residual, deliberately not fixed here
 
@@ -204,7 +204,7 @@ here rather than a carry-over iteration: no observed trajectory hits it.
 ## Out of scope
 
 - Anything about *what* the page view contains — that is [[iteration-219-reader-view-page]].
-- The benchmark re-measurement, which is [[iteration-213-act-and-see-benchmark-rerun]]
+- The benchmark re-measurement, which is [[iteration-256-act-and-see-benchmark-rerun]]
   Theme A's harness. Note it cannot produce a fair `wikipedia_link_follow` number until this
   is fixed: the trajectory it measures is exactly the one that times out.
 
@@ -213,6 +213,6 @@ here rather than a carry-over iteration: no observed trajectory hits it.
 - [[iteration-210-act-and-see]] — introduced `--with-page` and `page_view::attach`
 - [[iteration-219-reader-view-page]] — found this while closing; its live tests pass because
   its fixtures commit instantly
-- [[iteration-213-act-and-see-benchmark-rerun]] — blocked by this for the click-through tasks
+- [[iteration-256-act-and-see-benchmark-rerun]] — blocked by this for the click-through tasks
 - `crates/ff-rdp-cli/src/commands/navigate.rs` — `defer_with_page`, the existing fresh-connection
   escape for the same class of problem

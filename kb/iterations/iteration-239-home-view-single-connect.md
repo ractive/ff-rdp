@@ -1,9 +1,9 @@
 ---
-title: "Iteration 218: home view — one RDP connection instead of two"
+title: "Iteration 239: home view — one RDP connection instead of two"
 type: iteration
 date: 2026-08-30
 status: planned
-branch: iter-218/home-view-single-connect
+branch: iter-239/home-view-single-connect
 depends_on: [212]
 first_call_sites:
   - primitive: ff_rdp_cli::commands::connect_tab::connect_and_list_tabs
@@ -15,7 +15,9 @@ dogfood_path: |
 tags: [iteration, cli, agent-ergonomics, performance]
 ---
 
-# Iteration 218: home view — one RDP connection instead of two
+# Iteration 239: home view — one RDP connection instead of two
+
+> **Renumbered 218 → 239 on 2026-09-06** so the pending queue runs as one contiguous sweep (DEC-051). Older PRs, commits and sweep logs cite it as iteration 218.
 
 Carry-over from [[iteration-212-ambient-context]]'s local review pass on PR #232 (finding #4, a
 code-review subagent report; `kb/decision-log.md` DEC-050 covers 212 itself). `commands/home.rs`

@@ -1,9 +1,9 @@
 ---
-title: "Iteration 204: `profiles prune --all` intermittently reports a live-owner profile as not live"
+title: "Iteration 242: `profiles prune --all` intermittently reports a live-owner profile as not live"
 type: iteration
 date: 2026-08-24
 status: planned
-branch: iter-204/profile-liveness-flake-in-prune-all
+branch: iter-242/profile-liveness-flake-in-prune-all
 depends_on: [iteration-193-dogfood-scripts-pkill-and-path-binary]
 first_call_sites: []
 dogfood_path: |
@@ -28,7 +28,9 @@ dogfood_path: |
 tags: [iteration, profiles, flake, liveness]
 ---
 
-# Iteration 204: the live-owner signal is not stable across two calls in one run
+# Iteration 242: the live-owner signal is not stable across two calls in one run
+
+> **Renumbered 204 → 242 on 2026-09-06** so the pending queue runs as one contiguous sweep (DEC-051). Older PRs, commits and sweep logs cite it as iteration 204.
 
 Carry-over from [[iteration-193-dogfood-scripts-pkill-and-path-binary]]'s close.
 

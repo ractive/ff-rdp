@@ -153,7 +153,7 @@ which dominates the iteration loop's wall-clock cost.
   was deleted rather than kept as dead weight in the live tier (found in review of this PR). The
   whole-suite guarantee it used to stand in for — no live-owned managed profile survives in the
   *real* per-user root after a sweep completes — is not asserted anywhere as of this iteration; see
-  `kb/iterations/iteration-202-live-sweep-lost-its-real-root-orphan-guarantee.md`.
+  `kb/iterations/iteration-245-live-sweep-lost-its-real-root-orphan-guarantee.md`.
 - **`preexisting=K` is the third tier** (iter-158 Theme F). The `ff-rdp-core` live tests never
   launch Firefox — they connect to one somebody else started on the fixed default port 6000
   (`support::recording::firefox_port()`). Pre-158 `live-sweep` neither provided that instance nor

@@ -246,7 +246,7 @@ sweep 2: LIVE_SWEEP_SUMMARY executed=282 skipped=0 preexisting=0 vanished=0 laun
 ```
 
 Different single failure each time, both green when re-run in isolation, and both filed as
-[[iteration-190-live-sweep-only-failures]]. Sweep 1's failure was **self-inflicted**: the
+[[iteration-244-live-sweep-only-failures]]. Sweep 1's failure was **self-inflicted**: the
 port-6000 browser started for the `preexisting` tier was started with `ff-rdp launch`, which
 creates a managed profile owned by a live PID — exactly `live_96`'s documented precondition.
 Sweep 2 was re-run with a raw, unmanaged port-6000 Firefox and `live_96` passed.

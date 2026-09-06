@@ -1,9 +1,9 @@
 ---
-title: "Iteration 217: install-hook for Codex and OpenCode, against pinned schemas"
+title: "Iteration 254: install-hook for Codex and OpenCode, against pinned schemas"
 type: iteration
 date: 2026-08-30
 status: planned
-branch: iter-217/hook-targets
+branch: iter-254/hook-targets
 depends_on: [212]
 first_call_sites:
   - primitive: ff_rdp_cli::commands::install_hook::Target::Codex
@@ -18,7 +18,9 @@ dogfood_path: |
 tags: [iteration, cli, agent-ergonomics]
 ---
 
-# Iteration 217: install-hook for Codex and OpenCode
+# Iteration 254: install-hook for Codex and OpenCode
+
+> **Renumbered 217 → 254 on 2026-09-06** so the pending queue runs as one contiguous sweep (DEC-051). Older PRs, commits and sweep logs cite it as iteration 217.
 
 Carry-over from [[iteration-212-ambient-context]] Theme B, task 3. Iteration 212 shipped
 `install-hook --claude` and made `--codex` / `--opencode` exit 1 naming their file locations,

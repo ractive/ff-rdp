@@ -1,5 +1,5 @@
 ---
-branch: iter-152/live-guard-coverage-sweep
+branch: iter-243/live-guard-coverage-sweep
 date: 2026-08-12
 depends_on:
   - kb/iterations/iteration-151-residual-live-firefox-leak.md
@@ -11,13 +11,17 @@ dogfood_path: |
   #   name its spawning test via the .ff-rdp-owner-test marker (never "unknown test").
 first_call_sites: []
 status: planned
-title: "Iteration 152: close the remaining live-suite guard-coverage gaps"
+title: "Iteration 243: close the remaining live-suite guard-coverage gaps"
 type: iteration
 tags:
   - iteration
 ---
 
-# Iteration 152: close the remaining live-suite guard-coverage gaps
+# Iteration 243: close the remaining live-suite guard-coverage gaps
+
+> **Renumbered 152 → 243 on 2026-09-06** so the pending queue runs as one contiguous sweep (DEC-051). Older PRs, commits and sweep logs cite it as iteration 152.
+
+> **Premise check (2026-09-06):** the chunk-A/chunk-B `--test-threads=1` methodology in `dogfood_path` and the ACs predates the parallel `cargo run -p xtask -- live-sweep` (iterations 188/197). Run the verification through the sweep; do not tick the chunk ACs on a runner the repo no longer uses — leave them unticked and say so.
 
 Carry-over from [[iteration-151-residual-live-firefox-leak]]. Filed from the independent
 code review of PR #188 (2026-08-12), which found five real gaps that were out of scope for

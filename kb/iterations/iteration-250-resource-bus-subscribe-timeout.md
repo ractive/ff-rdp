@@ -1,9 +1,9 @@
 ---
-title: "Iteration 229: live_resource_dedupe times out on its first subscribe under sweep load"
+title: "Iteration 250: live_resource_dedupe times out on its first subscribe under sweep load"
 type: iteration
 date: 2026-08-31
 status: planned
-branch: iter-229/resource-bus-subscribe-timeout
+branch: iter-250/resource-bus-subscribe-timeout
 depends_on:
   - 225
 dogfood_path: |
@@ -18,7 +18,9 @@ dogfood_path: |
 tags: [iteration, live-tests, resource-bus, flake, carry-over]
 ---
 
-# Iteration 229: `live_resource_dedupe`'s first subscribe times out under load
+# Iteration 250: `live_resource_dedupe`'s first subscribe times out under load
+
+> **Renumbered 229 → 250 on 2026-09-06** so the pending queue runs as one contiguous sweep (DEC-051). Older PRs, commits and sweep logs cite it as iteration 229.
 
 ## Why
 

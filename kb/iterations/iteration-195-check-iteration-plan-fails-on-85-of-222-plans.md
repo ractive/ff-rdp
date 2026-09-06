@@ -162,13 +162,13 @@ Checking the claim did turn up a real instance of it, in a file this plan never 
 `iteration-84-dogfood-56-real-real-fixes.md` is the one plan `hyalo` genuinely cannot read
 (a 9086-byte block scalar over its `ScalarBytes` budget), and the skip is a stderr warning on an
 otherwise successful exit — so every scripted `hyalo find` in this repo has been silently
-answering from 231 plans. Filed as iteration 205.
+answering from 231 plans. Filed as iteration 205 (renumbered 234).
 
 ### Carry-over
 
-- **[[iteration-205-plan-84-is-invisible-to-hyalo]]** — the one genuinely hyalo-unreadable plan,
+- **[[iteration-234-plan-84-is-invisible-to-hyalo]]** — the one genuinely hyalo-unreadable plan,
   and whether a silent skip should be detectable without reading stderr.
-- **[[iteration-206-nothing-runs-the-plan-linter-sweep]]** — this iteration made the sweep green
+- **[[iteration-233-nothing-runs-the-plan-linter-sweep]]** — this iteration made the sweep green
   because a green sweep is enforceable; wiring the enforcement was not in its tasks or ACs and is
   not done here.
 

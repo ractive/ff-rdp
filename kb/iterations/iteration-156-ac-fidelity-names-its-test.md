@@ -63,7 +63,7 @@ PR the agent also rewrote a test path from `live_109_throttle_block::live_block_
 outcome (verified: both forms yield identical slugs to every heuristic) and only made a Rust path
 non-copy-pasteable. That is regex-dodging reflex, and a mis-firing check is what trains it.
 
-Any iteration *about* live-test infrastructure trips this. [[iteration-152-live-guard-coverage-sweep]]
+Any iteration *about* live-test infrastructure trips this. [[iteration-243-live-guard-coverage-sweep]]
 is next in line.
 
 ## What is achievable

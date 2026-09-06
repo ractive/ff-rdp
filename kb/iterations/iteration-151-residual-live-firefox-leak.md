@@ -217,7 +217,7 @@ in its own right — it breaks the JSON-only output contract for every consumer 
 
 The remaining five review findings (guard coverage in `live_90`, the spawn→guard window in
 `live_142`, owner-marker coverage across raw launch sites, `Drop` signalling a known-dead PID,
-and helper de-duplication) are filed as [[iteration-152-live-guard-coverage-sweep]].
+and helper de-duplication) are filed as [[iteration-243-live-guard-coverage-sweep]].
 
 ## Notes
 

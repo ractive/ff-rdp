@@ -125,7 +125,7 @@ browser command failed with exit 1 ("port 6000 already in use") in 3 of 42 runs.
       and are covered by the seven live tests above, but nobody ran the benchmark, so the turn
       count after this change is unknown and this box stays empty. The harness drives real Claude
       Code agents against live Wikipedia over hours at real per-run cost, and lived in a session
-      scratchpad rather than in this repo. Carried over as [[iteration-213-act-and-see-benchmark-rerun]],
+      scratchpad rather than in this repo. Carried over as [[iteration-256-act-and-see-benchmark-rerun]],
       which lands the harness under `tools/` first so the comparison is reproducible at all.
       Note what remains genuinely open: `--with-page` is opt-in, so an unchanged turn count is a
       possible and publishable outcome — it would mean agents do not discover the flag, which is a
@@ -135,7 +135,7 @@ browser command failed with exit 1 ("port 6000 already in use") in 3 of 42 runs.
 ## Outcome
 
 Landed as `iter-210/act-and-see`. Eight of nine acceptance criteria met; the benchmark re-run was
-not performed and is carried over (see the AC itself, and [[iteration-213-act-and-see-benchmark-rerun]]).
+not performed and is carried over (see the AC itself, and [[iteration-256-act-and-see-benchmark-rerun]]).
 
 ### What shipped
 
@@ -207,7 +207,7 @@ navigated (the returned heading changed). `ENTER_NAVIGATION_GRACE_MS` (600ms) is
 for a real network round-trip past the synthetic-Enter probe; this is a pre-existing tuning gap in
 the grace period, not the error-collapse bug this pass fixed, and not present before this iteration
 either (there was no `navigated_away` before iter-210). Filed as
-[[iteration-215-submit-navigation-grace-period]] rather than fixed blind under time pressure — see
+[[iteration-237-submit-navigation-grace-period]] rather than fixed blind under time pressure — see
 Carry-over below.
 
 ## Design notes
@@ -236,12 +236,12 @@ Every non-green line from the sweep, plus the unticked AC. Dispositions per
 
 | # | Item | Evidence | Disposition |
 |---|---|---|---|
-| 1 | AC "Benchmark: re-run [[axi-benchmark-comparison]] `--repeat 3`" not done | AC left unticked above | **file** — [[iteration-213-act-and-see-benchmark-rerun]] (validated with `check-iteration-plan`) |
-| 2 | `live_166_navigate_document_status::live_166_navigate_reports_document_status` FAILED | `expected HTTP 200, got status: 304` for `https://example.com/`; reproduced on an isolated re-run | **file** — [[iteration-214-live-166-cache-304]] |
-| 3 | `live_166_navigate_document_status::live_166_navigate_status_direct_parity` FAILED | same 304, on the `--no-daemon --with-network` route | **file** — same plan, [[iteration-214-live-166-cache-304]]: one defect, one fix |
+| 1 | AC "Benchmark: re-run [[axi-benchmark-comparison]] `--repeat 3`" not done | AC left unticked above | **file** — [[iteration-256-act-and-see-benchmark-rerun]] (validated with `check-iteration-plan`) |
+| 2 | `live_166_navigate_document_status::live_166_navigate_reports_document_status` FAILED | `expected HTTP 200, got status: 304` for `https://example.com/`; reproduced on an isolated re-run | **file** — [[iteration-236-live-166-cache-304]] |
+| 3 | `live_166_navigate_document_status::live_166_navigate_status_direct_parity` FAILED | same 304, on the `--no-daemon --with-network` route | **file** — same plan, [[iteration-236-live-166-cache-304]]: one defect, one fix |
 | 4 | `live_137_daemon_mode_parity::live_137_consent_accept_via_daemon` FAILED in the sweep | `daemon never reported live frame targets`, `live_target_count: 0` after 18 s | **no plan, with a stated reason** — passed on an isolated re-run at `--test-threads=1`; load-sensitive under the sweep's 6 threads. If it fails again on an isolated run, or in two consecutive sweeps, it needs its own plan. |
 | 5 | `live_navigate_default_fast::live_navigate_elapsed_matches_wall` FAILED in the sweep | `elapsed_ms (715) must be within ±750ms of measured wall (2187); delta 1472ms` | **no plan, with a stated reason** — passed on the same isolated re-run. The test measures wall-clock including process spawn, which the sweep's parallelism inflates; the ±750 ms band is the load-sensitive part, not the product. Same trigger as row 4 for filing. |
-| 6 | `type --ref … --submit` reports `results.navigated: false` after a `requestSubmit()` that demonstrably navigated (the returned `--with-page` heading changed) | Found live during this PR's review-fix pass: `{"submitted":true,"navigated":false,"method":"request_submit","heading":{"level":1,"text":"Turing Award"}}` against Wikipedia | **file** — [[iteration-215-submit-navigation-grace-period]]: `ENTER_NAVIGATION_GRACE_MS` (600ms) is too short for the post-`requestSubmit()` poll over a real network round-trip; not a regression from this PR's `navigated_away` fix (that fix changed what a hard `Err` means, not the timeout path or this constant) |
+| 6 | `type --ref … --submit` reports `results.navigated: false` after a `requestSubmit()` that demonstrably navigated (the returned `--with-page` heading changed) | Found live during this PR's review-fix pass: `{"submitted":true,"navigated":false,"method":"request_submit","heading":{"level":1,"text":"Turing Award"}}` against Wikipedia | **file** — [[iteration-237-submit-navigation-grace-period]]: `ENTER_NAVIGATION_GRACE_MS` (600ms) is too short for the post-`requestSubmit()` poll over a real network round-trip; not a regression from this PR's `navigated_away` fix (that fix changed what a hard `Err` means, not the timeout path or this constant) |
 
 Rows 2 and 3 are one defect: `live_166` hard-asserts HTTP 200 from `https://example.com/`, but
 Firefox's HTTP cache makes a repeat visit a conditional request the server answers **304 Not
@@ -250,7 +250,7 @@ navigation to a reachable page reports 200") is what is wrong. It reproduced on 
 re-run, so it is not load-sensitive. It is **not** caused by this iteration —
 `git diff main...HEAD -- crates/ff-rdp-cli/src/commands/navigate.rs` touches only `--with-page`
 plumbing and nothing in the document-status path — but "not ours" is a diagnosis, not a
-disposition, so it is filed as [[iteration-214-live-166-cache-304]].
+disposition, so it is filed as [[iteration-236-live-166-cache-304]].
 
 ## Out of scope
 

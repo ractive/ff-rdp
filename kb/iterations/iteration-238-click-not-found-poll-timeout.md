@@ -1,9 +1,9 @@
 ---
-title: "Iteration 232: click's missed selector waits the full --timeout before reporting not-found"
+title: "Iteration 238: click's missed selector waits the full --timeout before reporting not-found"
 type: iteration
 date: 2026-09-01
 status: planned
-branch: iter-232/click-not-found-poll-timeout
+branch: iter-238/click-not-found-poll-timeout
 depends_on: []
 dogfood_path: |
   ff-rdp launch --headless
@@ -20,7 +20,9 @@ tags:
   - click
 ---
 
-# Iteration 232: `click`'s not-found poll costs a full timeout on a guessed selector
+# Iteration 238: `click`'s not-found poll costs a full timeout on a guessed selector
+
+> **Renumbered 232 → 238 on 2026-09-06** so the pending queue runs as one contiguous sweep (DEC-051). Older PRs, commits and sweep logs cite it as iteration 232.
 
 ## Why
 
@@ -36,7 +38,7 @@ Carried unfixed across two iterations without ever getting its own plan:
   re-measurement runs (all six clicked by `--ref`, not a guessed selector), and named the
   condition under which it would need a plan: "if a run loses turns to it... it needs its own
   plan."
-- [[iteration-231-infobox-facts-refs-and-query-matching]] repeated the "out of scope" note a third
+- [[iteration-255-infobox-facts-refs-and-query-matching]] repeated the "out of scope" note a third
   time without changing the disposition.
 
 That condition — turn cost, not just wall-clock cost — has not yet fired in a measured benchmark
@@ -113,4 +115,4 @@ shrink the timeout (which would make the legitimate "not rendered yet" case flak
 
 - [[iteration-228-two-task-benchmark-after-facts]] — first observation, "deliberately not acted on"
 - [[iteration-230-quickstart-navigate-with-page]] — carry-over row repeating the disposition
-- [[iteration-231-infobox-facts-refs-and-query-matching]] — carry-over row repeating it a third time
+- [[iteration-255-infobox-facts-refs-and-query-matching]] — carry-over row repeating it a third time

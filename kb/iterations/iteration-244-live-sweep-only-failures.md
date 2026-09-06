@@ -1,9 +1,9 @@
 ---
-title: "Iteration 190: live tests that assert on third-party page content, so a slow or changed site reds the sweep"
+title: "Iteration 244: live tests that assert on third-party page content, so a slow or changed site reds the sweep"
 type: iteration
 date: 2026-08-23
 status: planned
-branch: iter-190/live-sweep-only-failures
+branch: iter-244/live-sweep-only-failures
 depends_on: [iteration-175-failed-launch-leaks-unmarked-profile-dir]
 first_call_sites: []
 dogfood_path: |
@@ -37,7 +37,11 @@ dogfood_path: |
 tags: [iteration, live-tests, sweep, carry-over]
 ---
 
-# Iteration 190: live tests that only fail under sweep conditions
+# Iteration 244: live tests that only fail under sweep conditions
+
+> **Renumbered 190 → 244 on 2026-09-06** so the pending queue runs as one contiguous sweep (DEC-051). Older PRs, commits and sweep logs cite it as iteration 190.
+
+> **Premise check (2026-09-06):** AC 1 asks for a sweep in which `live_96_profile_cleanup::live_profiles_prune_removes_all_when_no_firefox_running` passes, but that test was deleted in iteration 188's review (see `live_151_residual_leak.rs` and iteration 245). Leave the AC unticked with that reason rather than rewording it. Theme B task 3 overlaps iteration 251 (`live_137_consent_accept_via_daemon`); 251 owns that signature.
 
 Carry-over from [[iteration-175-failed-launch-leaks-unmarked-profile-dir]]'s closing sweeps.
 

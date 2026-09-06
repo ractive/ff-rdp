@@ -506,4 +506,4 @@ Run 1 avoids the second cost only because it queried `"Formation"` by luck.
 The Quick-start line did what it was measured to do: adoption 1/6 → 6/6, overall 10.2 → 6.3 turns,
 `link_follow` at target and level with axi. It did **not** get `infobox_hop` to target, and the
 reason is now specific and measured rather than suspected. Filed as
-[[iteration-231-infobox-facts-refs-and-query-matching]].
+[[iteration-255-infobox-facts-refs-and-query-matching]].

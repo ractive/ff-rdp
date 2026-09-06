@@ -1,9 +1,9 @@
 ---
-title: "Iteration 213: re-measure the axi benchmark after act-and-see"
+title: "Iteration 256: re-measure the axi benchmark after act-and-see"
 type: iteration
 date: 2026-08-29
-status: in-progress
-branch: iter-213/act-and-see-benchmark-rerun
+status: planned
+branch: iter-256/act-and-see-benchmark-rerun
 depends_on: [iteration-210-act-and-see, iteration-211-find-not-guess, iteration-212-ambient-context]
 dogfood_path: |
   ff-rdp launch --headless
@@ -14,7 +14,11 @@ dogfood_path: |
 tags: [iteration, benchmark, agent-ergonomics, measurement]
 ---
 
-# Iteration 213: re-measure the axi benchmark after act-and-see
+# Iteration 256: re-measure the axi benchmark after act-and-see
+
+> **Renumbered 213 → 256 on 2026-09-06** so the pending queue runs as one contiguous sweep (DEC-051). Older PRs, commits and sweep logs cite it as iteration 213.
+
+> **Status note (2026-09-06):** was `in-progress` with no branch and no PR; reset to `planned`. Theme E's blocker (iteration 220) merged on 2026-08-30. Theme A (land `tools/axi-bench/` — verified absent today) is autonomous and must land first because 255 Theme C needs the harness. Themes B/D are the paid, hours-long measurement: run once, last, so it covers 237/238/239/253/255 together; if the budget is not there, leave those ACs unticked and file the measurement as carry-over.
 
 [[iteration-210-act-and-see]] shipped `--with-page`, refs from `a11y summary`/`snapshot`,
 `type --submit`, and an idempotent `launch` — every mechanism the

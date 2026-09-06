@@ -1,9 +1,9 @@
 ---
-title: "Iteration 223: --with-page cannot tell a fast outgoing-document answer from the real destination"
+title: "Iteration 253: --with-page cannot tell a fast outgoing-document answer from the real destination"
 type: iteration
 date: 2026-08-31
 status: planned
-branch: iter-223/with-page-outgoing-doc-race-detection
+branch: iter-253/with-page-outgoing-doc-race-detection
 depends_on: [220]
 first_call_sites:
   - primitive: (none yet — investigation first; see Themes)
@@ -23,7 +23,9 @@ dogfood_path: |
 tags: [iteration, act-and-see, page-view, carry-over, defect]
 ---
 
-# Iteration 223: `--with-page` cannot tell a fast outgoing-document answer from the real destination
+# Iteration 253: `--with-page` cannot tell a fast outgoing-document answer from the real destination
+
+> **Renumbered 223 → 253 on 2026-09-06** so the pending queue runs as one contiguous sweep (DEC-051). Older PRs, commits and sweep logs cite it as iteration 223.
 
 ## Why
 

@@ -1,9 +1,9 @@
 ---
-title: "Iteration 209: live-sweep's Windows process-tree paths compile but have never run"
+title: "Iteration 248: live-sweep's Windows process-tree paths compile but have never run"
 type: iteration
 date: 2026-08-24
 status: planned
-branch: iter-209/live-sweep-windows-process-paths
+branch: iter-248/live-sweep-windows-process-paths
 depends_on: [197]
 first_call_sites: []
 dogfood_path: |
@@ -29,7 +29,9 @@ dogfood_path: |
 tags: [iteration, testing, live-tests, windows, tooling, xtask, carry-over]
 ---
 
-# Iteration 209: three Windows-only branches nothing has ever exercised
+# Iteration 248: three Windows-only branches nothing has ever exercised
+
+> **Renumbered 209 → 248 on 2026-09-06** so the pending queue runs as one contiguous sweep (DEC-051). Older PRs, commits and sweep logs cite it as iteration 209.
 
 ## Where this came from
 

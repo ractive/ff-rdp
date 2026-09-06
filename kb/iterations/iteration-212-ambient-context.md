@@ -224,14 +224,14 @@ and `live_home_hook_form_is_trimmed`.
 
 **Carry-over**, all filed before this PR merges:
 
-- [[iteration-217-hook-targets]] — `install-hook --codex` / `--opencode`, gated on pinning each
+- [[iteration-254-hook-targets]] — `install-hook --codex` / `--opencode`, gated on pinning each
   target's entry schema against its published docs first.
-- [[iteration-213-act-and-see-benchmark-rerun]] — the benchmark AC, folded in as its Theme D
+- [[iteration-256-act-and-see-benchmark-rerun]] — the benchmark AC, folded in as its Theme D
   rather than filed as a third plan: it is the same harness, the same 42 tasks and the same money
   as the 210/211 re-run already queued there. That theme also carries the unsettled part — the
   harness passes `--setting-sources ""`, so it must decide and *record* whether it is measuring
   the hook or an `--append-system-prompt` paste of its output.
-- [[iteration-218-home-view-single-connect]] — a fifth finding from PR #232's local review pass
+- [[iteration-239-home-view-single-connect]] — a fifth finding from PR #232's local review pass
   (a code-review subagent): `home.rs` opens two independent RDP connections per invocation
   (`browser_and_tabs`, then `page_block`) where one would do, which matters because the
   `SessionStart` hook runs this command on every agent session. Fixing it means adding a primitive

@@ -94,7 +94,7 @@ round trips?* — is still open. The mechanism is verified (unit tests, five liv
 
 - Any further change to the page view. If the number is still above 5, that is a finding to file,
   not a licence to keep editing the collector inside a measurement iteration.
-- Default-on for `--with-page` — [[iteration-213-act-and-see-benchmark-rerun]] Theme C, which was
+- Default-on for `--with-page` — [[iteration-256-act-and-see-benchmark-rerun]] Theme C, which was
   always gated on this measurement.
 
 ## References
@@ -167,7 +167,7 @@ not a licence to edit the collector, and nothing under `crates/` is touched by t
 - [[iteration-230-quickstart-navigate-with-page]] — put the `navigate <URL> --with-page --query`
   idiom inside the first 50 lines of `--help`, make `check-help-idioms` hold it there, and
   re-measure these two tasks with per-run `navigate --with-page` adoption recorded next to turns.
-- [[iteration-213-act-and-see-benchmark-rerun]] Theme C (default-on `--with-page`) stays gated:
+- [[iteration-256-act-and-see-benchmark-rerun]] Theme C (default-on `--with-page`) stays gated:
   deciding a default from a run where the flag is adopted once in six would be deciding it blind.
 
 ## References

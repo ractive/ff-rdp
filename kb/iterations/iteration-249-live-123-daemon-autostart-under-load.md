@@ -1,9 +1,9 @@
 ---
-title: "Iteration 222: live_123's decoy-port eval fails under sweep contention and the assertion says nothing about why"
+title: "Iteration 249: live_123's decoy-port eval fails under sweep contention and the assertion says nothing about why"
 type: iteration
 date: 2026-08-30
 status: planned
-branch: iter-222/live-123-daemon-autostart-under-load
+branch: iter-249/live-123-daemon-autostart-under-load
 depends_on: []
 first_call_sites:
   - primitive: (none — test-only change; no new pub item)
@@ -20,7 +20,9 @@ dogfood_path: |
 tags: [iteration, live-tests, daemon, carry-over, flake]
 ---
 
-# Iteration 222: `live_123`'s decoy-port eval fails under sweep contention
+# Iteration 249: `live_123`'s decoy-port eval fails under sweep contention
+
+> **Renumbered 222 → 249 on 2026-09-06** so the pending queue runs as one contiguous sweep (DEC-051). Older PRs, commits and sweep logs cite it as iteration 222.
 
 ## Why
 
@@ -103,7 +105,7 @@ the next occurrence is just as uninformative.
 ## Out of scope
 
 - The two `live_166` reds from the same sweep — those are
-  [[iteration-214-live-166-cache-304]] (filed as 221 by this sweep, reconciled into 214).
+  [[iteration-236-live-166-cache-304]] (filed as 221 by this sweep, reconciled into 214, now 236).
 
 ## References
 

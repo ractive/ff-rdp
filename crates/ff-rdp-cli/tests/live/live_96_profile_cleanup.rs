@@ -22,7 +22,7 @@
 //! the whole-suite guarantee that a completed live-sweep run leaves no
 //! live-owned managed profile behind in the *real* per-user root — that
 //! guarantee currently has no test anywhere and is filed as
-//! `kb/iterations/iteration-202-live-sweep-lost-its-real-root-orphan-guarantee.md`.
+//! `kb/iterations/iteration-245-live-sweep-lost-its-real-root-orphan-guarantee.md`.
 //!
 //! Run with:
 //!   FF_RDP_LIVE_TESTS=1 cargo test-live -p ff-rdp-cli \

@@ -1,9 +1,9 @@
 ---
-title: "Iteration 198: the daemon's frame-target subscription misses a fixed 15 s bound under a parallel sweep"
+title: "Iteration 251: the daemon's frame-target subscription misses a fixed 15 s bound under a parallel sweep"
 type: iteration
 date: 2026-08-23
 status: planned
-branch: iter-198/live-tests-red-under-concurrency
+branch: iter-251/live-tests-red-under-concurrency
 depends_on: [kb/iterations/iteration-188-live-sweep-cost-and-parallelism.md]
 first_call_sites: []
 dogfood_path: |
@@ -28,7 +28,9 @@ dogfood_path: |
 tags: [iteration, testing, live-tests, flaky, daemon, carry-over]
 ---
 
-# Iteration 198: "passes alone, fails under load" for two daemon-route tests
+# Iteration 251: "passes alone, fails under load" for two daemon-route tests
+
+> **Renumbered 198 → 251 on 2026-09-06** so the pending queue runs as one contiguous sweep (DEC-051). Older PRs, commits and sweep logs cite it as iteration 198.
 
 ## Where this came from
 

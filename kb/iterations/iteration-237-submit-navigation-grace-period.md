@@ -1,9 +1,9 @@
 ---
-title: "Iteration 215: type --submit under-reports navigated after a slow requestSubmit()"
+title: "Iteration 237: type --submit under-reports navigated after a slow requestSubmit()"
 type: iteration
 date: 2026-08-29
 status: planned
-branch: iter-215/submit-navigation-grace-period
+branch: iter-237/submit-navigation-grace-period
 depends_on: [210]
 first_call_sites:
   - primitive: ff_rdp_cli::commands::type_text::navigated_away
@@ -21,7 +21,9 @@ dogfood_path: |
 tags: [iteration, cli, agent-ergonomics, refs, bugfix]
 ---
 
-# Iteration 215: `type --submit` under-reports `navigated` after a slow `requestSubmit()`
+# Iteration 237: `type --submit` under-reports `navigated` after a slow `requestSubmit()`
+
+> **Renumbered 215 → 237 on 2026-09-06** so the pending queue runs as one contiguous sweep (DEC-051). Older PRs, commits and sweep logs cite it as iteration 215.
 
 Found while manually verifying [[iteration-210-act-and-see]]'s PR #230 review fixes live against
 Wikipedia. `type --ref <search box> --text "Turing Award" --submit --with-page` correctly submits

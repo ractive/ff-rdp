@@ -129,13 +129,13 @@ Two things make this a defect of ours rather than noise:
 ## Out of scope
 
 - The reader excerpt's missing infobox — [[iteration-225-reader-excerpt-infobox]].
-- Re-measuring the benchmark — [[iteration-213-act-and-see-benchmark-rerun]] Task E, after this
+- Re-measuring the benchmark — [[iteration-256-act-and-see-benchmark-rerun]] Task E, after this
   and 225.
 - **Why the CLI→daemon frame stream desynchronises in the first place.** This iteration found
   *that* it does and made both sides survive it; the byte-level cause is
-  [[iteration-226-daemon-frame-desync-root-cause]].
+  [[iteration-240-daemon-frame-desync-root-cause]].
 - The daemon wedge observed twice at ~25 consecutive hops (every later command times out at
-  `phase: recv` and the daemon logs nothing) — [[iteration-227-daemon-wedge-after-sustained-hops]].
+  `phase: recv` and the daemon logs nothing) — [[iteration-241-daemon-wedge-after-sustained-hops]].
 - `tracing` output never reaching `~/.ff-rdp/daemon.log` — filed inside 226, since it is what
   blocked a byte-level trace here.
 
@@ -175,7 +175,7 @@ than the wire, is on the *other* direction and would corrupt the CLI's framer ra
 daemon's: a client socket is written by two threads with no shared lock — the dispatcher via
 `SharedState::rpc_writer`, and the client thread via the `own_writer` / heartbeat clones — so
 two concurrent `write_all`s can interleave. Filed as
-[[iteration-226-daemon-frame-desync-root-cause]] with the capture plan.
+[[iteration-240-daemon-frame-desync-root-cause]] with the capture plan.
 
 ### Reproduction, before and after
 
@@ -256,14 +256,14 @@ Before this branch those two events were silent closes.
 
 | # | item | disposition |
 |---|---|---|
-| 1 | AC 2 unmet — the Theme C live test does not fail on `5a0071d`, because the flake does not reproduce against a local fixture (0 in 90 hops) | **no plan.** Nothing measured is left to act on: the contract cover exists and passes, and the reproduction lives in the `.dogfood.sh` against the real page. What would change that: a local fixture that *does* reproduce the desync — [[iteration-226-daemon-frame-desync-root-cause]] Theme A is what would find one |
-| 2 | Why the CLI↔daemon frame stream desynchronises (`unexpected byte 0x3d/0x20/0x6c in length prefix`) — diagnosed as far as "the daemon's framer resumed mid-payload", not to a writer | **filed:** [[iteration-226-daemon-frame-desync-root-cause]] |
-| 3 | The daemon emits no `tracing` output at all (`RUST_LOG` reaches the `_daemon` process — `ps eww` — but no `tracing` line reaches `~/.ff-rdp/daemon.log`, while `eprintln!` lines do). This blocked the byte-level trace Theme A asked for | **filed:** [[iteration-226-daemon-frame-desync-root-cause]] Theme A, task 1 — it is the thing standing in front of that iteration |
-| 4 | The daemon wedges after ~25 sustained hops: every later command times out at `phase: recv`, the daemon logs nothing, only a restart clears it. Seen twice, on two daemon processes and two Firefox instances | **filed:** [[iteration-227-daemon-wedge-after-sustained-hops]] |
-| 5 | `live_96_profile_cleanup::live_daemon_stop_profile_path_matches_launch_json` — failed in **both** sweeps (`profile_removed: false` after `stopped: true`); passes alone | **folded** into [[iteration-204-profile-liveness-flake-in-prune-all]] with the evidence. Not environmental-and-dismissed: a reclamation that reports `false` with no reason is a defect of ours |
-| 6 | `live_171_recycled_owner_pid::live_171_recycled_owner_pid_no_longer_reads_as_live` — failed in sweep 1, passed in sweep 2 and alone | **folded** into [[iteration-198-live-tests-red-only-under-concurrency]]'s table |
-| 7 | `live_160_envelope_honesty::live_160_type_emits_key_events` — failed in sweep 2 with `daemon did not respond within the timeout after auth`, passed in sweep 1 | **folded** into [[iteration-198-live-tests-red-only-under-concurrency]]'s table; it is that plan's second signature (`live_165`'s message) on a different test, which is new information for it |
-| 8 | Two client sockets are written by two threads with no shared lock (dispatcher via `rpc_writer`, client thread via its `own_writer`/heartbeat clones) — found by reading the code, not measured | **filed:** [[iteration-226-daemon-frame-desync-root-cause]] Theme B, as the leading hypothesis with a capture plan rather than a fix applied blind |
+| 1 | AC 2 unmet — the Theme C live test does not fail on `5a0071d`, because the flake does not reproduce against a local fixture (0 in 90 hops) | **no plan.** Nothing measured is left to act on: the contract cover exists and passes, and the reproduction lives in the `.dogfood.sh` against the real page. What would change that: a local fixture that *does* reproduce the desync — [[iteration-240-daemon-frame-desync-root-cause]] Theme A is what would find one |
+| 2 | Why the CLI↔daemon frame stream desynchronises (`unexpected byte 0x3d/0x20/0x6c in length prefix`) — diagnosed as far as "the daemon's framer resumed mid-payload", not to a writer | **filed:** [[iteration-240-daemon-frame-desync-root-cause]] |
+| 3 | The daemon emits no `tracing` output at all (`RUST_LOG` reaches the `_daemon` process — `ps eww` — but no `tracing` line reaches `~/.ff-rdp/daemon.log`, while `eprintln!` lines do). This blocked the byte-level trace Theme A asked for | **filed:** [[iteration-240-daemon-frame-desync-root-cause]] Theme A, task 1 — it is the thing standing in front of that iteration |
+| 4 | The daemon wedges after ~25 sustained hops: every later command times out at `phase: recv`, the daemon logs nothing, only a restart clears it. Seen twice, on two daemon processes and two Firefox instances | **filed:** [[iteration-241-daemon-wedge-after-sustained-hops]] |
+| 5 | `live_96_profile_cleanup::live_daemon_stop_profile_path_matches_launch_json` — failed in **both** sweeps (`profile_removed: false` after `stopped: true`); passes alone | **folded** into [[iteration-242-profile-liveness-flake-in-prune-all]] with the evidence. Not environmental-and-dismissed: a reclamation that reports `false` with no reason is a defect of ours |
+| 6 | `live_171_recycled_owner_pid::live_171_recycled_owner_pid_no_longer_reads_as_live` — failed in sweep 1, passed in sweep 2 and alone | **folded** into [[iteration-251-live-tests-red-only-under-concurrency]]'s table |
+| 7 | `live_160_envelope_honesty::live_160_type_emits_key_events` — failed in sweep 2 with `daemon did not respond within the timeout after auth`, passed in sweep 1 | **folded** into [[iteration-251-live-tests-red-only-under-concurrency]]'s table; it is that plan's second signature (`live_165`'s message) on a different test, which is new information for it |
+| 8 | Two client sockets are written by two threads with no shared lock (dispatcher via `rpc_writer`, client thread via its `own_writer`/heartbeat clones) — found by reading the code, not measured | **filed:** [[iteration-240-daemon-frame-desync-root-cause]] Theme B, as the leading hypothesis with a capture plan rather than a fix applied blind |
 
 ### C — cover
 

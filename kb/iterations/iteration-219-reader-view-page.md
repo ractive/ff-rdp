@@ -200,7 +200,7 @@ junk-description guard on excerpts port directly; its benchmark lesson — agent
       excerpt lacks the infobox (→ 225) and one hop hit a daemon reset (→ 224).** Target ≤ 5 (were 8.3 / 8.3 on
       2026-08-30). A number that did not improve is a valid result and must not be re-run until
       it looks better; if agents still did not use `--with-page`, say so — that reopens
-      [[iteration-213-act-and-see-benchmark-rerun]] Theme C's default-on question with evidence
+      [[iteration-256-act-and-see-benchmark-rerun]] Theme C's default-on question with evidence
 - [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q`
       clean; live sweep reconciles [2026-08-30: 1163+ unit/e2e pass, 0 fail; sweep
       `executed=299 skipped=0 preexisting=9 vanished=0 launch_timeout=0 timed_out=0 total=308`
@@ -253,7 +253,7 @@ _returns_the_destination_text`, excerpt contains "1791"), but the criterion's ow
 is Wikipedia, and there it fails.
 
 **The benchmark was not run.** Theme F's `wikipedia_link_follow` / `wikipedia_infobox_hop`
-re-measurement needs the harness that [[iteration-213-act-and-see-benchmark-rerun]] owns, plus
+re-measurement needs the harness that [[iteration-256-act-and-see-benchmark-rerun]] owns, plus
 API spend, neither of which this iteration had. It is also *blocked* on iteration 220: the
 trajectory it measures is the one that times out. AC 6 is unticked and no number is claimed —
 the honest state is "the two defects the benchmark diagnosed are fixed; whether that moves the
@@ -270,9 +270,9 @@ All three failures are pre-existing and already have plans:
 
 | test | diagnosis | disposition |
 |---|---|---|
-| `live_166_navigate_reports_document_status` | `example.com` served HTTP 304 from cache; the test asserts 200 | already filed as [[iteration-214-live-166-cache-304]] |
+| `live_166_navigate_reports_document_status` | `example.com` served HTTP 304 from cache; the test asserts 200 | already filed as [[iteration-236-live-166-cache-304]] |
 | `live_166_navigate_status_direct_parity` | same cause | same plan |
-| `live_212::live_home_with_page_lists_tabs_and_refs` | load-sensitive; passes in isolation, failed only under the full sweep | already filed as [[iteration-216-sweep-load-misclassification]] |
+| `live_212::live_home_with_page_lists_tabs_and_refs` | load-sensitive; passes in isolation, failed only under the full sweep | already filed as [[iteration-246-sweep-load-misclassification]] |
 
 `preexisting=9` are the `ff-rdp-core` suites that need a browser on the fixed port 6000; a raw
 `firefox --start-debugger-server 6000 --headless` was started for them and never opened the
@@ -311,14 +311,14 @@ port on this machine, so the sweep classified them `ignored` as designed. Nine t
 
 ## Out of scope
 
-- **Defaulting `--with-page` on.** That decision belongs to [[iteration-213-act-and-see-benchmark-rerun]]
+- **Defaulting `--with-page` on.** That decision belongs to [[iteration-256-act-and-see-benchmark-rerun]]
   Theme C and needs Theme F's numbers first; a measurement iteration must not become a
   behaviour-change one and vice versa.
 - **`ff-rdp read` — a Markdown reader-view command** (mdget on the live DOM). Natural follow-up
   once the injection exists; not needed for the benchmark gap. File as its own plan if wanted.
 - **Renaming `--with-page`.** The payload now matches the name.
 - Cross-page "this link is on every page" chrome detection (needs daemon state).
-- Landing the benchmark harness in `tools/` — [[iteration-213-act-and-see-benchmark-rerun]]
+- Landing the benchmark harness in `tools/` — [[iteration-256-act-and-see-benchmark-rerun]]
   Theme A; Theme F here runs it from wherever it lives and says so.
 
 ## References
@@ -330,7 +330,7 @@ port on this machine, so the sweep classified them `ignored` as designed. Nine t
 - [[iteration-210-act-and-see]] — introduced `--with-page` and `page_view.rs`
 - [[iteration-211-find-not-guess]] — `--query`, `QueryArgs`, `page_text::build_excerpt`
 - [[iteration-212-ambient-context]] — `skill_doc.rs` IDIOMS table, `check-skill-drift`
-- [[iteration-213-act-and-see-benchmark-rerun]] — owns the default-on decision and the harness
+- [[iteration-256-act-and-see-benchmark-rerun]] — owns the default-on decision and the harness
 - `~/devel/mdget/crates/mdget-core/src/extract.rs` — `truncate_output`, `strip_edit_links`,
   `looks_like_junk_description`
 - https://github.com/mozilla/readability — `@mozilla/readability` 0.6.0, Apache-2.0

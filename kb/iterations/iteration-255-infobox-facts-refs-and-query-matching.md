@@ -1,9 +1,9 @@
 ---
-title: "Iteration 231: give infobox facts a ref, and stop --query missing Formation for \"formed\""
+title: "Iteration 255: give infobox facts a ref, and stop --query missing Formation for \"formed\""
 type: iteration
 date: 2026-09-01
 status: planned
-branch: iter-231/infobox-facts-refs-and-query-matching
+branch: iter-255/infobox-facts-refs-and-query-matching
 depends_on:
   - 230
 dogfood_path: |
@@ -27,7 +27,9 @@ tags:
   - carry-over
 ---
 
-# Iteration 231: the two costs left in `wikipedia_infobox_hop`
+# Iteration 255: the two costs left in `wikipedia_infobox_hop`
+
+> **Renumbered 231 → 255 on 2026-09-06** so the pending queue runs as one contiguous sweep (DEC-051). Older PRs, commits and sweep logs cite it as iteration 231.
 
 ## Why
 
@@ -111,7 +113,7 @@ Five of eight commands are recovering things the payload already had.
 
 ## Out of scope
 
-- Changing `--with-page`'s default. Still gated on [[iteration-213-act-and-see-benchmark-rerun]]
+- Changing `--with-page`'s default. Still gated on [[iteration-256-act-and-see-benchmark-rerun]]
   Theme C; 230 made adoption real without it, which is evidence *against* needing the default flip,
   not for it.
 - `click`'s not-found poll (a missed selector waits the full `--timeout`). Carried unfixed from

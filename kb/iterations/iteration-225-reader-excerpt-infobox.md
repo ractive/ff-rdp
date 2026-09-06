@@ -117,7 +117,7 @@ The 5-turn run that did happen (`link_follow` run 1: `navigate --with-page` → 
 ## Out of scope
 
 - The 1-in-5 daemon reset on `click --ref --with-page` — [[iteration-224-with-page-daemon-connection-reset]].
-- Default-on for `--with-page` — [[iteration-213-act-and-see-benchmark-rerun]] Theme C, after C here.
+- Default-on for `--with-page` — [[iteration-256-act-and-see-benchmark-rerun]] Theme C, after C here.
 
 ## References
 
@@ -183,7 +183,7 @@ The 5-turn run that did happen (`link_follow` run 1: `navigate --with-page` → 
 ### Carry-over
 
 - [[iteration-228-two-task-benchmark-after-facts]] — the measurement, on a browser the run owns.
-- [[iteration-229-resource-bus-subscribe-timeout]] — the load-sensitive subscribe timeout this
+- [[iteration-250-resource-bus-subscribe-timeout]] — the load-sensitive subscribe timeout this
   iteration's first sweep surfaced.
 - [[iteration-230-quickstart-navigate-with-page]] — what 228's trajectories showed is actually in
   the way: the act-and-see idiom is below the fold of the only help text these agents read.
@@ -213,5 +213,5 @@ away:
 - `live_61q_resource_bus::live_resource_dedupe` timed out on its first `subscribe` — one failure
   in 311 tests at `--test-threads=6`, green alone in 2.6 s and green in the second full sweep.
   Nothing here touches the resource bus. Filed as
-  [[iteration-229-resource-bus-subscribe-timeout]]; "environmental" is a diagnosis, not a
+  [[iteration-250-resource-bus-subscribe-timeout]]; "environmental" is a diagnosis, not a
   disposition.
