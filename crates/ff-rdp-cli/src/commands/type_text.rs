@@ -263,12 +263,51 @@ fn press_enter_and_submit(
         console_actor,
         &url_before,
         request_submit_grace_ms(wait_timeout_ms),
-    );
+    ) || navigated_after_refresh(ctx, &url_before);
     Ok(json!({
         "submitted": true,
         "navigated": navigated,
         "method": "request_submit",
     }))
+}
+
+/// The authoritative second opinion after [`navigated_away`] came back "no"
+/// following a real `form.requestSubmit()`.
+///
+/// iter-237 Part A. Measured against Wikipedia, the grace period is not what
+/// loses the navigation, and lengthening it alone changes nothing: while
+/// Firefox is committing the new document it stops answering
+/// `evaluateJSAsync` on the pre-submit console actor entirely, so the *first*
+/// poll iteration blocks on the socket read for the transport's own deadline
+/// (`--timeout`, 10 s by default). That single read outlives any grace period
+/// shorter than it; the loop wakes with `ProtocolError::Timeout`, finds its
+/// own deadline long past, and answers "no navigation" having never completed
+/// one probe. Widening `REQUEST_SUBMIT_NAVIGATION_GRACE_MS` moved that
+/// boundary but not the outcome — `navigated: false` still shipped next to a
+/// `results.page` carrying the destination's `<h1>`.
+///
+/// So rather than infer navigation from the *absence* of an answer (a plain
+/// timeout is genuinely ambiguous — a same-page handler that never navigates
+/// produces one too), ask the question again where it can be answered: drop
+/// the torn-down target, re-resolve the tab's fronts, and read
+/// `location.href` off the document that actually exists now. That is the
+/// same recovery `--with-page` already performs to collect `results.page`,
+/// which is exactly why `results.page` was right about the destination while
+/// `results.navigated` was wrong about reaching it.
+///
+/// Returns `false` on any probe failure: an unreadable location is not
+/// evidence of a navigation.
+fn navigated_after_refresh(ctx: &mut ConnectedTab, url_before: &str) -> bool {
+    use ff_rdp_core::WebConsoleActor;
+
+    ctx.refresh_target();
+    let console_actor = ctx.target.console_actor.clone();
+    let before_lit = serde_json::to_string(url_before).unwrap_or_else(|_| "\"\"".to_owned());
+    let js = format!("window.location.href !== {before_lit}");
+    match WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, &js) {
+        Ok(result) if result.exception.is_none() => super::js_helpers::is_truthy(&result.result),
+        _ => false,
+    }
 }
 
 /// Poll for `window.location.href` moving away from `url_before`.
