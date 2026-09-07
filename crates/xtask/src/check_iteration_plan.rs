@@ -526,8 +526,8 @@ fn repo_iterations_dir() -> Option<PathBuf> {
 /// parse failure into the finding list instead of returning `Err`.
 ///
 /// Single-file mode can afford to `?` on a parse error — there is nothing else to
-/// report. A sweep cannot: one unreadable file must not hide the verdict on the
-/// other 250. Pure apart from the borrowed `siblings` list, so the sweep's
+/// report. A sweep cannot: one unreadable file must not hide the verdict on every
+/// other plan in the directory. Pure apart from the borrowed `siblings` list, so the sweep's
 /// behaviour is unit-testable without a directory on disk.
 fn check_plan_content(
     path: &Path,
@@ -587,7 +587,7 @@ fn run_sweep(dir: &Path) -> Result<()> {
     // uniqueness check needs is done once rather than once per plan.
     let siblings = collect_sibling_plans(&files[0]);
 
-    let mut failed: Vec<&PathBuf> = Vec::new();
+    let mut failed = 0usize;
     let mut warned = 0usize;
     for path in &files {
         let content =
@@ -599,7 +599,7 @@ fn run_sweep(dir: &Path) -> Result<()> {
         if findings.is_empty() {
             continue;
         }
-        failed.push(path);
+        failed += 1;
         eprintln!(
             "check-iteration-plan: {} finding(s) in {}",
             findings.len(),
@@ -610,23 +610,22 @@ fn run_sweep(dir: &Path) -> Result<()> {
         }
     }
 
-    // The grandfathered pre-discipline plans warn on every run (82 of them, up to
-    // two lines each). Printing all of that would bury a real failure, so the
+    // The DEC-047 grandfathered plans warn on every run — 86 of the 260 plans do,
+    // up to two lines each. Printing all of that would bury a real failure, so the
     // sweep counts them and names the per-file command that prints the detail.
     println!(
         "check-iteration-plan: swept {} plan(s) in {}: {} failed, {} with warnings only",
         files.len(),
         dir.display(),
-        failed.len(),
+        failed,
         warned
     );
-    if failed.is_empty() {
+    if failed == 0 {
         return Ok(());
     }
     eprintln!(
-        "check-iteration-plan: {} plan(s) failed. Re-run on one file for its warnings too: \
-         cargo run -p xtask -- check-iteration-plan <plan>",
-        failed.len()
+        "check-iteration-plan: {failed} plan(s) failed. Re-run on one file for its warnings too: \
+         cargo run -p xtask -- check-iteration-plan <plan>"
     );
     std::process::exit(1);
 }

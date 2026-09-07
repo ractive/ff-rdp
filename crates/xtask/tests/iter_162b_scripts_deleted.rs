@@ -265,13 +265,14 @@ fn ci_162b_discipline_job_xtask_steps_are_pinned() {
         .filter(|l| l.contains("cargo run -p xtask --"))
         .collect();
     // 2 after iter-162b, 3 after iter-212 added `check-skill-drift`, 5 after
-    // iter-219 added `check-help-idioms` and `check-vendored-js`. The point of
-    // the count is that growing CI's gate list is a deliberate edit here, not
-    // that the number is 2 forever.
+    // iter-219 added `check-help-idioms` and `check-vendored-js`, 6 after
+    // iter-233 added `check-iteration-plan kb/iterations`. The point of the
+    // count is that growing CI's gate list is a deliberate edit here, not that
+    // the number is 2 forever.
     assert_eq!(
         invocations.len(),
-        5,
-        "expected exactly 5 xtask steps in CI, found: {invocations:#?}"
+        6,
+        "expected exactly 6 xtask steps in CI, found: {invocations:#?}"
     );
     for line in &invocations {
         // Take the subcommand only — trailing arguments are legitimate.
