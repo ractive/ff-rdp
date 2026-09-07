@@ -30,6 +30,7 @@
 
 use std::collections::HashMap;
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::Value;
 
@@ -143,6 +144,55 @@ fn fixture_routes() -> HashMap<String, FixtureRoute> {
 }
 
 // ---------------------------------------------------------------------------
+// Why these tests fetch a *fresh* example.com URL every time (iteration 235
+// Part B — is 304 acceptable here?)
+// ---------------------------------------------------------------------------
+
+/// Serial number making each `example.com` URL below unique within a process.
+static CACHE_BUSTER: AtomicU64 = AtomicU64::new(0);
+
+/// A `https://example.com` URL Firefox has never fetched, returned as
+/// `(url_as_typed, url_after_canonicalisation)`.
+///
+/// # Why the cache buster
+///
+/// `example.com` answers with `Cache-Control: max-age=604800`, so the *second*
+/// and later navigations to it inside one profile are conditional requests and
+/// the origin answers `304 Not Modified`. These two tests asserted a flat
+/// `200` and so were red on any warm profile — twice in production sweeps
+/// (iteration 210, 2026-08-24; iteration 220, 2026-08-30), each time costing
+/// an investigation that concluded the same thing.
+///
+/// **The 304 is ff-rdp being right, and the assertion was wrong.**
+/// `results.status` reporting the document's real 304 is precisely the
+/// document-status truthfulness iteration 166 was built to deliver; the test
+/// encoded "the first, uncached fetch" as if it were "any fetch".
+///
+/// So 304 is *not* accepted here — it is *prevented*. A unique query string
+/// gives every navigation its own HTTP cache key, making the load
+/// unconditional, so the strict `200` keeps its original meaning: **the server
+/// answered 200**. The alternative — widening the assertion to "200 or 304" —
+/// was rejected deliberately: it would then also pass if ff-rdp reported 304
+/// for a navigation that genuinely got 200, which is exactly the class of
+/// defect iteration 166 exists to catch.
+///
+/// The query string does not weaken the canonicalisation coverage that is the
+/// point of the no-trailing-slash leg: Firefox still rewrites
+/// `https://example.com?x` to `https://example.com/?x`, the missing-slash shape
+/// that *was* the iteration 166 defect.
+fn uncached_example_url(path: &str) -> (String, String) {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let serial = CACHE_BUSTER.fetch_add(1, Ordering::Relaxed);
+    let query = format!("?ff-rdp-cache-bust={nanos}-{serial}");
+    (
+        format!("https://example.com{path}{query}"),
+        format!("https://example.com/{query}"),
+    )
+}
+
+// ---------------------------------------------------------------------------
 // AC live_166_navigate_reports_document_status
 // ---------------------------------------------------------------------------
 
@@ -171,27 +221,28 @@ fn live_166_navigate_reports_document_status() {
     let global = daemon_args(port);
 
     // No trailing slash — the form the plan's dogfood_path uses and the form
-    // that reported `null` on main.
-    let results = navigate_ok(&global, &["https://example.com"], "daemon");
+    // that reported `null` on main. Each leg gets its own cache-busting query
+    // so the fetch is unconditional and `200` stays the honest expectation;
+    // see `uncached_example_url`.
+    let (url, canonical) = uncached_example_url("");
+    let results = navigate_ok(&global, &[&url], "daemon");
     assert_eq!(
-        results["committed_url"], "https://example.com/",
+        results["committed_url"], canonical,
         "sanity: the navigation itself must have succeeded, got {results}"
     );
     assert_eq!(results["ready_state"], "complete");
     assert_status(&results, 200, "daemon, no trailing slash");
 
     // The canonical form must agree — it worked on main and must not regress.
-    let results = navigate_ok(&global, &["https://example.com/"], "daemon");
+    let (url, _) = uncached_example_url("/");
+    let results = navigate_ok(&global, &[&url], "daemon");
     assert_status(&results, 200, "daemon, trailing slash");
 
     // `--with-network` reaches the status through an entirely separate code
     // path (it drains the daemon buffer rather than correlating a streamed
     // event). It reported `null` on main too, and must now agree.
-    let results = navigate_ok(
-        &global,
-        &["https://example.com", "--with-network"],
-        "daemon --with-network",
-    );
+    let (url, _) = uncached_example_url("");
+    let results = navigate_ok(&global, &[&url, "--with-network"], "daemon --with-network");
     assert_status(&results, 200, "daemon --with-network");
 
     stop_daemon(port);
@@ -224,18 +275,19 @@ fn live_166_navigate_status_direct_parity() {
     let port = ff.port();
     let global = direct_args(port);
 
-    let results = navigate_ok(&global, &["https://example.com"], "direct");
+    // Fresh URL per leg — see `uncached_example_url` for why a repeat fetch
+    // would legitimately report 304 and why widening the assertion to accept
+    // it was the wrong fix.
+    let (url, canonical) = uncached_example_url("");
+    let results = navigate_ok(&global, &[&url], "direct");
     assert_eq!(
-        results["committed_url"], "https://example.com/",
+        results["committed_url"], canonical,
         "sanity: the navigation itself must have succeeded, got {results}"
     );
     assert_status(&results, 200, "--no-daemon, no trailing slash");
 
-    let results = navigate_ok(
-        &global,
-        &["https://example.com", "--with-network"],
-        "direct --with-network",
-    );
+    let (url, _) = uncached_example_url("");
+    let results = navigate_ok(&global, &[&url, "--with-network"], "direct --with-network");
     assert_status(&results, 200, "--no-daemon --with-network");
 }
 
