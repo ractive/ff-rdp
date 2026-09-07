@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use ff_rdp_core::{
     ActorId, DeviceActor, FrontKind, ProtocolError, RdpConnection, RdpTransport, Registry,
-    ResourceCommand, RootActor, Session, TabActor, TargetInfo,
+    ResourceCommand, RootActor, Session, TabActor, TabInfo, TargetInfo,
 };
 use serde_json::json;
 
@@ -76,7 +76,8 @@ pub fn connect_and_get_target(cli: &Cli) -> Result<ConnectedTab, AppError> {
             // still propagates through the envelope via `?` below.
             eprintln!("{w}");
         }
-    })?;
+    })
+    .map_err(ConnectFailure::into_app_error)?;
 
     handshake_and_resolve_tab(connection, cli, via_daemon)
 }
@@ -85,7 +86,8 @@ pub fn connect_and_get_target(cli: &Cli) -> Result<ConnectedTab, AppError> {
 /// connects directly to Firefox.  Use this for commands (e.g. screenshot)
 /// whose protocol interactions are incompatible with the daemon proxy.
 pub fn connect_direct(cli: &Cli) -> Result<ConnectedTab, AppError> {
-    let connection = connect_to_firefox(&cli.host, cli.port, cli, false, None)?;
+    let connection = connect_to_firefox(&cli.host, cli.port, cli, false, None)
+        .map_err(ConnectFailure::into_app_error)?;
 
     handshake_and_resolve_tab(connection, cli, false)
 }
@@ -102,7 +104,7 @@ fn connect_to_firefox(
     cli: &Cli,
     via_daemon: bool,
     auth_token: Option<&str>,
-) -> Result<RdpConnection, AppError> {
+) -> Result<RdpConnection, ConnectFailure> {
     let timeout = Duration::from_millis(cli.timeout);
 
     if let Some(token) = auth_token {
@@ -111,29 +113,36 @@ fn connect_to_firefox(
         // 2. Send auth frame.
         // 3. Then proceed with the normal connect (reads greeting).
         let mut transport =
-            RdpTransport::connect_raw(host, port, timeout).map_err(|e| match e {
-                ProtocolError::ConnectionFailed(_) | ProtocolError::Timeout => {
-                    AppError::Connection(format!(
-                        "could not connect to daemon on port {port} — try --no-daemon to connect directly to Firefox.\n\
-                         hint: run `ff-rdp doctor` to inspect daemon health."
-                    ))
-                }
-                other => AppError::from(other),
+            RdpTransport::connect_raw(host, port, timeout).map_err(|e| {
+                let detail = e.to_string();
+                let app = match e {
+                    ProtocolError::ConnectionFailed(_) | ProtocolError::Timeout => {
+                        AppError::Connection(format!(
+                            "could not connect to daemon on port {port} — try --no-daemon to connect directly to Firefox.\n\
+                             hint: run `ff-rdp doctor` to inspect daemon health."
+                        ))
+                    }
+                    other => AppError::from(other),
+                };
+                ConnectFailure { app, detail }
             })?;
 
         // Send the auth frame before any other request.
-        transport
-            .send(&json!({"auth": token}))
-            .map_err(|e| AppError::Internal(anyhow::anyhow!("sending daemon auth frame: {e}")))?;
+        transport.send(&json!({"auth": token})).map_err(|e| {
+            ConnectFailure::same(AppError::Internal(anyhow::anyhow!(
+                "sending daemon auth frame: {e}"
+            )))
+        })?;
 
         // Read the greeting (daemon sends it after successful auth).
         // If the daemon closes the connection here it rejected our auth token.
         // If it times out, the daemon is overloaded or the socket is stale.
         let greeting = transport.recv().map_err(|e| {
+            let detail = e.to_string();
             // Distinguish: a read timeout (or transient I/O error) means the
             // daemon isn't responding, not that the token was wrong
             // (E1 — honest error messages).
-            if e.is_transient() {
+            let app = if e.is_transient() {
                 AppError::Timeout(
                     "daemon did not respond within the timeout after auth — \
                      the daemon may be overloaded or the connection is stale.\n\
@@ -145,7 +154,8 @@ fn connect_to_firefox(
                     "daemon auth rejected (wrong token): {e}\n\
                      hint: stop the running daemon (`ff-rdp daemon stop`) or use --no-daemon."
                 ))
-            }
+            };
+            ConnectFailure { app, detail }
         })?;
 
         // Verify protocol version — a mismatch means the running daemon is a
@@ -160,10 +170,10 @@ fn connect_to_firefox(
             .unwrap_or(0);
         let expected = crate::daemon::server::DAEMON_PROTOCOL_VERSION;
         if daemon_version != expected {
-            return Err(AppError::DaemonVersionMismatch {
+            return Err(ConnectFailure::same(AppError::DaemonVersionMismatch {
                 daemon: daemon_version,
                 cli: expected,
-            });
+            }));
         }
 
         // Now wrap in RdpConnection. We already consumed the greeting; pass it
@@ -173,81 +183,268 @@ fn connect_to_firefox(
         ));
     }
 
-    RdpConnection::connect(host, port, timeout).map_err(|e| match e {
-        ProtocolError::ConnectionFailed(_) | ProtocolError::Timeout if !via_daemon => {
-            AppError::Connection(format!(
-                "could not connect to Firefox at {}:{} — is Firefox running with --start-debugger-server {}?\n\
-                 hint: run `ff-rdp doctor` for a full diagnostic, or `ff-rdp launch` to start Firefox with debugging enabled.",
-                cli.host, cli.port, cli.port
-            ))
+    RdpConnection::connect(host, port, timeout).map_err(|e| {
+        let detail = e.to_string();
+        let app = match e {
+            ProtocolError::ConnectionFailed(_) | ProtocolError::Timeout if !via_daemon => {
+                AppError::Connection(format!(
+                    "could not connect to Firefox at {}:{} — is Firefox running with --start-debugger-server {}?\n\
+                     hint: run `ff-rdp doctor` for a full diagnostic, or `ff-rdp launch` to start Firefox with debugging enabled.",
+                    cli.host, cli.port, cli.port
+                ))
+            }
+            ProtocolError::ConnectionFailed(_) | ProtocolError::Timeout if via_daemon => {
+                AppError::Connection(format!(
+                    "could not connect to daemon on port {port} — try --no-daemon to connect directly to Firefox.\n\
+                     hint: run `ff-rdp doctor` to inspect daemon health."
+                ))
+            }
+            other => AppError::from(other),
+        };
+        ConnectFailure { app, detail }
+    })
+}
+
+/// A [`connect_to_firefox`] failure, keeping the raw transport error next to
+/// the user-facing message built from it.
+///
+/// The two are not interchangeable. [`AppError::Connection`]'s text is written
+/// for a terminal — multi-line, with a `hint:` line naming `ff-rdp doctor` —
+/// which is right for a command that is about to abort, and wrong for the home
+/// view, whose `browser.detail` JSON field wants the one-line transport reason
+/// and emits its own hints separately. So the constructor keeps both and each
+/// caller takes the half it needs.
+struct ConnectFailure {
+    app: AppError,
+    /// The underlying transport error, undressed.
+    detail: String,
+}
+
+impl ConnectFailure {
+    /// A failure whose raw detail is simply the user-facing message — used for
+    /// the daemon-handshake errors that have no distinct transport-level text.
+    fn same(app: AppError) -> Self {
+        let detail = app.to_string();
+        Self { app, detail }
+    }
+
+    fn into_app_error(self) -> AppError {
+        self.app
+    }
+}
+
+/// How [`connect_and_list_tabs`] should reach Firefox.
+///
+/// This is an explicit parameter rather than a lookup inside the primitive
+/// because [`resolve_connection_target`] *starts* a daemon when it does not
+/// find one, and the home view must never do that ([[decision-log]] DEC-050:
+/// "the home view starts nothing"). Making the caller hand over the registry
+/// entry it already read turns that rule into something the type system keeps,
+/// and saves the redundant second registry read the old `page_block` paid for.
+pub enum TabListRouting<'a> {
+    /// Straight to Firefox's debugger port. Touches no daemon, starts nothing.
+    Direct,
+    /// Through the proxy of a daemon that is **already running** — so the refs
+    /// handed out by a later [`TabListing::attach`] are live handles in that
+    /// daemon's ref store.
+    RunningDaemon {
+        proxy_port: u16,
+        auth_token: &'a str,
+    },
+}
+
+/// Why [`connect_and_list_tabs`] gave up.
+///
+/// The two variants are the two states the home view renders differently: a
+/// browser that never answered is `reachable: false` and sends the agent to
+/// `launch`, while a browser that greeted us and then failed `listTabs` is
+/// `reachable: true` and sends it to `doctor`.
+pub enum TabListError {
+    /// The TCP connect or the RDP greeting never landed.
+    Connect {
+        error: AppError,
+        /// The raw transport reason, without the multi-line hint text — see
+        /// [`ConnectFailure`].
+        detail: String,
+    },
+    /// The greeting landed but `listTabs` did not: the browser *is* reachable.
+    ListTabs {
+        /// The version from the greeting, which is already known at this point.
+        firefox_version: Option<u32>,
+        error: AppError,
+    },
+}
+
+impl TabListError {
+    /// Collapse to the error a normal command would have reported.
+    pub fn into_app_error(self) -> AppError {
+        match self {
+            Self::Connect { error, .. } | Self::ListTabs { error, .. } => error,
         }
-        ProtocolError::ConnectionFailed(_) | ProtocolError::Timeout if via_daemon => {
-            AppError::Connection(format!(
-                "could not connect to daemon on port {port} — try --no-daemon to connect directly to Firefox.\n\
-                 hint: run `ff-rdp doctor` to inspect daemon health."
-            ))
+    }
+}
+
+/// A live connection that has greeted Firefox and listed its tabs, but has not
+/// yet attached to one of them.
+///
+/// This is the split that lets the home view (iter-239) get both the full tab
+/// list *and* an attached target from a single connect: it reads
+/// [`tabs`](Self::tabs) for its `tabs` block, then calls
+/// [`attach`](Self::attach) on the same connection for the focused tab's
+/// accessibility view. Before, those were two independent `connect` calls —
+/// two TCP round trips and two RDP handshakes for one invocation of the
+/// command the `SessionStart` hook runs on every agent session.
+pub struct TabListing {
+    connection: RdpConnection,
+    /// The version the RDP greeting carried, before any device-actor fallback.
+    greeting_version: Option<u32>,
+    tabs: Vec<TabInfo>,
+    via_daemon: bool,
+}
+
+impl TabListing {
+    /// The full `listTabs` payload — every tab, not just the resolved one.
+    pub fn tabs(&self) -> &[TabInfo] {
+        &self.tabs
+    }
+
+    /// The Firefox version as the greeting reported it, or `None` when the
+    /// greeting omitted `ua`.
+    ///
+    /// Deliberately *not* the device-actor fallback [`attach`](Self::attach)
+    /// resolves: this is what the connection announced about itself, and the
+    /// home view reports it verbatim rather than a value synthesised by a
+    /// round trip it may never make.
+    pub fn greeting_version(&self) -> Option<u32> {
+        self.greeting_version
+    }
+
+    /// Resolve the target tab on **this** connection and call `getTarget` on
+    /// it, yielding the same [`ConnectedTab`] a plain
+    /// [`connect_and_get_target`] would have produced.
+    pub fn attach(self, cli: &Cli) -> Result<ConnectedTab, AppError> {
+        let Self {
+            mut connection,
+            greeting_version,
+            tabs,
+            via_daemon,
+        } = self;
+
+        // When the RDP greeting omits the `ua` field (some Firefox builds strip
+        // it), try the device actor's `getDescription` as a version fallback.
+        // This ensures `remembered_version()` is populated for all downstream
+        // callers (e.g. `version_mismatch_message()` in the screenshot path) and
+        // that the compatibility warning is emitted based on the resolved
+        // version, not the (absent) greeting one.
+        let effective_version = if greeting_version.is_none() {
+            DeviceActor::query_version(connection.transport_mut()).unwrap_or(None)
+        } else {
+            greeting_version
+        };
+        if effective_version != greeting_version {
+            connection.set_firefox_version(effective_version);
         }
-        other => AppError::from(other),
+        crate::connection_meta::remember_version(effective_version);
+
+        let tab = crate::tab_target::resolve_tab_with_context(
+            &tabs,
+            cli.tab.as_deref(),
+            cli.tab_id.as_deref(),
+            &cli.host,
+            cli.port,
+        )?;
+        let tab_actor = tab.actor.clone();
+
+        let target_info =
+            TabActor::get_target(connection.transport_mut(), &tab_actor).map_err(AppError::from)?;
+
+        // Consume the RdpConnection and build a Session so all subsequent
+        // actor interactions use the registry for front resolution.
+        let firefox_version = connection.firefox_version();
+        let transport = connection.into_transport();
+        let session = Session::new(transport);
+
+        // Register the target front (WindowGlobalTarget) and its console front.
+        // These two are always present after getTarget.
+        register_target_fronts(session.registry(), &target_info);
+
+        Ok(ConnectedTab {
+            session,
+            firefox_version,
+            target: target_info,
+            tab_actor,
+            via_daemon,
+        })
+    }
+}
+
+/// Connect once and list every tab, leaving the connection open so the caller
+/// can [`attach`](TabListing::attach) to one of them without reconnecting.
+///
+/// Unlike [`connect_and_get_target`], the route is the caller's decision (see
+/// [`TabListRouting`]) and no daemon is ever started. Unlike both existing
+/// entry points, the error distinguishes "never reached the browser" from
+/// "reached it, and `listTabs` failed" — the split the home view renders as
+/// `reachable: false` vs `reachable: true` with a `detail`.
+pub fn connect_and_list_tabs(
+    cli: &Cli,
+    routing: TabListRouting<'_>,
+) -> Result<TabListing, TabListError> {
+    let (host, port, via_daemon, auth_token) = match routing {
+        TabListRouting::Direct => (cli.host.as_str(), cli.port, false, None),
+        TabListRouting::RunningDaemon {
+            proxy_port,
+            auth_token,
+        } => ("127.0.0.1", proxy_port, true, Some(auth_token)),
+    };
+
+    let connection = connect_to_firefox(host, port, cli, via_daemon, auth_token).map_err(
+        |ConnectFailure { app, detail }| TabListError::Connect { error: app, detail },
+    )?;
+
+    handshake_and_list_tabs(connection, via_daemon)
+}
+
+/// Greet, remember the version, and run `listTabs`.
+fn handshake_and_list_tabs(
+    mut connection: RdpConnection,
+    via_daemon: bool,
+) -> Result<TabListing, TabListError> {
+    let greeting_version = connection.firefox_version();
+    // Remember the greeting version *before* `listTabs`, so a `listTabs`
+    // failure still leaves downstream error paths able to name the version.
+    // `attach` overwrites it with the device-actor fallback when there is one;
+    // `remember_version` ignores a `None`, so the ordering is safe either way.
+    crate::connection_meta::remember_version(greeting_version);
+
+    let tabs = match RootActor::list_tabs(connection.transport_mut()) {
+        Ok(tabs) => tabs,
+        Err(e) => {
+            return Err(TabListError::ListTabs {
+                firefox_version: greeting_version,
+                error: AppError::from(e),
+            });
+        }
+    };
+
+    Ok(TabListing {
+        connection,
+        greeting_version,
+        tabs,
+        via_daemon,
     })
 }
 
 /// Run the RDP handshake: list tabs, resolve the target tab, call `getTarget`,
 /// and register the discovered actor fronts in the session registry.
 fn handshake_and_resolve_tab(
-    mut connection: RdpConnection,
+    connection: RdpConnection,
     cli: &Cli,
     via_daemon: bool,
 ) -> Result<ConnectedTab, AppError> {
-    // When the RDP greeting omits the `ua` field (some Firefox builds strip
-    // it), try the device actor's `getDescription` as a version fallback.
-    // This ensures `remembered_version()` is populated for all downstream
-    // callers (e.g. `version_mismatch_message()` in the screenshot path) and
-    // that the compatibility warning is emitted based on the resolved
-    // version, not the (absent) greeting one.
-    let greeting_version = connection.firefox_version();
-    let effective_version = if greeting_version.is_none() {
-        DeviceActor::query_version(connection.transport_mut())
-            .unwrap_or(None)
-            .or(greeting_version)
-    } else {
-        greeting_version
-    };
-    if effective_version != greeting_version {
-        connection.set_firefox_version(effective_version);
-    }
-    crate::connection_meta::remember_version(effective_version);
-
-    let tabs = RootActor::list_tabs(connection.transport_mut()).map_err(AppError::from)?;
-
-    let tab = crate::tab_target::resolve_tab_with_context(
-        &tabs,
-        cli.tab.as_deref(),
-        cli.tab_id.as_deref(),
-        &cli.host,
-        cli.port,
-    )?;
-    let tab_actor = tab.actor.clone();
-
-    let target_info =
-        TabActor::get_target(connection.transport_mut(), &tab_actor).map_err(AppError::from)?;
-
-    // Consume the RdpConnection and build a Session so all subsequent
-    // actor interactions use the registry for front resolution.
-    let firefox_version = connection.firefox_version();
-    let transport = connection.into_transport();
-    let session = Session::new(transport);
-
-    // Register the target front (WindowGlobalTarget) and its console front.
-    // These two are always present after getTarget.
-    register_target_fronts(session.registry(), &target_info);
-
-    Ok(ConnectedTab {
-        session,
-        firefox_version,
-        target: target_info,
-        tab_actor,
-        via_daemon,
-    })
+    handshake_and_list_tabs(connection, via_daemon)
+        .map_err(TabListError::into_app_error)?
+        .attach(cli)
 }
 
 /// Register target and console fronts in the registry after `getTarget`.
