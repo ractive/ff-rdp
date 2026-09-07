@@ -466,6 +466,12 @@ fn follow_server_with_events(console_event: serde_json::Value) -> MockRdpServer 
             load_fixture("start_listeners_response.json"),
         )
         .on("getWatcher", load_fixture("get_watcher_response.json"))
+        // iter-252: `run_follow_direct` now issues `watchTargets("frame")`
+        // before `watchResources`, because the content-process half of
+        // `watchResources` only reaches targets the watcher itself created.
+        // Without a handler here the mock answers `unknownMethod` and the
+        // command exits 3 before any followup is delivered.
+        .on("watchTargets", load_fixture("watch_targets_response.json"))
         .on_with_followups(
             "watchResources",
             load_fixture("watch_resources_response.json"),
@@ -546,6 +552,89 @@ fn console_follow_streams_messages_as_ndjson() {
         serde_json::from_str(lines[1]).expect("line 2 must be valid JSON");
     assert_eq!(msg2["level"], "warn");
     assert_eq!(msg2["message"], "live message 2");
+}
+
+/// iter-252: the payload Firefox actually sends for a `console-message`
+/// **resource** is flat — `resources/console-messages.js:55` hands
+/// `prepareConsoleMessageForRemote`'s result straight to `onAvailable`, with no
+/// `message` wrapper (the wrapper belongs to the legacy `consoleAPICall` push,
+/// `webconsole.js:1453`). The event below is recorded verbatim off the wire on
+/// Firefox 155.0.1.
+///
+/// Until iter-252 every such item parsed to `None`, so `console --follow`
+/// printed nothing at all even on the daemon route, which received every frame.
+/// That is why iteration 174's attempt to measure `console --follow` saw empty
+/// stdout on both routes and could conclude nothing. The sibling tests above
+/// all use the wrapped shape and therefore could not catch it.
+#[test]
+fn console_follow_streams_flat_console_message_resources() {
+    let console_event = json!({
+        "type": "resources-available-array",
+        "from": "server1.conn0.watcher4",
+        "array": [
+            ["console-message", [
+                {
+                    "arguments": ["flat resource 1"],
+                    "lineNumber": 1,
+                    "columnNumber": 32,
+                    "filename": "debugger eval code",
+                    "level": "log",
+                    "timeStamp": 1000.0,
+                    "sourceId": null,
+                    "innerWindowID": 17_179_869_186_u64
+                },
+                {
+                    "arguments": ["flat resource %s", "two"],
+                    "lineNumber": 2,
+                    "columnNumber": 1,
+                    "filename": "app.js",
+                    "level": "warn",
+                    "timeStamp": 2000.0
+                }
+            ]]
+        ]
+    });
+
+    let server = follow_server_with_events(console_event);
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["console".to_owned(), "--follow".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().expect("server thread panicked");
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        support::output_note(&output)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "flat console-message resources must stream like wrapped ones, got: {stdout}"
+    );
+
+    let msg1: serde_json::Value =
+        serde_json::from_str(lines[0]).expect("line 1 must be valid JSON");
+    assert_eq!(msg1["level"], "log");
+    assert_eq!(msg1["message"], "flat resource 1");
+    assert_eq!(msg1["source"], "debugger eval code");
+    assert_eq!(msg1["line"], 1);
+
+    // printf substitution must run on the flat branch too.
+    let msg2: serde_json::Value =
+        serde_json::from_str(lines[1]).expect("line 2 must be valid JSON");
+    assert_eq!(msg2["level"], "warn");
+    assert_eq!(msg2["message"], "flat resource two");
 }
 
 #[test]
@@ -634,6 +723,8 @@ fn follow_server_with_direct_notification(notification: serde_json::Value) -> Mo
             load_fixture("start_listeners_response.json"),
         )
         .on("getWatcher", load_fixture("get_watcher_response.json"))
+        // iter-252: see the note in `follow_server_with_events`.
+        .on("watchTargets", load_fixture("watch_targets_response.json"))
         .on_with_followups(
             "watchResources",
             load_fixture("watch_resources_response.json"),
