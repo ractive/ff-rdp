@@ -482,8 +482,8 @@ survived several iterations.
 - [x] Instrument `wait_for_live_targets` to record how long the subscription *actually* takes,
       idle and under sweep load — the distribution, not one number
 
-#### B. Classify and act [0/2]
-- [ ] One of the three verdicts above per test, in writing, with the evidence
+#### B. Classify and act [1/2]
+- [x] One of the three verdicts above per test, in writing, with the evidence
 - [ ] The fix that follows from the verdict, plus the repeated run that shows it holding
 
 ### Acceptance Criteria [1/3]
@@ -639,6 +639,94 @@ sensitive. The next `--jobs 6` sweep log is therefore the distribution, and the 
 `live_164_block_and_daemon_autostart`'s `run_json` already asserts on the exit status while
 quoting both streams, so it never had the bool-only shape. `live_123` was the only offender, and
 its whole file is converted, not just the decoy-port assertions the sweep happened to hit.
+
+### The closing sweep, and what its instrumentation immediately produced
+
+```
+FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo run -p xtask -- live-sweep
+  (default --jobs, macOS 25.5, 2026-09-07 13:32–13:39, raw `firefox -no-remote
+   --start-debugger-server 6000 --headless` for the preexisting tier)
+
+LIVE_SWEEP_SUMMARY executed=328 skipped=0 preexisting=0 vanished=0 launch_timeout=0 timed_out=0 total=328
+LIVE_SWEEP_PROFILES leaked=0 unattributed=0 root=/Users/james/Library/Application Support/ff-rdp/profiles
+CLI tier: 308 passed / 11 failed (359.64 s); core tiers: 1+3+3+2 passed / 0 failed
+```
+
+`308 + 11 = 319` CLI-tier verdicts, plus the four core tiers' `1 + 3 + 3 + 2 = 9`, reconciles to
+`executed=328` exactly — no test went unreported. `launch_timeout=0` is honest here: **no launch
+timed out in this run**, which is why Part A AC 1 stays unticked. The classifier change is
+unit-tested against the real 2026-08-30 envelope; it has not yet been exercised by a sweep that
+reproduced the condition.
+
+The 11 failures:
+
+| test | family | disposition |
+| --- | --- | --- |
+| `live_135_screenshot_ff153::live_135_screenshot_full_page_taller` | drawSnapshot | [[iteration-257-firefox-155-drawsnapshot-dictionary-arg]] |
+| `live_144_session_hygiene_followup::live_144_full_page_no_duplicate_header` | drawSnapshot | 257 |
+| `live_61l::live_screenshot_full_page` | drawSnapshot | 257 |
+| `live_61r_screenshot::live_screenshot_full_page` | drawSnapshot | 257 |
+| `live_92_screenshot_full_page::live_screenshot_full_page_md5_differs_from_viewport` | drawSnapshot | 257 |
+| `live_92_screenshot_full_page::pre_fix_repro_screenshot_full_page_taller_than_viewport` | drawSnapshot | 257 |
+| `live_screenshot_shim::live_screenshot_unchanged_after_shim` | drawSnapshot | 257 |
+| `live_137_daemon_mode_parity::live_137_consent_accept_via_daemon` | frame targets | this plan — see below |
+| `live_145_error_envelope_completeness::live_145_click_frame_scan_js_exception_envelope` | frame targets | this plan — see below |
+| `live_145_error_envelope_completeness::live_145_click_element_not_found_unchanged` | frame targets | this plan — see below |
+| `live_network_default_watcher::live_network_watcher_source_after_navigate_with_network` | network watcher | never filed anywhere — folded into [[iteration-262-daemon-live-target-never-promoted]] as an explicitly-unattributed second observation |
+
+All seven drawSnapshot rows carry the identical envelope
+`TypeError: WindowGlobalParent.drawSnapshot: Argument 4 can't be converted to a dictionary`,
+which is iteration 257's business and not load-shaped.
+
+### Part D's verdict, from this sweep — it is (1), a product race, not (2), a tight bound
+
+This is the first occurrence of the frame-target signature recorded with the instrumentation
+this iteration added, and it answers the question the plan has been carrying since iteration 188:
+
+```
+---- live_137_daemon_mode_parity::live_137_consent_accept_via_daemon stdout ----
+LIVE_TARGET_WAIT port=55418 reached=false elapsed_ms=15301 polls=49 bound_ms=15000
+… daemon never reported live frame targets — waited 15.301097542s of a 15s bound over 49 poll(s)
+  … last daemon status: status=Some(0) stdout={
+    "running": true, "pid": 57215, "port": 55556, "uptime_seconds": 20,
+    "connections": 0, "buffer_sizes": { "network-event": 446 },
+    "target_count": 1, "live_target_count": 0,
+    "dispatcher": { "alive": true, "frames_started": 130, "frames_finished": 130,
+                    "in_flight": 0, "last_frame_kind": "resources-updated-array" }, … }
+
+---- live_145_…::live_145_click_frame_scan_js_exception_envelope stdout ----
+LIVE_TARGET_WAIT port=57307 reached=false elapsed_ms=15163 polls=48 bound_ms=15000
+
+---- live_145_…::live_145_click_element_not_found_unchanged stdout ----
+LIVE_TARGET_WAIT port=57200 reached=false elapsed_ms=15048 polls=47 bound_ms=15000
+```
+
+Read the daemon's own status, which no previous occurrence recorded:
+
+- **`target_count: 1, live_target_count: 0` after 20 s of uptime.** The daemon *saw* a frame
+  target and never promoted it to live. A machine merely too slow to answer inside 15 s would
+  show the count arriving late; it would not show a target counted and then permanently not-live
+  while the daemon is otherwise healthy.
+- **`dispatcher.alive: true`, `frames_started: 130`, `frames_finished: 130`, `in_flight: 0`.** The
+  daemon is not wedged and is not behind: it processed 130 frames, has nothing outstanding, and
+  its last frame was a `resources-updated-array`. It is answering every `daemon status` poll in
+  well under the 300 ms the loop leaves between them — 47–49 polls in 15.0–15.3 s.
+- **All three failures land within 300 ms of the same 15 s bound** (15048 / 15163 / 15301 ms),
+  i.e. every one of them ran the wait to exhaustion rather than nearly making it. A too-tight
+  bound produces a distribution that straddles it; this produces a cliff.
+
+So verdict **(1) — a real race in the product** — with the same shape as
+[[iteration-179-live-62-runner-sees-no-network-events]]: the `watchTargets("frame")`
+subscription's live-target bookkeeping is armed after the event it needs, and once missed it is
+never repaired for the life of the daemon. Verdict (2) is positively excluded by
+`live_target_count: 0` at `target_count: 1`, and verdict (3) by the dispatcher counters showing a
+responsive daemon. **The 15 s bound is therefore correctly left where it is, and raising it would
+have hidden exactly this.**
+
+The product fix is not attempted here — it is bookkeeping inside the daemon's target subscription,
+it needs its own live test that fails before and passes after (Part D AC 3), and this PR is
+already four merged plans wide. Filed as
+[[iteration-262-daemon-live-target-never-promoted]] with the evidence above.
 
 ### What is NOT ticked, and why
 
