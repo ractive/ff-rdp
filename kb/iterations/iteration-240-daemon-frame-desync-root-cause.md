@@ -116,9 +116,9 @@ in a proxy.
 - [x] `tests/live/live_226_*.rs`: the 40-hop loop asserting zero `abandoning client` lines and
       zero `meta.page_reconnects`
 
-### Acceptance Criteria [0/2]
+### Acceptance Criteria [2/2]
 
-- [ ] 40 daemon hops against the real page log zero `abandoning client` lines and report
+- [x] 40 daemon hops against the real page log zero `abandoning client` lines and report
       `meta.page_reconnects: 0` on every hop
 - [x] The Outcome names the writer (or reader) that corrupted the stream, with the trace
 
@@ -204,9 +204,9 @@ old one.
 - [x] Unit: a client that never reads does not stop the dispatcher from serving another client
 - [x] `tests/live/live_227_*.rs`: a sustained-hop loop (N ≥ 40) asserting every hop succeeds
 
-### Acceptance Criteria [0/3]
+### Acceptance Criteria [2/3]
 
-- [ ] 60 consecutive daemon hops against the real page all succeed
+- [x] 60 consecutive daemon hops against the real page all succeed
 - [x] A deliberately non-reading client is dropped within the deadline and no other client is
       delayed by more than it
 - [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q`
@@ -280,6 +280,21 @@ DEBUG ff_rdp_core::transport: frame read hit the socket deadline mid-frame — p
 
 Two payloads of ~49 KB and ~33 KB straddled a socket read deadline inside one 40-hop run. Before
 this branch, each of those was 33–49 KB of a frame thrown away with the framer's position.
+
+### The real-page run
+
+`kb/iterations/iteration-240-daemon-frame-desync-root-cause.dogfood.sh` drives the acceptance
+criteria's own loop — `navigate --with-page` + `click --ref … --with-page` against
+`https://en.wikipedia.org/wiki/Python_(programming_language)` through the daemon — for the 60
+hops Part B asks for (which also clears Part A's 40):
+
+```text
+iter-240 dogfood: 60 hops, 0 reconnects, 0 abandoned clients, dispatcher healthy
+check-dogfood-script: OK
+```
+
+Both recorded wedges (hop 13 of a 60-hop loop, hop 26 of a 45-hop loop) and the ~2-in-40 desync
+rate sat well inside that range.
 
 **What the evidence does not settle:** which of the two sockets produced the pre-fix hop-32
 `0x64`. The captured resumes are consistent with the 1 s Firefox reader; a truncated CLI→daemon
