@@ -8,9 +8,12 @@
 //!   `navigated_away` poll shared the 600 ms constant sized for the *local*
 //!   post-Enter check, and a real network round-trip outlives it — so the
 //!   envelope carried `navigated: false` next to a `results.page` collected
-//!   from the destination. The fixture's `/slow` route holds its first byte
-//!   back for [`DESTINATION_DELAY`], which is longer than the old grace period
-//!   and far inside the new one, so this fails deterministically on `main`.
+//!   from the destination. Two fixtures, because the grace period turned out
+//!   not to be the whole fix: `/slow` holds its first byte back for
+//!   [`DESTINATION_DELAY`] (longer than the old 600 ms budget, inside the new
+//!   3 s one), while `/slower` holds it for [`GRACE_OUTLIVING_DELAY`], past
+//!   the new budget as well — so only the refreshed-target re-check can
+//!   answer the second one. Both fail deterministically on `main`.
 //!
 //! - **Part B** (absorbed iter-238). A guessed selector that matches nothing
 //!   cost the whole `--timeout` before `click` said "0 elements matched".
@@ -185,6 +188,99 @@ fn live_237_submit_navigated_agrees_with_the_page_it_reports() {
         "results.navigated must agree with results.page — the heading above is \
          proof of a cross-document navigation, so `false` here is one envelope \
          contradicting itself: {typed}"
+    );
+
+    stop_daemon(port);
+}
+
+/// The delay that outlives the post-`requestSubmit()` grace period entirely,
+/// so this fixture exercises the *recovery* rather than the widened budget.
+///
+/// Above [`REQUEST_SUBMIT_NAVIGATION_GRACE_MS`]'s 3 s, so
+/// `navigated_away`'s poll is guaranteed to give up before the destination
+/// commits and the only thing that can answer `navigated` correctly is
+/// `navigated_after_refresh` re-reading `location.href` off the new target.
+/// Still well inside the 10 s `--timeout` this suite passes, so `--with-page`
+/// has room to collect the destination for the agreement assertion.
+const GRACE_OUTLIVING_DELAY: Duration = Duration::from_millis(4_500);
+
+/// `/` carries a form whose action commits only after the whole grace period
+/// has expired.
+fn very_slow_form_fixture() -> HashMap<String, FixtureRoute> {
+    let mut routes = HashMap::new();
+    routes.insert(
+        "/".to_owned(),
+        FixtureRoute::html(
+            "<!doctype html><title>t237 origin</title><body>\
+             <h1>Ada Lovelace</h1>\
+             <form action=\"/slower\" method=\"get\">\
+             <input name=\"q\" aria-label=\"Search\">\
+             </form></body>",
+        ),
+    );
+    routes.insert(
+        "/slower".to_owned(),
+        FixtureRoute::html(
+            "<!doctype html><title>t237 destination</title><body>\
+             <h1>Grace Hopper</h1></body>",
+        )
+        .with_delay(GRACE_OUTLIVING_DELAY),
+    );
+    routes
+}
+
+/// AC, the harder half: the two fields must still agree when the destination
+/// takes longer to commit than the post-`requestSubmit()` grace period.
+///
+/// This is the case that showed the grace period was never the whole fix.
+/// Measured against Wikipedia while implementing this iteration, a longer
+/// budget changed nothing: Firefox stops answering `evaluateJSAsync` on the
+/// pre-submit console actor while it commits the new document, so the poll's
+/// first iteration blocks on the socket read for the *transport's* deadline
+/// (`--timeout`) and the loop never completes a probe before its own deadline
+/// has passed. Only re-resolving the target and reading `location.href` off
+/// the document that now exists gets the right answer — and that is what this
+/// test pins, because [`DESTINATION_DELAY`]'s 1.2 s is short enough that the
+/// widened grace period alone could have carried the test above.
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_237_submit_navigated_survives_a_destination_slower_than_the_grace() {
+    if !live_tests_enabled() {
+        eprintln!(
+            "live_237_submit_navigated_survives_a_destination_slower_than_the_grace: \
+             set FF_RDP_LIVE_TESTS=1"
+        );
+        return;
+    }
+    let ff = firefox_with_daemon(
+        "live_237_submit_navigated_survives_a_destination_slower_than_the_grace",
+    );
+    let port = ff.port();
+    let Some(server) = FixtureServer::start(very_slow_form_fixture()) else {
+        eprintln!(
+            "live_237_submit_navigated_survives_a_destination_slower_than_the_grace: \
+             no fixture HTTP — skipping"
+        );
+        stop_daemon(port);
+        return;
+    };
+
+    run_json(port, &["navigate", &server.base_url()]);
+    let typed = run_json(
+        port,
+        &["type", "input[name=q]", "hopper", "--submit", "--with-page"],
+    );
+
+    assert_eq!(
+        first_heading(&typed),
+        "Grace Hopper",
+        "--with-page must report the destination even when it commits late: {typed}"
+    );
+    assert_eq!(
+        typed["results"]["navigated"], true,
+        "the grace period cannot have observed this navigation — the refreshed-target \
+         re-check is what must report it, and `false` here means the envelope is back \
+         to contradicting itself: {typed}"
     );
 
     stop_daemon(port);
