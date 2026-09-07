@@ -237,28 +237,76 @@ fn live_resource_dedupe() {
     let mut transport =
         ff_rdp_core::RdpTransport::connect_raw("127.0.0.1", ff.port(), Duration::from_secs(5))
             .expect("connect");
+    // iter-246 Part C — attribution, in code, of the `subscribe A: Timeout`
+    // that failed once in iteration 225's 311-test sweep at `--test-threads=6`
+    // and passed in 2.6 s alone. The failing wait was **this** socket read
+    // timeout, and it was 500 ms: a tenth of the 5 s the same statement above
+    // allows merely to *open* the TCP connection. Nothing about `getWatcher`
+    // or `watchResources` justifies asserting that a round trip to Firefox
+    // completes ten times faster than the connect to it, and no other live
+    // test in the tree budgets a real round trip that tightly — the
+    // convention is 5 s (`live_cookies`, `live_eval_csp`,
+    // `live_102_longstring_and_reload`, `common/mod.rs`). So this is a test
+    // budget defect, not a product one: the 500 ms was never measured against
+    // anything, and matching the tree's convention is not "raising a timeout
+    // until it stops failing".
+    //
+    // The `SUBSCRIBE_LEG` lines below are the measurement the plan asks for:
+    // every run, loaded or idle, records how long each leg actually took, so
+    // the distribution accumulates in the sweep logs instead of having to be
+    // reconstructed from whichever run happened to fail.
     transport
-        .set_read_timeout(Some(Duration::from_millis(500)))
+        .set_read_timeout(Some(Duration::from_secs(5)))
         .expect("set_read_timeout");
 
     // Read greeting.
     transport.recv().expect("greeting");
 
     // Get watcher actor.
+    let leg = std::time::Instant::now();
     let tabs = ff_rdp_core::RootActor::list_tabs(&mut transport).expect("list tabs");
     let tab_actor = tabs.first().expect("at least one tab").actor.clone();
+    eprintln!(
+        "SUBSCRIBE_LEG live_resource_dedupe leg=list_tabs elapsed_ms={}",
+        leg.elapsed().as_millis()
+    );
+    let leg = std::time::Instant::now();
     let watcher_actor =
         ff_rdp_core::TabActor::get_watcher(&mut transport, &tab_actor).expect("get watcher");
+    eprintln!(
+        "SUBSCRIBE_LEG live_resource_dedupe leg=get_watcher elapsed_ms={}",
+        leg.elapsed().as_millis()
+    );
 
     let mut bus = ResourceCommand::new(watcher_actor);
 
     // Two in-process subscribers for the same type.
+    let leg = std::time::Instant::now();
     let (id_a, _rx_a) = bus
         .subscribe(&mut transport, &[ResourceType::NetworkEvent])
-        .expect("subscribe A");
+        .unwrap_or_else(|e| {
+            panic!(
+                "subscribe A failed after {:?} against a 5s read timeout: {e}",
+                leg.elapsed()
+            )
+        });
+    eprintln!(
+        "SUBSCRIBE_LEG live_resource_dedupe leg=subscribe_a elapsed_ms={}",
+        leg.elapsed().as_millis()
+    );
+    let leg = std::time::Instant::now();
     let (id_b, _rx_b) = bus
         .subscribe(&mut transport, &[ResourceType::NetworkEvent])
-        .expect("subscribe B");
+        .unwrap_or_else(|e| {
+            panic!(
+                "subscribe B failed after {:?} against a 5s read timeout: {e}",
+                leg.elapsed()
+            )
+        });
+    eprintln!(
+        "SUBSCRIBE_LEG live_resource_dedupe leg=subscribe_b elapsed_ms={}",
+        leg.elapsed().as_millis()
+    );
 
     assert_eq!(
         bus.ref_count(ResourceType::NetworkEvent),

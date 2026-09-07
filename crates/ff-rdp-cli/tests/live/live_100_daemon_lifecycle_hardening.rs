@@ -24,8 +24,26 @@ fn registry_path(home: &std::path::Path, port: u16) -> PathBuf {
 }
 
 /// Auto-start a daemon for `port` inside an isolated `FF_RDP_HOME` and return
-/// its PID (read from `daemon status`).
-fn autostart_daemon(home: &std::path::Path, port: u16) -> Option<u32> {
+/// its PID (read from `daemon status`), or a message saying exactly how it
+/// failed.
+///
+/// iter-246 Part A Theme D: this returned a bare `Option`, and its one
+/// diagnostic printed the CLI's **stderr** — which is empty, because `ff-rdp`
+/// writes its error envelopes to stdout. Iteration 211's second sweep recorded
+/// the whole failure as:
+///
+/// ```text
+/// autostart_daemon: eval failed:
+/// e2e_sigterm_removes_registry: daemon never reported a pid
+/// ```
+///
+/// — two lines that between them do not say whether the autostart lost a race,
+/// whether the daemon came up and then went quiet, or whether the eval never
+/// reached Firefox at all. The `Err` string now carries which of the three
+/// happened, with both streams, so the next occurrence is triageable rather
+/// than merely reproducible. (The iter-179 source scan cannot catch this shape:
+/// it covers panic macros, and this was an `eprintln!`.)
+fn autostart_daemon(home: &std::path::Path, port: u16) -> Result<u32, String> {
     // `eval` (unlike `tabs`, which connects to Firefox directly via
     // RdpConnection::connect and never touches resolve_connection_target)
     // routes through connect_tab.rs, so a call without --no-daemon genuinely
@@ -44,17 +62,19 @@ fn autostart_daemon(home: &std::path::Path, port: u16) -> Option<u32> {
             "1",
         ])
         .output()
-        .ok()?;
+        .map_err(|e| format!("autostart_daemon: could not spawn `ff-rdp eval 1`: {e}"))?;
     if !init.status.success() {
-        eprintln!(
-            "autostart_daemon: eval failed: {}",
-            String::from_utf8_lossy(&init.stderr)
-        );
-        return None;
+        return Err(format!(
+            "autostart_daemon: the autostart-triggering `eval 1` exited non-zero — {}",
+            crate::common::output_note(&init)
+        ));
     }
 
     // Poll daemon status for a pid.
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let started = std::time::Instant::now();
+    let deadline = started + Duration::from_secs(10);
+    let mut polls = 0usize;
+    let mut last;
     loop {
         let status = Command::new(ff_rdp_bin())
             .env("FF_RDP_HOME", home)
@@ -67,17 +87,26 @@ fn autostart_daemon(home: &std::path::Path, port: u16) -> Option<u32> {
                 "status",
             ])
             .output()
-            .ok()?;
+            .map_err(|e| {
+                format!("autostart_daemon: could not spawn `ff-rdp daemon status`: {e}")
+            })?;
+        polls += 1;
+        last = crate::common::output_note(&status);
         if status.status.success()
             && let Ok(json) = serde_json::from_slice::<serde_json::Value>(&status.stdout)
             && let Some(pid) = json["results"]["pid"]
                 .as_u64()
                 .and_then(|p| u32::try_from(p).ok())
         {
-            return Some(pid);
+            return Ok(pid);
         }
         if std::time::Instant::now() >= deadline {
-            return None;
+            return Err(format!(
+                "autostart_daemon: `eval 1` succeeded, so the autostart was triggered, but \
+                 `daemon status` never reported a pid within {:?} over {polls} poll(s); last \
+                 status: {last}",
+                started.elapsed()
+            ));
         }
         std::thread::sleep(Duration::from_millis(200));
     }
@@ -103,9 +132,8 @@ fn e2e_sigterm_removes_registry() {
 
     let home = tempfile::tempdir().expect("tempdir for FF_RDP_HOME");
 
-    let Some(daemon_pid) = autostart_daemon(home.path(), ff.port()) else {
-        panic!("e2e_sigterm_removes_registry: daemon never reported a pid");
-    };
+    let daemon_pid = autostart_daemon(home.path(), ff.port())
+        .unwrap_or_else(|why| panic!("e2e_sigterm_removes_registry: {why}"));
     eprintln!("e2e_sigterm_removes_registry: daemon pid={daemon_pid}");
 
     let reg = registry_path(home.path(), ff.port());
