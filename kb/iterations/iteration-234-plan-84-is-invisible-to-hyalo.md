@@ -36,6 +36,14 @@ tags: [iteration, tooling, hyalo, process, carry-over]
 
 > **Renumbered 205 → 234 on 2026-09-06** so the pending queue runs as one contiguous sweep (DEC-051). Older PRs, commits and sweep logs cite it as iteration 205.
 
+> **Closed obsolete 2026-09-07 (iter-233).** Verified against
+> `hyalo 0.22.0 (625c5c19510d 2026-09-05)`: `hyalo find --property type=iteration` writes zero
+> bytes to stderr over 450 files and returns iteration 84's `title` and `status`; a planted
+> 23,979-byte block scalar parses without complaint, so the `ScalarBytes` budget is gone
+> upstream. Iteration 84 was **not** edited. The surviving Task C is answered in
+> `kb/decision-log.md` DEC-052 Part B — `hyalo lint --rule HYALO005` (severity `error`, exit 1)
+> is the without-stderr detector, documented in `CONTRIBUTING.md`, deliberately not a CI gate.
+
 > **Premise check (2026-09-06):** `hyalo 0.22.0 (2026-09-05)` reads `iteration-84` without a skip warning — Tasks A/B and ACs 1–2 are already satisfied by an upstream hyalo change, not by a merged iteration. Only Task C (a written disposition on whether a silent hyalo skip should be detectable) survives; verify with `hyalo find --file kb/iterations/iteration-84-*.md` on arrival and close `obsolete` if that holds, recording the version.
 
 ## Where this came from

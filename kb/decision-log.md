@@ -2014,3 +2014,123 @@ nothing-to-run, so `/new-ralph-loop 233 256` still covers the range.
 Rules kept: no acceptance criterion was reworded; duplicates across parts are
 marked "tick together" rather than deleted; each merged plan is still one
 branch, one PR, one carry-over sweep.
+
+## DEC-052: the plan linter sweeps a directory and blocks in CI; the hyalo skip is detected by `hyalo lint`, not by a new gate
+
+**Date**: 2026-09-07 (iter-233, absorbing iter-234)
+
+### Part A — where the sweep runs, what it runs, and what it costs when it fails
+
+**Decision**: `check-iteration-plan` accepts a directory as well as a file. Given
+one, it checks every `iteration-*.md` in it and exits 1 if any plan fails. The
+`discipline` job in `.github/workflows/ci.yml` runs
+`cargo run -p xtask -- check-iteration-plan kb/iterations` as a **blocking** step
+on every pull request.
+
+**Why now**: DEC-047 took the sweep from 85 failures to zero, and said so in
+those terms — a green sweep "would let CI run the linter over the directory,
+which is the only way any of this gets enforced without a human remembering".
+Iteration 195 deliberately stopped there rather than scope-creep into CI, so the
+enforcement half sat unfiled. `grep -rn check-iteration-plan .github/workflows/`
+returned nothing on `origin/main` the day this landed: a check CLAUDE.md calls
+required, that ran only when an agent remembered.
+
+**Where it runs — the `discipline` job, not `toolchain-watch`.** The weekly
+canary exists for a failure that happens with no commit at all (a new `stable`
+breaking the build, DEC-044). A malformed plan is the opposite: it always arrives
+in a diff, and the diff is the thing to fail. Weekly would mean up to seven days
+of plans filed against a linter nobody ran, which is the status quo with extra
+steps.
+
+**What it runs — a directory argument, not a Bash loop.** The loop
+`CONTRIBUTING.md` documented is Bash-only, and this repo builds and tests on
+Windows; a Windows contributor could not run the same sweep the runner runs. The
+loop also has to write `>/dev/null 2>&1 || echo FAILED:` to stay readable, which
+throws away the findings and reports only a file name. Moving it into the binary
+gives one cross-platform command, keeps the findings, and lets a parse failure be
+one plan's verdict rather than an abort of the whole walk.
+
+This is not a new subcommand — iteration 162a's decision stands. It is new
+*behaviour* on an existing one, which needs its own justification, and this is
+it: the argument is a path, the check is unchanged, and the glob it walks
+(`iteration-*.md`) is the one CONTRIBUTING has documented since 195. `_template.md`
+stays outside it; it is a skeleton with placeholder frontmatter, not a filed plan.
+
+**Blocking, not advisory.** An advisory (`continue-on-error`) lane was considered
+and rejected on this repo's own evidence: the ralph-loop's review agent treats any
+failing check as blocking regardless of `continue-on-error`, which is why
+`live.yml` was taken off `pull_request` before iteration 117. A second advisory
+lane would stall the loop it is meant to serve. The accepted cost is that a
+plan-linting failure can block an unrelated code PR — small, because the failing
+file is always one that PR added or edited, and the fix is a frontmatter key.
+
+**Warnings are counted, not printed.** 86 of 260 plans warn on every run (the
+DEC-047 grandfathered set, plus a few). Printing up to two lines each would bury
+the one failure worth reading, so the sweep prints failures in full and reports
+`swept N plan(s): F failed, W with warnings only`. A single-file run still prints
+that file's warnings.
+
+**Demonstrated red**: planting `iteration-998-deliberately-invalid.md` (valid
+YAML, no `dogfood_path`) makes the sweep print the finding and exit 1; removing it
+returns it to `swept 260 plan(s) … 0 failed`. The same plan content is asserted as
+a unit test (`test_check_plan_content_fails_the_planted_invalid_plan`) so the
+demonstration survives the branch.
+
+### Part B — iteration 84's hyalo skip, and whether a silent skip needs a repo-side gate
+
+**Premise correction**: the defect this part was filed for is **gone upstream**,
+not fixed here. `hyalo 0.22.0 (625c5c19510d 2026-09-05)` reads
+`kb/iterations/iteration-84-dogfood-56-real-real-fixes.md` and returns its `title`
+and `status`; `hyalo find --property type=iteration` writes **zero bytes** to
+stderr over the whole vault. The `ScalarBytes { total_scalar_bytes: 9086 }` budget
+that rejected it is not merely raised: a planted plan with a 24 KB block scalar
+parses without complaint. So iteration 234's Tasks A/B and its ACs 1–2 were
+satisfied by a hyalo release, and iteration 84's bytes were never edited — its
+recorded outcome, ACs and tick state are untouched.
+
+The budget is **not** configurable from `.hyalo.toml`: `hyalo config` reports no
+scalar or budget key, and no `hyalo` help text names one. That was the question
+Task A asked, and the answer is that it was never this repo's dial to turn.
+
+**Decision (Task C)**: no repo-side gate. A silent skip *is* detectable without
+reading stderr, and the detector already exists in hyalo:
+
+```sh
+hyalo lint --rule HYALO005
+```
+
+`HYALO005` (`frontmatter-parse-error`, default severity `error`) covers "invalid
+YAML, duplicate keys, oversized scalar", names the offending file in
+`.results.files[]`, and **exits 1**. Verified by planting a file with unparsable
+frontmatter: `errors: 1`, exit 1, and `hyalo find`'s own stderr warning now points
+at the rule ("skipped 1 file with unparsable frontmatter (run hyalo lint --rule
+HYALO005 for details)"). It is documented in `CONTRIBUTING.md` under "Every plan
+must stay readable to hyalo".
+
+**Alternatives rejected**:
+
+*Wire `hyalo lint --rule HYALO005` into CI.* hyalo is not installed on the runners
+and is not a workspace dependency; adding it would put a third-party tool's version
+in the critical path of every PR, for a class of defect that upstream now both
+prevents and reports.
+
+*Add an xtask gate that compares hyalo's document count to the plan count.* This is
+the shape iteration 162a deleted six times over (`kb/discipline-rationale.md`): a
+local-only gate nothing runs, which is how the original skip went unnoticed for
+months in the first place. Adding one to detect the consequences of nobody running
+gates is self-refuting.
+
+*Shrink iteration 84's `dogfood_path` to a `dogfood_script` sidecar (DEC-046's
+shape).* The plan's leading option, and now unnecessary: it would edit a terminal
+plan's frontmatter to work around a limit that no longer exists.
+
+**Honest limit of the Part A backstop**: the CI sweep reads every plan with xtask's
+own YAML parser, so it goes red on frontmatter that is genuinely broken. It does
+**not** detect a hyalo-specific limit — xtask read iteration 84 without complaint
+the entire time hyalo was skipping it. The two checks answer different questions
+and `CONTRIBUTING.md` says so rather than implying coverage the sweep does not have.
+
+**Applies to**: `crates/xtask/src/check_iteration_plan.rs`,
+`.github/workflows/ci.yml`, `CONTRIBUTING.md`,
+`kb/iterations/iteration-233-nothing-runs-the-plan-linter-sweep.md`.
+

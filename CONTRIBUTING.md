@@ -252,18 +252,29 @@ This validates:
 
 #### Running it over the whole directory
 
-The check is safe to run as a sweep, and a sweep is expected to report **zero failures**:
+Give the check a **directory** instead of a file and it sweeps every `iteration-*.md` in
+it, exiting 1 if any one of them fails:
 
 ```sh
-cargo build -q -p xtask
-for p in kb/iterations/iteration-*.md; do
-  ./target/debug/xtask check-iteration-plan "$p" >/dev/null 2>&1 || echo "FAILED: $p"
-done
-# expected: no output
+cargo run -p xtask -- check-iteration-plan kb/iterations
+# expected: check-iteration-plan: swept N plan(s) in kb/iterations: 0 failed, M with warnings only
 ```
 
-Any output at all is a real regression — either a plan that was filed without a
-`dogfood_path`, or one whose frontmatter stopped matching the schema.
+A failing plan is printed with its findings, then the summary line names how many failed.
+Warnings are only counted, not printed: the grandfathered plans below warn on every run (86
+of the 260 plans do, as of iteration 233), and two lines each would bury the one failure
+worth reading. Re-run the check on a single file to see that file's warnings.
+
+**This runs in CI** — the `discipline` job in `.github/workflows/ci.yml` — so a plan filed
+without a `dogfood_path`, or one whose frontmatter stopped matching the schema, is a red
+check on the PR that files it rather than something a later agent notices. It is a blocking
+step, not an advisory lane (iteration 233; see `kb/decision-log.md` DEC-052 for why, and for
+why it is a directory argument rather than a Bash `for` loop or a new subcommand).
+
+Two things follow from it being blocking. A plan-linting failure can block an otherwise
+unrelated code PR — accepted, because the failure is always in a file that PR added or
+edited, and the fix is a frontmatter key. And the sweep runs on the branch's own copy of
+`kb/iterations/`, so a plan filed on a branch is checked before it can merge.
 
 This was not true until iteration 195. 82 of the plans in `kb/iterations/` were filed
 before the `dogfood_path` and `first_call_sites` requirements existed — every one of them
@@ -272,8 +283,8 @@ tell a new failure from the background. They are **not** backfilled: a `dogfood_
 record of commands someone actually ran, and writing one today for work delivered a year
 ago would be inventing evidence. Instead they are grandfathered by exact file name in
 `LEGACY_PRE_DISCIPLINE_PLANS` (`crates/xtask/src/check_iteration_plan.rs`), which downgrades
-their two content findings to warnings — the sweep still *prints* what each one is missing,
-it just exits 0. The exemption is keyed on the file name rather than on the number so that a
+their two content findings to warnings — a single-file run still *prints* what each one is
+missing (the sweep counts them instead), and either way it exits 0. The exemption is keyed on the file name rather than on the number so that a
 newly filed `iteration-61z-*.md` cannot fall into it; the list is a ratchet that may shrink
 and must never grow.
 
@@ -289,6 +300,39 @@ ls kb/iterations/ | grep -E '^iteration-[0-9]+[a-z]*-.+\.md$' \
   | sed -E 's/^iteration-([0-9]+[a-z]*)-.*/\1/' | sort -V | uniq -d
 # expected: 44 and 73 — the two collisions grandfathered by LEGACY_COLLISIONS
 ```
+
+### Every plan must stay readable to hyalo
+
+`CLAUDE.md` sends every agent to `hyalo find` for knowledgebase queries, and hyalo's
+scan is *forgiving*: a document whose frontmatter it cannot parse is skipped with a
+warning on **stderr** while the query still exits 0. Every scripted `hyalo find` in this
+repo discards stderr, so one plan —
+`kb/iterations/iteration-84-dogfood-56-real-real-fixes.md`, whose `dogfood_path` block
+scalar is 9086 bytes — was invisible to every status sweep, and nothing said so. It was
+found on 2026-08-24 while checking a claim iteration 195's plan had made about three
+*other* files (DEC-047), not by anything that was looking. See `kb/decision-log.md` DEC-052.
+
+Two things have changed since, both upstream in hyalo (verified against
+`hyalo 0.22.0 (625c5c19510d 2026-09-05)`):
+
+- the per-document scalar budget that rejected iteration 84 is gone — a 24 KB block
+  scalar now parses — so no plan in the tree is skipped today;
+- the skip is detectable **without reading stderr**. Rule `HYALO005`
+  (`frontmatter-parse-error`, default severity `error`) reports it and flips the exit
+  code:
+
+```sh
+hyalo lint --rule HYALO005
+# expected: "errors": 0, exit 0
+# a skipped document: exit 1, with the offending file named in .results.files[]
+```
+
+Run that after editing plan frontmatter — especially after adding a large block scalar.
+It is **not** wired into CI: hyalo is not installed on the runners, and a gate that only
+ever runs locally is exactly the shape iteration 162a deleted six of
+(`kb/discipline-rationale.md`). The CI sweep above is the repo-side backstop, and it is
+honestly a different check: it uses xtask's own YAML parser, so it catches frontmatter
+that is broken, not frontmatter that merely exceeds a hyalo limit.
 
 ### Validate firefox_refs in an iteration plan
 

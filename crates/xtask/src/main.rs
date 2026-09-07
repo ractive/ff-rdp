@@ -24,7 +24,9 @@ struct Cli {
 #[derive(Subcommand)]
 #[allow(clippy::enum_variant_names)]
 enum Commands {
-    /// Validate an iteration plan's frontmatter and required sections.
+    /// Validate an iteration plan's frontmatter and required sections. Given a
+    /// directory instead of a file, sweep every `iteration-*.md` in it and exit 1
+    /// if any one fails — this is what CI's discipline job runs (iter-233).
     CheckIterationPlan(check_iteration_plan::Args),
     /// Scan product source for three defect shapes: `.lock().unwrap()` in the daemon,
     /// `eprintln!` + `AppError::Exit(N)` that bypasses the JSON envelope, and any

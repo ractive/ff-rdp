@@ -140,6 +140,22 @@ jobs:
       # (a docs-sync reminder, now local-only). check-daemon-locks,
       # check-error-envelope-paths and check-stderr-annotations were merged into
       # check-source-invariants — same three scans, one step, named results.
+      - name: Check every iteration plan lints (iter-233)
+        # `check-iteration-plan` has been required by CLAUDE.md before filing a
+        # plan since long before anything ran it — "required by a document" means
+        # "runs when an agent remembers". Iteration 195 took the directory sweep
+        # from 85 failures to zero precisely so this step could exist; it took
+        # iteration 233 to add it. Blocking, in this job, because a plan whose
+        # frontmatter stopped matching the schema is exactly as much a regression
+        # as a stale SKILL.md, and this repo removed its one advisory PR lane
+        # for exactly this reason: an advisory (continue-on-error) check still
+        # reads as a failing check to the loop's review agent and stalls it, so
+        # `live.yml` was taken off `pull_request` before iteration 117.
+        # Not a new subcommand (iteration 162a's decision stands): the same check,
+        # given a directory instead of a file, so CI runs one cross-platform
+        # command instead of the Bash `for` loop CONTRIBUTING documents.
+        run: cargo run -p xtask -- check-iteration-plan kb/iterations
+
       - name: Check live-test layout (single consolidated target)
         # iter-100b: fails if any top-level crates/ff-rdp-cli/tests/live_*.rs
         # binary reappears. Live suites must be modules of tests/live/main.rs so
