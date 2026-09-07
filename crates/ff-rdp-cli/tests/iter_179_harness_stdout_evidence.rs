@@ -51,6 +51,14 @@ fn rust_files(root: &Path) -> Vec<PathBuf> {
 /// 179 fixed the two live roots; iteration 182 added `tests/e2e` here after
 /// fixing its 236 offending invocations (see
 /// [[iteration-182-e2e-tier-stdout-evidence]]).
+///
+/// iteration 246 added `crates/xtask/tests`. The rule — "an assertion naming
+/// `stderr` must name `stdout` too" — was never ff-rdp-cli-specific; only the
+/// roots were. `xtask`'s integration tests spawn the `xtask` binary and assert
+/// on its exit status, and `check_firefox_refs::valid_in_range_ref_passes`
+/// failed once during a workspace run with a message that interpolated an
+/// empty `stderr` and nothing else, which is precisely the class this scan
+/// exists to end.
 fn scanned_roots() -> Vec<PathBuf> {
     let crates = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -60,6 +68,7 @@ fn scanned_roots() -> Vec<PathBuf> {
         crates.join("ff-rdp-cli/tests/live"),
         crates.join("ff-rdp-cli/tests/e2e"),
         crates.join("ff-rdp-core/tests"),
+        crates.join("xtask/tests"),
     ]
 }
 
@@ -318,8 +327,23 @@ fn f() {
 ///
 /// `output_note` carries both streams by construction, so it satisfies the rule
 /// without the literal word `stdout` appearing at the call site.
+///
+/// iter-246 Part C: a `stderr` immediately followed by `-` is not the stream —
+/// it is a hyphenated name, and the only ones in the tree are `xtask`'s
+/// `check-stderr-annotations` invariant labels, which
+/// `crates/xtask/tests/check_source_invariants.rs` asserts on by name while
+/// already quoting the child's combined output. A hyphen cannot continue a
+/// Rust identifier, so this exemption cannot swallow a real
+/// `stderr`-interpolating message.
 fn is_offender(text: &str) -> bool {
-    text.contains("stderr") && !text.contains("stdout") && !text.contains("output_note(")
+    mentions_the_stream(text) && !text.contains("stdout") && !text.contains("output_note(")
+}
+
+/// Does `text` name the `stderr` *stream*, as opposed to a hyphenated label
+/// that merely starts with those letters?
+fn mentions_the_stream(text: &str) -> bool {
+    text.match_indices("stderr")
+        .any(|(i, m)| !text[i + m.len()..].starts_with('-'))
 }
 
 /// Positive control. Without this, any bug that made the scan return nothing —
@@ -354,6 +378,23 @@ fn f() {
     );
 }
 
+/// iter-246 Part C: the hyphen exemption must be narrow — it exempts
+/// `stderr-annotations` and nothing else.
+#[test]
+fn unit_246_hyphenated_label_is_not_the_stream() {
+    let label = r#"assert!(out.contains("stderr-annotations FAIL"), "must name it:\n{out}");"#;
+    assert!(
+        !is_offender(&panic_invocations(label)[0].text),
+        "a hyphenated invariant name is not the stderr stream"
+    );
+
+    let both = r#"assert!(ok, "stderr-annotations missing; stderr: {}", e);"#;
+    assert!(
+        is_offender(&panic_invocations(both)[0].text),
+        "a real stderr interpolation alongside the label must still be flagged"
+    );
+}
+
 /// Per-tier floors, not just a global one. A single combined floor (the
 /// iter-179 original: `scanned >= 1200`) can hide a per-tier regression: one
 /// tree could lose most of its invocations to a lexer desync while another
@@ -362,10 +403,16 @@ fn f() {
 /// 1290, e2e 1258, core 168 — each floor sits ~10% below its measured count,
 /// tight enough that a desync swallowing a meaningful fraction of a tree's
 /// invocations still trips its own assertion, not just the global total.
-const MIN_PER_ROOT: [(&str, usize); 3] = [
+/// The `xtask/tests` floor is measured the same way (iteration 246): 104
+/// panic-macro invocations on this branch, so the floor is 93. The other three
+/// floors are iteration 182's measurements and are left where they are — the
+/// tree has grown past them (live 1553, e2e 1356, core 168 as of this branch),
+/// and tightening them is a separate decision from adding a root.
+const MIN_PER_ROOT: [(&str, usize); 4] = [
     ("ff-rdp-cli/tests/live", 1150),
     ("ff-rdp-cli/tests/e2e", 1120),
     ("ff-rdp-core/tests", 150),
+    ("xtask/tests", 93),
 ];
 
 /// AC `unit_179_no_assertion_reports_stderr_without_stdout`: every panic

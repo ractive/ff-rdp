@@ -824,11 +824,49 @@ impl FailureVerdict {
 }
 
 /// Markers that identify a launch-timeout panic in a captured libtest failure
-/// block. Both come from `crates/ff-rdp-cli/tests/common/mod.rs`'s bounded
-/// port wait (iter-113 Theme A); the env-var name is included because a future
-/// launcher may reword the prose but will still name the knob to raise.
-const LAUNCH_TIMEOUT_MARKERS: &[&str] =
-    &["never opened debug port", "FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS"];
+/// block.
+///
+/// Two launchers can spend the same budget and there are therefore two
+/// wordings, both of which mean "the machine could not get Firefox listening
+/// in time":
+///
+/// * The **harness** launcher in `crates/ff-rdp-cli/tests/common/mod.rs`
+///   (iter-113 Theme A) panics with `never opened debug port … within Ns` and
+///   names `FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS`.
+/// * The **product** launcher, `ff-rdp launch`, run *inside* a test, exits 1
+///   with the JSON envelope `{"error":"Firefox (pid N) did not open debug port
+///   P within Ns — raise --launch-timeout or set FF_RDP_LAUNCH_TIMEOUT_SECS",
+///   "error_type":"User"}`. That reaches libtest as an ordinary assertion
+///   failure with the diagnosis sitting in captured stdout, which is why
+///   iteration 211's sweep reported `launch_timeout=0` against a
+///   `live_186_launch_record_growth_bounded` failure that was nothing but a
+///   busy machine (iter-246 Part A).
+///
+/// The env-var names are included because a future launcher may reword the
+/// prose but will still name the knob to raise. `FF_RDP_LAUNCH_TIMEOUT_SECS`
+/// is *not* a substring of `FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS`, so the two
+/// markers stay distinguishable.
+const LAUNCH_TIMEOUT_MARKERS: &[&str] = &[
+    "never opened debug port",
+    "FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS",
+    "did not open debug port",
+    "FF_RDP_LAUNCH_TIMEOUT_SECS",
+];
+
+/// Markers that veto the [`LAUNCH_TIMEOUT_MARKERS`] attribution for one block.
+///
+/// `ff-rdp launch` rejects an occupied debug port *before* it spawns anything
+/// (`reject_if_port_occupied`), so a real bind deadline and an occupancy
+/// rejection are mutually exclusive product paths. A block naming both is
+/// therefore not a timeout — it is a test quoting the launcher's output while
+/// asserting something *about* the deadline message, and
+/// `live_158_launch_lifecycle`'s "an occupied port must not be reported as a
+/// bind deadline" assertion is exactly that shape. Without this veto a genuine
+/// regression on that path would be filed as a busy machine.
+///
+/// A veto only ever moves a test from `launch_timeout` to `genuine`, never the
+/// other way, so it cannot turn a red green.
+const LAUNCH_TIMEOUT_COUNTER_MARKERS: &[&str] = &["is already in use"];
 
 /// Attribute each `FAILED` test in one phase's libtest output to a cause.
 ///
@@ -849,7 +887,11 @@ pub fn classify_failures(
     let mut verdict = FailureVerdict::default();
     let browser_gone = target_needs_preexisting && !browser_still_up;
     for (name, body) in failure_blocks(stdout) {
-        if LAUNCH_TIMEOUT_MARKERS.iter().any(|m| body.contains(m)) {
+        let looks_like_launch_timeout = LAUNCH_TIMEOUT_MARKERS.iter().any(|m| body.contains(m))
+            && !LAUNCH_TIMEOUT_COUNTER_MARKERS
+                .iter()
+                .any(|m| body.contains(m));
+        if looks_like_launch_timeout {
             verdict.launch_timeout.push(name);
         } else if browser_gone {
             verdict.vanished.push(name);
@@ -2029,6 +2071,12 @@ pub fn run(args: Args) -> Result<()> {
     };
     let mut leaked_total = 0usize;
     let mut unattributed_total = 0usize;
+    // iter-246 Part A: `vanished` and `timed_out` are named next to the
+    // summary; `launch_timeout` was named only in a per-phase stderr line
+    // hundreds of lines earlier, so a reader triaging the summary could not
+    // see *which* tests the count referred to without scrolling back through
+    // every tier. Collect them and print them beside the summary too.
+    let mut launch_timeout_names: Vec<String> = Vec::new();
     if real_root.is_none() {
         eprintln!(
             "live-sweep: no per-user profile root could be resolved (no $FF_RDP_HOME, no state \
@@ -2206,8 +2254,10 @@ pub fn run(args: Args) -> Result<()> {
                     eprintln!(
                         "live-sweep: {} test(s) in -p {} --test {} failed because Firefox never \
                          opened its debug port within the launch budget (raise \
-                         FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS); the machine could not start a \
-                         browser in time — this is not a product failure: {}",
+                         FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS for the harness launcher, or \
+                         --launch-timeout / FF_RDP_LAUNCH_TIMEOUT_SECS when the test drives \
+                         `ff-rdp launch` itself); the machine could not start a browser in \
+                         time — this is not a product failure: {}",
                         verdict.launch_timeout.len(),
                         target.package,
                         target.test_name,
@@ -2219,6 +2269,7 @@ pub fn run(args: Args) -> Result<()> {
                     executed.saturating_sub(verdict.vanished.len() + verdict.launch_timeout.len());
                 totals.vanished += verdict.vanished.len();
                 totals.launch_timeout += verdict.launch_timeout.len();
+                launch_timeout_names.extend(verdict.launch_timeout.iter().cloned());
 
                 // The sweep still exits non-zero for a launch timeout: it is a
                 // red libtest result, and turning reds green on inference is
@@ -2344,6 +2395,19 @@ pub fn run(args: Args) -> Result<()> {
     // that invariant. A leaked profile is not a test, so it gets its own line
     // rather than an eighth field whose relationship to `total` would have to
     // be explained forever after.
+    // iter-246 Part A: a third line, on the same principle as
+    // `LIVE_SWEEP_PROFILES` — the names are not a count, so they do not become
+    // an eighth `LIVE_SWEEP_SUMMARY` field whose relationship to `total` would
+    // then have to be explained. Printed only when the tier is non-empty, so a
+    // clean sweep's output is unchanged.
+    if !launch_timeout_names.is_empty() {
+        launch_timeout_names.sort();
+        println!(
+            "LIVE_SWEEP_LAUNCH_TIMEOUT n={} tests={}",
+            launch_timeout_names.len(),
+            launch_timeout_names.join(", ")
+        );
+    }
     if !args.dry_run {
         println!(
             "LIVE_SWEEP_PROFILES leaked={leaked_total} unattributed={unattributed_total} \
@@ -2905,6 +2969,83 @@ failures:
         let verdict = classify_failures(stdout, false, true);
         assert_eq!(verdict.launch_timeout, vec!["t".to_owned()]);
         assert!(verdict.vanished.is_empty());
+    }
+
+    /// iter-246 Part A: the *product* launcher's envelope, reaching libtest as
+    /// an ordinary assertion failure with the diagnosis in captured stdout.
+    /// Iteration 211's sweep reported `launch_timeout=0` against exactly this
+    /// block and filed a busy machine as a product failure.
+    #[test]
+    fn test_246_in_test_launch_envelope_is_a_launch_timeout() {
+        let stdout = "\
+running 1 test
+test live_186_launch_record_gc::live_186_launch_record_growth_bounded ... FAILED
+
+failures:
+
+---- live_186_launch_record_gc::live_186_launch_record_growth_bounded stdout ----
+thread 'live_186_launch_record_gc::live_186_launch_record_growth_bounded' panicked at crates/ff-rdp-cli/tests/live/live_186_launch_record_gc.rs:64:
+`ff-rdp launch --headless --debug-port 62722` exited exit status: 1
+  stdout: {\"error\":\"Firefox (pid 76761) did not open debug port 62722 within 30s — raise --launch-timeout or set FF_RDP_LAUNCH_TIMEOUT_SECS\",\"error_type\":\"User\"}
+
+failures:
+    live_186_launch_record_gc::live_186_launch_record_growth_bounded
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored
+";
+        let verdict = classify_failures(stdout, true, false);
+        assert_eq!(
+            verdict.launch_timeout,
+            vec!["live_186_launch_record_gc::live_186_launch_record_growth_bounded".to_owned()],
+            "an in-test `ff-rdp launch` deadline is the same unmet precondition as the \
+             harness launcher's"
+        );
+        assert!(!verdict.has_genuine_failures());
+    }
+
+    /// The env-var knob alone is enough, in case the prose is reworded — and
+    /// the product knob must not be confused with the harness one.
+    #[test]
+    fn test_246_product_launch_timeout_env_var_is_its_own_marker() {
+        let stdout =
+            "failures:\n\n---- t stdout ----\nset FF_RDP_LAUNCH_TIMEOUT_SECS\n\nfailures:\n    t\n";
+        let verdict = classify_failures(stdout, true, false);
+        assert_eq!(verdict.launch_timeout, vec!["t".to_owned()]);
+        assert_ne!(
+            LAUNCH_TIMEOUT_MARKERS[1], LAUNCH_TIMEOUT_MARKERS[3],
+            "the harness and product knobs are different names, and neither is a substring \
+             of the other"
+        );
+        assert!(!LAUNCH_TIMEOUT_MARKERS[1].contains(LAUNCH_TIMEOUT_MARKERS[3]));
+    }
+
+    /// The veto: `live_158` asserts that an *occupied* port is not reported as
+    /// a bind deadline, and quotes the launcher's whole output when it fails.
+    /// That block names the deadline text without being a deadline, and
+    /// filing it under `launch_timeout` would hide a real regression on the
+    /// pre-spawn occupancy path behind "the machine was busy".
+    #[test]
+    fn test_246_an_occupancy_rejection_quoting_the_deadline_text_stays_genuine() {
+        let stdout = "\
+failures:
+
+---- live_158_launch_lifecycle::live_158_launch_rejects_occupied_port stdout ----
+thread 'main' panicked at crates/ff-rdp-cli/tests/live/live_158_launch_lifecycle.rs:437:
+an occupied port must not be reported as a bind deadline: {\"error\":\"port 7105 is already in use; Firefox (pid 1) did not open debug port 7105 within 30s\"}
+
+failures:
+    live_158_launch_lifecycle::live_158_launch_rejects_occupied_port
+";
+        let verdict = classify_failures(stdout, true, false);
+        assert!(
+            verdict.launch_timeout.is_empty(),
+            "the occupancy marker vetoes the deadline attribution"
+        );
+        assert_eq!(
+            verdict.genuine,
+            vec!["live_158_launch_lifecycle::live_158_launch_rejects_occupied_port".to_owned()]
+        );
+        assert!(verdict.has_genuine_failures());
     }
 
     /// A phase that fails without naming a single test (a compile error, or a

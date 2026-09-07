@@ -168,31 +168,6 @@ fn daemon_args(port: u16) -> Vec<String> {
     ]
 }
 
-fn daemon_status(port: u16) -> String {
-    let out = Command::new(ff_rdp_bin())
-        .args(["--host", "127.0.0.1", "--port", &port.to_string()])
-        .args(["daemon", "status"])
-        .output()
-        .expect("daemon status");
-    String::from_utf8_lossy(&out.stdout).into_owned()
-}
-
-/// Poll `daemon status` until it reports at least one **live** target — see
-/// live_137's identical helper for the full rationale.
-fn wait_for_live_targets(port: u16) -> bool {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-    while std::time::Instant::now() < deadline {
-        let text = daemon_status(port);
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
-            && json["results"]["live_target_count"].as_u64().unwrap_or(0) >= 1
-        {
-            return true;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(250));
-    }
-    false
-}
-
 /// AC: `live_146_daemon_parity_stable_repeat` — `live_137_frame_targets_via_daemon`
 /// / `live_137_click_cross_origin_via_daemon`'s core shape (launch, start the
 /// daemon, navigate to a cross-origin fixture, wait for live frame targets)
@@ -250,11 +225,12 @@ fn live_146_daemon_parity_stable_repeat() {
             return;
         }
 
+        let wait = crate::common::wait_for_live_targets(port);
         assert!(
-            wait_for_live_targets(port),
+            wait.reached,
             "live_146_daemon_parity_stable_repeat: iteration {i}/{ITERATIONS} — daemon never \
-             reported live frame targets (iter-146 Theme C regression) — status: {}",
-            daemon_status(port)
+             reported live frame targets (iter-146 Theme C regression) — {}",
+            wait.note()
         );
 
         eprintln!("live_146_daemon_parity_stable_repeat: iteration {i}/{ITERATIONS} PASSED");

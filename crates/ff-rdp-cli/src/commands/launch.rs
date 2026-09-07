@@ -943,6 +943,17 @@ pub(crate) fn run_with_hooks(
             let outcome = (hooks.probe_port)("localhost", port, port_wait_bound);
             if let Some(e) = outcome.into_error(pid, port, port_wait_bound) {
                 let _ = child.kill();
+                // iter-246 Part A Theme D: `kill` only *sends* the signal. The
+                // `ManagedProfileGuard` that `return` drops immediately walks
+                // this profile directory with `remove_dir_all`, and until the
+                // child is actually gone it is still creating files in there —
+                // so on a loaded machine the walk can race new entries and
+                // fail, leaving the directory behind. That is the shape
+                // `live_175_failed_launch_leaves_no_profile_dir` reported in
+                // iteration 211's second sweep and never in an idle run.
+                // Reaping first also stops the process being left a zombie for
+                // the lifetime of this command.
+                let _ = child.wait();
                 return Err(e);
             }
 
