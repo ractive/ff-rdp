@@ -671,3 +671,305 @@ impl Drop for TargetGuardScope<'_> {
         self.ctx.set_target_guard(None);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    use clap::Parser as _;
+    use ff_rdp_core::transport::encode_frame;
+    use serde_json::Value;
+
+    use super::*;
+
+    /// Replies recorded from a real Firefox (see `.claude/CLAUDE.md` — fixtures
+    /// are never hand-crafted), replayed by the mock below.
+    const LIST_TABS_REPLY: &str = include_str!("../../tests/fixtures/list_tabs_response.json");
+    const GET_TARGET_REPLY: &str = include_str!("../../tests/fixtures/get_target_response.json");
+
+    /// A listener that speaks just enough RDP for the connect + `listTabs` +
+    /// `getTarget` handshake, and — the point of the whole exercise — counts
+    /// how many times it was connected to.
+    ///
+    /// iter-239 is a round-trip change, so a test that only checks the parsed
+    /// result would pass just as happily against the two-connection code it
+    /// replaced. The connection counter is the assertion that actually pins it.
+    struct MockFirefox {
+        port: u16,
+        connections: Arc<AtomicUsize>,
+        shutdown: Arc<AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl MockFirefox {
+        /// `list_tabs_ok = false` makes the server answer `listTabs` with an
+        /// actor error — the "greeting landed, listTabs did not" branch.
+        fn start(list_tabs_ok: bool) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
+            let port = listener.local_addr().expect("addr").port();
+            listener.set_nonblocking(true).expect("nonblocking");
+
+            let connections = Arc::new(AtomicUsize::new(0));
+            let shutdown = Arc::new(AtomicBool::new(false));
+            let counter = Arc::clone(&connections);
+            let stop = Arc::clone(&shutdown);
+
+            let thread = std::thread::spawn(move || {
+                while !stop.load(Ordering::SeqCst) {
+                    match listener.accept() {
+                        Ok((stream, _)) => {
+                            counter.fetch_add(1, Ordering::SeqCst);
+                            stream.set_nonblocking(false).expect("blocking stream");
+                            serve(stream, list_tabs_ok);
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+
+            Self {
+                port,
+                connections,
+                shutdown,
+                thread: Some(thread),
+            }
+        }
+
+        fn connections(&self) -> usize {
+            self.connections.load(Ordering::SeqCst)
+        }
+
+        fn cli(&self, extra: &[&str]) -> Cli {
+            let port = self.port.to_string();
+            let mut argv = vec![
+                "ff-rdp",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                &port,
+                "--no-daemon",
+                "--timeout",
+                "5000",
+            ];
+            argv.extend_from_slice(extra);
+            // The home view is what iter-239 is about, and `home` is also the
+            // subcommand clap substitutes for a bare `ff-rdp` (see `main`), so
+            // it is both the realistic and the parseable choice here.
+            argv.push("home");
+            Cli::try_parse_from(argv).expect("mock cli args parse")
+        }
+    }
+
+    impl Drop for MockFirefox {
+        fn drop(&mut self) {
+            self.shutdown.store(true, Ordering::SeqCst);
+            if let Some(t) = self.thread.take() {
+                let _ = t.join();
+            }
+        }
+    }
+
+    /// Read one `<len>:<json>` frame, or `None` at EOF.
+    fn read_frame(stream: &mut TcpStream) -> Option<Value> {
+        let mut len_digits = String::new();
+        loop {
+            let mut byte = [0u8; 1];
+            if stream.read_exact(&mut byte).is_err() {
+                return None;
+            }
+            if byte[0] == b':' {
+                break;
+            }
+            len_digits.push(char::from(byte[0]));
+        }
+        let len: usize = len_digits.parse().ok()?;
+        let mut body = vec![0u8; len];
+        stream.read_exact(&mut body).ok()?;
+        serde_json::from_slice(&body).ok()
+    }
+
+    fn send(stream: &mut TcpStream, value: &Value) {
+        let frame = encode_frame(&value.to_string());
+        let _ = stream.write_all(frame.as_bytes());
+    }
+
+    fn serve(mut stream: TcpStream, list_tabs_ok: bool) {
+        send(
+            &mut stream,
+            &json!({
+                "from": "root",
+                "applicationType": "browser",
+                "traits": {},
+                "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:143.0) Gecko/20100101 Firefox/143.0",
+            }),
+        );
+
+        while let Some(request) = read_frame(&mut stream) {
+            let to = request
+                .get("to")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let kind = request.get("type").and_then(Value::as_str).unwrap_or_default();
+
+            let reply = match kind {
+                "listTabs" if list_tabs_ok => {
+                    serde_json::from_str(LIST_TABS_REPLY).expect("recorded listTabs")
+                }
+                "getTarget" => {
+                    let mut reply: Value =
+                        serde_json::from_str(GET_TARGET_REPLY).expect("recorded getTarget");
+                    reply["from"] = json!(to);
+                    reply
+                }
+                // Everything else (including `listTabs` in the failure mode)
+                // answers with an actor error rather than closing, so nothing
+                // downstream mistakes the mock for a lost connection and
+                // reconnects.
+                _ => json!({
+                    "from": to,
+                    "error": "unknownError",
+                    "message": "mock firefox does not implement this",
+                }),
+            };
+            send(&mut stream, &reply);
+        }
+    }
+
+    /// Task A: the primitive lists every tab *and* attaches to one of them
+    /// over a single connection — the two round trips iter-239 merged.
+    #[test]
+    fn unit_239_lists_every_tab_and_attaches_on_one_connection() {
+        let mock = MockFirefox::start(true);
+        let cli = mock.cli(&[]);
+
+        let listing =
+            connect_and_list_tabs(&cli, TabListRouting::Direct).unwrap_or_else(|e| {
+                panic!("connect_and_list_tabs: {}", e.into_app_error());
+            });
+
+        assert_eq!(listing.greeting_version(), Some(143));
+        let urls: Vec<&str> = listing.tabs().iter().map(|t| t.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            ["https://example.com/", "https://www.rust-lang.org/"],
+            "the listing must carry every tab, not just the resolved one"
+        );
+
+        let ctx = listing.attach(&cli).expect("attach on the same connection");
+        assert_eq!(
+            ctx.target_tab_actor().as_ref(),
+            "server1.conn0.tabDescriptor1",
+            "no --tab flag resolves to the selected tab"
+        );
+        assert_eq!(
+            ctx.target.console_actor.as_ref(),
+            "server1.conn0.child2/consoleActor3"
+        );
+
+        drop(ctx);
+        assert_eq!(
+            mock.connections(),
+            1,
+            "the tab list and the attached target must come from one connect"
+        );
+    }
+
+    /// `--tab N` is honoured by `attach`, and still costs no extra connection:
+    /// the selector is applied to the list the same connection already
+    /// returned.
+    #[test]
+    fn unit_239_attach_honours_the_tab_selector() {
+        let mock = MockFirefox::start(true);
+        let cli = mock.cli(&["--tab", "2"]);
+
+        let listing = connect_and_list_tabs(&cli, TabListRouting::Direct)
+            .unwrap_or_else(|e| panic!("connect_and_list_tabs: {}", e.into_app_error()));
+        let ctx = listing.attach(&cli).expect("attach");
+
+        assert_eq!(
+            ctx.target_tab_actor().as_ref(),
+            "server1.conn0.tabDescriptor2"
+        );
+        drop(ctx);
+        assert_eq!(mock.connections(), 1);
+    }
+
+    /// The two failure branches the home view renders differently: a greeting
+    /// that never landed is `reachable: false`, a `listTabs` that failed after
+    /// one is `reachable: true` with the version already known.
+    #[test]
+    fn unit_239_list_tabs_failure_is_not_a_connect_failure() {
+        let mock = MockFirefox::start(false);
+        let cli = mock.cli(&[]);
+
+        match connect_and_list_tabs(&cli, TabListRouting::Direct) {
+            Err(TabListError::ListTabs {
+                firefox_version,
+                detail,
+                ..
+            }) => {
+                assert_eq!(
+                    firefox_version,
+                    Some(143),
+                    "the greeting landed, so its version is known"
+                );
+                assert!(!detail.is_empty(), "the reason must be reportable");
+            }
+            Err(TabListError::Connect { detail, .. }) => {
+                panic!("a reachable browser must not report a connect failure: {detail}")
+            }
+            Ok(_) => panic!("the mock refused listTabs"),
+        }
+    }
+
+    /// A dark port is a connect failure, and its `detail` is the raw transport
+    /// reason — not the multi-line `AppError::Connection` text, whose `hint:`
+    /// line the home view emits itself.
+    #[test]
+    fn unit_239_connect_failure_detail_is_the_undressed_reason() {
+        let dark = {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+            let port = listener.local_addr().expect("addr").port();
+            drop(listener);
+            port
+        };
+        let port = dark.to_string();
+        let cli = Cli::try_parse_from([
+            "ff-rdp",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &port,
+            "--no-daemon",
+            "--timeout",
+            "1500",
+            "home",
+        ])
+        .expect("cli args parse");
+
+        match connect_and_list_tabs(&cli, TabListRouting::Direct) {
+            Err(e @ TabListError::Connect { .. }) => {
+                let detail = e.detail().to_owned();
+                assert!(
+                    !detail.contains("hint:"),
+                    "the JSON detail must stay a one-line reason: {detail}"
+                );
+                assert!(
+                    e.into_app_error().to_string().contains("hint:"),
+                    "…while the raised error keeps the terminal-facing hint"
+                );
+            }
+            Err(other) => panic!(
+                "a dark port must be a connect failure, got: {}",
+                other.into_app_error()
+            ),
+            Ok(_) => panic!("nothing is listening on the dark port"),
+        }
+    }
+}
