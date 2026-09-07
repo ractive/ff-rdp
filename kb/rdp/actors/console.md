@@ -81,6 +81,28 @@ Returns cached page errors, console-api calls etc. recorded **since the listener
 > `live_console_no_double_delivery` (the combined legacy + watcher path stays
 > single-delivery).
 
+> **iter-252 — the watcher subscription `console --follow` uses is not the same
+> shape as the legacy push, and needs two more things.** Two corrections to
+> what the note above implies:
+>
+> 1. A `console-message` **resource** is flat.
+>    `resources/console-messages.js:55` hands
+>    `prepareConsoleMessageForRemote`'s result straight to `onAvailable`, with
+>    no `message` wrapper — unlike the `consoleAPICall` push
+>    (`webconsole.js:1453`) and unlike `error-message`, which does wrap in
+>    `pageError`. ff-rdp understood only the wrapped shapes until iter-252, so
+>    `console --follow` printed nothing on *either* route even when every frame
+>    arrived.
+> 2. `console-message` and `error-message` are `FrameTargetResources`, so the
+>    direct route additionally needs `getWatcher {isServerTargetSwitchingEnabled:
+>    true}` **and** a `watchTargets("frame")` before `watchResources` —
+>    otherwise no content-process target exists to emit them and the
+>    subscription is acked into silence. That is iter-174's defect in a second
+>    place; the mechanism is written up in `kb/rdp/actors/watcher.md`.
+>
+> Live coverage:
+> `live_252_console_follow_sees_content_process_messages_both_routes`.
+
 ### `startListeners(listeners: string[]) → { startedListeners }`
 
 Listener kinds: `"PageError"`, `"ConsoleAPI"`, `"FileActivity"`, `"ReflowActivity"`, `"ContentProcessMessages"`, `"DocumentEvents"`. Listeners populate the cache and fire live events.

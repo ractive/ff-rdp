@@ -1,130 +1,120 @@
 #!/usr/bin/env bash
-# iteration-252 — does any *other* direct-route watcher starve on
+# iter-252 dogfood gate — does any *other* direct-route watcher starve on
 # content-process resources the way iteration 174's navigation waits did?
 #
-# The audit (see the plan) leaves exactly one candidate: `console --follow`'s
-# direct path, which subscribes to `console-message` + `error-message` — both
-# members of `FrameTargetResources` in
-# `devtools/server/actors/resources/index.js`, i.e. emitted only from the
-# content process, per frame target. Every other remaining `get_watcher` call
-# site subscribes to `network-event` or `cookies`, which live in
-# `ParentProcessResources` and are therefore immune.
+# The audit leaves exactly one candidate: `console --follow`'s direct path,
+# which subscribes to `console-message` + `error-message` — both members of
+# `FrameTargetResources` in `devtools/server/actors/resources/index.js`, i.e.
+# emitted only from the content process, per frame target. Every other
+# remaining `get_watcher` call site subscribes to `network-event` or `cookies`,
+# which live in `ParentProcessResources` and are therefore immune.
 #
-# This script is the measurement harness iteration 174 lacked. 174 tried the
-# same comparison, saw empty stdout on *both* routes inside an 8 s window and
-# concluded nothing. The two things it was missing:
+# This is the measurement harness iteration 174 lacked. 174 tried the same
+# comparison, saw empty stdout on *both* routes inside an 8 s window and
+# concluded nothing. Two things it was missing, both of which turned out to be
+# defects rather than harness problems:
 #
-#   1. a page that actually runs in the content process (`about:blank` and a
-#      freshly-launched browser can leave you on a parent-process document);
-#   2. enough settling time between arming the subscription and emitting the
-#      probe — `watchResources` is asynchronous on the server and a probe fired
-#      immediately after the ack races the subscription.
+#   1. the direct route never received a single `console-message` resource
+#      (no `isServerTargetSwitchingEnabled`, no `watchTargets("frame")`);
+#   2. neither route could *print* one, because the parser understood only the
+#      nested `consoleAPICall` shape and a `console-message` resource is flat.
 #
-# Both routes are measured with the same code path, the same page and the same
-# timings, so a difference between them is the defect and not the harness.
+# Both routes are measured against the same page, the same probe source and the
+# same window, so a difference between them is the defect and not the harness —
+# and a *daemon* route that goes silent fails the run outright, because a
+# harness that measures nothing must never read as a clean result.
+#
+# The probe is page-driven (a `setInterval` armed once, up front) rather than a
+# per-route `eval`: a daemon-routed `console --follow` holds the daemon's single
+# RPC-writer slot for its whole lifetime, so a second daemon command fired
+# underneath it would time out with `daemon_busy` and the daemon leg would look
+# starved for a reason that has nothing to do with this audit.
+#
+# Run manually:
+#   FF_RDP_LIVE_TESTS=1 cargo run -p xtask -- check-dogfood-script \
+#     kb/iterations/iteration-252-content-process-resources-on-the-direct-route.md
 set -euo pipefail
 
 # shellcheck source=kb/iterations/dogfood-lib.sh
-. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/dogfood-lib.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/dogfood-lib.sh"
+
+SENTINEL="${FF_RDP_DOGFOOD_SENTINEL:?set by check-dogfood-script; run this script via: cargo run -p xtask -- check-dogfood-script <plan.md>}"
+rm -f "$SENTINEL"
+
 dogfood_init
 
-ARM_SECONDS="${ITER252_ARM_SECONDS:-4}"
-OBSERVE_SECONDS="${ITER252_OBSERVE_SECONDS:-6}"
+# The page logs once a second; 8 s of observation leaves a wide margin over the
+# ~1 s a healthy route needs while staying quick.
+OBSERVE_SECONDS="${ITER252_OBSERVE_SECONDS:-8}"
+PROBE="iter252tick"
 
 PORT="$(dogfood_free_port)"
 WORK="$(dogfood_workdir)"
 
-dogfood_log "launching headless Firefox on port $PORT"
-dogfood_launch "$PORT" || dogfood_die "launch failed"
+dogfood_launch "$PORT"
+sleep 2
 
-PAGE="$WORK/iter252-probe.html"
-cat >"$PAGE" <<'HTML'
-<!doctype html>
-<meta charset="utf-8">
-<title>iter-252 console-follow probe</title>
-<body>iter-252 probe page</body>
-HTML
-PAGE_URL="file://$PAGE"
+# `about:blank` is enough: it is a content-process document like any other, and
+# it keeps this gate free of both the network and the `--allow-file-urls` opt-in.
+ffrdp --port "$PORT" --no-daemon navigate about:blank >"$WORK/navigate.json"
 
-# `file://` is off by default (it makes local files exfiltratable through
-# `eval`/`page-text`); the page here is one this script just wrote into its own
-# private workdir, so opting in is bounded by the run.
-dogfood_log "navigating to $PAGE_URL"
-ffrdp --port "$PORT" --allow-file-urls navigate "$PAGE_URL" >"$WORK/navigate.json" 2>&1 \
-  || dogfood_die "navigate failed: $(cat "$WORK/navigate.json")"
+ffrdp --port "$PORT" --no-daemon \
+  eval "setInterval(function(){console.log('$PROBE')},1000); 'armed'" \
+  >"$WORK/arm.json"
 
-# Measure one route. $1 is the label used in the probe string and the output
-# file names; the remaining arguments are the global flags that select the
-# route (empty for the daemon route).
+# Stream `console --follow` over one route for the observation window and print
+# how many probe lines it produced. $1 is the label; the remaining arguments are
+# the global flags that select the route (none for the daemon route).
+#
+# Backgrounded rather than run under `timeout`, because `ffrdp` is a shell
+# function (the dogfood-lib helper that guarantees the binary under test) and
+# `timeout` can only exec a real program.
 measure_route() {
   local label="$1"
   shift
   local out="$WORK/follow-$label.out"
-  local err="$WORK/follow-$label.err"
-  local probe="iter252-$label-probe"
-  local follow_pid
+  local follow_pid seen
 
   : >"$out"
-  : >"$err"
+  : >"$WORK/follow-$label.err"
 
-  ffrdp --port "$PORT" "$@" console --follow --pattern iter252 >"$out" 2>"$err" &
+  ffrdp --port "$PORT" "$@" console --follow --pattern "$PROBE" \
+    >"$out" 2>"$WORK/follow-$label.err" &
   follow_pid=$!
-
-  sleep "$ARM_SECONDS"
-
-  if ! kill -0 "$follow_pid" 2>/dev/null; then
-    dogfood_log "$label: console --follow exited before the probe was emitted"
-    dogfood_log "$label: stderr: $(head -c 400 "$err")"
-    printf 'FOLLOW-DIED\n'
-    return 0
-  fi
-
-  ffrdp --port "$PORT" "$@" eval "console.log('$probe')" \
-    >"$WORK/eval-$label.json" 2>&1 \
-    || dogfood_log "$label: eval reported failure: $(head -c 300 "$WORK/eval-$label.json")"
 
   sleep "$OBSERVE_SECONDS"
 
   kill "$follow_pid" 2>/dev/null || true
   wait "$follow_pid" 2>/dev/null || true
 
-  if grep -q "$probe" "$out"; then
-    printf 'OBSERVED\n'
-  else
-    printf 'SILENT\n'
-  fi
+  seen=$(grep -c "$PROBE" "$out" || true)
+  printf '%s\n' "${seen:-0}"
 }
 
-dogfood_log "measuring the daemon route"
-DAEMON_RESULT="$(measure_route daemon)"
-dogfood_log "daemon route: $DAEMON_RESULT"
+DIRECT_LINES="$(measure_route direct --no-daemon)"
+DAEMON_LINES="$(measure_route daemon)"
 
-dogfood_log "measuring the direct route (--no-daemon)"
-DIRECT_RESULT="$(measure_route direct --no-daemon)"
-dogfood_log "direct route: $DIRECT_RESULT"
+echo "iter-252: window=${OBSERVE_SECONDS}s (page logs at 1 Hz) direct=$DIRECT_LINES daemon=$DAEMON_LINES"
 
-printf '\n=== iteration-252 console --follow route comparison ===\n'
-printf 'daemon route : %s\n' "$DAEMON_RESULT"
-printf 'direct route : %s\n' "$DIRECT_RESULT"
+# The daemon leg is the control. If it is silent the harness is not measuring
+# anything and the direct result is not evidence either way — the exact trap
+# iteration 174 fell into, which is why this is checked first and separately.
+test "$DAEMON_LINES" -gt 0 || {
+  echo "FAIL: the daemon route delivered no console-message resources — the harness" >&2
+  echo "      measured nothing, so the direct result below is not evidence." >&2
+  head -c 300 "$WORK/follow-daemon.err" >&2
+  exit 1
+}
 
-FAILED=0
+test "$DIRECT_LINES" -gt 0 || {
+  echo "FAIL: the direct route delivered no console-message resources. This is the" >&2
+  echo "      iteration-174 shape: console --follow subscribes to content-process" >&2
+  echo "      resources, so its watcher needs isServerTargetSwitchingEnabled:true" >&2
+  echo "      and a watchTargets(\"frame\") before watchResources, or the" >&2
+  echo "      subscription is acked into silence." >&2
+  head -c 300 "$WORK/follow-direct.err" >&2
+  exit 1
+}
 
-if [ "$DAEMON_RESULT" != "OBSERVED" ]; then
-  printf 'FAIL: the daemon route did not deliver its own console probe — the\n'
-  printf '      harness is not measuring anything and neither result is evidence.\n'
-  FAILED=1
-fi
-
-if [ "$DIRECT_RESULT" != "OBSERVED" ]; then
-  printf 'FAIL: the direct route did not deliver its own console probe. This is\n'
-  printf '      the iteration-174 defect in a second place: console --follow\n'
-  printf '      subscribes to content-process resources through a watcher\n'
-  printf '      obtained without isServerTargetSwitchingEnabled.\n'
-  FAILED=1
-fi
-
-if [ "$FAILED" -eq 0 ]; then
-  printf 'PASS: both routes deliver console-message resources.\n'
-fi
-
-exit "$FAILED"
+date -u +%Y-%m-%dT%H:%M:%SZ > "$SENTINEL"
+echo "iter-252 dogfood: console --follow delivers content-process resources on both routes — $SENTINEL"

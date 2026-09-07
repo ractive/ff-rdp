@@ -12,11 +12,21 @@
 //! # Why `network --follow` (not `console --follow`)
 //!
 //! The daemon's follow streams read the watcher `resources-available-array`
-//! stream.  On the tested Firefox versions ordinary `console.log` calls are
-//! delivered as a direct console-actor push and are **not** routed through the
-//! watcher `console-message` resource stream (iter-71 Theme C research), so a
-//! `console --follow` stream is not a dependable post-nav signal.  Network /
-//! navigation resources, by contrast, flow through the watcher reliably (the
+//! stream.  This test predates iteration 252 and was written believing that
+//! ordinary `console.log` calls are delivered only as a direct console-actor
+//! push and are **not** routed through the watcher `console-message` resource
+//! stream (iter-71 Theme C research).  **That belief was wrong**, and
+//! iteration 252 measured why it looked true: the frames were arriving all
+//! along, but `parse_single_console_resource` understood only the nested
+//! `consoleAPICall` payload and dropped every flat `console-message` resource,
+//! so the stream *looked* empty.  Both halves are fixed (see
+//! `kb/rdp/actors/watcher.md`, iter-252) and
+//! `live_252_console_follow_sees_content_process_messages_both_routes` now
+//! asserts `console --follow` delivers on both routes.  `network --follow` is
+//! kept here anyway: it is the signal this test's own AC names, and rewriting a
+//! passing cross-process regression guard around a different resource type
+//! would change what it proves.  Network / navigation resources, for their
+//! part, flow through the watcher reliably (the
 //! daemon's whole network-buffering feature is built on them).  A
 //! `network --follow` stream therefore emits a `navigation` event whose `url`
 //! is the post-nav page — an event unambiguously *sourced from the post-nav
