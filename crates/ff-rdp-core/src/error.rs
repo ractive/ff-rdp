@@ -307,6 +307,35 @@ pub enum ProtocolError {
     #[error("unexpected bulk packet: expected actor={actor} kind={kind}")]
     BulkPacketUnexpected { actor: String, kind: String },
 
+    /// A frame was **partially** written before the write failed (iter-240).
+    ///
+    /// This is the wire-corruption error. `write_all` on a socket carrying a
+    /// `{len}:{json}` frame can stop halfway — most commonly because
+    /// `SO_SNDTIMEO` (set from `--timeout` in
+    /// [`RdpTransport::connect_raw`](crate::transport::RdpTransport::connect_raw))
+    /// expired with the peer's receive window full. The bytes already written
+    /// stay on the wire, so the peer's framer resumes reading *inside* a
+    /// payload and reports something like
+    /// `invalid packet: unexpected byte 0x3d in length prefix` — the exact
+    /// line iteration 224 found in `~/.ff-rdp/daemon.log` and could not
+    /// explain.
+    ///
+    /// The distinction from [`Timeout`](Self::Timeout) matters: a timeout that
+    /// wrote nothing leaves an aligned stream and may be retried, whereas this
+    /// one **must not** be — resending the frame appends a second copy on top
+    /// of the truncated tail. [`is_transient`](Self::is_transient) therefore
+    /// reports `false` for it, and the transport shuts the socket down on the
+    /// way out so no later frame can be written after the stump.
+    #[error(
+        "frame write desynchronised the connection: {written} of {total} bytes written before {source}"
+    )]
+    FrameWriteDesynchronised {
+        written: usize,
+        total: usize,
+        #[source]
+        source: std::io::Error,
+    },
+
     /// A per-actor bounded channel is at capacity (back-pressure signal).
     ///
     /// Reserved for a future per-actor demux fan-out layer.  The former
@@ -410,6 +439,9 @@ impl ProtocolError {
             | Self::BulkPacketUnsupported { .. }
             | Self::BulkPacketUnexpected { .. }
             | Self::ActorChannelFull { .. }
+            // iter-240: never retryable — half a frame is already on the wire,
+            // and a retry would append a second copy to the truncated tail.
+            | Self::FrameWriteDesynchronised { .. }
             | Self::InvalidState(_) => false,
         }
     }

@@ -520,9 +520,7 @@ impl RdpTransport {
         }
 
         let frame = encode_frame(&json);
-        self.writer
-            .write_all(frame.as_bytes())
-            .map_err(map_send_io_error)?;
+        write_frame(&mut self.writer, frame.as_bytes())?;
 
         Ok(())
     }
@@ -730,9 +728,7 @@ impl FramedWriter {
         }
 
         let frame = encode_frame(&json);
-        self.writer
-            .write_all(frame.as_bytes())
-            .map_err(map_send_io_error)
+        write_frame(&mut self.writer, frame.as_bytes())
     }
 
     /// Send a pre-serialised JSON string as a Firefox RDP frame.
@@ -741,9 +737,30 @@ impl FramedWriter {
     /// redundant parse/serialise round-trip.
     pub fn send_raw(&mut self, json: &str) -> Result<(), ProtocolError> {
         let frame = encode_frame(json);
+        write_frame(&mut self.writer, frame.as_bytes())
+    }
+
+    /// Set the write deadline (`SO_SNDTIMEO`) on the underlying socket.
+    ///
+    /// A write that exceeds it fails with
+    /// [`ProtocolError::FrameWriteDesynchronised`] if any byte of the frame had
+    /// already reached the socket, and with [`ProtocolError::Timeout`] if none
+    /// had. The daemon uses this to bound every write to a CLI client so one
+    /// client that stopped reading cannot stall the event dispatcher (iter-240
+    /// Part B).
+    pub fn set_write_timeout(&self, timeout: Option<Duration>) -> Result<(), ProtocolError> {
         self.writer
-            .write_all(frame.as_bytes())
-            .map_err(map_send_io_error)
+            .set_write_timeout(timeout)
+            .map_err(ProtocolError::ConnectionFailed)
+    }
+
+    /// Shut down the underlying socket in both directions.
+    ///
+    /// Used by the daemon to drop a client whose write deadline expired: the
+    /// peer must not be left holding a half-written frame on a socket that
+    /// something else could still write to.
+    pub fn shutdown(&self) -> std::io::Result<()> {
+        self.writer.shutdown(std::net::Shutdown::Both)
     }
 
     /// Try to clone the underlying `TcpStream`.
@@ -1410,6 +1427,82 @@ fn map_send_io_error(e: std::io::Error) -> ProtocolError {
     } else {
         ProtocolError::SendFailed(e)
     }
+}
+
+/// Write one complete `{len}:{json}` frame, reporting a **partial** write as
+/// such (iter-240).
+///
+/// `Write::write_all` is not usable for framed output on a socket that has a
+/// write timeout: when `SO_SNDTIMEO` expires it returns `TimedOut` having
+/// already pushed an unknown number of bytes, and the caller cannot tell that
+/// case apart from "nothing was sent". Every connection this crate opens *does*
+/// carry a write timeout — [`RdpTransport::connect_raw`] sets it from the
+/// caller's `--timeout` — so the ambiguity was live on every socket, including
+/// the CLI↔daemon one.
+///
+/// The consequence was the desync iteration 224 recorded and could not
+/// explain: a truncated frame stump left on the wire, the peer's framer
+/// resuming mid-payload, and `unexpected byte 0x3d in length prefix` in
+/// `~/.ff-rdp/daemon.log`. Worse, the truncation surfaced as
+/// [`ProtocolError::Timeout`], which [`ProtocolError::is_transient`] calls
+/// retryable — so a retry could append a second copy of the frame after the
+/// stump.
+///
+/// This loop counts what actually reached the socket. Once any byte has, the
+/// connection is unrecoverable: it is shut down (so no later frame can be
+/// written after the stump) and the error is
+/// [`ProtocolError::FrameWriteDesynchronised`], which is never transient.
+/// A failure at offset 0 is still mapped by [`map_send_io_error`], because a
+/// stream that received nothing is still aligned.
+fn write_frame(stream: &mut TcpStream, frame: &[u8]) -> Result<(), ProtocolError> {
+    let total = frame.len();
+    let mut written = 0usize;
+
+    while written < total {
+        match stream.write(&frame[written..]) {
+            Ok(0) => {
+                let source = std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "socket accepted zero bytes",
+                );
+                if written == 0 {
+                    return Err(ProtocolError::SendFailed(source));
+                }
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+                return Err(ProtocolError::FrameWriteDesynchronised {
+                    written,
+                    total,
+                    source,
+                });
+            }
+            Ok(n) => written += n,
+            // A signal interrupted the syscall before it moved any bytes;
+            // `write` reports `Interrupted` only in that case, so the stream is
+            // still aligned and the write may simply be reissued.
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => {
+                if written == 0 {
+                    return Err(map_send_io_error(e));
+                }
+                tracing::warn!(
+                    target: "ff_rdp_core::transport",
+                    written,
+                    total,
+                    error = %e,
+                    "frame write stopped mid-frame — closing the connection so no \
+                     frame is written after the truncated one"
+                );
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+                return Err(ProtocolError::FrameWriteDesynchronised {
+                    written,
+                    total,
+                    source: e,
+                });
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Test-only RAII guard for the **only** sanctioned mutation of
