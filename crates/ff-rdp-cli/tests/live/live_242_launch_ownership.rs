@@ -105,6 +105,11 @@ fn live_242_marker_names_test_from_direct_launch() {
 /// leave the process table changed. The stronger statement — `disarm()` — is
 /// asserted alongside, because it does not depend on losing the race against
 /// PID reuse to be correct.
+// allow-ungated-live: needs no Firefox — it spawns and reaps a trivial child to
+// get a dead PID, so it is a fast, network-free probe of a `tests/live` helper.
+// Gating it behind FF_RDP_LIVE_TESTS would mean the guard's Drop contract is
+// only ever checked on a machine that has Firefox, which is the opposite of
+// where a regression here would hurt most.
 #[test]
 fn live_242_guard_drop_skips_dead_pid() {
     #[cfg(unix)]

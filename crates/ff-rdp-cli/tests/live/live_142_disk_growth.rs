@@ -234,7 +234,7 @@ fn live_142_throttle_json_gc() {
     // `common::LiveFirefox` here (the custom `FF_RDP_HOME` env var above).
     // iter-242 Theme B: and before the *success* assertion and the two
     // `expect`s that used to sit between the spawn and the guard.
-    let _guard = crate::common::guard_launched_firefox(&out);
+    let guard = crate::common::guard_launched_firefox(&out);
     assert!(
         out.status.success(),
         "live_142_throttle_json_gc: `ff-rdp launch --headless --debug-port {port}` exited {}\n  stdout: {}\n  stderr: {}",
@@ -243,7 +243,7 @@ fn live_142_throttle_json_gc() {
         String::from_utf8_lossy(&out.stderr).trim(),
     );
     assert!(
-        _guard.is_some(),
+        guard.is_some(),
         "live_142_throttle_json_gc: successful launch reported no results.pid; stdout: {}",
         String::from_utf8_lossy(&out.stdout).trim()
     );
@@ -274,5 +274,5 @@ fn live_142_throttle_json_gc() {
         .output();
     // The guard reaps whatever `daemon stop` did not, and skips the PID
     // entirely when it is already gone (iter-242 Theme D).
-    drop(_guard);
+    drop(guard);
 }

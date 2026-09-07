@@ -1674,9 +1674,16 @@ mod tests {
             "a marker naming the live test process must report alive"
         );
 
-        // Garbage marker → not owned by a live process.
+        // Garbage marker. iter-242 **changed this answer on purpose**: it used
+        // to grade `Unmarked` — "nobody owns this directory" — and so let the
+        // deletion paths reclaim it. A file that exists and does not parse is
+        // not evidence of no owner; it is evidence we could not read the owner,
+        // which on a deletion path resolves toward keeping the directory (see
+        // `OwnerLiveness::Unreadable`, and the `fs::write` truncate window that
+        // produces exactly this state on a *live* profile).
         std::fs::write(dir.path().join(OWNER_PID_MARKER), b"not-a-pid\n").expect("overwrite");
-        assert!(!owner_liveness_of(dir.path()).keeps_profile_alive());
+        assert_eq!(owner_liveness(dir.path()), OwnerLiveness::Unreadable);
+        assert!(owner_liveness_of(dir.path()).keeps_profile_alive());
     }
 
     /// AC: `live_151_leaked_profile_names_its_test` (unit half) —
@@ -2293,7 +2300,11 @@ mod tests {
             .expect("read profile dir")
             .flatten()
             .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|name| name.ends_with(".tmp"))
+            .filter(|name| {
+                std::path::Path::new(name)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("tmp"))
+            })
             .collect();
         assert!(
             strays.is_empty(),
