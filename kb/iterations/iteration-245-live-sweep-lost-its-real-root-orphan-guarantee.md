@@ -497,6 +497,14 @@ run that has something to report. Four unit tests cover both directions
 browser alive after its tier finished), and following it to the bottom produced a correction rather
 than a shrug. A warning-only design would have produced a line nobody read.
 
+**A second defect, caught in PR review rather than by the sweep itself:** `real_profile_root()`
+copied the product resolver's `$FF_RDP_HOME` precedence but not its empty-string filter — an
+exported-but-empty override would have resolved to a *relative* `ff-rdp/profiles` under the
+sweep's cwd instead of falling through to `state_dir`/`data_local_dir`, the same edge case
+`util::home_override()` exists to guard against. Fixed on the branch: the env read is now split
+into a pure `resolve_real_profile_root`, with `iter_245_real_profile_root_filters_an_empty_home_override`
+covering both the fallthrough and the genuinely-set-override precedence.
+
 ## Live sweep (closing record)
 
 Two dual-gate sweeps, macOS, `--jobs 6`, a raw `firefox --start-debugger-server 6000 --headless`
