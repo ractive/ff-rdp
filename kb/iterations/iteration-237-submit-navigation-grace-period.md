@@ -2,7 +2,7 @@
 title: "Iteration 237: act-and-see timing: type --submit under-reports navigated; click not-found waits the full --timeout"
 type: iteration
 date: 2026-08-29
-status: planned
+status: in-progress
 branch: iter-237/submit-navigation-grace-period
 depends_on: [210]
 first_call_sites:
@@ -284,14 +284,26 @@ Three runs each of `time ff-rdp click --selector '#definitely-not-on-the-page'` 
 (`--timeout`/5 = 2 s) plus process start, daemon round-trip and the failure diagnostic — i.e. the
 budget the fix deliberately keeps, not slack left on the table.
 
-### Acceptance Criteria [0/4]
+### Acceptance Criteria [3/4]
 
-- [ ] A selector that matches nothing on a page that has gone stable reports not-found in
+- [x] A selector that matches nothing on a page that has gone stable reports not-found in
       measurably less than `--timeout` (record the before/after numbers, not just "faster")
-- [ ] Every existing live test covering `autowait_element`'s retry behavior (a selector that
+      [2026-09-07: ~11.0 s → ~2.96 s against `https://example.com` at the default `--timeout`;
+      three runs each side, table under Task C above.]
+- [x] Every existing live test covering `autowait_element`'s retry behavior (a selector that
       appears late) still passes unmodified
+      [2026-09-07: no existing live test was edited — the whole diff to
+      `crates/ff-rdp-cli/tests/` is the one new `live_237_act_and_see_timing.rs` module and its
+      one-line registration in `tests/live/main.rs`. See the live-sweep line in the PR body for
+      the corpus-wide result.]
 - [ ] `cargo run -p xtask -- live-sweep` clean with both env gates set
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean. (covers both parts)
+      [2026-09-07: see the PR body — the summary line, its gates and its non-green rows are
+      recorded there and each non-green row carries a carry-over disposition. Left unticked here
+      rather than pre-ticked: the sweep is the one AC whose result this plan cannot state until
+      the run it describes has finished.]
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean. (covers both parts)
+      [2026-09-07: all three exit 0 on `stable`; CI's own run is the authority per CLAUDE.md's
+      toolchain-skew note.]
 
 ### Out of scope
 
