@@ -324,7 +324,9 @@ fn probe_daemon_health(cli: &Cli, port: u16) -> Probe {
             status: Status::Fail,
             detail: format!(
                 "the dispatcher has been stuck on one {} frame for {age_ms} ms —                  the daemon is wedged",
-                dispatcher["last_frame_kind"].as_str().unwrap_or("<unknown>")
+                dispatcher["last_frame_kind"]
+                    .as_str()
+                    .unwrap_or("<unknown>")
             ),
             hint: Some("`ff-rdp daemon stop`, then re-run the command".to_owned()),
         };

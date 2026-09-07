@@ -1354,11 +1354,7 @@ impl FrameDecoder {
     ///
     /// Returns [`ProtocolError::Timeout`] when the socket deadline expires
     /// before the frame is complete; the caller may simply call again.
-    fn decode(
-        &mut self,
-        reader: &mut impl BufRead,
-        cap: usize,
-    ) -> Result<Value, ProtocolError> {
+    fn decode(&mut self, reader: &mut impl BufRead, cap: usize) -> Result<Value, ProtocolError> {
         loop {
             match &mut self.state {
                 DecodeState::Poisoned => {
@@ -1379,10 +1375,7 @@ impl FrameDecoder {
                         // resumable, so a timeout inside it *is* fatal: say so
                         // rather than silently losing the position.
                         let result = recv_bulk_frame(reader, first[0], cap);
-                        if matches!(
-                            result,
-                            Err(ProtocolError::BulkPacketUnsupported { .. })
-                        ) {
+                        if matches!(result, Err(ProtocolError::BulkPacketUnsupported { .. })) {
                             // Fully drained: the stream is aligned again.
                             self.state = DecodeState::Idle;
                         } else {
@@ -2610,7 +2603,10 @@ mod tests {
             .expect("good frame");
         sender.flush().expect("flush");
 
-        assert!(matches!(reader.recv(), Err(ProtocolError::InvalidPacket(_))));
+        assert!(matches!(
+            reader.recv(),
+            Err(ProtocolError::InvalidPacket(_))
+        ));
         assert!(
             matches!(reader.recv(), Err(ProtocolError::InvalidPacket(_))),
             "a stream whose position is unknown must not be read as if aligned"
@@ -2648,11 +2644,7 @@ mod tests {
             .expect_err("a frame this large cannot fit a stalled send window");
 
         match &err {
-            ProtocolError::FrameWriteDesynchronised {
-                written,
-                total,
-                ..
-            } => {
+            ProtocolError::FrameWriteDesynchronised { written, total, .. } => {
                 assert!(*written > 0, "a desync means bytes reached the wire");
                 assert!(
                     written < total,

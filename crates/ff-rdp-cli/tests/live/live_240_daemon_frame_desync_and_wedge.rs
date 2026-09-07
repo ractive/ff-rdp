@@ -14,24 +14,36 @@
 //!     unexpected byte 0x3d in length prefix
 //! ```
 //!
-//! `0x3d` is `=`: the daemon's framer had resumed reading *inside* a client
-//! frame's payload. Iteration 240 found two ways that happened and closed both
-//! by construction — a partial `write_all` under `SO_SNDTIMEO` leaving a
-//! truncated stump on the wire (now
+//! `0x3d` is `=`: the daemon's framer had resumed reading *inside* a payload.
+//!
+//! # The root cause, and how this test found it
+//!
+//! This suite is what located it. The 40-hop loop below **reproduced the desync
+//! at hop 32** (`unexpected byte 0x64 in length prefix`; `0x64` is `d`), which
+//! made the mechanism findable: the frame reader was a straight-line function,
+//! and every read loop in the daemon polls — 30 s on a client socket, 1 s on
+//! the Firefox one — treating `ProtocolError::Timeout` as "nothing arrived, go
+//! round again". A timeout firing *mid-frame* discarded the length prefix and
+//! the payload bytes already consumed, so the next `recv()` restarted inside
+//! the payload. `FrameDecoder` in `ff_rdp_core::transport` now keeps its
+//! progress across a timeout; running this loop with
+//! `RUST_LOG=ff_rdp_core::transport=debug` shows the resumes it used to lose
+//! (`progress=32658`, `progress=48990` on the recorded run).
+//!
+//! Two mirror hazards were closed alongside it: a partial `write_all` under
+//! `SO_SNDTIMEO` leaving a truncated stump (now
 //! `ProtocolError::FrameWriteDesynchronised`, never retried), and the auth
 //! `BufReader` discarding whatever it had buffered past the auth frame (now one
-//! reader for the whole connection). It also bounded every daemon→client write,
+//! reader for the whole connection). Every daemon→client write is also bounded,
 //! so a client that stops reading can no longer park the single event
 //! dispatcher forever — the ~25-hop wedge of iteration 241.
 //!
 //! # What this test can and cannot prove
 //!
-//! Like [`super::live_224_with_page_connection_reset`], it does not reproduce
-//! the original rate: the reset needed a real remote origin and a
-//! Wikipedia-sized document, and against a local fixture it does not appear.
-//! What it covers is the contract the fix rests on, over a run **long enough
-//! for the wedge to have shown itself** (the two recorded wedges hit at hop 13
-//! and hop 26):
+//! It does not reproduce the original *rate* — the desync appeared roughly
+//! twice in 40 hops against a real remote origin, and once here. What it covers
+//! is the contract the fix rests on, over a run **long enough for the wedge to
+//! have shown itself** (the two recorded wedges hit at hop 13 and hop 26):
 //!
 //! - every one of `HOPS` hops returns the destination view;
 //! - `meta.page_reconnects` is 0 on every hop — a reconnect means the daemon
@@ -213,7 +225,9 @@ fn live_240_sustained_hops_never_desynchronise() {
     for hop in 1..=HOPS {
         let nav = run_json(port, &["navigate", &server.base_url(), "--with-page"]);
         let Some(ref_id) = ref_named(&nav["results"]["page"], "Grace Hopper") else {
-            failures.push(format!("hop {hop}: origin page carried no destination ref: {nav}"));
+            failures.push(format!(
+                "hop {hop}: origin page carried no destination ref: {nav}"
+            ));
             continue;
         };
 
@@ -229,9 +243,11 @@ fn live_240_sustained_hops_never_desynchronise() {
             ));
             continue;
         }
-        let hop_reconnects = click["meta"]["page_reconnects"].as_u64().unwrap_or_else(|| {
-            panic!("hop {hop}: meta.page_reconnects must always be reported: {click}")
-        });
+        let hop_reconnects = click["meta"]["page_reconnects"]
+            .as_u64()
+            .unwrap_or_else(|| {
+                panic!("hop {hop}: meta.page_reconnects must always be reported: {click}")
+            });
         if hop_reconnects != 0 {
             failures.push(format!(
                 "hop {hop}: the connection was rebuilt {hop_reconnects} time(s) — \

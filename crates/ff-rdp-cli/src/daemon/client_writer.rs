@@ -132,7 +132,7 @@ impl ClientWriter {
         // protected data stays structurally valid across a panic, and refusing
         // to write for the rest of the daemon's life would be a worse outcome
         // than continuing.
-        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
 
         if let Some((failure, _)) = guard.failed {
             return Err(failure);
@@ -172,7 +172,7 @@ impl ClientWriter {
     pub(crate) fn failure(&self) -> Option<(WriteFailure, String)> {
         self.inner
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .failed
             .clone()
     }
@@ -211,21 +211,22 @@ mod tests {
     /// Before iteration 240 each writer was its own `FramedWriter` over its own
     /// `try_clone` of the socket, so two `write_all`s could interleave and the
     /// reader would resume mid-payload.
+    /// Payloads big enough that the kernel splits them across writes, which is
+    /// what made the old racing writers observable.
+    const THREADS: usize = 4;
+    const PER_THREAD: usize = 25;
+
     #[test]
     fn concurrent_writes_decode_frame_for_frame() {
         let (server, client) = socket_pair();
         let writer = ClientWriter::new(server);
 
-        // Payloads big enough that the kernel splits them across writes, which
-        // is what made the old racing writers observable.
-        const THREADS: usize = 4;
-        const PER_THREAD: usize = 25;
         let bodies: Vec<String> = (0..THREADS)
             .map(|t| format!(r#"{{"t":{t},"pad":"{}"}}"#, "x".repeat(40_000)))
             .collect();
 
         let mut handles = Vec::new();
-        for body in bodies.iter().cloned() {
+        for body in bodies.clone() {
             let w = writer.clone();
             handles.push(std::thread::spawn(move || {
                 for _ in 0..PER_THREAD {
@@ -244,9 +245,11 @@ mod tests {
             let mut chunk = [0u8; 8192];
             loop {
                 match client.read(&mut chunk) {
-                    Ok(0) => break,
-                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
-                    Err(_) => break,
+                    Ok(n) if n > 0 => buf.extend_from_slice(&chunk[..n]),
+                    // `Ok(0)` is EOF (the writer dropped); an error is the read
+                    // deadline or a dead socket. Either way there is no more to
+                    // collect.
+                    Ok(_) | Err(_) => break,
                 }
             }
             buf

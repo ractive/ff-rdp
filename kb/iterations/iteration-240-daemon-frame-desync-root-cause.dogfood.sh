@@ -54,8 +54,12 @@ LOG="$FF_RDP_HOME/.ff-rdp/daemon.log"
 RECONNECT_TOTAL=0
 FAILED=0
 for i in $(seq 1 "$HOPS"); do
-  REF="$(ffrdp --port "$PORT" navigate "$PAGE" --with-page \
-    --jq "[.results.page.interactive[] | select(.name == \"$LINK\")][0].ref" | tr -d '"')"
+  echo "[iter-240 dogfood] hop $i/$HOPS" >&2
+  # `|| true` throughout: this is a *real* page over a *real* network, so a
+  # single slow load must be counted and reported, not abort the run under
+  # `set -e` — the run only means something if it reaches the end.
+  REF="$(ffrdp --port "$PORT" --timeout 30000 navigate "$PAGE" --with-page \
+    --jq "[.results.page.interactive[] | select(.name == \"$LINK\")][0].ref" 2>/dev/null | tr -d '"' || true)"
   if [ -z "$REF" ] || [ "$REF" = "null" ]; then
     echo "FAIL hop $i: the article carried no ref for '$LINK'" >&2
     FAILED=$((FAILED + 1))
@@ -63,7 +67,7 @@ for i in $(seq 1 "$HOPS"); do
   fi
 
   # One invocation, parsed twice: a second click would be a second hop.
-  OUT="$(ffrdp --port "$PORT" click --ref "$REF" --with-page)"
+  OUT="$(ffrdp --port "$PORT" --timeout 30000 click --ref "$REF" --with-page 2>/dev/null || true)"
   case "$OUT" in
     *'"error_type"'*)
       echo "FAIL hop $i: click returned an error envelope: $OUT" >&2
@@ -73,6 +77,7 @@ for i in $(seq 1 "$HOPS"); do
   esac
   RECONNECTS="$(dogfood_json_number "$OUT" page_reconnects)"
   if [ -z "$RECONNECTS" ]; then
+    echo "  (raw output: $OUT)" >&2
     echo "FAIL hop $i: meta.page_reconnects was not reported" >&2
     FAILED=$((FAILED + 1))
     continue

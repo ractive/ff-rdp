@@ -230,7 +230,7 @@ struct SharedState {
     /// `daemon status` as `rpc_slot.held_secs` — a wedged daemon is diagnosable
     /// from "one client has held the slot for 900 s" in a way it was not when
     /// the slot recorded only an owner.
-    rpc_writer: Mutex<Option<(ClientId, ClientWriter, Instant)>>,
+    rpc_writer: Mutex<Option<RpcSlot>>,
     /// Signalled whenever the [`rpc_writer`](Self::rpc_writer) slot is released
     /// (iter-137 Theme B).
     ///
@@ -432,8 +432,11 @@ impl SharedState {
         // Only meaningful while a dispatch is actually in flight; reporting an
         // age for an idle dispatcher would read as a stall that is not there.
         let current_frame_age_ms = (in_flight > 0).then(|| {
-            self.elapsed_ms()
-                .saturating_sub(self.dispatcher.last_frame_started_ms.load(Ordering::Relaxed))
+            self.elapsed_ms().saturating_sub(
+                self.dispatcher
+                    .last_frame_started_ms
+                    .load(Ordering::Relaxed),
+            )
         });
         json!({
             "alive": self.dispatcher.alive.load(Ordering::Relaxed),
@@ -464,6 +467,14 @@ impl SharedState {
 /// of the daemon process and is therefore safe to use as a cleanup key even
 /// after the underlying socket is closed and its fd recycled.
 type ClientId = u64;
+
+/// The occupant of the daemon's single RPC slot: which client owns it, the one
+/// writer its Firefox replies go through, and when it claimed the slot.
+///
+/// The claim instant is what `daemon status` reports as `rpc_slot.held_secs`
+/// (iter-240) — "one client has held the Firefox channel for 900 s" is a
+/// diagnosis; "a client owns the slot" was not.
+type RpcSlot = (ClientId, ClientWriter, Instant);
 
 /// The typed receiver end produced by [`ResourceCommand::subscribe`] — the
 /// stream of parsed [`ff_rdp_core::Resource`]s the dispatcher fans into the
@@ -2039,10 +2050,10 @@ fn claim_rpc_slot_queued(
 /// Returns `Ok(())` on success, or gives the still-locked guard back in `Err`
 /// so the caller can wait on it without re-acquiring.
 fn claim_locked<'a>(
-    mut guard: std::sync::MutexGuard<'a, Option<(ClientId, ClientWriter, Instant)>>,
+    mut guard: std::sync::MutexGuard<'a, Option<RpcSlot>>,
     client_id: ClientId,
     pending_writer: &mut Option<ClientWriter>,
-) -> Result<(), std::sync::MutexGuard<'a, Option<(ClientId, ClientWriter, Instant)>>> {
+) -> Result<(), std::sync::MutexGuard<'a, Option<RpcSlot>>> {
     match guard.as_ref() {
         // Someone else owns it — the caller must wait.
         Some((owner, ..)) if *owner != client_id => Err(guard),
@@ -3754,7 +3765,8 @@ mod tests {
                 types: HashSet::new(),
             });
         }
-        *state.rpc_writer.lock().expect("lock") = Some((client_id, dummy_client_writer(), Instant::now()));
+        *state.rpc_writer.lock().expect("lock") =
+            Some((client_id, dummy_client_writer(), Instant::now()));
 
         // Simulate handle_client returning (normally or via an early `?`):
         // the guard drops here and must clean up both roles.
@@ -3784,7 +3796,8 @@ mod tests {
         let new_id = state.next_client_id();
 
         // A newer client currently owns the rpc_writer slot.
-        *state.rpc_writer.lock().expect("lock") = Some((new_id, dummy_client_writer(), Instant::now()));
+        *state.rpc_writer.lock().expect("lock") =
+            Some((new_id, dummy_client_writer(), Instant::now()));
 
         // The OLD client's guard drops; it must not clear the newer client's
         // writer.
@@ -4932,8 +4945,7 @@ mod tests {
 
         let mut client = spawn_handle_client_with_token("correct-token");
         // One write: auth frame immediately followed by a daemon-local request.
-        let mut pipelined =
-            ff_rdp_core::transport::encode_frame(r#"{"auth":"correct-token"}"#);
+        let mut pipelined = ff_rdp_core::transport::encode_frame(r#"{"auth":"correct-token"}"#);
         pipelined.push_str(&ff_rdp_core::transport::encode_frame(
             r#"{"to":"daemon","type":"status"}"#,
         ));
@@ -4997,7 +5009,8 @@ mod tests {
 
         // One Firefox reply, far larger than any socket buffer, aimed at the
         // stuck client.
-        let big = json!({ "from": "server1.conn0.consoleActor1", "pad": "x".repeat(8 * 1024 * 1024) });
+        let big =
+            json!({ "from": "server1.conn0.consoleActor1", "pad": "x".repeat(8 * 1024 * 1024) });
         let started = Instant::now();
         forward_to_rpc_client(&state, &big);
         let blocked_for = started.elapsed();
@@ -5025,7 +5038,9 @@ mod tests {
             .set_read_timeout(Some(Duration::from_secs(2)))
             .expect("set timeout");
         let mut buf = [0u8; 256];
-        let n = good_client.read(&mut buf).expect("healthy client is served");
+        let n = good_client
+            .read(&mut buf)
+            .expect("healthy client is served");
         assert!(n > 0, "the healthy subscriber must still receive its event");
     }
 
@@ -5052,8 +5067,7 @@ mod tests {
 
         // A dispatch in flight, and a claimed RPC slot.
         state.dispatch_started(&json!({"type": "target-available-form"}));
-        *state.rpc_writer.lock().expect("lock") =
-            Some((7, dummy_client_writer(), Instant::now()));
+        *state.rpc_writer.lock().expect("lock") = Some((7, dummy_client_writer(), Instant::now()));
         let busy = handle_daemon_message(
             &state,
             &json!({"to": "daemon", "type": "status"}),
@@ -5061,7 +5075,10 @@ mod tests {
             None,
         );
         assert_eq!(busy["dispatcher"]["in_flight"], 1);
-        assert_eq!(busy["dispatcher"]["last_frame_kind"], "target-available-form");
+        assert_eq!(
+            busy["dispatcher"]["last_frame_kind"],
+            "target-available-form"
+        );
         assert!(
             busy["dispatcher"]["current_frame_age_ms"].is_number(),
             "an in-flight dispatch must report how long it has been running"
