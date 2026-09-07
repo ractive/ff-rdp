@@ -2269,6 +2269,8 @@ entirely — leaving a `tracing::warn!` that no `--jq` consumer and no dogfood a
 
 The removal failing is not a defect: `--all` against a live owner races a browser writing into
 that directory throughout, so the walk can meet a file created after it listed the directory.
+The corrected gate names the error — `Directory not empty (os error 66)`, ENOTEMPTY — which is
+that race and nothing else.
 Theme C demanded a guarantee `--all` cannot make. **A retry was considered and rejected** — it
 would quiet the symptom at whatever rate a given machine produces, which is exactly the "fix
 justified by reasoning alone" the plan warned about. Reporting the failure is honest at every

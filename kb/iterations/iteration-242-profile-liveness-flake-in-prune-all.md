@@ -158,7 +158,8 @@ wrong function.
 And the removal failing is not itself a defect. `--all` against a live owner races a browser
 that is writing into that directory continuously: `remove_dir_all`'s walk can meet a file
 created after it listed the directory. Theme C was asking `--all` for a guarantee it cannot make
-against a running Firefox.
+against a running Firefox. The corrected gate now names the error it gets —
+`Directory not empty (os error 66)`, i.e. ENOTEMPTY — which is that race and no other.
 
 **Two fixes follow, and no retry.** `PruneOutcome` gains `failed` (`basename -> OS error`),
 reported as `results.failed`, so a removal that did not happen can never again be silent. And
@@ -208,14 +209,28 @@ must not be credited with having fixed it.
       `unit_242_age_gated_prune_keeps_profile_with_unreadable_marker` (`commands/profiles.rs`)
       and `unit_242_unreadable_marker_survives_the_age_gated_orphan_sweep` (`util/profile_dir.rs`),
       one per reclamation path. Both fail on `main`.
-- [ ] The iteration-97 dogfood gate passes ten consecutive runs
+- [x] The iteration-97 dogfood gate passes ten consecutive runs
       (`FF_RDP_LIVE_TESTS=1 cargo run -p xtask -- check-dogfood-script kb/iterations/iteration-97-*.md`)
-      — see the run table below. **Read this AC carefully before ticking it:** ten consecutive
-      passes of the *corrected* assertion is a weaker claim than it was written to be, because
-      the corrected assertion tolerates the removal failing (while requiring it to be reported).
-      That is the right assertion — the old one demanded the impossible — but it means this AC
-      no longer certifies what its author thought it did, so the honest thing is to record the
-      numbers and let a reader judge.
+      — **10 pass / 0 fail, 2026-09-07, macOS, real headless Firefox.** Four of the ten took the
+      "could not remove, and said so" branch with `Directory not empty (os error 66)`; the other
+      six removed cleanly and reported `removed_live`. All ten graded the owner `live`.
+
+      Run table on this machine, same command, same day:
+
+      | assertion | pass | fail | failing branch |
+      |---|---|---|---|
+      | as filed | 6 | 4 | `--all` did not report it in `removed_live` (3), did not remove it (1) |
+      | as filed, with `owner_liveness` in the output | 9 | 1 | same, now attributed: grading was `live` |
+      | corrected | 10 | 0 | — (4 of 10 hit the removal race and reported it) |
+
+      **Read this AC carefully before trusting it.** Ten consecutive passes of the *corrected*
+      assertion is a weaker claim than its author meant, because the corrected assertion
+      tolerates the removal failing — while requiring it to be reported, and while asserting the
+      liveness grading directly, which the old one never did. That is the right assertion: the
+      old one demanded of `--all` a guarantee it cannot make against a running browser. But the
+      AC no longer certifies what it was written to certify, and a reader should judge from the
+      table rather than from the tick. The middle row is the one that matters: the flake is real,
+      it reproduces, and it is not a liveness flip.
 
 ### Out of scope
 
