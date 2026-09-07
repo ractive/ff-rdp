@@ -62,17 +62,20 @@ had already gone green.
 - [x] Live test: a single-connection assertion (e.g. a connection-count counter in the test
       harness, or a network-level check) proving the round-trip count actually dropped from 2 to 1
 
-## Acceptance Criteria [2/4]
+## Acceptance Criteria [4/4]
 
 - [x] `home_view_output_unchanged_by_single_connect` (unit, fixture-driven): the JSON `results`
       payload for a representative (browser up, page loaded) scenario is identical before and
       after this refactor — this is a performance change, not a behavior change
 - [x] A live or unit test proves exactly one RDP connection is opened per `ff-rdp` invocation when
       a page is loaded (the two-connection case this iteration removes)
-- [ ] The three `live_212_ambient_context` live tests (`live_home_with_page_lists_tabs_and_refs`,
+- [x] The three `live_212_ambient_context` live tests (`live_home_with_page_lists_tabs_and_refs`,
       `live_home_with_blank_tab_asks_for_a_navigate`, `live_home_hook_form_is_trimmed`) still pass
       unmodified — the refactor must not change what they assert
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+      [2026-09-07 sweep, `FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1`: all three `ok`; the
+      file is not in this branch's diff]
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+      [2026-09-07: clippy exit 0, workspace tests exit 0]
 
 ## Implementation notes
 
