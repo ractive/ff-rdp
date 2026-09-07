@@ -8,7 +8,28 @@ depends_on:
   - iteration-193-dogfood-scripts-pkill-and-path-binary
   - kb/iterations/iteration-151-residual-live-firefox-leak.md
   - iteration-175-failed-launch-leaks-unmarked-profile-dir
-first_call_sites: []
+first_call_sites:
+  - primitive: ff_rdp_cli::util::profile_dir::OwnerLiveness (with owner_liveness_of, keeps_profile_alive, as_str)
+    site: >-
+      crates/ff-rdp-cli/src/commands/profiles.rs (select_prune_targets and
+      owner_liveness_report; replaces the deleted profile_is_owned_by_live_process)
+  - primitive: ff_rdp_cli::util::profile_dir::ProfileCleanupSkip (with ProfileCleanup::skip_reason)
+    site: >-
+      crates/ff-rdp-cli/src/daemon/client.rs (daemon stop's profile_skip_reason)
+  - primitive: ff_rdp_cli::commands::profiles::PruneOutcome::failed
+    site: >-
+      crates/ff-rdp-cli/src/commands/profiles.rs (run_prune's results.failed)
+  - primitive: tests/common::guard_launched_firefox (with FirefoxGuard::disarm)
+    site: >-
+      crates/ff-rdp-cli/tests/live/live_90_daemon_lifecycle.rs (also
+      live_142_disk_growth.rs, live_110_kill_scoping.rs, live_175_failed_launch_profile.rs)
+  - primitive: tests/common::live_owned_profile_dirs (with OWNER_PID_MARKER, OWNER_TEST_MARKER)
+    site: >-
+      crates/ff-rdp-cli/tests/live/live_151_residual_leak.rs (also
+      live_168_drop_waits_for_exit.rs, live_171_recycled_owner_pid.rs)
+  - primitive: tests/common::await_document_ready (with DocumentState::diagnosis)
+    site: >-
+      crates/ff-rdp-cli/tests/live/live_61r_eval.rs (live_eval_on_hn)
 dogfood_path: |
   # Reproduce: launch a headless Firefox into an isolated profile root, back-date
   # the live profile past the age threshold, then ask --all to reclaim it. The
