@@ -1198,7 +1198,7 @@ mod tests {
     #[test]
     fn test_check_plan_content_turns_a_parse_failure_into_a_finding() {
         // Single-file mode `?`s on this. The sweep must not: one unreadable plan
-        // cannot be allowed to abort the walk over the other 250.
+        // cannot be allowed to abort the walk over every other plan in the directory.
         let path = PathBuf::from("iteration-9004-unterminated.md");
         let (findings, warnings) = check_plan_content(&path, "---\nstatus: planned\n", &[]);
         assert_eq!(findings.len(), 1, "expected one finding: {findings:?}");

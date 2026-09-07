@@ -243,6 +243,12 @@ as a unit test (`test_check_plan_content_fails_the_planted_invalid_plan`), along
 with the directory glob and the "a parse failure is one plan's finding, not an
 abort of the walk" behaviour the sweep needs and single-file mode does not have.
 
+The repo's existing tripwire fired as designed:
+`ci_162b_discipline_job_xtask_steps_are_pinned` asserts the exact number of
+`cargo run -p xtask --` steps in `ci.yml`, so adding one is a deliberate edit to
+that test rather than something that slips in. Bumped 5 → 6, with the reason
+beside the four previous bumps.
+
 Reasoning for all three decisions the plan demanded — where it runs, what it runs,
 blocking vs advisory — is `kb/decision-log.md` DEC-052 Part A.
 
