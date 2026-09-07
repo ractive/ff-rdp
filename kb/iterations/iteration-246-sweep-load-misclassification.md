@@ -510,6 +510,55 @@ survived several iterations.
   turned out to be a real arming race
 - [[iteration-181-playbook-scoped-network-subscription]] — its fix, on the daemon/direct split
 
+## Addendum — the 2026-09-07 signatures (folded in from iteration 245's carry-over)
+
+Iteration 245's two closing dual-gate sweeps (`FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1`,
+`--jobs 6`, macOS, `executed=328 skipped=0 preexisting=0 total=328` both times) produced 15 and 12
+failures respectively. Iteration 245's diff touches only `crates/xtask` and documentation, so none
+of these can be attributed to it; they are recorded here because this plan is where the
+"red only under sweep load" question lives.
+
+Seven of each run's failures are **not** load-shaped and belong to
+[[iteration-257-firefox-155-drawsnapshot-dictionary-arg]]: every `--full-page` screenshot now fails
+with `TypeError: WindowGlobalParent.drawSnapshot: Argument 4 can't be converted to a dictionary`
+(`live_61l`, `live_61r_screenshot`, `live_92_screenshot_full_page` ×2, `live_135`, `live_144`,
+`live_screenshot_shim`). Not a load effect and not this plan's business.
+
+The rest are, and the interesting property is that **the set is not stable between two runs on the
+same machine and the same commit** — which is itself the evidence this plan wants:
+
+| test | sweep 1 | sweep 2 | signature |
+| --- | --- | --- | --- |
+| `live_109_throttle_block::live_block_url_pattern` | FAILED | passed | `throttle --unblock`: "daemon did not respond within the timeout after auth" |
+| `live_145_error_envelope_completeness::live_145_click_frame_scan_js_exception_envelope` | FAILED | FAILED | "daemon never reported live frame targets" — the Part D signature |
+| `live_159_daemon_watcher_regression::live_159_with_network_and_auto_consent_together` | FAILED | passed | `results.consent = no_cmp_detected` on a consent-walled page |
+| `live_169_nav_verb_status_parity::live_169_nav_verbs_report_status_direct` | FAILED | passed | reload of a 200 page reported `status: null, status_reason: "not_observed"`, `elapsed_ms: 21030` |
+| `live_169_nav_verb_status_parity::live_169_nav_verbs_report_status_daemon` | passed | FAILED | same assertion, other route |
+| `live_174_direct_route_events_path::live_174_nav_verbs_resolve_from_events_daemon` | passed | FAILED | same family |
+| `live_212_ambient_context::live_home_with_page_lists_tabs_and_refs` | FAILED | passed | the click did not follow the ref's link |
+| `live_237_act_and_see_timing::live_237_cancelled_submit_does_not_wait_out_the_timeout` | FAILED | FAILED | took 2.74 s on a path asserted to stay on the fast local check |
+| `live_237_act_and_see_timing::live_237_late_selector_behind_a_request_still_clicks` | FAILED | passed | `#late` not found after 2062 ms on an idle page |
+| `live_navigate_default_fast::live_navigate_elapsed_matches_wall` | FAILED | FAILED | `elapsed_ms 322` vs measured wall `1250`, delta 928 ms |
+
+Two rows deserve to be read as more than load noise when this plan is worked:
+
+- **`live_169` / `live_174` flipping route between runs.** A `status: null, status_reason:
+  "not_observed"` with `elapsed_ms: 21030` is not a slow machine returning a correct answer late —
+  it is the navigation status never being observed at all within a wait that did complete. That is
+  the same "the event arrived, nobody was listening yet" shape as
+  [[iteration-179-live-62-runner-sees-no-network-events]], which turned out to be a real arming
+  race rather than load.
+- **`live_navigate_elapsed_matches_wall` failing in both runs, in the same direction.** The
+  reported `elapsed_ms` is *smaller* than the wall clock by ~900 ms, i.e. the command is
+  under-reporting its own cost. Load makes the wall clock longer; it does not make ff-rdp's own
+  measurement shorter. This one may be a real honesty regression (iter-122 Theme B) and should be
+  re-run in isolation before being written off.
+
+Sweep 2 additionally ran while the host desktop was at load average 400+ on a 10-core machine
+(Finder, Chrome, Teams and ~90 WebKit content processes belonging to the operator, not the sweep),
+which is exactly the contamination the `iteration-close` skill says to declare rather than average
+away.
+
 ## Closing acceptance criterion (covers all parts) [0/1]
 
 - [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean. (covers all parts)

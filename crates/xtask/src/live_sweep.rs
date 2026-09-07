@@ -963,6 +963,22 @@ struct PhaseOutcome {
     /// `Some` when the watchdog killed the phase instead of libtest finishing
     /// it. `success` is always `false` then.
     timed_out: Option<PhaseTimeout>,
+    /// Stack snapshots taken before the kill, when the hook fired (iter-245
+    /// Part B). Empty on every other path.
+    capture_paths: Vec<PathBuf>,
+}
+
+/// What [`run_phase`] needs in order to decide, at the instant the watchdog
+/// fires, whether this is the one hang worth sampling (iter-245 Part B).
+///
+/// `None` for phase 2, which executes nothing and therefore cannot hang in a
+/// test body.
+pub struct PhaseWatch<'a> {
+    /// Exactly the names this phase passed to `--exact`, so the stalled set is
+    /// a set difference against the sweep's own input rather than prose.
+    pub qualified: &'a [String],
+    /// Where a captured stack is written.
+    pub capture_dir: PathBuf,
 }
 
 /// Put the phase's `cargo` in a process group of its own so the watchdog has
@@ -1060,7 +1076,12 @@ fn kill_phase_tree(child: &mut std::process::Child) {
 /// have to be sized for a 40-minute tier and would therefore be useless, while
 /// silence between libtest result lines is bounded by one test's duration no
 /// matter how long the tier is. See [`DEFAULT_PHASE_STALL_SECS`].
-fn run_phase(cmd: &mut Command, what: &str, bounds: PhaseBounds) -> Result<PhaseOutcome> {
+fn run_phase(
+    cmd: &mut Command,
+    what: &str,
+    bounds: PhaseBounds,
+    watch: Option<&PhaseWatch<'_>>,
+) -> Result<PhaseOutcome> {
     use std::io::{BufRead, BufReader, Write};
     use std::sync::mpsc::{RecvTimeoutError, channel};
 
@@ -1096,6 +1117,7 @@ fn run_phase(cmd: &mut Command, what: &str, bounds: PhaseBounds) -> Result<Phase
     let mut captured = String::new();
     let mut seen_output = false;
     let mut timed_out: Option<PhaseTimeout> = None;
+    let mut capture_paths: Vec<PathBuf> = Vec::new();
 
     let absorb = |line: &str, captured: &mut String| {
         print!("{line}");
@@ -1137,6 +1159,19 @@ fn run_phase(cmd: &mut Command, what: &str, bounds: PhaseBounds) -> Result<Phase
                     bound,
                     before_first_output: !seen_output,
                 });
+                // iter-245 Part B: the kill below destroys the only copy of
+                // *why* this hung, so sample first — for the one named test,
+                // and only for it.
+                if let Some(watch) = watch {
+                    let stalled = unreported_tests(watch.qualified, &captured);
+                    if capture_hook_should_fire(&stalled) {
+                        eprintln!(
+                            "live-sweep: CAPTURE — {CAPTURE_HOOK_TEST} never reported a verdict; \
+                             sampling the hung test binary's stacks before the kill (iter-245)"
+                        );
+                        capture_paths = capture_stacks(child.id(), &watch.capture_dir);
+                    }
+                }
                 kill_phase_tree(&mut child);
                 break;
             }
@@ -1175,6 +1210,7 @@ fn run_phase(cmd: &mut Command, what: &str, bounds: PhaseBounds) -> Result<Phase
         success: timed_out.is_none() && status.success(),
         stdout: captured,
         timed_out,
+        capture_paths,
     })
 }
 
@@ -1450,6 +1486,504 @@ pub fn reap_managed_firefox() -> Vec<u32> {
 }
 
 // ---------------------------------------------------------------------------
+// iter-245 Part A — the real-root orphan guarantee
+// ---------------------------------------------------------------------------
+
+/// Prefix of every ephemeral profile directory ff-rdp creates for itself.
+///
+/// Mirrors the product's private `util::profile_dir::MANAGED_PROFILE_PREFIX`.
+/// The three constants in this block are **duplicated, not imported**, and
+/// that is a deliberate answer to the question iteration 245 asked (Part A,
+/// task A): the alternative is a new `pub` read-only helper on `ff-rdp-cli`
+/// for `xtask` to call, which would make every `cargo run -p xtask -- check-*`
+/// invocation — the discipline gates that run on every iteration — build the
+/// whole CLI and its dependency tree first, to read three file names. The live
+/// test harness already carries exactly this duplication for exactly this
+/// reason (`crates/ff-rdp-cli/tests/common/mod.rs`, which notes the crate
+/// ships no `[lib]` target to import from), so this is the established shape
+/// rather than a new one. Keep the copies in sync by hand; the format is
+/// append-only in practice (a marker has never been renamed) and a stale copy
+/// degrades to "found nothing", never to a false accusation.
+const MANAGED_PROFILE_PREFIX: &str = "ff-rdp-profile-";
+
+/// Owner-PID marker: mirrors `util::profile_dir::OWNER_PID_MARKER`.
+const OWNER_PID_MARKER: &str = ".ff-rdp-owner-pid";
+
+/// Owner-test marker: mirrors `util::profile_dir::OWNER_TEST_MARKER`.
+///
+/// Only ever written when `FF_RDP_LIVE_TEST_NAME` is set, which only the live
+/// test harness does (`tests/common/mod.rs`'s `ff_rdp_launch_command`). Its
+/// presence is therefore positive evidence that a profile belongs to a live
+/// test rather than to a developer's own interactive `ff-rdp launch` — the
+/// signal [`classify_orphans`] uses to keep the check off other people's
+/// business.
+const OWNER_TEST_MARKER: &str = ".ff-rdp-owner-test";
+
+/// A managed profile directory in the real root whose owner PID is alive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedProfile {
+    /// The profile directory itself.
+    pub dir: PathBuf,
+    /// PID recorded in [`OWNER_PID_MARKER`], confirmed present in the process
+    /// listing.
+    pub pid: u32,
+    /// Contents of [`OWNER_TEST_MARKER`], when the profile carries one.
+    pub spawning_test: Option<String>,
+}
+
+impl OwnedProfile {
+    /// `<dir> (pid <n>, spawned by <test>)` — the operator-facing rendering
+    /// AC1 asks for: directory *and* PID, never a bare count.
+    fn describe(&self) -> String {
+        let dir = self.dir.file_name().map_or_else(
+            || self.dir.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        match &self.spawning_test {
+            Some(test) => format!("{dir} (pid {}, spawned by {test})", self.pid),
+            None => format!("{dir} (pid {}, no owner-test marker)", self.pid),
+        }
+    }
+}
+
+/// Resolve the profile root a child process of this sweep would use by
+/// default, mirroring `util::profile_dir::resolve_profile_root`'s order:
+/// `$FF_RDP_HOME`, then `dirs::state_dir()`, then `dirs::data_local_dir()`.
+///
+/// **This is the *real* root, not an isolated one.** The distinction the plan
+/// draws is between the per-user root every ordinary launch lands in and the
+/// per-*test* temp roots several live tests point `$FF_RDP_HOME` at by setting
+/// the variable on their own child `Command` — those are invisible from here,
+/// which is correct: they are removed with their `TempDir` when the owning
+/// test exits, so scanning them would prove nothing.
+///
+/// A process-wide `$FF_RDP_HOME` is honoured rather than ignored, because the
+/// sweep's own children inherit it: with the variable exported, *that* is the
+/// root an un-isolated live test writes into, and the no-override path would
+/// scan a directory nothing in this run ever touched.
+///
+/// Read-only: unlike `secure_profile_root`, this never creates the directory
+/// or changes its mode. A sweep that finds no root simply reports that it
+/// could not check.
+fn real_profile_root() -> Option<PathBuf> {
+    resolve_real_profile_root(
+        std::env::var_os("FF_RDP_HOME"),
+        dirs::state_dir(),
+        dirs::data_local_dir(),
+    )
+}
+
+/// The env-independent half of [`real_profile_root`], split out so the
+/// empty-string edge case is unit-testable without mutating the real
+/// process environment (which `#[test]`s run concurrently and share).
+///
+/// An exported-but-empty `$FF_RDP_HOME` must fall through to the `state`/
+/// `data_local` candidates, not resolve to `""` — `.join(...)` below would
+/// otherwise silently turn that into a *relative* `ff-rdp/profiles` under
+/// the sweep's cwd. `util::home_override()` filters the same edge case for
+/// the same reason; the duplicate here missed it (caught in review of this
+/// PR, before it ever shipped).
+fn resolve_real_profile_root(
+    home_override: Option<std::ffi::OsString>,
+    state: Option<PathBuf>,
+    data_local: Option<PathBuf>,
+) -> Option<PathBuf> {
+    let base = home_override
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or(state)
+        .or(data_local)?;
+    Some(base.join("ff-rdp").join("profiles"))
+}
+
+/// Every PID in a `<pid> <command line>` listing.
+///
+/// Liveness is graded from the same snapshot the reaper already takes, rather
+/// than from a `kill(pid, 0)`: the workspace forbids `unsafe`, `xtask` has no
+/// `libc` dependency, and one `ps` invocation answers the question for every
+/// candidate at once.
+pub fn pids_in_listing(listing: &str) -> std::collections::BTreeSet<u32> {
+    listing
+        .lines()
+        .filter_map(|line| {
+            let (pid_text, _) = line.trim_start().split_once(char::is_whitespace)?;
+            pid_text.parse::<u32>().ok()
+        })
+        .collect()
+}
+
+/// Scan `root` for `ff-rdp-profile-*` directories whose owner PID is in
+/// `live_pids`.
+///
+/// Pure with respect to the process table (the caller supplies the snapshot),
+/// so the whole check is unit-testable against a `TempDir` and a synthetic PID
+/// set — no Firefox, no sweep. An unreadable root yields no findings: this is
+/// a diagnostic, and a permissions problem must not fail a sweep.
+pub fn scan_owned_profiles(
+    root: &Path,
+    live_pids: &std::collections::BTreeSet<u32>,
+) -> Vec<OwnedProfile> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut out: Vec<OwnedProfile> = entries
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| n.starts_with(MANAGED_PROFILE_PREFIX))
+        })
+        .filter_map(|e| {
+            let pid: u32 = std::fs::read_to_string(e.path().join(OWNER_PID_MARKER))
+                .ok()?
+                .trim()
+                .parse()
+                .ok()?;
+            if !live_pids.contains(&pid) {
+                return None;
+            }
+            let spawning_test = std::fs::read_to_string(e.path().join(OWNER_TEST_MARKER))
+                .ok()
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty());
+            Some(OwnedProfile {
+                dir: e.path(),
+                pid,
+                spawning_test,
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| a.dir.cmp(&b.dir));
+    out
+}
+
+/// What a live-owned profile found in the real root after a phase means.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct OrphanReport {
+    /// Live-owned and carrying an owner-test marker — i.e. a live test's
+    /// Firefox that outlived the test that asked for it. This is the guarantee
+    /// iteration 146 made loud and iteration 188 accidentally dropped, and it
+    /// fails the sweep.
+    pub leaked: Vec<OwnedProfile>,
+    /// Live-owned and new since the sweep started, but with no owner-test
+    /// marker, so nothing ties it to the live tier. The likeliest owner is a
+    /// developer's own `ff-rdp launch` in another terminal, which is
+    /// explicitly none of the sweep's business — reported, never fatal.
+    pub unattributed: Vec<OwnedProfile>,
+}
+
+impl OrphanReport {
+    /// Nothing to say about this root.
+    pub fn is_clean(&self) -> bool {
+        self.leaked.is_empty() && self.unattributed.is_empty()
+    }
+}
+
+/// Split the profiles found after a phase into "a live test leaked it" and
+/// "somebody else's business", skipping any directory named in `excused`.
+///
+/// **The owner-test marker is the discriminator, not the clock.** Only the
+/// live harness sets `FF_RDP_LIVE_TEST_NAME` (see [`OWNER_TEST_MARKER`]), so
+/// its presence is positive proof that a *live test* asked for this browser,
+/// and a live test's browser that is still running when its tier's phase 1 has
+/// ended is a leak whether it was launched by this sweep or by a previous one
+/// that leaked it — in both cases a real Firefox is holding a real profile
+/// nothing owns any more, and both are actionable in the same way. That answers
+/// the plan's second question (`false positives against a developer's own
+/// interactive session`) without a heuristic: an interactive `ff-rdp launch`
+/// never carries the marker and can therefore never be called a leak.
+///
+/// A live-owned profile with **no** marker is where the clock does come in:
+/// nothing ties it to the live tier, so it is reported only when it appeared
+/// during the sweep (i.e. is not in `excused`, which the caller seeds with the
+/// unmarked profiles that were already there), and it never affects the
+/// verdict.
+///
+/// The residual false positive is a *second concurrent live sweep* on the same
+/// machine, whose profiles would carry the marker legitimately. That
+/// configuration is already unsupported for older reasons —
+/// [`reap_managed_firefox`] kills managed browsers machine-wide, and the
+/// `preexisting` tier assumes one client on port 6000 — so it is called out in
+/// the failure message rather than designed around.
+pub fn classify_orphans(
+    excused: &std::collections::BTreeSet<String>,
+    found: Vec<OwnedProfile>,
+) -> OrphanReport {
+    let mut report = OrphanReport::default();
+    for profile in found {
+        let name = profile
+            .dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if excused.contains(&name) {
+            continue;
+        }
+        if profile.spawning_test.is_some() {
+            report.leaked.push(profile);
+        } else {
+            report.unattributed.push(profile);
+        }
+    }
+    report
+}
+
+/// How many times the orphan check re-scans before believing what it found.
+///
+/// **Why a settle loop is not optional.** `LiveFirefox::drop` signals its
+/// Firefox and returns without waiting for the process to actually exit — that
+/// is [[iteration-168-livefirefox-drop-does-not-wait-for-exit]]'s whole
+/// subject. The check runs the instant `run_phase` returns, which is the
+/// instant libtest printed its summary, so the last tests' browsers are
+/// routinely still in the process table with their profile markers intact,
+/// *dying*. Reporting those would make an honest sweep red for a browser that
+/// is already on its way out. This was measured, not imagined: the first real
+/// dual-gate sweep with this check (2026-09-07, 328 tests) reported exactly one
+/// "leak" — `live_target_destroyed_invalidates_registry`'s browser — and it was
+/// gone by the time anyone looked.
+const ORPHAN_SETTLE_ATTEMPTS: usize = 5;
+
+/// Gap between those re-scans. Five attempts × 2 s bounds the extra cost of a
+/// finding at ~10 s, and only when something *was* found — a clean root pays
+/// one scan.
+const ORPHAN_SETTLE_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The profiles from `first` that `second` still reports live-owned, matched on
+/// directory **and** PID.
+///
+/// The PID has to match too: a directory whose owner changed between scans is a
+/// different browser, not the same one persisting.
+pub fn still_owned(first: &[OwnedProfile], second: &[OwnedProfile]) -> Vec<OwnedProfile> {
+    first
+        .iter()
+        .filter(|a| second.iter().any(|b| b.dir == a.dir && b.pid == a.pid))
+        .cloned()
+        .collect()
+}
+
+/// Re-scan until nothing is left or `attempts` are exhausted, and return only
+/// what survived every scan.
+///
+/// Takes the scan as a closure so the settle policy is unit-testable without a
+/// filesystem, a process table or a two-second wait.
+fn settle_owned_profiles(
+    mut scan: impl FnMut() -> Vec<OwnedProfile>,
+    attempts: usize,
+    delay: std::time::Duration,
+) -> Vec<OwnedProfile> {
+    let mut found = scan();
+    for _ in 0..attempts {
+        if found.is_empty() {
+            break;
+        }
+        std::thread::sleep(delay);
+        found = still_owned(&found, &scan());
+    }
+    found
+}
+
+/// Directory names of the live-owned managed profiles in `root` that were
+/// there *before* the sweep started and carry no owner-test marker — i.e. the
+/// browsers the operator already had running, which are never this sweep's
+/// business and seed [`classify_orphans`]' `excused` set.
+///
+/// Deliberately does **not** excuse a pre-existing profile that *does* carry
+/// an owner-test marker: that is a live test's browser still alive before a
+/// single test of this sweep has run, which is a leak somebody should hear
+/// about rather than a state to normalise.
+fn preexisting_unmarked_names(root: &Path) -> std::collections::BTreeSet<String> {
+    let Some(listing) = process_listing() else {
+        // No process table means no liveness grading at all, so nothing can be
+        // proved either way: excuse every managed directory currently present
+        // and report only ones that appear later.
+        return std::fs::read_dir(root)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| e.file_name().to_str().map(str::to_owned))
+            .filter(|n| n.starts_with(MANAGED_PROFILE_PREFIX))
+            .collect();
+    };
+    scan_owned_profiles(root, &pids_in_listing(&listing))
+        .into_iter()
+        .filter(|p| p.spawning_test.is_none())
+        .filter_map(|p| p.dir.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// iter-245 Part B — capture a stack before the watchdog destroys the evidence
+// ---------------------------------------------------------------------------
+
+/// The one test the stack-capture hook fires for.
+///
+/// Deliberately a single name, not a policy. Iteration 197 gave the sweep a
+/// watchdog that *counts* a hang; what it cannot do is say why, because the
+/// same kill that makes the hang visible destroys the stack. This adds the
+/// missing capture — for the one test that has actually hung (2026-08-23,
+/// iteration 188's third sweep) and for no other, so an ordinary timeout on an
+/// unrelated test never starts shelling out to a debugger.
+pub const CAPTURE_HOOK_TEST: &str = "live_158_launch_survives_contended_bind";
+
+/// Whether the capture hook fires for a phase whose stalled set is `stalled`.
+///
+/// Matches on the *last* `::` segment so a caller may pass either bare or
+/// module-qualified names ([`unreported_tests`] yields the qualified form).
+pub fn capture_hook_should_fire(stalled: &[String]) -> bool {
+    stalled
+        .iter()
+        .any(|name| name.rsplit("::").next().unwrap_or(name) == CAPTURE_HOOK_TEST)
+}
+
+/// `<pid> <ppid> <command line>` for every process, or `None` when the
+/// platform's lister could not be run.
+///
+/// A second listing shape rather than a widening of [`process_listing`]:
+/// [`managed_firefox_pids`] parses that one, and inserting a column would
+/// silently shift `argv[0]` for every existing caller.
+fn process_tree_listing() -> Option<String> {
+    #[cfg(unix)]
+    let mut cmd = {
+        let mut c = Command::new("ps");
+        c.args(["-eo", "pid=,ppid=,args="]);
+        c
+    };
+    #[cfg(not(unix))]
+    let mut cmd = {
+        let mut c = Command::new("powershell");
+        c.args([
+            "-NoProfile",
+            "-Command",
+            "Get-CimInstance Win32_Process | ForEach-Object { \
+             \"$($_.ProcessId) $($_.ParentProcessId) $($_.CommandLine)\" }",
+        ]);
+        c
+    };
+    let out = cmd.stderr(std::process::Stdio::null()).output().ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Every descendant of `root` in a `<pid> <ppid> …` listing, nearest first.
+///
+/// The hung party is never the `cargo` the sweep spawned — it is the test
+/// binary `cargo` started, which is where the stack has to come from.
+pub fn descendant_pids(listing: &str, root: u32) -> Vec<u32> {
+    let mut edges: Vec<(u32, u32)> = Vec::new();
+    for line in listing.lines() {
+        let mut fields = line.split_whitespace();
+        let (Some(pid), Some(ppid)) = (fields.next(), fields.next()) else {
+            continue;
+        };
+        let (Ok(pid), Ok(ppid)) = (pid.parse::<u32>(), ppid.parse::<u32>()) else {
+            continue;
+        };
+        edges.push((pid, ppid));
+    }
+    let mut frontier = vec![root];
+    let mut out: Vec<u32> = Vec::new();
+    while let Some(parent) = frontier.pop() {
+        for (pid, ppid) in &edges {
+            if *ppid == parent && *pid != root && !out.contains(pid) {
+                out.push(*pid);
+                frontier.push(*pid);
+            }
+        }
+    }
+    out
+}
+
+/// Build the platform's stack sampler for `pid`, writing to `out`.
+///
+/// macOS ships `sample(1)`, which needs no debugger entitlement for a process
+/// the same user owns. Linux has no equivalent in the base install, so `gdb`
+/// is used in batch mode when it is present. Windows is out of scope: iteration
+/// 245 Part C establishes that the *process-management* paths work there, not
+/// that a sampler exists, and picking one (`procdump`? WinDbg?) without a
+/// machine to try it on is exactly the untested-Windows-code problem Part C
+/// exists to stop repeating.
+#[cfg(target_os = "macos")]
+fn stack_sampler(pid: u32, out: &Path) -> Option<Command> {
+    let mut cmd = Command::new("sample");
+    cmd.args([&pid.to_string(), "5", "-f"]).arg(out);
+    Some(cmd)
+}
+
+#[cfg(target_os = "linux")]
+fn stack_sampler(pid: u32, out: &Path) -> Option<Command> {
+    let file = std::fs::File::create(out).ok()?;
+    let mut cmd = Command::new("gdb");
+    cmd.args([
+        "-p",
+        &pid.to_string(),
+        "-batch",
+        "-ex",
+        "thread apply all bt",
+    ])
+    .stdout(std::process::Stdio::from(file));
+    Some(cmd)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn stack_sampler(_pid: u32, _out: &Path) -> Option<Command> {
+    None
+}
+
+/// Sample every descendant of the phase's `cargo` **before** the watchdog
+/// kills it, and return the files written.
+///
+/// Best-effort throughout: a missing sampler, an unreadable process table or a
+/// sampler that fails all resolve to "no file", never to an error. The sweep
+/// is already red by the time this runs and the kill must not be delayed by
+/// more than the sampler's own few seconds.
+fn capture_stacks(cargo_pid: u32, dir: &Path) -> Vec<PathBuf> {
+    let Some(listing) = process_tree_listing() else {
+        eprintln!(
+            "live-sweep: CAPTURE — wanted a stack of the hung {CAPTURE_HOOK_TEST} test binary, \
+             but this platform's process lister did not run; nothing captured"
+        );
+        return Vec::new();
+    };
+    let mut targets = descendant_pids(&listing, cargo_pid);
+    // The `cargo` itself last: it is almost certainly just waiting on the test
+    // binary, but a stack of it costs nothing and rules that out.
+    targets.push(cargo_pid);
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        eprintln!(
+            "live-sweep: CAPTURE — could not create {}: {e}; nothing captured",
+            dir.display()
+        );
+        return Vec::new();
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let mut written = Vec::new();
+    for pid in targets {
+        let out = dir.join(format!("{CAPTURE_HOOK_TEST}-{stamp}-pid{pid}.txt"));
+        let Some(mut cmd) = stack_sampler(pid, &out) else {
+            eprintln!(
+                "live-sweep: CAPTURE — no stack sampler is wired up for this platform \
+                 (iter-245 Part B); nothing captured"
+            );
+            return written;
+        };
+        let ran = cmd
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ran && std::fs::metadata(&out).is_ok_and(|m| m.len() > 0) {
+            written.push(out);
+        } else {
+            let _ = std::fs::remove_file(&out);
+        }
+    }
+    written
+}
+
+// ---------------------------------------------------------------------------
 // run()
 // ---------------------------------------------------------------------------
 
@@ -1481,6 +2015,26 @@ pub fn run(args: Args) -> Result<()> {
 
     let mut totals = SweepSummary::default();
     let mut overall_ok = true;
+
+    // iter-245 Part A. Note the browsers the operator already had running in
+    // the real profile root before a single test ran, so an interactive
+    // session of theirs is never mistaken for something the live tier left
+    // behind. A *marked* profile (one a live test launched) is deliberately
+    // not excused even if it predates the sweep — see
+    // [`preexisting_unmarked_names`].
+    let real_root = real_profile_root();
+    let mut excused = match &real_root {
+        Some(root) if !args.dry_run => preexisting_unmarked_names(root),
+        _ => std::collections::BTreeSet::new(),
+    };
+    let mut leaked_total = 0usize;
+    let mut unattributed_total = 0usize;
+    if real_root.is_none() {
+        eprintln!(
+            "live-sweep: no per-user profile root could be resolved (no $FF_RDP_HOME, no state \
+             or data dir) — the post-phase-1 orphan check will not run"
+        );
+    }
 
     for target in &targets {
         let needs_preexisting = target.gated.iter().any(|g| g.needs_preexisting);
@@ -1546,7 +2100,11 @@ pub fn run(args: Args) -> Result<()> {
                 "`cargo test -p {} --test {}` (phase 1: real run, --test-threads={jobs})",
                 target.package, target.test_name
             );
-            let outcome = run_phase(&mut cmd, &what, bounds)?;
+            let watch = PhaseWatch {
+                qualified: &part.qualified,
+                capture_dir: args.workspace_root.join("target").join("live-sweep"),
+            };
+            let outcome = run_phase(&mut cmd, &what, bounds, Some(&watch))?;
             if let Some(timeout) = outcome.timed_out {
                 // iter-197. The phase was killed, so libtest never printed a
                 // `failures:` section and `classify_failures` has nothing to
@@ -1578,6 +2136,21 @@ pub fn run(args: Args) -> Result<()> {
                     eprintln!(
                         "live-sweep: libtest's own slow-test notice named: {}",
                         format_name_list(&flagged)
+                    );
+                }
+                // iter-245 Part B AC2: the path goes in the same report that
+                // names the unreported test, so a later reader does not have
+                // to know where the sweep writes.
+                if !outcome.capture_paths.is_empty() {
+                    eprintln!(
+                        "live-sweep: WATCHDOG — stack snapshot(s) of the hung {CAPTURE_HOOK_TEST} \
+                         process tree were written before the kill: {}",
+                        outcome
+                            .capture_paths
+                            .iter()
+                            .map(|p| p.display().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     );
                 }
 
@@ -1661,6 +2234,74 @@ pub fn run(args: Args) -> Result<()> {
             }
         }
 
+        // iter-245 Part A: phase 1 is over, so every self-launching test in
+        // this target has either cleaned up after itself (`daemon stop` /
+        // `LiveFirefox::drop`, iter-146 and iter-168) or is already accounted
+        // for above. Anything still holding a live-owned profile in the real
+        // root at this instant is a leak — the whole-suite guarantee that
+        // stopped being asserted anywhere when iteration 188 deleted the
+        // isolated `live_96` test that used to stand in for it.
+        if let Some(root) = &real_root
+            && !args.dry_run
+        {
+            let scan = || {
+                process_listing().map_or_else(Vec::new, |l| {
+                    scan_owned_profiles(root, &pids_in_listing(&l))
+                })
+            };
+            let found = settle_owned_profiles(scan, ORPHAN_SETTLE_ATTEMPTS, ORPHAN_SETTLE_DELAY);
+            let report = classify_orphans(&excused, found);
+            if report.is_clean() {
+                // Said out loud on the happy path too: a guarantee nobody can
+                // see being checked is how the pre-188 version of this became
+                // a quiet no-op in the first place.
+                eprintln!(
+                    "live-sweep: real profile root {} holds no live-owned profile this sweep \
+                     left behind (checked after -p {} --test {})",
+                    root.display(),
+                    target.package,
+                    target.test_name
+                );
+            }
+            for profile in &report.leaked {
+                eprintln!(
+                    "live-sweep: LEAKED PROFILE after -p {} --test {} — {} was still owned by a \
+                     live process in {} on every one of {ORPHAN_SETTLE_ATTEMPTS} scans over \
+                     {}s. A live test's Firefox outlived the test that launched it (iter-146 / \
+                     iter-168 cleanup guarantee). If a *second* live sweep is running on this \
+                     machine, this is its browser, not a leak — but that configuration is \
+                     unsupported for other reasons too (the watchdog's reaper kills managed \
+                     browsers machine-wide).",
+                    target.package,
+                    target.test_name,
+                    profile.describe(),
+                    root.display(),
+                    ORPHAN_SETTLE_ATTEMPTS as u64 * ORPHAN_SETTLE_DELAY.as_secs()
+                );
+            }
+            for profile in &report.unattributed {
+                eprintln!(
+                    "live-sweep: note — {} appeared in {} during this sweep but carries no \
+                     owner-test marker, so nothing ties it to the live tier (most likely your \
+                     own `ff-rdp launch`). Reported, not counted against the sweep.",
+                    profile.describe(),
+                    root.display()
+                );
+            }
+            leaked_total += report.leaked.len();
+            unattributed_total += report.unattributed.len();
+            if !report.leaked.is_empty() {
+                overall_ok = false;
+            }
+            // Fold everything just reported into the excused set so the next
+            // target does not report the same directory a second time.
+            for profile in report.leaked.into_iter().chain(report.unattributed) {
+                if let Some(name) = profile.dir.file_name() {
+                    excused.insert(name.to_string_lossy().into_owned());
+                }
+            }
+        }
+
         if let Some(mut cmd) = phase_command(
             &target.package,
             &target.test_name,
@@ -1676,7 +2317,7 @@ pub fn run(args: Args) -> Result<()> {
             // it is a wedged cargo. It runs under the same bounds anyway:
             // `success` is already `false` for a timed-out phase, which is the
             // only thing this branch consumes.
-            let outcome = run_phase(&mut cmd, &what, bounds)?;
+            let outcome = run_phase(&mut cmd, &what, bounds, None)?;
             overall_ok &= outcome.success;
         }
 
@@ -1697,9 +2338,31 @@ pub fn run(args: Args) -> Result<()> {
          vanished={vanished} launch_timeout={launch_timeout} timed_out={timed_out} \
          total={grand_total}"
     );
+    // iter-245 Part A: a *second* line, deliberately. Every field of
+    // `LIVE_SWEEP_SUMMARY` counts a test, `total` conserves them, and several
+    // readers (the `iteration-close` skill, the loop's own log scraping) parse
+    // that invariant. A leaked profile is not a test, so it gets its own line
+    // rather than an eighth field whose relationship to `total` would have to
+    // be explained forever after.
+    if !args.dry_run {
+        println!(
+            "LIVE_SWEEP_PROFILES leaked={leaked_total} unattributed={unattributed_total} \
+             root={}",
+            real_root
+                .as_ref()
+                .map_or_else(|| "<unresolved>".to_owned(), |r| r.display().to_string())
+        );
+    }
 
     if overall_ok {
         Ok(())
+    } else if leaked_total > 0 && timed_out == 0 {
+        Err(anyhow!(
+            "live-sweep: {leaked_total} managed Firefox profile(s) were left live-owned in the \
+             real profile root (named above), plus any ordinary failures. A completed sweep must \
+             leave none: that is the whole-suite cleanup guarantee iterations 146 and 168 built \
+             and iteration 245 restored a check for."
+        ))
     } else if timed_out > 0 {
         Err(anyhow!(
             "live-sweep: a phase had to be killed by the watchdog — {timed_out} qualified live \
@@ -2578,7 +3241,7 @@ failures:
             stall: Duration::from_secs(1),
         };
         let started = std::time::Instant::now();
-        let outcome = run_phase(&mut cmd, "silent phase", bounds).expect("run_phase");
+        let outcome = run_phase(&mut cmd, "silent phase", bounds, None).expect("run_phase");
         let elapsed = started.elapsed();
 
         let timeout = outcome
@@ -2619,7 +3282,7 @@ failures:
             build: Duration::from_secs(1),
             stall: Duration::from_secs(30),
         };
-        let outcome = run_phase(&mut cmd, "silent build", bounds).expect("run_phase");
+        let outcome = run_phase(&mut cmd, "silent build", bounds, None).expect("run_phase");
         let timeout = outcome.timed_out.expect("must time out");
         assert!(timeout.before_first_output);
         assert_eq!(timeout.bound, Duration::from_secs(1));
@@ -2630,7 +3293,8 @@ failures:
     #[test]
     fn iter_197_watchdog_leaves_a_finishing_phase_alone() {
         let mut cmd = prints_and_exits("test result: ok. 1 passed");
-        let outcome = run_phase(&mut cmd, "normal phase", default_bounds()).expect("run_phase");
+        let outcome =
+            run_phase(&mut cmd, "normal phase", default_bounds(), None).expect("run_phase");
         assert!(outcome.timed_out.is_none());
         assert!(outcome.success);
         assert!(outcome.stdout.contains("test result: ok. 1 passed"));
@@ -2648,7 +3312,7 @@ failures:
         assert_eq!(bounds.current(false), None);
         assert_eq!(bounds.current(true), None);
         let mut cmd = prints_and_exits("hello");
-        let outcome = run_phase(&mut cmd, "unbounded phase", bounds).expect("run_phase");
+        let outcome = run_phase(&mut cmd, "unbounded phase", bounds, None).expect("run_phase");
         assert!(outcome.timed_out.is_none());
         assert!(outcome.success);
     }
@@ -2693,7 +3357,7 @@ failures:
             build: Duration::from_secs(30),
             stall: Duration::from_secs(1),
         };
-        let outcome = run_phase(&mut cmd, "grandchild phase", bounds).expect("run_phase");
+        let outcome = run_phase(&mut cmd, "grandchild phase", bounds, None).expect("run_phase");
         assert!(
             outcome.timed_out.is_some(),
             "the phase must have been killed"
@@ -2750,7 +3414,7 @@ failures:
             stall: Duration::from_secs(1),
         };
         let started = std::time::Instant::now();
-        let outcome = run_phase(&mut cmd, "leaky phase", bounds).expect("run_phase");
+        let outcome = run_phase(&mut cmd, "leaky phase", bounds, None).expect("run_phase");
         let elapsed = started.elapsed();
 
         assert!(outcome.timed_out.is_some());
@@ -2934,5 +3598,500 @@ not-a-process-line
         };
         assert_eq!(hung.total(), 277);
         assert_eq!(hung.total(), clean.total());
+    }
+
+    // -----------------------------------------------------------------------
+    // iter-245 Part A — the real-root orphan check
+    // -----------------------------------------------------------------------
+
+    /// Seed a managed profile directory with the markers `launch` writes.
+    fn seed_profile(root: &Path, name: &str, pid: u32, test: Option<&str>) -> PathBuf {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).expect("profile dir");
+        std::fs::write(dir.join(OWNER_PID_MARKER), format!("{pid}\n")).expect("pid marker");
+        if let Some(test) = test {
+            std::fs::write(dir.join(OWNER_TEST_MARKER), test).expect("test marker");
+        }
+        dir
+    }
+
+    fn pid_set(pids: &[u32]) -> std::collections::BTreeSet<u32> {
+        pids.iter().copied().collect()
+    }
+
+    /// AC1: a live-owned profile left in the real root is reported by
+    /// directory **and** PID — the thing the deleted `live_96` test used to
+    /// stand for.
+    #[test]
+    fn iter_245_leaked_profile_is_named_with_its_directory_and_pid() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        seed_profile(
+            tmp.path(),
+            "ff-rdp-profile-aaaaaaaaaaaaaaaa",
+            4242,
+            Some("live_158_launch_lifecycle::live_158_launch_survives_contended_bind"),
+        );
+
+        let found = scan_owned_profiles(tmp.path(), &pid_set(&[4242]));
+        assert_eq!(found.len(), 1, "the live-owned profile must be found");
+        let report = classify_orphans(&std::collections::BTreeSet::new(), found);
+        assert_eq!(report.leaked.len(), 1);
+        assert!(report.unattributed.is_empty());
+
+        let rendered = report.leaked[0].describe();
+        assert!(
+            rendered.contains("ff-rdp-profile-aaaaaaaaaaaaaaaa") && rendered.contains("pid 4242"),
+            "AC1 wants the directory and the PID, not a bare count: {rendered}"
+        );
+        assert!(
+            rendered.contains("live_158_launch_survives_contended_bind"),
+            "and the owner-test marker names the culprit: {rendered}"
+        );
+    }
+
+    /// AC2: a clean root reports nothing at all.
+    #[test]
+    fn iter_245_clean_root_reports_no_finding() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        // A profile whose owner is gone is not a finding: `profiles prune`
+        // reclaims those, and the guarantee here is about *live* owners.
+        seed_profile(
+            tmp.path(),
+            "ff-rdp-profile-bbbbbbbbbbbbbbbb",
+            4242,
+            Some("t"),
+        );
+        // An unrelated directory in the same root is likewise none of its
+        // business.
+        std::fs::create_dir_all(tmp.path().join("some-other-dir")).expect("dir");
+
+        let found = scan_owned_profiles(tmp.path(), &pid_set(&[1]));
+        assert!(found.is_empty(), "a dead owner is not a leak: {found:?}");
+        assert!(classify_orphans(&std::collections::BTreeSet::new(), found).is_clean());
+    }
+
+    /// The false positive the plan names explicitly: a browser the operator
+    /// already had open when the sweep started is somebody else's business,
+    /// and [`preexisting_unmarked_names`] is what excuses it.
+    #[test]
+    fn iter_245_an_interactive_browser_open_before_the_sweep_is_never_reported() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        // No owner-test marker: this is what a developer's own `ff-rdp launch`
+        // leaves behind.
+        seed_profile(tmp.path(), "ff-rdp-profile-cccccccccccccccc", 77, None);
+
+        let excused = name_set(&["ff-rdp-profile-cccccccccccccccc"]);
+        let found = scan_owned_profiles(tmp.path(), &pid_set(&[77]));
+        assert_eq!(found.len(), 1, "it is still found by the scan");
+        assert!(
+            classify_orphans(&excused, found).is_clean(),
+            "…and still excused, because it predates the sweep and names no test"
+        );
+    }
+
+    /// …but the *marker* leads, not the clock: a live test's browser that is
+    /// already alive when the sweep starts is a leak somebody should hear
+    /// about, not a state to normalise. This is the case the plan's
+    /// `dogfood_path` walks through by hand.
+    #[test]
+    fn iter_245_a_test_owned_profile_is_reported_even_when_it_predates_the_sweep() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        seed_profile(
+            tmp.path(),
+            "ff-rdp-profile-ffffffffffffffff",
+            77,
+            Some("live_96_profile_cleanup::live_96_something"),
+        );
+
+        let excused = preexisting_unmarked_names(tmp.path());
+        assert!(
+            excused.is_empty(),
+            "a marked profile is never folded into the excused set: {excused:?}"
+        );
+        let found = scan_owned_profiles(tmp.path(), &pid_set(&[77]));
+        let report = classify_orphans(&excused, found);
+        assert_eq!(report.leaked.len(), 1);
+        assert!(report.leaked[0].describe().contains("live_96_something"));
+    }
+
+    fn name_set(names: &[&str]) -> std::collections::BTreeSet<String> {
+        names.iter().map(|n| (*n).to_owned()).collect()
+    }
+
+    fn owned(dir: &str, pid: u32, test: Option<&str>) -> OwnedProfile {
+        OwnedProfile {
+            dir: PathBuf::from(dir),
+            pid,
+            spawning_test: test.map(str::to_owned),
+        }
+    }
+
+    /// The false positive the first real dual-gate sweep with this check
+    /// produced (2026-09-07): `LiveFirefox::drop` signals its browser and
+    /// returns without waiting for it to exit (iter-168), so a browser that is
+    /// *dying* is in the process table at the instant the check runs. It must
+    /// not be reported as a leak.
+    #[test]
+    fn iter_245_a_browser_still_exiting_is_not_reported_as_a_leak() {
+        let dying = vec![owned("/root/ff-rdp-profile-a", 1, Some("live_x::t"))];
+        let mut scans = vec![Vec::new(), dying.clone()];
+        let survivors = settle_owned_profiles(
+            || scans.pop().unwrap_or_default(),
+            ORPHAN_SETTLE_ATTEMPTS,
+            std::time::Duration::ZERO,
+        );
+        assert!(
+            survivors.is_empty(),
+            "a profile whose owner is gone by the second scan is a browser on its way \
+             out, not a leak: {survivors:?}"
+        );
+    }
+
+    /// …while one that is there on every scan still is.
+    #[test]
+    fn iter_245_a_browser_that_survives_every_scan_is_still_a_leak() {
+        let leaked = vec![owned("/root/ff-rdp-profile-b", 7, Some("live_y::t"))];
+        let mut scans = 0usize;
+        let survivors = settle_owned_profiles(
+            || {
+                scans += 1;
+                leaked.clone()
+            },
+            ORPHAN_SETTLE_ATTEMPTS,
+            std::time::Duration::ZERO,
+        );
+        assert_eq!(survivors, leaked);
+        assert_eq!(
+            scans,
+            ORPHAN_SETTLE_ATTEMPTS + 1,
+            "one scan plus one per attempt — the loop must not give up early"
+        );
+    }
+
+    /// A clean root pays for exactly one scan: the settle cost is only ever
+    /// spent when something was found.
+    #[test]
+    fn iter_245_a_clean_root_is_scanned_once() {
+        let mut scans = 0usize;
+        let survivors = settle_owned_profiles(
+            || {
+                scans += 1;
+                Vec::new()
+            },
+            ORPHAN_SETTLE_ATTEMPTS,
+            std::time::Duration::from_secs(600),
+        );
+        assert!(survivors.is_empty());
+        assert_eq!(scans, 1, "an empty first scan must not sleep at all");
+    }
+
+    /// A directory whose owner PID changed between scans is a *different*
+    /// browser, so it does not count as the same one persisting.
+    #[test]
+    fn iter_245_still_owned_matches_on_pid_not_just_directory() {
+        let first = vec![owned("/root/ff-rdp-profile-c", 1, Some("live_z::t"))];
+        let recycled = vec![owned("/root/ff-rdp-profile-c", 2, Some("live_z::t"))];
+        assert!(still_owned(&first, &recycled).is_empty());
+        assert_eq!(still_owned(&first, &first), first);
+    }
+
+    /// A live-owned profile with no owner-test marker cannot be attributed to
+    /// the live tier, so it is reported without failing the sweep — the
+    /// developer's own `ff-rdp launch` case.
+    #[test]
+    fn iter_245_a_profile_without_an_owner_test_marker_is_not_a_sweep_leak() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        seed_profile(tmp.path(), "ff-rdp-profile-dddddddddddddddd", 99, None);
+
+        let found = scan_owned_profiles(tmp.path(), &pid_set(&[99]));
+        let report = classify_orphans(&std::collections::BTreeSet::new(), found);
+        assert!(
+            report.leaked.is_empty(),
+            "no marker means no evidence it came from a test"
+        );
+        assert_eq!(report.unattributed.len(), 1);
+        assert!(
+            report.unattributed[0]
+                .describe()
+                .contains("no owner-test marker")
+        );
+    }
+
+    /// A marker that does not parse as a PID grades as "no finding" rather
+    /// than as a leak: [`scan_owned_profiles`] reports only what it can prove.
+    #[test]
+    fn iter_245_an_unreadable_marker_is_not_evidence_of_a_leak() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let dir = tmp.path().join("ff-rdp-profile-eeeeeeeeeeeeeeee");
+        std::fs::create_dir_all(&dir).expect("dir");
+        std::fs::write(dir.join(OWNER_PID_MARKER), "").expect("empty marker");
+        assert!(scan_owned_profiles(tmp.path(), &pid_set(&[1, 2, 3])).is_empty());
+    }
+
+    /// The liveness grading reads the same `<pid> <cmdline>` snapshot the
+    /// reaper takes, so the two can never disagree about who is alive.
+    #[test]
+    fn iter_245_pids_in_listing_reads_the_reapers_own_snapshot() {
+        let listing = "  501 /Applications/Firefox.app/Contents/MacOS/firefox --profile /x\n\
+                       1 /sbin/launchd\nnot-a-pid whatever\n";
+        assert_eq!(pids_in_listing(listing), pid_set(&[1, 501]));
+    }
+
+    /// The real root is resolved read-only, in the same order the product
+    /// uses, and honours a process-wide `$FF_RDP_HOME` because the sweep's
+    /// children inherit it.
+    #[test]
+    fn iter_245_real_profile_root_is_resolved_read_only() {
+        let root = real_profile_root().expect("a per-user root on any dev machine");
+        assert!(
+            root.ends_with(Path::new("ff-rdp").join("profiles")),
+            "same layout as util::profile_dir::resolve_profile_root: {}",
+            root.display()
+        );
+        // Read-only: resolving must never create anything.
+        let probe = root.join("iter-245-should-not-exist");
+        assert!(!probe.exists());
+    }
+
+    /// An exported-but-empty `$FF_RDP_HOME` must fall through to the `state`/
+    /// `data_local` candidates exactly like `util::home_override()` does —
+    /// not resolve to a relative `ff-rdp/profiles` under the sweep's cwd.
+    /// Found by review of this PR: the first cut of `real_profile_root`
+    /// duplicated the product's `$FF_RDP_HOME` precedence but not its
+    /// empty-string filter.
+    #[test]
+    fn iter_245_real_profile_root_filters_an_empty_home_override() {
+        let empty = Some(std::ffi::OsString::from(""));
+        let state = Some(PathBuf::from("/state/root"));
+        let data_local = Some(PathBuf::from("/data-local/root"));
+
+        assert_eq!(
+            resolve_real_profile_root(empty.clone(), state.clone(), data_local.clone()),
+            Some(PathBuf::from("/state/root/ff-rdp/profiles")),
+            "empty override must fall through to state, not resolve to a relative path"
+        );
+        assert_eq!(
+            resolve_real_profile_root(empty, None, data_local.clone()),
+            Some(PathBuf::from("/data-local/root/ff-rdp/profiles")),
+            "empty override must fall through to data_local when state is also absent"
+        );
+        // A genuinely-set override still wins over both fallbacks.
+        assert_eq!(
+            resolve_real_profile_root(
+                Some(std::ffi::OsString::from("/home/override")),
+                state,
+                data_local
+            ),
+            Some(PathBuf::from("/home/override/ff-rdp/profiles"))
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // iter-245 Part B — the capture hook
+    // -----------------------------------------------------------------------
+
+    /// The plan's AC, under the name it gives (iteration 208 → 247 → 245): the
+    /// hook is scoped to one test name, so an ordinary timeout on an unrelated
+    /// test never shells out to a debugger.
+    #[test]
+    fn live_208_capture_hook_fires_only_for_the_named_test() {
+        assert!(
+            !capture_hook_should_fire(&[
+                "live_a::one".to_owned(),
+                "live_90_daemon_lifecycle::live_daemon_stop".to_owned(),
+            ]),
+            "an unrelated timed-out set must not trigger a capture"
+        );
+        assert!(capture_hook_should_fire(&[
+            "live_a::one".to_owned(),
+            "live_158_launch_lifecycle::live_158_launch_survives_contended_bind".to_owned(),
+        ]));
+        assert!(
+            capture_hook_should_fire(&[CAPTURE_HOOK_TEST.to_owned()]),
+            "a bare name matches too — the same set is printed both ways"
+        );
+        assert!(
+            !capture_hook_should_fire(&[
+                "live_x::live_158_launch_survives_contended_bind_variant".to_owned()
+            ]),
+            "the match is on the whole final segment, not a prefix"
+        );
+        assert!(!capture_hook_should_fire(&[]));
+    }
+
+    /// The sampler targets the process `cargo` spawned, not `cargo` — the test
+    /// binary is where the hang lives.
+    #[test]
+    fn iter_245_descendants_reach_the_test_binary_not_just_cargo() {
+        let listing = "\
+1 0 /sbin/launchd
+100 1 cargo test -p ff-rdp-cli
+200 100 /path/target/debug/deps/live-abcdef --exact live_158
+300 200 /Applications/Firefox.app/Contents/MacOS/firefox --profile /x/ff-rdp-profile-y
+400 1 unrelated
+";
+        let mut found = descendant_pids(listing, 100);
+        found.sort_unstable();
+        assert_eq!(found, vec![200, 300], "the whole subtree, and only it");
+        assert!(descendant_pids(listing, 400).is_empty());
+    }
+
+    /// A phase that times out *without* the named test in its stalled set
+    /// captures nothing — the negative half of the AC, exercised through
+    /// `run_phase` rather than the predicate alone.
+    #[test]
+    fn iter_245_a_timed_out_phase_captures_nothing_for_another_test() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let mut cmd = prints_then_hangs("running 1 test");
+        let qualified = vec!["live_other::some_other_test".to_owned()];
+        let watch = PhaseWatch {
+            qualified: &qualified,
+            capture_dir: tmp.path().join("captures"),
+        };
+        let bounds = PhaseBounds {
+            build: Duration::from_secs(30),
+            stall: Duration::from_secs(1),
+        };
+        let outcome =
+            run_phase(&mut cmd, "unrelated phase", bounds, Some(&watch)).expect("run_phase");
+        assert!(outcome.timed_out.is_some(), "the phase must be killed");
+        assert!(
+            outcome.capture_paths.is_empty(),
+            "no capture for a test the hook is not scoped to"
+        );
+        assert!(
+            !tmp.path().join("captures").exists(),
+            "and nothing is even created on disk"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // iter-245 Part C — the Windows process-tree paths, actually executed
+    // -----------------------------------------------------------------------
+
+    /// Theme A. The Windows mirror of
+    /// [`iter_197_watchdog_kill_reaches_the_grandchild`]: `taskkill /F /T`
+    /// must reach a process the phase did not spawn directly, exactly as the
+    /// Unix process-group kill does. This branch had never run anywhere before
+    /// iteration 245 — CI's `windows-latest` job runs `cargo test --workspace`,
+    /// which until now only exercised this file's *string parsing*.
+    #[cfg(windows)]
+    #[test]
+    fn windows_live_sweep_kill_phase_tree_reaches_a_real_grandchild() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        // The grandchild is identified by a unique string in its own command
+        // line rather than by a pidfile: `process_listing()` already renders
+        // exactly that, and a marker sidesteps the three levels of quoting a
+        // `cmd`-inside-`cmd`-inside-Rust command line would otherwise need —
+        // untestable from a non-Windows machine, and therefore the most likely
+        // thing to be wrong in a test written to *stop* untested Windows code.
+        let marker = format!("iter245-grandchild-{}", std::process::id());
+        // The phase itself is a batch file for the same reason: nothing about
+        // its contents has to survive Rust's argument escaping.
+        let script = tmp.path().join("phase.bat");
+        std::fs::write(
+            &script,
+            format!(
+                "@echo off\r\n\
+                 start /b cmd /c \"ping -n 600 127.0.0.1 > nul & rem {marker}\"\r\n\
+                 echo running 1 test\r\n\
+                 ping -n 600 127.0.0.1 > nul\r\n"
+            ),
+        )
+        .expect("write phase.bat");
+
+        let mut cmd = Command::new("cmd");
+        cmd.arg("/c").arg(&script);
+        let bounds = PhaseBounds {
+            build: Duration::from_secs(60),
+            stall: Duration::from_secs(5),
+        };
+        let outcome =
+            run_phase(&mut cmd, "windows grandchild phase", bounds, None).expect("run_phase");
+        assert!(
+            outcome.timed_out.is_some(),
+            "the phase must have been killed by the watchdog"
+        );
+
+        // Poll: `taskkill` is asynchronous, the same bounded-wait shape the
+        // Unix sibling uses after its SIGKILL.
+        let survivors = |marker: &str| -> Vec<u32> {
+            let listing = process_listing().unwrap_or_default();
+            listing
+                .lines()
+                .filter(|line| line.contains(marker))
+                .filter_map(|line| {
+                    line.trim_start()
+                        .split_once(char::is_whitespace)
+                        .and_then(|(pid, _)| pid.parse::<u32>().ok())
+                })
+                .filter(|pid| *pid != std::process::id())
+                .collect()
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let mut left = survivors(&marker);
+        while std::time::Instant::now() < deadline && !left.is_empty() {
+            std::thread::sleep(Duration::from_millis(250));
+            left = survivors(&marker);
+        }
+        // Leave nothing behind even if the assertion below is about to fail.
+        for pid in &left {
+            kill_pid_hard(*pid);
+        }
+        assert!(
+            left.is_empty(),
+            "taskkill /F /T must reach the detached grandchild; pid(s) {left:?} survived, which \
+             is what killing only the direct child would leave running — the Windows half of the \
+             guarantee iteration 197 only ever proved on Unix"
+        );
+    }
+
+    /// Theme B. `process_listing()`'s PowerShell one-liner, run for real, must
+    /// produce the `<pid> <command line>` shape [`managed_firefox_pids`] is
+    /// written against — proved against a live process, not the hand-written
+    /// fixture `iter_197_argv0_handles_a_quoted_windows_path` uses.
+    #[cfg(windows)]
+    #[test]
+    fn windows_live_sweep_process_listing_matches_a_real_process() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        // `managed_firefox_pids` requires *both* an argv[0] that is a Firefox
+        // and a managed-profile path in the arguments, so the decoy has to be
+        // named like one: a copy of cmd.exe does the job without needing a
+        // browser on the runner.
+        let fake = tmp.path().join("firefox.exe");
+        let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_owned());
+        std::fs::copy(format!("{system_root}\\System32\\cmd.exe"), &fake).expect("copy cmd.exe");
+
+        let marker = format!("{}\\ff-rdp-profile-iter245test", tmp.path().display());
+        let mut child = Command::new(&fake)
+            .args([
+                "/c",
+                &format!("ping -n 60 127.0.0.1 > nul & rem --profile {marker}"),
+            ])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn the decoy");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let mut matched = Vec::new();
+        while std::time::Instant::now() < deadline {
+            let listing = process_listing().expect("Get-CimInstance must run on Windows");
+            matched = managed_firefox_pids(&listing, std::process::id());
+            if matched.contains(&child.id()) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        let found = matched.contains(&child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(
+            found,
+            "the real PowerShell listing must render pid {} as `<pid> <command line>` so \
+             managed_firefox_pids picks it up — if this fails, the reaper has never been able \
+             to see an orphaned Firefox on Windows at all",
+            child.id()
+        );
     }
 }
