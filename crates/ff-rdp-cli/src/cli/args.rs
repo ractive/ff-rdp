@@ -863,6 +863,17 @@ before dispatching the full pointer-event sequence (pointerover, pointerenter,
 pointerdown, pointerup, click). This matches the behaviour expected by modern
 component libraries such as Radix UI and Headless UI.
 
+Not-found is reported early (iter-237): a selector that matches nothing no longer
+costs the whole --timeout. Once the page is provably done changing — document
+readyState complete, no XHR/fetch in flight for 500 ms, no DOM mutation for
+200 ms — further waiting cannot produce a match, so click answers then. A guessed
+selector against a static page now reports in ~2 s instead of 10 s. The retry
+case the poll exists for is untouched: an element arriving behind an in-flight
+request keeps the page non-idle, so it still gets the full budget. The
+short-circuit never fires before a fraction (1/5, minimum 500 ms) of --timeout has
+elapsed, and never at all on a page whose CSP refuses the idle probe — those fall
+back to polling the whole budget exactly as before.
+
 The selector can be supplied positionally or via --selector:
   ff-rdp click 'button[type=submit]'
   ff-rdp click --selector 'button[type=submit]'
@@ -2216,6 +2227,15 @@ pub struct TypeArgs {
     /// Adds `submitted` (did anything submit) and `navigated` (did the URL
     /// change) to `results`, plus `method`: `enter`, `request_submit`,
     /// `no_form`, or `enter_prevented`.
+    ///
+    /// The two navigation checks get different budgets (iter-237). The one
+    /// after the synthetic Enter is a fast local check (600 ms) — it only
+    /// decides whether the `requestSubmit()` fallback is needed, and a slow
+    /// check there is pure latency on the usual no-op page. The one after
+    /// `requestSubmit()` waits on a real network round-trip plus a docshell
+    /// teardown, so it gets 3 s (capped by --timeout). Sharing the short budget
+    /// made `navigated: false` ship alongside a `results.page` from the
+    /// destination on any submit slower than 600 ms.
     #[arg(long)]
     pub submit: bool,
     #[command(flatten)]
