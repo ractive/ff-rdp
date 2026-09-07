@@ -519,21 +519,28 @@ pub(crate) fn autowait_element(
         // separates them: once the document is complete, nothing is in
         // flight and the DOM has stopped mutating, no amount of further
         // waiting can produce a match, so answer now.
-        if started.elapsed() >= Duration::from_millis(not_found_min_observation_ms(timeout_ms)) {
-            if settle_probe == SettleProbe::Uninstalled {
-                settle_probe = install_settle_probe(ctx, console_actor, &escaped);
-            }
-            if settle_probe == SettleProbe::Installed
-                && selector_absent_on_settled_page(ctx, console_actor, &escaped)
-            {
-                let (diag, _) = diagnose_selector_failure(ctx, console_actor, selector, &escaped);
-                let elapsed_ms = started.elapsed().as_millis();
-                return Err(AppError::Timeout(format!(
-                    "{diag} after {elapsed_ms}ms — the page is idle (document complete, no network \
-                     in flight, no DOM mutations), so the rest of the {timeout_ms}ms auto-wait \
-                     budget could not have changed the answer"
-                )));
-            }
+        //
+        // The probe is installed on the FIRST poll that misses, not at the
+        // floor: the counters only see requests that start after the shims are
+        // in place, so installing early is what lets the common agent idiom —
+        // act, then immediately look for what the action is fetching — be seen
+        // as busy rather than idle. (A request already in flight when the
+        // command started is still invisible to it; the floor is the cover for
+        // that, and `--no-wait` the escape hatch.)
+        if settle_probe == SettleProbe::Uninstalled {
+            settle_probe = install_settle_probe(ctx, console_actor, &escaped);
+        }
+        if started.elapsed() >= Duration::from_millis(not_found_min_observation_ms(timeout_ms))
+            && settle_probe == SettleProbe::Installed
+            && selector_absent_on_settled_page(ctx, console_actor, &escaped)
+        {
+            let (diag, _) = diagnose_selector_failure(ctx, console_actor, selector, &escaped);
+            let elapsed_ms = started.elapsed().as_millis();
+            return Err(AppError::Timeout(format!(
+                "{diag} after {elapsed_ms}ms — the page is idle (document complete, no network \
+                 in flight, no DOM mutations), so the rest of the {timeout_ms}ms auto-wait \
+                 budget could not have changed the answer"
+            )));
         }
 
         std::thread::sleep(poll);
@@ -1591,12 +1598,6 @@ mod tests {
         assert!(!is_truthy(&Grip::NegZero));
     }
 
-    /// Regression test: a transport-level recv timeout inside
-    /// `poll_js_condition` (Firefox never answers `evaluateJSAsync`) must
-    /// surface as `AppError::Timeout` with the caller's descriptive
-    /// `timeout_context` — not the generic, contextless
-    /// `AppError::RdpTimeout { phase: "recv", after_ms: 0 }` that
-    /// `AppError::from(ProtocolError::Timeout)` would otherwise produce
     // -----------------------------------------------------------------
     // iter-237 Part B — the not-found short-circuit
     // -----------------------------------------------------------------
@@ -1802,6 +1803,12 @@ mod tests {
         );
     }
 
+    /// Regression test: a transport-level recv timeout inside
+    /// `poll_js_condition` (Firefox never answers `evaluateJSAsync`) must
+    /// surface as `AppError::Timeout` with the caller's descriptive
+    /// `timeout_context` — not the generic, contextless
+    /// `AppError::RdpTimeout { phase: "recv", after_ms: 0 }` that
+    /// `AppError::from(ProtocolError::Timeout)` would otherwise produce
     /// ("timed out after 0ms (phase: recv)").
     #[test]
     fn poll_js_condition_recv_timeout_surfaces_descriptive_message() {
