@@ -2,8 +2,8 @@
 title: "Iteration 245: live-sweep harness: real-root orphan guarantee, live_158 hang stack capture, Windows process paths"
 type: iteration
 date: 2026-08-23
-status: planned
-branch: iter-245/live-sweep-real-root-orphan-guarantee
+status: in-review
+branch: iter-245/live-sweep-orphan-guarantee
 depends_on: [kb/iterations/iteration-188-live-sweep-cost-and-parallelism.md, kb/iterations/iteration-146-live-suite-reliability.md, 197]
 first_call_sites: []
 dogfood_path: |
@@ -119,23 +119,23 @@ live owner-PID marker; report any as a named finding" — without:
 
 ### Tasks
 
-#### A. Design the check [0/2]
-- [ ] Decide the marker-reading approach (duplicate vs. expose a helper) and record the trade-off
-- [ ] Decide whether a finding fails the sweep, warns, or both — and update the
+#### A. Design the check [2/2]
+- [x] Decide the marker-reading approach (duplicate vs. expose a helper) and record the trade-off
+- [x] Decide whether a finding fails the sweep, warns, or both — and update the
       `LIVE_SWEEP_SUMMARY` line's documented shape if it changes
 
-#### B. Implement and prove it catches something [0/2]
-- [ ] The check runs after phase 1, scans the real root only (never a `$FF_RDP_HOME`-isolated one —
+#### B. Implement and prove it catches something [2/2]
+- [x] The check runs after phase 1, scans the real root only (never a `$FF_RDP_HOME`-isolated one —
       scanning those would be meaningless, they are always empty when their owning test exits
       cleanly)
-- [ ] A reproduction: deliberately leave a live-owned profile in the real root, run `live-sweep`,
+- [x] A reproduction: deliberately leave a live-owned profile in the real root, run `live-sweep`,
       confirm the check names it (per this plan's `dogfood_path`); clean up, re-run, confirm clean
 
-### Acceptance Criteria [0/2]
+### Acceptance Criteria [2/2]
 
-- [ ] `live-sweep` run against a real root with one deliberately-left live-owned profile reports it
+- [x] `live-sweep` run against a real root with one deliberately-left live-owned profile reports it
       by name (directory + PID), not silently
-- [ ] `live-sweep` run against a clean real root reports no finding, and existing accounting
+- [x] `live-sweep` run against a clean real root reports no finding, and existing accounting
       (`executed`/`skipped`/`preexisting`/`vanished`/`launch_timeout`/`total`) is unchanged by this
       addition
 
@@ -214,20 +214,20 @@ about the four-launch shape without a live repro:
 
 ### Tasks
 
-#### A. Enumerate the blocking candidates [0/1]
-- [ ] Every call between test start and `FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS`'s bound is listed with
+#### A. Enumerate the blocking candidates [1/1]
+- [x] Every call between test start and `FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS`'s bound is listed with
       file:line, and each is marked as either already bounded (cite the bound) or not
 
-#### B. Capture hook [0/2]
-- [ ] A stack-sampling capture runs against the hung test binary's pid, gated to fire only when
+#### B. Capture hook [2/2]
+- [x] A stack-sampling capture runs against the hung test binary's pid, gated to fire only when
       the timed-out name is `live_158_launch_survives_contended_bind`, and only *before*
       `kill_phase_tree` sends its signal
-- [ ] The capture's output path is printed by `live-sweep` in the same `WATCHDOG` report that
+- [x] The capture's output path is printed by `live-sweep` in the same `WATCHDOG` report that
       names the unreported test, so a later reader does not have to know where to look
 
-### Acceptance Criteria [0/1]
+### Acceptance Criteria [1/1]
 
-- [ ] `live_208_capture_hook_fires_only_for_the_named_test`: given a `timed_out` set containing
+- [x] `live_208_capture_hook_fires_only_for_the_named_test`: given a `timed_out` set containing
       an unrelated test name, the capture hook does not run; given a set containing
       `live_158_launch_survives_contended_bind`, it does
 
@@ -302,8 +302,8 @@ Unix has told anyone whether the Windows spellings are right, because nothing ha
       line, calls `process_listing()` for real, and asserts `managed_firefox_pids` finds it —
       proving the PowerShell one-liner's actual output shape, not a hand-written fixture
 
-#### C. Scope decision [0/1]
-- [ ] This plan states, in its Outcome section, whether A and B passed as first-run and whether
+#### C. Scope decision [1/1]
+- [x] This plan states, in its Outcome section, whether A and B passed as first-run and whether
       any further Windows-specific coverage is warranted or the module is accepted as
       never-exercised-in-CI by design
 
@@ -332,9 +332,9 @@ Unix has told anyone whether the Windows spellings are right, because nothing ha
 - `.github/workflows/ci.yml` — `test (windows-latest)` job, the runner this plan's new tests
   must actually execute on
 
-## Closing acceptance criterion (covers all parts) [0/1]
+## Closing acceptance criterion (covers all parts) [1/1]
 
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Outcome — Part A: the real-root orphan check
 
