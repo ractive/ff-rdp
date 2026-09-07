@@ -2,7 +2,7 @@
 title: "Iteration 240: the daemon's frame-stream desync and the ~25-hop wedge — root cause, single writer, write deadlines"
 type: iteration
 date: 2026-08-31
-status: in-progress
+status: done
 branch: iter-240/daemon-frame-desync-root-cause
 depends_on:
   - 224
