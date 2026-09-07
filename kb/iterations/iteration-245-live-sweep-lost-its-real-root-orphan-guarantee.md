@@ -2,7 +2,7 @@
 title: "Iteration 245: live-sweep harness: real-root orphan guarantee, live_158 hang stack capture, Windows process paths"
 type: iteration
 date: 2026-08-23
-status: in-review
+status: done
 branch: iter-245/live-sweep-orphan-guarantee
 depends_on: [kb/iterations/iteration-188-live-sweep-cost-and-parallelism.md, kb/iterations/iteration-146-live-suite-reliability.md, 197]
 first_call_sites: []
