@@ -1730,6 +1730,9 @@ outside the raise lock, 35/200) — one green run proves nothing about a
 test binary (the live suite, `--test-threads=1`, env-gated), so it cannot
 affect `cargo test --workspace`; it has nonetheless already broken a sibling
 live test once (DEC-022, iter-114). Filed as iteration 207 (renumbered 235 by DEC-051).
+**Resolved 2026-09-07 by DEC-053**: that call is gone; the test announces over the
+default cap instead of shrinking it, and the premise quoted above ("the live suite
+runs `--test-threads=1`") had already expired at iteration 188.
 
 **Applies to**: `crates/ff-rdp-core/src/transport.rs`,
 `crates/ff-rdp-core/src/specs/types.rs`, iter-196.
@@ -2134,3 +2137,90 @@ and `CONTRIBUTING.md` says so rather than implying coverage the sweep does not h
 `.github/workflows/ci.yml`, `CONTRIBUTING.md`,
 `kb/iterations/iteration-233-nothing-runs-the-plan-linter-sweep.md`.
 
+
+---
+
+## DEC-053: a live test proves the frame cap by announcing over it, never by shrinking it; and a cache-busted URL beats widening a status assertion
+
+**Date**: 2026-09-07 (iter-235, absorbing iter-236)
+
+### Part A — the last writer of the process-global frame cap is gone
+
+**Decision**: `crates/ff-rdp-cli/tests/live/live_bulk_cap.rs` no longer calls
+`set_max_frame_bytes`. It reads `max_frame_bytes()` and announces twice that —
+`2 × 256 MiB` where it used to announce `2 × 1 KiB` after shrinking the cap to
+1 KiB. Its `FrameCapGuard` RAII type is deleted with it. **No test in the
+workspace writes `MAX_FRAME_BYTES_CELL` in the shrinking direction any more**,
+in either test binary; the only remaining writer is `ff-rdp-cli`'s `main.rs`,
+where `--max-frame-mb` belongs.
+
+**Why**: DEC-048 (iter-196) removed every shrink from the `ff-rdp-core` unit-test
+binary and explicitly left this one, on the reasoning that the live suite runs
+`--test-threads=1` so the window is empty in practice. That premise expired:
+`crates/xtask/src/live_sweep.rs` has run the CLI tier at `--test-threads={jobs}`
+since iteration 188, so every sweep since then has had a window in which one
+test held the process cap at 1 KiB while its neighbours parsed screenshot data
+URLs and `longString` bodies — routinely far more than 1 KiB — and would fail
+with `FrameTooLarge`. DEC-022's guard (iter-114, filed after a leaked 1 KiB cap
+turned `live_console_no_double_delivery` red) closes the *leak*, not the
+*window*.
+
+The 1 KiB cap was never load-bearing. The property under test is "an over-cap
+bulk announcement is rejected before any body read, promptly", and the cap check
+precedes the body read, so announcing `512 MiB` allocates exactly as little as
+announcing `2 KiB`. The whole cost of the fix is a longer decimal in a header
+string. Both alternatives the plan weighed were worse: a per-instance cap on
+`RdpTransport` would add a `pub` API whose only consumer is a test (the
+non-test-consumer review rule), and keeping the global with a lock re-creates
+the reader-set problem DEC-048 abandoned for being unenumerable.
+
+**Consequence for iteration 251** (raising live-suite parallelism): with respect
+to the frame cap the live suite is now safe at any `--test-threads`, and the
+reason is structural rather than a convention — there is no writer to
+synchronise with.
+
+### Part B — `live_166` gets a fresh URL rather than a wider assertion
+
+**Decision**: the four `https://example.com` legs of
+`live_166_navigate_reports_document_status` and
+`live_166_navigate_status_direct_parity` each request a unique
+`?ff-rdp-cache-bust=<nanos>-<serial>` URL. The `200` assertion is unchanged.
+
+**Why**: `example.com` is served `Cache-Control: max-age=604800`, so a repeat
+visit inside one profile is a conditional request the origin answers
+`304 Not Modified`. Two production sweeps went red on it (iteration 210,
+2026-08-24; iteration 220, 2026-08-30) and each investigation reached the same
+verdict: **ff-rdp is right and the test was wrong** — reporting the document's
+real 304 is exactly the truthfulness iteration 166 was built to deliver. The
+test encoded "the first, uncached fetch" as if it were "any fetch".
+
+The rejected fix is the tempting one: accept `200 | 304`. That assertion would
+also pass if ff-rdp reported 304 for a navigation that genuinely got 200 — the
+precise defect class iteration 166 exists to catch. Making the fetch
+unconditional keeps the assertion meaning "the server answered 200" instead of
+"the server answered one of the things we have seen".
+
+The cache buster costs no coverage: Firefox still canonicalises
+`https://example.com?x` to `https://example.com/?x`, so the missing-slash shape
+that *was* the iteration 166 defect is still exercised, and the test now asserts
+`committed_url` against the canonicalised form it computed rather than a
+hardcoded string.
+
+**Not moved to a fixture route** (the plan's Part B task B): the trailing-slash
+leg's whole subject is how a *real remote origin* is canonicalised. `FixtureServer`
+serves `Cache-Control: no-store` with no validators, so it can never answer 304 —
+which is why every other `status`-asserting live test (`live_138_navigate_reports_200`,
+`live_169`'s reload leg, `live_166_navigate_status_reflects_the_server`) was
+immune to this defect in the first place — but it also cannot reproduce the
+`host` vs `host/` distinction, since `{base}/ok` is spelled identically either
+way. Moving the leg would trade the only real-origin coverage in the file for a
+duplicate of a fixture test that already exists.
+
+**Scope check**: `live_166` was the only live test asserting a literal HTTP
+status against a repeatedly-visited public URL. Every other literal-`200`
+assertion in `crates/ff-rdp-cli/tests/live/` is against `FixtureServer`.
+
+**Applies to**: `crates/ff-rdp-cli/tests/live/live_bulk_cap.rs`,
+`crates/ff-rdp-cli/tests/live/live_166_navigate_document_status.rs`,
+`kb/iterations/iteration-235-live-bulk-cap-shrinks-a-process-global.md`.
+Supersedes the "Not fixed here" clause of DEC-048 and closes DEC-022's residue.

@@ -2,8 +2,8 @@
 title: "Iteration 235: the two standing live-suite defects: live_bulk_cap's process-global cap and live_166's 200-on-304"
 type: iteration
 date: 2026-08-24
-status: planned
-branch: iter-235/live-bulk-cap-process-global
+status: in-review
+branch: iter-235/live-suite-defects
 depends_on: [196]
 first_call_sites: []
 dogfood_path: |
