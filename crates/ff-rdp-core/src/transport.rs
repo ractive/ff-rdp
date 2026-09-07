@@ -619,12 +619,19 @@ impl RdpTransport {
     /// The bulk body is limited by `max_frame_bytes()`.  An announcement
     /// exceeding the cap returns `ProtocolError::BulkFrameTooLarge` before any
     /// allocation is attempted.
+    ///
+    /// The bulk parser reads straight off the socket, so it is only valid at a
+    /// frame boundary. If a previous [`recv`](Self::recv) stopped mid-frame
+    /// (a read timeout inside a payload leaves the decoder resumable, by
+    /// design), this returns `ProtocolError::InvalidPacket` rather than
+    /// resuming inside that payload and dropping the buffered bytes.
     pub fn recv_bulk_with_handler<W: Write>(
         &mut self,
         actor: &str,
         kind: &str,
         out: &mut W,
     ) -> Result<u64, ProtocolError> {
+        self.decoder.ensure_aligned()?;
         recv_bulk_with_handler_from(&mut self.reader, actor, kind, out)
     }
 }
@@ -695,13 +702,14 @@ impl FramedReader {
     /// Receive a bulk packet streaming directly into `out`.
     ///
     /// Mirrors [`RdpTransport::recv_bulk_with_handler`]; see its documentation
-    /// for the full contract.
+    /// for the full contract, including the frame-boundary precondition.
     pub fn recv_bulk_with_handler<W: Write>(
         &mut self,
         actor: &str,
         kind: &str,
         out: &mut W,
     ) -> Result<u64, ProtocolError> {
+        self.decoder.ensure_aligned()?;
         recv_bulk_with_handler_from(&mut self.reader, actor, kind, out)
     }
 }
@@ -1350,6 +1358,39 @@ pub(crate) struct FrameDecoder {
 }
 
 impl FrameDecoder {
+    /// Refuse to hand the stream to a reader that does not understand the
+    /// decoder's position (iter-240 review, finding 4).
+    ///
+    /// The bulk reads (`recv_bulk_with_handler`) parse straight off the socket
+    /// and know nothing about [`DecodeState`]. Calling one while the decoder
+    /// sits in `Prefix`/`Body` would start at the socket's current offset —
+    /// *inside* the previous frame's payload — and silently discard the bytes
+    /// already buffered in `Body`, which is the exact desync this decoder
+    /// exists to remove. `Poisoned` is refused for the same reason it is
+    /// refused by [`decode`](Self::decode): the stream's framing is no longer
+    /// trustworthy.
+    ///
+    /// Only `Idle` — a real frame boundary — is safe, and that is the only
+    /// state this returns `Ok` for.
+    fn ensure_aligned(&self) -> Result<(), ProtocolError> {
+        match &self.state {
+            DecodeState::Idle => Ok(()),
+            DecodeState::Poisoned => Err(ProtocolError::InvalidPacket(
+                "the frame stream desynchronised earlier on this connection".to_owned(),
+            )),
+            DecodeState::Prefix(digits) => Err(ProtocolError::InvalidPacket(format!(
+                "a bulk read was attempted {} byte(s) into a frame's length prefix; \
+                 the connection is mid-frame, not at a frame boundary",
+                digits.len()
+            ))),
+            DecodeState::Body { body, filled } => Err(ProtocolError::InvalidPacket(format!(
+                "a bulk read was attempted {filled}/{} bytes into a frame payload; \
+                 the connection is mid-frame, not at a frame boundary",
+                body.len()
+            ))),
+        }
+    }
+
     /// Decode the next frame, resuming any partially-read one.
     ///
     /// Returns [`ProtocolError::Timeout`] when the socket deadline expires
@@ -3094,6 +3135,78 @@ mod tests {
         let n = recv_bulk_with_handler_from(&mut cursor, "actor1", "kind1", &mut out).unwrap();
         assert_eq!(n, 0);
         assert!(out.is_empty());
+    }
+
+    /// iter-240 review, finding 4: a bulk read must refuse a stream the
+    /// decoder has already partly consumed.
+    ///
+    /// `recv_bulk_with_handler` parses straight off the socket and knows
+    /// nothing about [`DecodeState`]. Called after a `recv()` that timed out
+    /// mid-payload — which the resumable decoder makes an ordinary, expected
+    /// state — it would start at the socket's current offset, *inside* that
+    /// payload, and silently drop the bytes already buffered in `Body`. That
+    /// is the very desync the decoder exists to remove, reintroduced through a
+    /// side door.
+    #[test]
+    fn bulk_read_refuses_a_stream_the_decoder_is_mid_frame_on() {
+        use std::net::{TcpListener, TcpStream};
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let mut peer = TcpStream::connect(addr).expect("connect");
+        let (server, _) = listener.accept().expect("accept");
+
+        let mut reader = FramedReader::from_stream(server);
+        reader
+            .set_read_timeout(Some(Duration::from_millis(150)))
+            .expect("read timeout");
+
+        // Announce a 40-byte frame and send only part of the payload, then
+        // stop. `recv` consumes the prefix and the partial body, then times
+        // out with the decoder parked in `Body`.
+        peer.write_all(b"40:{\"from\":\"conn0.screen")
+            .expect("partial frame");
+        peer.flush().expect("flush");
+        let err = reader.recv().expect_err("the frame is incomplete");
+        assert!(
+            matches!(err, ProtocolError::Timeout),
+            "expected a resumable timeout, got {err:?}"
+        );
+
+        let mut out = Vec::new();
+        let err = reader
+            .recv_bulk_with_handler("conn0.screenshot", "screenshot", &mut out)
+            .expect_err("a bulk read mid-frame must be refused, not attempted");
+        match err {
+            ProtocolError::InvalidPacket(message) => assert!(
+                message.contains("mid-frame"),
+                "the refusal must say why: {message}"
+            ),
+            other => panic!("expected InvalidPacket, got {other:?}"),
+        }
+        assert!(
+            out.is_empty(),
+            "a refused bulk read must not have consumed or emitted anything"
+        );
+    }
+
+    /// A poisoned decoder refuses a bulk read for the same reason `decode`
+    /// refuses one: the stream's framing is no longer trustworthy.
+    #[test]
+    fn bulk_read_refuses_a_poisoned_decoder() {
+        let mut decoder = FrameDecoder {
+            state: DecodeState::Poisoned,
+        };
+        let err = decoder
+            .ensure_aligned()
+            .expect_err("a poisoned stream must refuse a bulk read");
+        assert!(
+            matches!(err, ProtocolError::InvalidPacket(_)),
+            "expected InvalidPacket, got {err:?}"
+        );
+        // And an aligned one lets it through.
+        decoder.state = DecodeState::Idle;
+        assert!(decoder.ensure_aligned().is_ok());
     }
 
     #[test]

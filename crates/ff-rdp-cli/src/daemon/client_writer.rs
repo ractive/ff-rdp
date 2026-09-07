@@ -83,9 +83,42 @@ impl WriteFailure {
 
 struct Inner {
     writer: FramedWriter,
+    /// The deadline installed on the socket in steady state, restored after a
+    /// [`ClientWriter::send_bounded`] narrows it for one frame.
+    deadline: Duration,
     /// Set on the first failure; every later write fails fast with it rather
     /// than blocking on a socket that is already known to be gone.
     failed: Option<(WriteFailure, String)>,
+}
+
+/// Write one frame through an already-locked writer, recording the first
+/// failure and shutting the socket down on it.
+///
+/// The shutdown is not merely tidiness (iter-240 review, finding 1). The RPC
+/// slot is released by exactly one place — the owning client's
+/// `ClientCleanupGuard` — so a client the *dispatcher* gave up on must be made
+/// to notice: `Shutdown::Both` breaks its handler thread out of `recv()`, the
+/// handler returns, and the guard frees the slot. Leaving the socket open
+/// would leave the slot held by a client nobody is writing to any more.
+fn send_locked(inner: &mut Inner, json: &str) -> Result<(), WriteFailure> {
+    if let Some((failure, _)) = inner.failed {
+        return Err(failure);
+    }
+    match inner.writer.send_raw(json) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let failure = classify(&e);
+            // Nothing of a deadline-expired frame reached the socket, so the
+            // stream is still aligned — but the client is not draining, and a
+            // second attempt would block for another full deadline on the
+            // dispatcher thread. A desynchronised or errored socket is worse
+            // still. Every case ends the same way: shut it down so the client
+            // learns immediately instead of waiting out its own read timeout.
+            let _ = inner.writer.shutdown();
+            inner.failed = Some((failure, e.to_string()));
+            Err(failure)
+        }
+    }
 }
 
 /// The single, shared, deadline-bounded write half of one CLI client's socket.
@@ -118,6 +151,7 @@ impl ClientWriter {
         Self {
             inner: Arc::new(Mutex::new(Inner {
                 writer,
+                deadline,
                 failed: None,
             })),
         }
@@ -136,28 +170,39 @@ impl ClientWriter {
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        send_locked(&mut guard, json)
+    }
 
-        if let Some((failure, _)) = guard.failed {
-            return Err(failure);
-        }
-
-        match guard.writer.send_raw(json) {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                let failure = classify(&e);
-                if failure == WriteFailure::DeadlineExpired {
-                    // Nothing of this frame reached the socket, so the stream
-                    // is still aligned — but the client is not draining, and a
-                    // second attempt would block for another full deadline on
-                    // the dispatcher thread. Shut the socket down so the client
-                    // learns immediately instead of waiting out its own read
-                    // timeout.
-                    let _ = guard.writer.shutdown();
-                }
-                guard.failed = Some((failure, e.to_string()));
-                Err(failure)
-            }
-        }
+    /// Send one frame under a *narrower* deadline than the writer's own.
+    ///
+    /// Used for the goodbye frame on the way out of `handle_client`
+    /// (iter-240 review, finding 3): that frame must go through this writer —
+    /// it can race the dispatcher fanning an event onto the same socket, and
+    /// two unsynchronised `write` sequences on one socket are exactly the
+    /// desync this type exists to remove — but it must not cost the departing
+    /// thread a full [`CLIENT_WRITE_DEADLINE`], because the RPC slot is not
+    /// released until that thread returns.
+    ///
+    /// The socket's own deadline is restored before returning, so a writer
+    /// that somehow outlives the goodbye keeps its normal bound.
+    pub(crate) fn send_bounded(
+        &self,
+        message: &Value,
+        deadline: Duration,
+    ) -> Result<(), WriteFailure> {
+        let json = match serde_json::to_string(message) {
+            Ok(json) => json,
+            Err(_) => return Err(WriteFailure::SocketError),
+        };
+        let mut guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let restore = guard.deadline;
+        let _ = guard.writer.set_write_timeout(Some(deadline));
+        let result = send_locked(&mut guard, &json);
+        let _ = guard.writer.set_write_timeout(Some(restore));
+        result
     }
 
     /// Send a JSON value as one frame.
@@ -169,6 +214,19 @@ impl ClientWriter {
             // than looping on it.
             Err(_) => Err(WriteFailure::SocketError),
         }
+    }
+
+    /// Has this writer already latched a failure?
+    ///
+    /// Cheaper than [`failure`](Self::failure) (no `String` clone) and used on
+    /// the dispatcher's hot path to tell the write that *drops* a client from
+    /// the fast no-ops that follow it.
+    pub(crate) fn is_failed(&self) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .failed
+            .is_some()
     }
 
     /// The failure and its underlying I/O description, if any.

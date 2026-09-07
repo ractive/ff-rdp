@@ -323,7 +323,7 @@ fn probe_daemon_health(cli: &Cli, port: u16) -> Probe {
             name,
             status: Status::Fail,
             detail: format!(
-                "the dispatcher has been stuck on one {} frame for {age_ms} ms —                  the daemon is wedged",
+                "the dispatcher has been stuck on one {} frame for {age_ms} ms — the daemon is wedged",
                 dispatcher["last_frame_kind"]
                     .as_str()
                     .unwrap_or("<unknown>")
@@ -337,11 +337,11 @@ fn probe_daemon_health(cli: &Cli, port: u16) -> Probe {
             name,
             status: Status::Warn,
             detail: format!(
-                "{dropped} client(s) were dropped for missing the write deadline                  ({} ms)",
+                "{dropped} client(s) were dropped for missing the write deadline ({} ms)",
                 status["client_write_deadline_ms"].as_u64().unwrap_or(0)
             ),
             hint: Some(
-                "a client stopped reading its socket; the daemon dropped it rather than                  blocking on it"
+                "a client stopped reading its socket; the daemon dropped it rather than blocking on it"
                     .to_owned(),
             ),
         };
