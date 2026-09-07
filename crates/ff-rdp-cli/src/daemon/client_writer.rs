@@ -190,9 +190,8 @@ impl ClientWriter {
         message: &Value,
         deadline: Duration,
     ) -> Result<(), WriteFailure> {
-        let json = match serde_json::to_string(message) {
-            Ok(json) => json,
-            Err(_) => return Err(WriteFailure::SocketError),
+        let Ok(json) = serde_json::to_string(message) else {
+            return Err(WriteFailure::SocketError);
         };
         let mut guard = self
             .inner

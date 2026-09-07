@@ -5299,92 +5299,158 @@ mod tests {
     /// and may still own the RPC slot. Two unsynchronised `write` sequences on
     /// one socket split mid-payload, which is the desync this iteration
     /// removes by construction.
+    ///
+    /// Payloads are sized past any loopback send buffer so `write_all` is
+    /// several kernel writes, which is what makes an unsynchronised second
+    /// writer observable; the scenario is repeated because a race that is
+    /// *possible* need not fire on the first attempt.
     #[test]
     fn unit_240_goodbye_frame_shares_the_one_client_writer() {
         use std::io::Read as _;
 
         const THREADS: usize = 3;
-        const PER_THREAD: usize = 20;
+        const PER_THREAD: usize = 3;
+        const ROUNDS: usize = 3;
+        const PAYLOAD: usize = 400_000;
 
-        let (server, client) = loopback_pair();
-        let sock = server.try_clone().expect("clone");
-        let writer = ClientWriter::new(server);
-
-        // Drain on the client side so the writers never fill the window.
-        let reader = std::thread::spawn(move || {
-            let mut client = client;
-            client
-                .set_read_timeout(Some(Duration::from_secs(30)))
-                .expect("read timeout");
-            let mut buf = Vec::new();
-            let mut chunk = [0u8; 8192];
-            loop {
-                match client.read(&mut chunk) {
-                    Ok(n) if n > 0 => buf.extend_from_slice(&chunk[..n]),
-                    Ok(_) | Err(_) => break,
-                }
-            }
-            buf
-        });
-
-        // The dispatcher fanning events onto the same socket.
-        let event = format!(
-            r#"{{"from":"consoleActor1","pad":"{}"}}"#,
-            "x".repeat(60_000)
-        );
-        let mut handles = Vec::new();
-        for _ in 0..THREADS {
-            let w = writer.clone();
-            let body = event.clone();
-            handles.push(std::thread::spawn(move || {
-                for _ in 0..PER_THREAD {
-                    let _ = w.send_raw(&body);
-                }
-            }));
-        }
-
-        close_client_with_error(&writer, &sock, "client_frame_undecodable", "boom");
-
-        for h in handles {
-            h.join().expect("writer thread");
-        }
-        drop(writer);
-        drop(sock);
-        let buf = reader.join().expect("reader thread");
-
-        // Strict re-framing: an interleaved write shows up either as a non-digit
-        // where a length is expected or as a payload that is neither the event
-        // nor the goodbye.
         let goodbye =
             serde_json::to_string(&daemon_closing_response("client_frame_undecodable", "boom"))
                 .expect("serialise goodbye");
-        let mut pos = 0_usize;
-        let mut goodbyes = 0_usize;
-        let mut events = 0_usize;
-        while pos < buf.len() {
-            let colon = buf[pos..]
-                .iter()
-                .position(|b| *b == b':')
-                .unwrap_or_else(|| panic!("no length prefix at offset {pos}"));
-            let len_str = std::str::from_utf8(&buf[pos..pos + colon]).expect("utf8 length prefix");
-            let len: usize = len_str
-                .parse()
-                .unwrap_or_else(|_| panic!("bad length prefix {len_str:?} at offset {pos}"));
-            let start = pos + colon + 1;
-            let body = std::str::from_utf8(&buf[start..start + len]).expect("utf8 payload");
-            if body == goodbye {
-                goodbyes += 1;
-            } else {
-                assert_eq!(body, event, "a frame was cut by an unsynchronised writer");
-                events += 1;
+        let event = format!(
+            r#"{{"from":"consoleActor1","pad":"{}"}}"#,
+            "x".repeat(PAYLOAD)
+        );
+
+        for round in 0..ROUNDS {
+            let (server, client) = loopback_pair();
+            let sock = server.try_clone().expect("clone");
+            let writer = ClientWriter::new(server);
+
+            // Drain slowly on the client side. A full receive window keeps
+            // every writer parked *inside* its `write_all`, which is the state
+            // an unsynchronised second writer corrupts; a fast drain would let
+            // each frame land in one uninterrupted burst and hide the race.
+            let reader = std::thread::spawn(move || {
+                let mut client = client;
+                client
+                    .set_read_timeout(Some(Duration::from_secs(30)))
+                    .expect("read timeout");
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 16384];
+                loop {
+                    match client.read(&mut chunk) {
+                        Ok(n) if n > 0 => {
+                            buf.extend_from_slice(&chunk[..n]);
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                        Ok(_) | Err(_) => break,
+                    }
+                }
+                buf
+            });
+
+            // The dispatcher fanning events onto the same socket.
+            let start = Arc::new(std::sync::Barrier::new(THREADS + 1));
+            let mut handles = Vec::new();
+            for _ in 0..THREADS {
+                let w = writer.clone();
+                let body = event.clone();
+                let start = Arc::clone(&start);
+                handles.push(std::thread::spawn(move || {
+                    start.wait();
+                    for _ in 0..PER_THREAD {
+                        let _ = w.send_raw(&body);
+                    }
+                }));
             }
-            pos = start + len;
+
+            start.wait();
+            // Let every writer fill the window and park mid-`write_all`, so the
+            // goodbye really does have to cut into one of them.
+            std::thread::sleep(Duration::from_millis(50));
+            close_client_with_error(&writer, &sock, "client_frame_undecodable", "boom");
+
+            for h in handles {
+                h.join().expect("writer thread");
+            }
+            drop(writer);
+            drop(sock);
+            let buf = reader.join().expect("reader thread");
+
+            // Strict re-framing: an interleaved write shows up either as a
+            // non-digit where a length is expected or as a payload that is
+            // neither the event nor the goodbye.
+            let mut pos = 0_usize;
+            let mut goodbyes = 0_usize;
+            let mut events = 0_usize;
+            while pos < buf.len() {
+                let colon = buf[pos..]
+                    .iter()
+                    .position(|b| *b == b':')
+                    .unwrap_or_else(|| panic!("round {round}: no length prefix at offset {pos}"));
+                let len_str =
+                    std::str::from_utf8(&buf[pos..pos + colon]).expect("utf8 length prefix");
+                let len: usize = len_str.parse().unwrap_or_else(|_| {
+                    panic!("round {round}: bad length prefix {len_str:?} at offset {pos}")
+                });
+                let start = pos + colon + 1;
+                assert!(
+                    start + len <= buf.len(),
+                    "round {round}: frame at {pos} claims {len} bytes but the stream ends early"
+                );
+                let body = std::str::from_utf8(&buf[start..start + len]).expect("utf8 payload");
+                if body == goodbye {
+                    goodbyes += 1;
+                } else {
+                    assert_eq!(
+                        body.len(),
+                        event.len(),
+                        "round {round}: a frame was cut by an unsynchronised writer"
+                    );
+                    assert_eq!(
+                        body, event,
+                        "round {round}: a frame was cut by an unsynchronised writer"
+                    );
+                    events += 1;
+                }
+                pos = start + len;
+            }
+            assert_eq!(
+                goodbyes, 1,
+                "round {round}: the goodbye must arrive exactly once, intact"
+            );
+            assert_eq!(
+                events,
+                THREADS * PER_THREAD,
+                "round {round}: every dispatcher frame must survive the goodbye intact"
+            );
         }
-        assert_eq!(goodbyes, 1, "the goodbye must arrive exactly once, intact");
+    }
+
+    /// iter-240 review, finding 3, the deterministic half: the goodbye must not
+    /// reconfigure the shared socket behind the `ClientWriter`'s back.
+    ///
+    /// The old `close_client_with_error` set `SO_SNDTIMEO` to the 250 ms drain
+    /// budget on a `try_clone` of the client socket and never restored it — so
+    /// every subsequent daemon write to that client (it is still a stream
+    /// subscriber and may still own the RPC slot at this point) silently ran
+    /// on a deadline forty times shorter than the one `ClientWriter` installed
+    /// and reports in `daemon status`. Going through
+    /// `ClientWriter::send_bounded` narrows and restores it under the writer's
+    /// own lock instead.
+    #[test]
+    fn unit_240_goodbye_restores_the_client_write_deadline() {
+        let (server, _client) = loopback_pair();
+        let sock = server.try_clone().expect("clone");
+        let writer = ClientWriter::new(server);
+
+        close_client_with_error(&writer, &sock, "client_frame_undecodable", "boom");
+
         assert_eq!(
-            events,
-            THREADS * PER_THREAD,
-            "every dispatcher frame must survive the goodbye intact"
+            sock.write_timeout().expect("read back the write timeout"),
+            Some(CLIENT_WRITE_DEADLINE),
+            "the goodbye must leave the socket on the writer's own deadline, \
+             not on the drain budget"
         );
     }
 
