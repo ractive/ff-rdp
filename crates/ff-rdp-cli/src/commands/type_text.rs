@@ -98,6 +98,62 @@ fn build_type_js(escaped_sel: &str, escaped_text_json: &str, clear: bool) -> Str
 /// does nothing, which is the common case that made `--submit` necessary.
 const ENTER_NAVIGATION_GRACE_MS: u64 = 600;
 
+/// How long to watch for a navigation caused by `form.requestSubmit()` — the
+/// *second* `navigated_away` call in [`press_enter_and_submit`], which is
+/// answering a different question than the first one.
+///
+/// iter-237 Part A. Post-Enter (above) the question is local: "did the
+/// untrusted `keydown` alone start anything?" — a decision the page's own JS
+/// makes synchronously, so 600 ms is generous and a longer budget would only
+/// add latency to the usual no-op case. Post-`requestSubmit()` the question
+/// is "did the network round-trip land?": Firefox has to reach the form's
+/// action, get a response, and tear the old docshell down before
+/// `location.href` moves or the console actor goes away. 600 ms is frequently
+/// not enough for that over a real connection — `navigated_away` then hit its
+/// deadline having seen neither the settled `location.href` nor a hard
+/// protocol error, and reported `navigated: false` on a submission that
+/// really did navigate, while `--with-page` (which waits for the destination
+/// properly) reported the destination's heading in the same envelope. The two
+/// fields of one result contradicting each other is the bug.
+///
+/// **3 s is the cheap path, not the fix.** A submission that commits inside it
+/// is answered by this poll alone, with no extra target round-trip. Everything
+/// slower is answered by [`navigated_after_refresh`], which is what actually
+/// closes the defect — the header on that function explains why no value of
+/// this constant could have.
+///
+/// Capped by the command's own `--timeout` — see [`request_submit_grace_ms`]:
+/// a caller who asked for a 1 s budget must not wait 3 s here.
+const REQUEST_SUBMIT_NAVIGATION_GRACE_MS: u64 = 3_000;
+
+/// The budget for the post-`requestSubmit()` navigation poll, given the
+/// command's auto-wait timeout.
+///
+/// `min` rather than a bare constant so `--timeout` still bounds the command:
+/// the default (10 s) leaves the full [`REQUEST_SUBMIT_NAVIGATION_GRACE_MS`]
+/// in place, while an explicitly short `--timeout` shortens this poll too.
+fn request_submit_grace_ms(wait_timeout_ms: u64) -> u64 {
+    REQUEST_SUBMIT_NAVIGATION_GRACE_MS.min(wait_timeout_ms)
+}
+
+/// The budget for `press_enter_and_submit`'s *first* post-`requestSubmit()`
+/// poll — the one that runs unconditionally, before the refresh-based
+/// re-check that already gates on `load_expected`.
+///
+/// Review fix (2026-09-07): this must also gate on `load_expected`. A
+/// cancelled/never-fired submission is not waiting on a network round-trip at
+/// all, so it belongs on the fast, post-Enter-sized check — reusing
+/// [`request_submit_grace_ms`] here unconditionally silently regressed every
+/// AJAX form from ~600 ms to up to 3 s, exactly the latency Task/AC on Part A
+/// says the `cancelled` gate exists to prevent.
+fn first_poll_grace_ms(load_expected: bool, wait_timeout_ms: u64) -> u64 {
+    if load_expected {
+        request_submit_grace_ms(wait_timeout_ms)
+    } else {
+        ENTER_NAVIGATION_GRACE_MS
+    }
+}
+
 /// JS that presses Enter on the element and reports what it found there.
 ///
 /// It deliberately does NOT submit the form: whether the fallback is needed
@@ -138,12 +194,27 @@ fn build_request_submit_js(escaped_sel: &str) -> String {
   if (!el) throw new Error('Element not found: {escaped_sel}');
   var form = el.form || (el.closest ? el.closest('form') : null);
   if (!form) return '{JSON_SENTINEL}' + JSON.stringify({{requested: false, reason: 'no_form'}});
+  // iter-237 Part A: report whether a cross-document load is actually coming,
+  // so Rust knows whether spending a navigation budget on it is warranted.
+  // Two ways it is not: a `submit` handler calling preventDefault() (every
+  // AJAX form), and constraint validation refusing to submit at all — in
+  // which case `requestSubmit()` fires `invalid` and no `submit` event ever
+  // dispatches. Hence both flags: `fired` separates "submitted" from "never
+  // got that far", `cancelled` separates "will navigate" from "handled in
+  // page".
+  var fired = false;
+  var cancelled = false;
+  var onSubmit = function(e) {{ fired = true; cancelled = e.defaultPrevented; }};
   if (typeof form.requestSubmit === 'function') {{
-    form.requestSubmit();
+    form.addEventListener('submit', onSubmit, {{capture: false, once: true}});
+    try {{ form.requestSubmit(); }} finally {{ form.removeEventListener('submit', onSubmit); }}
   }} else {{
+    // The legacy path bypasses `submit` entirely and cannot be cancelled, so
+    // it always navigates: report it as an uncancelled submission that fired.
+    fired = true;
     form.submit();
   }}
-  return '{JSON_SENTINEL}' + JSON.stringify({{requested: true, reason: null}});
+  return '{JSON_SENTINEL}' + JSON.stringify({{requested: true, reason: null, fired: fired, cancelled: cancelled}});
 }})()"#
     )
 }
@@ -163,6 +234,7 @@ fn press_enter_and_submit(
     ctx: &mut ConnectedTab,
     console_actor: &ff_rdp_core::ActorId,
     escaped_sel: &str,
+    wait_timeout_ms: u64,
 ) -> Result<serde_json::Value, AppError> {
     let enter = eval_or_bail(
         ctx,
@@ -185,6 +257,11 @@ fn press_enter_and_submit(
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
 
+    // Call 1 of 2 — the short, local one: "did the untrusted keydown do
+    // anything at all?" Its answer only decides whether the `requestSubmit()`
+    // fallback below is needed, so a slow check here is pure added latency on
+    // the common (isTrusted-ceiling) no-op page. See
+    // `ENTER_NAVIGATION_GRACE_MS` vs `REQUEST_SUBMIT_NAVIGATION_GRACE_MS`.
     if navigated_away(ctx, console_actor, &url_before, ENTER_NAVIGATION_GRACE_MS) {
         return Ok(json!({"submitted": true, "navigated": true, "method": "enter"}));
     }
@@ -213,12 +290,91 @@ fn press_enter_and_submit(
     if !requested {
         return Ok(json!({"submitted": false, "navigated": false, "method": "no_form"}));
     }
-    let navigated = navigated_away(ctx, console_actor, &url_before, ENTER_NAVIGATION_GRACE_MS);
+    // Call 2 of 2 — the remote one: `requestSubmit()` has really submitted the
+    // form, so this is waiting on a network round-trip plus a docshell
+    // teardown, not on a local script decision. iter-237 Part A: it used to
+    // share the post-Enter constant, and 600 ms expired mid-flight often
+    // enough that `navigated: false` shipped alongside a `results.page` from
+    // the destination.
+    // A load is coming only if the `submit` event actually dispatched and no
+    // handler cancelled it. `fired` defaults to true so an older/absent field
+    // keeps the extended poll rather than silently skipping it; `cancelled`
+    // defaults to false for the same reason.
+    let fired = req_json
+        .get("fired")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+    let cancelled = req_json
+        .get("cancelled")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let load_expected = fired && !cancelled;
+    let started = std::time::Instant::now();
+    let mut navigated = navigated_away(
+        ctx,
+        console_actor,
+        &url_before,
+        first_poll_grace_ms(load_expected, wait_timeout_ms),
+    );
+    // The grace period is the cheap path, not the answer. When it comes back
+    // "no" on a submission that really did start a load, that load is still
+    // coming, so ask again where the question can be answered — see
+    // `navigated_after_refresh`.
+    if !navigated && load_expected {
+        let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let remaining = wait_timeout_ms.saturating_sub(elapsed);
+        navigated = navigated_after_refresh(ctx, &url_before, remaining);
+    }
     Ok(json!({
         "submitted": true,
         "navigated": navigated,
         "method": "request_submit",
     }))
+}
+
+/// The authoritative second opinion after [`navigated_away`] came back "no"
+/// following a `form.requestSubmit()` the page did not cancel.
+///
+/// iter-237 Part A. Two things had to be true at once for `navigated: false`
+/// to ship next to a `results.page` from the destination, and the plan only
+/// named one of them.
+///
+/// 1. **The grace period is not the binding constraint.** While Firefox
+///    commits the new document it stops answering `evaluateJSAsync` on the
+///    pre-submit console actor entirely, so [`navigated_away`]'s *first* poll
+///    iteration blocks on the socket read for the **transport's** deadline
+///    (`--timeout`, 10 s by default). That single read outlives any grace
+///    period shorter than it: the loop wakes with `ProtocolError::Timeout`,
+///    finds its own deadline long past, and returns "no navigation" having
+///    never completed one probe. Widening
+///    [`REQUEST_SUBMIT_NAVIGATION_GRACE_MS`] moved that boundary and not the
+///    outcome — measured against Wikipedia at 3 s, the envelope still said
+///    `navigated: false` beside `heading: "Turing Award"`.
+///
+/// 2. **A single re-read is too early.** A destination that sends its first
+///    byte late (the `/slower` live fixture waits 4.5 s) has not committed
+///    when the grace period expires, so one look at `location.href` sees the
+///    origin URL and is just as wrong.
+///
+/// So: drop the torn-down target, re-resolve the tab's fronts, and poll
+/// `location.href` on the actor that now exists, for whatever is left of the
+/// caller's own `--timeout`. That is the same recovery `--with-page` performs
+/// to collect `results.page`, which is exactly why `results.page` was right
+/// about the destination while `results.navigated` was wrong about reaching
+/// it.
+///
+/// **Why this does not cost every caller the full `--timeout`.** The caller
+/// gates it on the submission not having been cancelled: a `submit` handler
+/// that calls `preventDefault()` — every AJAX form — means no cross-document
+/// load is coming, and those return here immediately rather than waiting out a
+/// navigation that was never going to happen. `build_request_submit_js`
+/// reports that as `cancelled`. The forms that do reach this path have a load
+/// genuinely in flight, and `--timeout` is the budget the caller already
+/// stated for it.
+fn navigated_after_refresh(ctx: &mut ConnectedTab, url_before: &str, timeout_ms: u64) -> bool {
+    ctx.refresh_target();
+    let console_actor = ctx.target.console_actor.clone();
+    navigated_away(ctx, &console_actor, url_before, timeout_ms)
 }
 
 /// Poll for `window.location.href` moving away from `url_before`.
@@ -365,7 +521,8 @@ pub fn run_core(
     // iter-210 Theme C: --submit. Runs before --settle/--wait-for so those
     // observe the page the submission produced.
     if opts.submit {
-        let submit_json = press_enter_and_submit(&mut ctx, &console_actor, &escaped_sel)?;
+        let submit_json =
+            press_enter_and_submit(&mut ctx, &console_actor, &escaped_sel, wait_timeout_ms)?;
         let navigated = submit_json
             .get("navigated")
             .and_then(serde_json::Value::as_bool)
@@ -530,6 +687,92 @@ mod tests {
         );
         let kept = build_type_js("input", "\"hi\"", false);
         assert!(kept.contains("if (false) { applyValue(''); }"), "{kept}");
+    }
+
+    /// iter-237 Part A: the submitted JS must report both flags the Rust side
+    /// gates the extended navigation poll on. Without them every AJAX form —
+    /// and every form constraint validation refuses — pays the full
+    /// `--timeout` waiting for a load that is not coming.
+    #[test]
+    fn unit_237_request_submit_js_reports_fired_and_cancelled() {
+        let js = build_request_submit_js("form input");
+        assert!(
+            js.contains("addEventListener('submit'"),
+            "the submit event is the only place preventDefault is observable: {js}"
+        );
+        assert!(
+            js.contains("e.defaultPrevented"),
+            "cancellation must be read off the event, not guessed: {js}"
+        );
+        assert!(
+            js.contains("fired: fired") && js.contains("cancelled: cancelled"),
+            "both flags must reach Rust: {js}"
+        );
+        // The legacy `form.submit()` path fires no `submit` event but always
+        // navigates, so it must not be reported as "never got that far".
+        let legacy = js
+            .split("}} else {{")
+            .nth(1)
+            .or_else(|| js.split("} else {").nth(1))
+            .unwrap_or("");
+        assert!(
+            legacy.contains("fired = true"),
+            "form.submit() always navigates and must not skip the poll: {js}"
+        );
+    }
+
+    /// iter-237 Part A: the post-`requestSubmit()` poll must get a budget
+    /// sized for a network round-trip, not the short local post-Enter one —
+    /// that mismatch is what made `results.navigated` disagree with
+    /// `results.page` on a slow-but-successful submit.
+    #[test]
+    fn unit_237_request_submit_grace_outlives_the_post_enter_one() {
+        // Default `--timeout` (10s) leaves the full constant in place.
+        assert_eq!(
+            request_submit_grace_ms(10_000),
+            REQUEST_SUBMIT_NAVIGATION_GRACE_MS
+        );
+        assert!(
+            request_submit_grace_ms(10_000) > ENTER_NAVIGATION_GRACE_MS,
+            "the post-requestSubmit poll must outlive the post-Enter one"
+        );
+    }
+
+    /// …but `--timeout` still bounds the command: an explicitly short budget
+    /// must not be silently widened to the constant.
+    #[test]
+    fn unit_237_request_submit_grace_is_capped_by_the_command_timeout() {
+        assert_eq!(request_submit_grace_ms(800), 800);
+        assert_eq!(request_submit_grace_ms(0), 0);
+    }
+
+    /// Review fix (2026-09-07): `first_poll_grace_ms` — the budget for
+    /// `press_enter_and_submit`'s *unconditional* first post-`requestSubmit()`
+    /// poll — must itself gate on `load_expected`. Before this fix that poll
+    /// always used `request_submit_grace_ms` regardless of `load_expected`,
+    /// so a cancelled/AJAX submission silently regressed from the fast
+    /// post-Enter budget to up to 3s: only the *second*, refresh-based poll
+    /// was gated, and that poll never runs when the first one is never
+    /// expected to see a navigation.
+    #[test]
+    fn unit_237_first_poll_grace_stays_short_when_no_load_is_expected() {
+        assert_eq!(
+            first_poll_grace_ms(false, 10_000),
+            ENTER_NAVIGATION_GRACE_MS,
+            "a cancelled/never-fired submission must not pay the wider \
+             post-requestSubmit grace period"
+        );
+        assert_eq!(
+            first_poll_grace_ms(true, 10_000),
+            REQUEST_SUBMIT_NAVIGATION_GRACE_MS,
+            "an uncancelled submission that really is loading must still get \
+             the full grace period"
+        );
+        // The short path is not itself widened by a generous --timeout.
+        assert_eq!(
+            first_poll_grace_ms(false, 60_000),
+            ENTER_NAVIGATION_GRACE_MS
+        );
     }
 
     /// Regression (review finding on the iter-210 PR): a hard `noSuchActor`
