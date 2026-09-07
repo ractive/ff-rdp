@@ -2200,6 +2200,15 @@ precise defect class iteration 166 exists to catch. Making the fetch
 unconditional keeps the assertion meaning "the server answered 200" instead of
 "the server answered one of the things we have seen".
 
+**Honest limit, measured 2026-09-07**: on the day of the fix the plain repeat did *not* reproduce
+the 304 — one launched instance, `navigate https://example.com` three times, `200, 200, 200`, and
+three distinct cache-busted URLs likewise `200, 200, 200`. Whether a repeat visit revalidates
+depends on `example.com`'s current cache headers and Firefox's heuristics, neither of which is
+ours. That intermittency is the argument *for* this fix rather than against it: an assertion
+whose truth depends on a third party's `Cache-Control` is not an assertion about ff-rdp. It also
+means a future reader must not treat a green `live_166` on plain `example.com` as evidence the
+defect is gone.
+
 The cache buster costs no coverage: Firefox still canonicalises
 `https://example.com?x` to `https://example.com/?x`, so the missing-slash shape
 that *was* the iteration 166 defect is still exercised, and the test now asserts

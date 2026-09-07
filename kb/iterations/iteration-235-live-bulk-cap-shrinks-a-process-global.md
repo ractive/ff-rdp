@@ -94,20 +94,20 @@ about the 1 KiB cap turns out to be load-bearing.
 
 ### Tasks
 
-#### A. The fix [0/2]
-- [ ] Remove the `set_max_frame_bytes` call from `live_bulk_cap.rs`, keeping the AC it defends
-- [ ] Confirm no other file under `crates/*/tests/` mutates the cap
+#### A. The fix [2/2]
+- [x] Remove the `set_max_frame_bytes` call from `live_bulk_cap.rs`, keeping the AC it defends
+- [x] Confirm no other file under `crates/*/tests/` mutates the cap
 
 #### B. Proof [0/1]
 - [ ] `FF_RDP_LIVE_TESTS=1 cargo test-live -p ff-rdp-cli --test live` green, and the oversize
       rejection still measured under 500 ms
 
-### Acceptance Criteria [0/3]
+### Acceptance Criteria [3/3]
 
-- [ ] `grep -rn "set_max_frame_bytes" crates/*/tests/` returns nothing that lowers the cap
-- [ ] `live_bulk_frame_oversize_rejected` still asserts announced-length round-trip, the `max`
+- [x] `grep -rn "set_max_frame_bytes" crates/*/tests/` returns nothing that lowers the cap
+- [x] `live_bulk_frame_oversize_rejected` still asserts announced-length round-trip, the `max`
       field, and the sub-500 ms rejection
-- [ ] The live suite would survive `--test-threads>1` with respect to the frame cap — stated with
+- [x] The live suite would survive `--test-threads>1` with respect to the frame cap — stated with
       the reason, not just asserted
 
 ### Out of scope
@@ -163,36 +163,36 @@ tasks live here.
 
 ### Tasks
 
-#### A. Fix the assertion [0/3]
-- [ ] Decide between the two honest fixes and record the reason in the test's own comment:
+#### A. Fix the assertion [3/3]
+- [x] Decide between the two honest fixes and record the reason in the test's own comment:
       (a) defeat the cache for this navigation (a cache-busting query parameter, or a
       `Cache-Control: no-cache` load), keeping the strict `200`; or (b) accept any
       non-error document status and assert on `status_reason` being null.
       (a) keeps the test's original intent — "the server answered 200" — and is preferred unless
       it turns out ff-rdp has no way to force a non-conditional load, which is itself worth knowing
-- [ ] Apply it at `crates/ff-rdp-cli/tests/live/live_166_navigate_document_status.rs:121` and
+- [x] Apply it at `crates/ff-rdp-cli/tests/live/live_166_navigate_document_status.rs:121` and
       every sibling assertion with the same premise
-- [ ] Check the rest of the live suite for the same assumption — any other test asserting a
+- [x] Check the rest of the live suite for the same assumption — any other test asserting a
       literal `200` from a repeatedly-visited public URL has this defect latent
 
 
-#### B. Reduce the network surface [0/1]
-- [ ] Move the trailing-slash leg to a local fixture route if it can be done without weakening
+#### B. Reduce the network surface [1/1]
+- [x] Move the trailing-slash leg to a local fixture route if it can be done without weakening
       what it asserts; if it cannot, say why in the Outcome
 
-#### C. Same shape elsewhere [0/1]
-- [ ] Grep the live suites for a second fetch of the same public URL in one profile; fix or file
+#### C. Same shape elsewhere [1/1]
+- [x] Grep the live suites for a second fetch of the same public URL in one profile; fix or file
 
-### Acceptance Criteria [0/4]
+### Acceptance Criteria [2/4]
 
 - [ ] Running `live_166_navigate_document_status` twice in a row against the **same** profile
       passes both times (the warm-cache case is the one that was never exercised)
 - [ ] `live_166_navigate_reports_document_status` and `live_166_navigate_status_direct_parity`
       pass on a **warm** profile — run them twice in a row against the same Firefox, not once
       against a fresh one
-- [ ] The test states, in a comment, why 304 is or is not acceptable — so the next reader does not
+- [x] The test states, in a comment, why 304 is or is not acceptable — so the next reader does not
       re-litigate it
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean. (covers both parts)
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean. (covers both parts)
 
 ### Design notes
 
@@ -216,3 +216,88 @@ tasks live here.
 - [[iteration-210-act-and-see]] — the sweep that found this; carry-over rows 2 and 3
 - `crates/ff-rdp-cli/tests/live/live_166_navigate_document_status.rs:121`
 - `crates/ff-rdp-cli/src/commands/navigate.rs` — `DocumentStatusTracker`, the code being asserted on
+
+## Outcome (2026-09-07, branch `iter-235/live-suite-defects`)
+
+Both parts landed as the plan's preferred option. Recorded in `kb/decision-log.md` as **DEC-053**,
+which also annotates DEC-048's "Not fixed here" clause as resolved.
+
+### Part A — the last cap writer is gone
+
+`crates/ff-rdp-cli/tests/live/live_bulk_cap.rs` no longer calls `set_max_frame_bytes`, and its
+`FrameCapGuard` RAII type is deleted with it. The test now reads `max_frame_bytes()` and announces
+twice that: `announced = 512 MiB` against `max = 256 MiB`, where it used to announce `2 KiB`
+against a cap it had shrunk to `1 KiB`. The plan's second shape was taken, unchanged — the 1 KiB
+cap turned out not to be load-bearing, because the cap check precedes the body read, so neither
+number allocates. The first shape (a per-instance cap on `RdpTransport`) was rejected for the
+reason the plan anticipated: it would add a `pub` API whose only consumer is a test.
+
+- `grep -rn "set_max_frame_bytes" crates/*/tests/` → no hits at all. The only writer left in the
+  workspace is `crates/ff-rdp-cli/src/main.rs:294`, where `--max-frame-mb` belongs.
+- `FF_RDP_LIVE_TESTS=1 cargo test -p ff-rdp-cli --test live live_bulk_cap -- --include-ignored`
+  → `1 passed`, and the assertions it passed are the same three: announced-length round-trip,
+  `max` equal to the cap, and rejection under 500 ms.
+- Why `--test-threads>1` is now safe with respect to the frame cap, structurally rather than by
+  convention: there is no writer left to synchronise with. The sweep below ran the CLI tier at
+  `--test-threads=6` and produced no `FrameTooLarge` anywhere.
+
+### Part B — `live_166` gets a fresh URL, not a wider assertion
+
+The four `https://example.com` legs across `live_166_navigate_reports_document_status` and
+`live_166_navigate_status_direct_parity` now request a unique
+`?ff-rdp-cache-bust=<nanos>-<serial>` URL from a new `uncached_example_url()` helper, which also
+returns the canonicalised form so `committed_url` is compared against a computed value instead of
+a hardcoded `"https://example.com/"`. The strict `200` is unchanged, and the helper's doc comment
+states why 304 is *prevented* rather than accepted — widening to `200 | 304` would also pass a
+navigation that genuinely got 200 but was reported 304, the exact defect class iteration 166
+exists to catch.
+
+The cache buster keeps the canonicalisation coverage: Firefox still rewrites
+`https://example.com?x` → `https://example.com/?x`, the missing-slash shape that *was* the
+iteration 166 defect.
+
+**Task B (move the trailing-slash leg to a fixture) — deliberately not done, reason as required
+by the task.** `FixtureServer` sends `Cache-Control: no-store` and no validators, so it can never
+answer 304 — which is exactly why `live_138_navigate_reports_200`, `live_169`'s reload leg and
+this file's own `live_166_navigate_status_reflects_the_server` were immune to this defect. But it
+also cannot reproduce the `host` vs `host/` distinction, because `{base}/ok` is spelled
+identically either way. Moving the leg would trade away the only real-origin coverage in the file
+for a duplicate of a fixture test that already exists.
+
+**Task C (same shape elsewhere) — swept, nothing else to fix or file.** Every other literal-`200`
+status assertion in `crates/ff-rdp-cli/tests/live/` is against `FixtureServer`
+(`live_138_navigate_reports_200`, `live_169_nav_verb_status_parity`'s reload leg,
+`live_166_navigate_status_reflects_the_server`). Sixteen other live files do fetch
+`https://example.com` more than once in a profile, but none asserts a status on it —
+`live_159_daemon_watcher_regression` only checks `status` is non-null.
+
+### Honest limits — two ACs left unticked
+
+- **Part A AC "the live suite is green".** It is not: the closing sweep is 309 passed / 11 failed.
+  None of the eleven is this iteration's, and `live_bulk_cap` itself passes; seven are a Firefox
+  155 `drawSnapshot` break filed as [[iteration-257-firefox-155-drawsnapshot-dictionary-arg]] and
+  four are pre-existing or load-sensitive. Ticking "green" would be false, so it stays empty.
+- **Part B ACs "run twice in a row against the same profile / the same Firefox".** The premise is
+  wrong: `live_166`'s tests call `LiveFirefox::headless_on_random_port()`, which always creates a
+  *fresh* temp profile, so the harness has no way to point them at a warm one. What was measured
+  instead, on 2026-09-07: the two tests run back to back twice, `4 passed` both times; and a
+  hand dogfood on a **single** launched instance (one profile, warm after the first hit) —
+  `navigate https://example.com` three times → `200, 200, 200`, then three distinct cache-busted
+  URLs → `200, 200, 200`. Note what that first row says: **today the plain repeat did not
+  reproduce the 304 at all.** The 304 depends on `example.com`'s current cache headers and
+  Firefox's revalidation heuristics, neither of which is ours — which is the argument for removing
+  the dependency rather than asserting around it, and why the fix is a cache buster and not a
+  wider assertion.
+
+### Closing live sweep
+
+`FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo run -p xtask -- live-sweep`, with a raw
+`firefox -no-remote -profile <tmp> --start-debugger-server 6000 --headless` on port 6000:
+
+```
+LIVE_SWEEP_SUMMARY executed=320 skipped=0 preexisting=0 vanished=0 launch_timeout=0 timed_out=0 total=320
+```
+
+309 passed / 11 failed; `309 + 11 == 320 == executed`, so the record reconciles. Both `live_166`
+legs are green in it. The eleven failures and their dispositions are in the PR body's
+`## Carry-over` table.
