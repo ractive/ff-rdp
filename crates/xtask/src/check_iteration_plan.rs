@@ -8,7 +8,8 @@ use std::sync::OnceLock;
 
 #[derive(ClapArgs)]
 pub struct Args {
-    /// Path to the iteration plan markdown file.
+    /// Path to an iteration plan markdown file, or to a directory of plans
+    /// (every `iteration-*.md` in it is checked and the run fails if any one does).
     path: PathBuf,
 }
 
@@ -521,7 +522,120 @@ fn repo_iterations_dir() -> Option<PathBuf> {
     dir.is_dir().then_some(dir)
 }
 
+/// Validate one plan whose bytes have already been read, folding a frontmatter
+/// parse failure into the finding list instead of returning `Err`.
+///
+/// Single-file mode can afford to `?` on a parse error — there is nothing else to
+/// report. A sweep cannot: one unreadable file must not hide the verdict on the
+/// other 250. Pure apart from the borrowed `siblings` list, so the sweep's
+/// behaviour is unit-testable without a directory on disk.
+fn check_plan_content(
+    path: &Path,
+    content: &str,
+    siblings: &[PathBuf],
+) -> (Vec<String>, Vec<String>) {
+    match parse_plan(content) {
+        Err(e) => (vec![format!("{e:#}")], Vec::new()),
+        Ok(plan) => {
+            let file_name = path.file_name().and_then(|n| n.to_str());
+            let (mut findings, warnings) = validate_plan(&plan, file_name);
+            // Uniqueness is a property of the file, not of its contents, so it is
+            // checked here rather than inside `validate_plan`.
+            findings.extend(duplicate_id_findings(path, siblings));
+            (findings, warnings)
+        }
+    }
+}
+
+/// The plan files a directory sweep covers: `iteration-*.md`, sorted.
+///
+/// The glob is the one `CONTRIBUTING.md` has documented for the manual sweep
+/// since iteration 195, so wiring CI to this changes *who* runs the check, not
+/// *what* it covers. `_template.md` is deliberately outside it: it is a skeleton
+/// with placeholder frontmatter, not a filed plan.
+fn plan_files_in(dir: &Path) -> Result<Vec<PathBuf>> {
+    let entries =
+        std::fs::read_dir(dir).with_context(|| format!("failed to read directory {dir:?}"))?;
+    let mut out = Vec::new();
+    for entry in entries {
+        let path = entry
+            .with_context(|| format!("failed to read an entry of {dir:?}"))?
+            .path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.starts_with("iteration-") && name.ends_with(".md") {
+            out.push(path);
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// Check every plan in `dir`, then exit 1 if any of them failed.
+///
+/// This is the sweep `CONTRIBUTING.md` documents as a Bash `for` loop, moved into
+/// the binary so CI can run it as one cross-platform command (iteration 233). It
+/// is the same check over more inputs — no new subcommand, no new requirement.
+fn run_sweep(dir: &Path) -> Result<()> {
+    let files = plan_files_in(dir)?;
+    if files.is_empty() {
+        anyhow::bail!("no iteration-*.md plans found in {dir:?}");
+    }
+
+    // Every plan in the sweep has the same siblings, so the directory scan the
+    // uniqueness check needs is done once rather than once per plan.
+    let siblings = collect_sibling_plans(&files[0]);
+
+    let mut failed: Vec<&PathBuf> = Vec::new();
+    let mut warned = 0usize;
+    for path in &files {
+        let content =
+            std::fs::read_to_string(path).with_context(|| format!("failed to read {path:?}"))?;
+        let (findings, warnings) = check_plan_content(path, &content, &siblings);
+        if !warnings.is_empty() {
+            warned += 1;
+        }
+        if findings.is_empty() {
+            continue;
+        }
+        failed.push(path);
+        eprintln!(
+            "check-iteration-plan: {} finding(s) in {}",
+            findings.len(),
+            path.display()
+        );
+        for f in &findings {
+            eprintln!("  - {f}");
+        }
+    }
+
+    // The grandfathered pre-discipline plans warn on every run (82 of them, up to
+    // two lines each). Printing all of that would bury a real failure, so the
+    // sweep counts them and names the per-file command that prints the detail.
+    println!(
+        "check-iteration-plan: swept {} plan(s) in {}: {} failed, {} with warnings only",
+        files.len(),
+        dir.display(),
+        failed.len(),
+        warned
+    );
+    if failed.is_empty() {
+        return Ok(());
+    }
+    eprintln!(
+        "check-iteration-plan: {} plan(s) failed. Re-run on one file for its warnings too: \
+         cargo run -p xtask -- check-iteration-plan <plan>",
+        failed.len()
+    );
+    std::process::exit(1);
+}
+
 pub fn run(args: Args) -> Result<()> {
+    if args.path.is_dir() {
+        return run_sweep(&args.path);
+    }
+
     let content = std::fs::read_to_string(&args.path)
         .with_context(|| format!("failed to read {:?}", args.path))?;
 
@@ -1050,6 +1164,71 @@ mod tests {
             sorted.len(),
             LEGACY_PRE_DISCIPLINE_PLANS.len(),
             "duplicate entry in LEGACY_PRE_DISCIPLINE_PLANS"
+        );
+    }
+
+    // --- iteration 233: the directory sweep ---
+
+    #[test]
+    fn test_plan_files_in_selects_only_iteration_plans_sorted() {
+        let dir = tempfile::TempDir::new().unwrap();
+        for name in [
+            "iteration-9002-b.md",
+            "iteration-9001-a.md",
+            "_template.md",
+            "notes.txt",
+            "iteration-9003-c.markdown",
+        ] {
+            std::fs::write(dir.path().join(name), "---\nstatus: planned\n---\n").unwrap();
+        }
+        let found = plan_files_in(dir.path()).unwrap();
+        let names: Vec<String> = found
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["iteration-9001-a.md", "iteration-9002-b.md"]);
+    }
+
+    #[test]
+    fn test_plan_files_in_missing_directory_is_an_error() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let missing = dir.path().join("nope");
+        assert!(plan_files_in(&missing).is_err());
+    }
+
+    #[test]
+    fn test_check_plan_content_turns_a_parse_failure_into_a_finding() {
+        // Single-file mode `?`s on this. The sweep must not: one unreadable plan
+        // cannot be allowed to abort the walk over the other 250.
+        let path = PathBuf::from("iteration-9004-unterminated.md");
+        let (findings, warnings) = check_plan_content(&path, "---\nstatus: planned\n", &[]);
+        assert_eq!(findings.len(), 1, "expected one finding: {findings:?}");
+        assert!(
+            findings[0].contains("unterminated"),
+            "expected the parse diagnostic, got: {findings:?}"
+        );
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn test_check_plan_content_passes_a_valid_plan() {
+        let path = PathBuf::from("iteration-9005-valid.md");
+        let content = "---\nstatus: planned\ndogfood_path: \"ff-rdp --help\"\n---\n\n# Body\n";
+        let (findings, _warnings) = check_plan_content(&path, content, &[]);
+        assert!(findings.is_empty(), "unexpected findings: {findings:?}");
+    }
+
+    #[test]
+    fn test_check_plan_content_fails_the_planted_invalid_plan() {
+        // Byte-for-byte the plan iteration 233's dogfood_path plants to prove the
+        // sweep bites: valid YAML, no dogfood_path. A plan filed today without one
+        // must fail, and the CI sweep is what now notices.
+        let path = PathBuf::from("iteration-998-deliberately-invalid.md");
+        let content = "---\ntitle: \"x\"\ntype: iteration\nstatus: planned\n---\n\n# x\n";
+        let (findings, _warnings) = check_plan_content(&path, content, &[]);
+        assert!(
+            findings.iter().any(|f| f.contains("dogfood_path")),
+            "expected a dogfood_path finding, got: {findings:?}"
         );
     }
 }
