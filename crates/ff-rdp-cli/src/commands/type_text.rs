@@ -136,6 +136,24 @@ fn request_submit_grace_ms(wait_timeout_ms: u64) -> u64 {
     REQUEST_SUBMIT_NAVIGATION_GRACE_MS.min(wait_timeout_ms)
 }
 
+/// The budget for `press_enter_and_submit`'s *first* post-`requestSubmit()`
+/// poll — the one that runs unconditionally, before the refresh-based
+/// re-check that already gates on `load_expected`.
+///
+/// Review fix (2026-09-07): this must also gate on `load_expected`. A
+/// cancelled/never-fired submission is not waiting on a network round-trip at
+/// all, so it belongs on the fast, post-Enter-sized check — reusing
+/// [`request_submit_grace_ms`] here unconditionally silently regressed every
+/// AJAX form from ~600 ms to up to 3 s, exactly the latency Task/AC on Part A
+/// says the `cancelled` gate exists to prevent.
+fn first_poll_grace_ms(load_expected: bool, wait_timeout_ms: u64) -> u64 {
+    if load_expected {
+        request_submit_grace_ms(wait_timeout_ms)
+    } else {
+        ENTER_NAVIGATION_GRACE_MS
+    }
+}
+
 /// JS that presses Enter on the element and reports what it found there.
 ///
 /// It deliberately does NOT submit the form: whether the fallback is needed
@@ -296,7 +314,7 @@ fn press_enter_and_submit(
         ctx,
         console_actor,
         &url_before,
-        request_submit_grace_ms(wait_timeout_ms),
+        first_poll_grace_ms(load_expected, wait_timeout_ms),
     );
     // The grace period is the cheap path, not the answer. When it comes back
     // "no" on a submission that really did start a load, that load is still
@@ -726,6 +744,35 @@ mod tests {
     fn unit_237_request_submit_grace_is_capped_by_the_command_timeout() {
         assert_eq!(request_submit_grace_ms(800), 800);
         assert_eq!(request_submit_grace_ms(0), 0);
+    }
+
+    /// Review fix (2026-09-07): `first_poll_grace_ms` — the budget for
+    /// `press_enter_and_submit`'s *unconditional* first post-`requestSubmit()`
+    /// poll — must itself gate on `load_expected`. Before this fix that poll
+    /// always used `request_submit_grace_ms` regardless of `load_expected`,
+    /// so a cancelled/AJAX submission silently regressed from the fast
+    /// post-Enter budget to up to 3s: only the *second*, refresh-based poll
+    /// was gated, and that poll never runs when the first one is never
+    /// expected to see a navigation.
+    #[test]
+    fn unit_237_first_poll_grace_stays_short_when_no_load_is_expected() {
+        assert_eq!(
+            first_poll_grace_ms(false, 10_000),
+            ENTER_NAVIGATION_GRACE_MS,
+            "a cancelled/never-fired submission must not pay the wider \
+             post-requestSubmit grace period"
+        );
+        assert_eq!(
+            first_poll_grace_ms(true, 10_000),
+            REQUEST_SUBMIT_NAVIGATION_GRACE_MS,
+            "an uncancelled submission that really is loading must still get \
+             the full grace period"
+        );
+        // The short path is not itself widened by a generous --timeout.
+        assert_eq!(
+            first_poll_grace_ms(false, 60_000),
+            ENTER_NAVIGATION_GRACE_MS
+        );
     }
 
     /// Regression (review finding on the iter-210 PR): a hard `noSuchActor`

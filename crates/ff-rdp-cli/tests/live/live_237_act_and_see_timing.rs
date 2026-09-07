@@ -343,11 +343,16 @@ fn live_237_cancelled_submit_does_not_wait_out_the_timeout() {
         typed["results"]["navigated"], false,
         "a cancelled submission does not navigate: {typed}"
     );
-    // Half the budget: the point is "not the whole timeout", and a tight bound
-    // would turn ordinary CI jitter red.
+    // A fifth of the budget (2s), not half: a cancelled submission must stay
+    // on the fast post-Enter-sized check, not the wider post-requestSubmit
+    // grace period (up to 3s). A 5s (half-budget) bound is too loose to catch
+    // that — the review fix that gated the first poll's budget on
+    // `load_expected` regressed silently under it until this bound was
+    // tightened (2026-09-07).
     assert!(
-        elapsed < Duration::from_millis(CLICK_TIMEOUT_MS / 2),
-        "a cancelled submission must not wait out the {CLICK_TIMEOUT_MS}ms budget, took {elapsed:?}"
+        elapsed < Duration::from_millis(CLICK_TIMEOUT_MS / 5),
+        "a cancelled submission must stay on the fast local check, not the wider \
+         post-requestSubmit grace period, took {elapsed:?}"
     );
 
     stop_daemon(port);
