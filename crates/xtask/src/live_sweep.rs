@@ -1566,10 +1566,33 @@ impl OwnedProfile {
 /// or changes its mode. A sweep that finds no root simply reports that it
 /// could not check.
 fn real_profile_root() -> Option<PathBuf> {
-    let base = std::env::var_os("FF_RDP_HOME")
+    resolve_real_profile_root(
+        std::env::var_os("FF_RDP_HOME"),
+        dirs::state_dir(),
+        dirs::data_local_dir(),
+    )
+}
+
+/// The env-independent half of [`real_profile_root`], split out so the
+/// empty-string edge case is unit-testable without mutating the real
+/// process environment (which `#[test]`s run concurrently and share).
+///
+/// An exported-but-empty `$FF_RDP_HOME` must fall through to the `state`/
+/// `data_local` candidates, not resolve to `""` — `.join(...)` below would
+/// otherwise silently turn that into a *relative* `ff-rdp/profiles` under
+/// the sweep's cwd. `util::home_override()` filters the same edge case for
+/// the same reason; the duplicate here missed it (caught in review of this
+/// PR, before it ever shipped).
+fn resolve_real_profile_root(
+    home_override: Option<std::ffi::OsString>,
+    state: Option<PathBuf>,
+    data_local: Option<PathBuf>,
+) -> Option<PathBuf> {
+    let base = home_override
+        .filter(|v| !v.is_empty())
         .map(PathBuf::from)
-        .or_else(dirs::state_dir)
-        .or_else(dirs::data_local_dir)?;
+        .or(state)
+        .or(data_local)?;
     Some(base.join("ff-rdp").join("profiles"))
 }
 
@@ -3828,6 +3851,39 @@ not-a-process-line
         // Read-only: resolving must never create anything.
         let probe = root.join("iter-245-should-not-exist");
         assert!(!probe.exists());
+    }
+
+    /// An exported-but-empty `$FF_RDP_HOME` must fall through to the `state`/
+    /// `data_local` candidates exactly like `util::home_override()` does —
+    /// not resolve to a relative `ff-rdp/profiles` under the sweep's cwd.
+    /// Found by review of this PR: the first cut of `real_profile_root`
+    /// duplicated the product's `$FF_RDP_HOME` precedence but not its
+    /// empty-string filter.
+    #[test]
+    fn iter_245_real_profile_root_filters_an_empty_home_override() {
+        let empty = Some(std::ffi::OsString::from(""));
+        let state = Some(PathBuf::from("/state/root"));
+        let data_local = Some(PathBuf::from("/data-local/root"));
+
+        assert_eq!(
+            resolve_real_profile_root(empty.clone(), state.clone(), data_local.clone()),
+            Some(PathBuf::from("/state/root/ff-rdp/profiles")),
+            "empty override must fall through to state, not resolve to a relative path"
+        );
+        assert_eq!(
+            resolve_real_profile_root(empty, None, data_local.clone()),
+            Some(PathBuf::from("/data-local/root/ff-rdp/profiles")),
+            "empty override must fall through to data_local when state is also absent"
+        );
+        // A genuinely-set override still wins over both fallbacks.
+        assert_eq!(
+            resolve_real_profile_root(
+                Some(std::ffi::OsString::from("/home/override")),
+                state,
+                data_local
+            ),
+            Some(PathBuf::from("/home/override/ff-rdp/profiles"))
+        );
     }
 
     // -----------------------------------------------------------------------
