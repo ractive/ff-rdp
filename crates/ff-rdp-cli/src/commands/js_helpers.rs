@@ -312,6 +312,101 @@ pub(crate) fn build_stability_check_js(escaped_selector: &str) -> String {
     )
 }
 
+/// iter-237 Part B — how long [`autowait_element`] must watch a page before it
+/// is allowed to conclude that a selector matching nothing never will.
+///
+/// The short-circuit's real evidence is the shared settle signal (no XHR/fetch
+/// in flight for 500 ms, no DOM mutation for 200 ms, `document.readyState ===
+/// 'complete'`). This floor is the belt to that braces: a page whose settle
+/// probe was installed by an *earlier* command can report "idle" on the very
+/// first poll, and an element inserted by a bare `setTimeout` — no network, no
+/// mutation until it fires — would be missed. Half a second of unconditional
+/// observation keeps that case cheap to survive while still turning the
+/// guessed-selector stall from ~10 s into ~0.6 s.
+const NOT_FOUND_MIN_OBSERVATION_MS: u64 = 500;
+
+/// Whether the shared settle probe ([`SETTLE_INJECT_JS`]) is usable in the
+/// document [`autowait_element`] is polling.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SettleProbe {
+    /// Not attempted yet. Installed lazily — only on a poll that finds the
+    /// selector missing — so the happy path (selector present immediately)
+    /// pays no extra eval and no page instrumentation at all.
+    Uninstalled,
+    /// Installed; [`selector_absent_on_settled_page`] can be asked.
+    Installed,
+    /// No idle signal available here: the selector was present when the probe
+    /// would have been installed (nothing to short-circuit), CSP refused the
+    /// injection, or the eval failed. The poll runs its full budget, exactly
+    /// as it did before iter-237.
+    Unavailable,
+}
+
+/// Decide, in one eval, whether this invocation can short-circuit at all —
+/// and install the settle probe if so.
+///
+/// Deliberately fused: asking "is the selector absent?" and "instrument the
+/// page" separately would either cost two round-trips per poll or install the
+/// XHR/fetch shims on pages where the element is merely mid-transition, which
+/// is a page-visible side effect autowait has no business causing when it is
+/// not about to give up.
+fn install_settle_probe(
+    ctx: &mut ConnectedTab,
+    console_actor: &ActorId,
+    escaped_selector: &str,
+) -> SettleProbe {
+    let js = format!(
+        r"(function() {{
+  if (document.querySelector('{escaped_selector}')) return '__present__';
+  return {SETTLE_INJECT_JS};
+}})()"
+    );
+    let Ok(eval) = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, &js)
+    else {
+        return SettleProbe::Unavailable;
+    };
+    if eval.exception.is_some() {
+        return SettleProbe::Unavailable;
+    }
+    match &eval.result {
+        Grip::Value(v) if v.as_str() == Some("__ok__") => SettleProbe::Installed,
+        _ => SettleProbe::Unavailable,
+    }
+}
+
+/// The short-circuit predicate: the selector matches nothing **and** the page
+/// has provably stopped changing.
+///
+/// Three conditions, all required:
+/// - `document.querySelector` still finds nothing — the case being reported;
+/// - `document.readyState === 'complete'` — a document still parsing will grow
+///   more DOM on its own, with no mutation record for the observer to have
+///   seen yet;
+/// - the shared [`SETTLE_IDLE_CHECK_JS`] predicate — no XHR/fetch in flight
+///   for 500 ms and no DOM mutation for 200 ms.
+///
+/// The mutation half is what protects the retry case the poll exists for: an
+/// element inserted late by a fetch response or a route transition mutates the
+/// DOM, which resets the observer's timestamp, which keeps this predicate
+/// false and the poll running its full budget.
+fn selector_absent_on_settled_page(
+    ctx: &mut ConnectedTab,
+    console_actor: &ActorId,
+    escaped_selector: &str,
+) -> bool {
+    let js = format!(
+        r"(function() {{
+  if (document.querySelector('{escaped_selector}')) return false;
+  if (document.readyState !== 'complete') return false;
+  return {SETTLE_IDLE_CHECK_JS};
+}})()"
+    );
+    match WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, &js) {
+        Ok(eval) if eval.exception.is_none() => is_truthy(&eval.result),
+        _ => false,
+    }
+}
+
 /// Auto-wait for an element to be ready (exist + visible + stable rect).
 ///
 /// Default timeout: 5000 ms. Returns the sentinel-resolved JSON on success,
@@ -335,6 +430,10 @@ pub(crate) fn autowait_element(
     let timeout = Duration::from_millis(timeout_ms);
     let poll = Duration::from_millis(POLL_INTERVAL_MS);
     let started = Instant::now();
+    // iter-237 Part B: state for the "page is idle and the selector still
+    // matches nothing" short-circuit. Starts `Uninstalled` — nothing is
+    // injected until a poll actually fails to find the element.
+    let mut settle_probe = SettleProbe::Uninstalled;
 
     // Phase 1: wait for element to exist + be visible + have non-zero rect.
     loop {
@@ -389,6 +488,32 @@ pub(crate) fn autowait_element(
 
         if is_truthy(&eval.result) {
             break; // visible + non-zero rect
+        }
+
+        // iter-237 Part B: a selector guessed wrong — `a[href="/wiki/X"]`
+        // against a page that writes that attribute relative — used to cost
+        // the entire `--timeout` (10 s by default) before reporting
+        // "0 elements matched (not found)", because the poll cannot tell
+        // "not rendered yet" from "never going to render" and correctly
+        // refuses to shorten the budget for the former. The settle signal
+        // separates them: once the document is complete, nothing is in
+        // flight and the DOM has stopped mutating, no amount of further
+        // waiting can produce a match, so answer now.
+        if started.elapsed() >= Duration::from_millis(NOT_FOUND_MIN_OBSERVATION_MS) {
+            if settle_probe == SettleProbe::Uninstalled {
+                settle_probe = install_settle_probe(ctx, console_actor, &escaped);
+            }
+            if settle_probe == SettleProbe::Installed
+                && selector_absent_on_settled_page(ctx, console_actor, &escaped)
+            {
+                let (diag, _) = diagnose_selector_failure(ctx, console_actor, selector, &escaped);
+                let elapsed_ms = started.elapsed().as_millis();
+                return Err(AppError::Timeout(format!(
+                    "{diag} after {elapsed_ms}ms — the page is idle (document complete, no network \
+                     in flight, no DOM mutations), so the remaining {timeout_ms}ms of the auto-wait \
+                     budget could not have changed the answer"
+                )));
+            }
         }
 
         std::thread::sleep(poll);
@@ -1061,18 +1186,16 @@ pub(crate) fn wait_for_predicates(
 // Settle helper (network + DOM idle)
 // ---------------------------------------------------------------------------
 
-/// Inject and wait for network+DOM settle: no XHR/fetch in flight for 500 ms AND
-/// no DOM mutations for 200 ms.
+/// The page-side settle probe: XHR/fetch in-flight counters plus a
+/// `MutationObserver` timestamp, installed once per document
+/// (`window.__ffrdpSettleInit` guards re-entry) and read back by
+/// [`SETTLE_IDLE_CHECK_JS`].
 ///
-/// On CSP injection failure, falls back to a 1 s sleep and emits
-/// `meta.settle_method = "sleep"` via the returned string.
-pub(crate) fn settle_page(
-    ctx: &mut ConnectedTab,
-    console_actor: &ActorId,
-    timeout_ms: u64,
-) -> Result<SettleMethod, AppError> {
-    // Attempt to inject network monitoring + MutationObserver.
-    let inject_js = r"(function() {
+/// Returns `'__ok__'` when the instrumentation is in place and `'__csp__'`
+/// when the page's CSP refused it. Two call sites share it so there is exactly
+/// one notion of "idle" in the CLI: [`settle_page`] (`--settle`) and
+/// [`autowait_element`]'s not-found short-circuit (iter-237 Part B).
+const SETTLE_INJECT_JS: &str = r"(function() {
   try {
     if (window.__ffrdpSettleInit) return '__ok__';
     window.__ffrdpInflight = 0;
@@ -1102,6 +1225,29 @@ pub(crate) fn settle_page(
   } catch(e) { return '__csp__'; }
 })()";
 
+/// The idle predicate over the state [`SETTLE_INJECT_JS`] maintains: nothing
+/// in flight for 500 ms *and* no DOM mutation for 200 ms.
+const SETTLE_IDLE_CHECK_JS: &str = r"(function() {
+  var now = Date.now();
+  var inflight = (window.__ffrdpInflight || 0);
+  var networkIdle = inflight === 0 && (now - (window.__ffrdpLastInflightZero || 0)) >= 500;
+  var domOk = (now - (window.__ffrdpLastMutation || 0)) >= 200;
+  return networkIdle && domOk;
+})()";
+
+/// Inject and wait for network+DOM settle: no XHR/fetch in flight for 500 ms AND
+/// no DOM mutations for 200 ms.
+///
+/// On CSP injection failure, falls back to a 1 s sleep and emits
+/// `meta.settle_method = "sleep"` via the returned string.
+pub(crate) fn settle_page(
+    ctx: &mut ConnectedTab,
+    console_actor: &ActorId,
+    timeout_ms: u64,
+) -> Result<SettleMethod, AppError> {
+    // Attempt to inject network monitoring + MutationObserver.
+    let inject_js = SETTLE_INJECT_JS;
+
     let eval = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, inject_js)
         .map_err(AppError::from)?;
 
@@ -1117,13 +1263,7 @@ pub(crate) fn settle_page(
     }
 
     // Poll for idle state: inflight == 0 for 500ms sustained AND no mutation for 200ms.
-    let idle_check_js = r"(function() {
-  var now = Date.now();
-  var inflight = (window.__ffrdpInflight || 0);
-  var networkIdle = inflight === 0 && (now - (window.__ffrdpLastInflightZero || 0)) >= 500;
-  var domOk = (now - (window.__ffrdpLastMutation || 0)) >= 200;
-  return networkIdle && domOk;
-})()";
+    let idle_check_js = SETTLE_IDLE_CHECK_JS;
 
     match poll_js_condition(
         ctx,
@@ -1437,6 +1577,196 @@ mod tests {
     /// `timeout_context` — not the generic, contextless
     /// `AppError::RdpTimeout { phase: "recv", after_ms: 0 }` that
     /// `AppError::from(ProtocolError::Timeout)` would otherwise produce
+    // -----------------------------------------------------------------
+    // iter-237 Part B — the not-found short-circuit
+    // -----------------------------------------------------------------
+
+    /// A scripted stand-in for Firefox's console actor: answers every
+    /// `evaluateJSAsync` with `handler(<the JS text>)` as the result grip,
+    /// which is what lets these tests drive `autowait_element`'s poll loop
+    /// deterministically instead of against a real browser.
+    fn spawn_scripted_console(
+        handler: impl Fn(&str) -> Value + Send + 'static,
+    ) -> (u16, std::thread::JoinHandle<()>) {
+        use std::io::Write as _;
+        use std::net::TcpListener;
+
+        use ff_rdp_core::transport::{encode_frame, recv_from};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut writer = stream.try_clone().unwrap();
+            let mut reader = std::io::BufReader::new(stream);
+
+            let greeting = json!({"from": "root", "applicationType": "browser", "traits": {}});
+            writer
+                .write_all(encode_frame(&serde_json::to_string(&greeting).unwrap()).as_bytes())
+                .unwrap();
+
+            let mut seq = 0_u64;
+            while let Ok(msg) = recv_from(&mut reader) {
+                let text = msg
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
+                seq += 1;
+                let result_id = format!("r{seq}");
+                let ack = json!({"from": "conn0/console1", "resultID": result_id});
+                if writer
+                    .write_all(encode_frame(&serde_json::to_string(&ack).unwrap()).as_bytes())
+                    .is_err()
+                {
+                    break;
+                }
+                let event = json!({
+                    "from": "conn0/console1",
+                    "type": "evaluationResult",
+                    "resultID": result_id,
+                    "result": handler(&text),
+                });
+                if writer
+                    .write_all(encode_frame(&serde_json::to_string(&event).unwrap()).as_bytes())
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        (port, handle)
+    }
+
+    /// Which of `autowait_element`'s evals a piece of JS is — the same
+    /// classification a real page would answer implicitly. Order matters: the
+    /// settle-probe install embeds a `querySelector` call, and the idle check
+    /// embeds one too.
+    fn classify_eval(js: &str) -> &'static str {
+        if js.contains("__ffrdpSettleInit") {
+            "install"
+        } else if js.contains("__ffrdpLastInflightZero") {
+            "idle"
+        } else if js.contains("querySelectorAll") {
+            "diagnose"
+        } else if js.contains("getComputedStyle") {
+            "readiness"
+        } else {
+            "stability"
+        }
+    }
+
+    fn connect_for_test(port: u16) -> (ConnectedTab, ActorId) {
+        use ff_rdp_core::transport::RdpTransport;
+
+        let transport =
+            RdpTransport::connect("127.0.0.1", port, Duration::from_millis(2_000)).unwrap();
+        let console_actor = ActorId::from("conn0/console1");
+        let ctx = ConnectedTab::for_test(transport, console_actor.clone());
+        (ctx, console_actor)
+    }
+
+    /// Theme B, the regression this short-circuit must not cause: a selector
+    /// that only appears *after* the short-circuit becomes eligible (past
+    /// `NOT_FOUND_MIN_OBSERVATION_MS`) still resolves, because the page is
+    /// mutating and the idle predicate therefore stays false.
+    #[test]
+    fn unit_237_late_selector_still_resolves_when_the_page_is_not_idle() {
+        let started = Instant::now();
+        let (port, server) = spawn_scripted_console(move |js| match classify_eval(js) {
+            // Not there for the first ~700 ms — well past the 500 ms floor,
+            // so the short-circuit has had every chance to fire wrongly.
+            "readiness" => {
+                if started.elapsed() >= Duration::from_millis(700) {
+                    json!("__ffrdp_ready__")
+                } else {
+                    json!({"type": "null"})
+                }
+            }
+            "install" => json!("__ok__"),
+            // The page is still mutating: the observer's timestamp keeps
+            // resetting, so it is never idle.
+            "idle" => json!(false),
+            // Phase 2 stability: a constant rect, so two consecutive reads match.
+            _ => json!("[0,0,10,10]"),
+        });
+
+        let (mut ctx, console_actor) = connect_for_test(port);
+        let result = autowait_element(&mut ctx, &console_actor, "#late", 5_000, false);
+        drop(ctx);
+        server.join().unwrap();
+
+        assert!(
+            result.is_ok(),
+            "a selector that appears late on a busy page must still resolve, got: {result:?}"
+        );
+    }
+
+    /// The defect itself: a selector that matches nothing on a page that has
+    /// gone idle must be reported without spending the rest of `--timeout`.
+    #[test]
+    fn unit_237_absent_selector_on_an_idle_page_reports_before_the_timeout() {
+        let (port, server) = spawn_scripted_console(|js| match classify_eval(js) {
+            "readiness" => json!({"type": "null"}),
+            "install" => json!("__ok__"),
+            "idle" => json!(true),
+            "diagnose" => json!(r#"{"matchCount":0}"#),
+            _ => json!("[0,0,10,10]"),
+        });
+
+        let (mut ctx, console_actor) = connect_for_test(port);
+        let started = Instant::now();
+        // 60 s of budget: if the short-circuit does not fire, this test hangs
+        // for a minute instead of quietly passing.
+        let result = autowait_element(&mut ctx, &console_actor, "#nope", 60_000, false);
+        let elapsed = started.elapsed();
+        drop(ctx);
+        server.join().unwrap();
+
+        let Err(AppError::Timeout(msg)) = result else {
+            panic!("expected a not-found timeout error, got: {result:?}");
+        };
+        assert!(
+            msg.contains("0 elements matched (not found)"),
+            "the short-circuit must keep the diagnostic's message: {msg:?}"
+        );
+        assert!(
+            msg.contains("the page is idle"),
+            "the message must say why it stopped early: {msg:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "must report well under the 60s budget, took {elapsed:?}"
+        );
+    }
+
+    /// …but only when the idle signal is actually available. A page whose CSP
+    /// refuses the settle probe keeps the pre-iter-237 behaviour: poll to the
+    /// end of the budget rather than guess.
+    #[test]
+    fn unit_237_csp_blocked_probe_falls_back_to_the_full_budget() {
+        let (port, server) = spawn_scripted_console(|js| match classify_eval(js) {
+            "readiness" => json!({"type": "null"}),
+            "install" => json!("__csp__"),
+            "idle" => json!(true),
+            "diagnose" => json!(r#"{"matchCount":0}"#),
+            _ => json!("[0,0,10,10]"),
+        });
+
+        let (mut ctx, console_actor) = connect_for_test(port);
+        let started = Instant::now();
+        let result = autowait_element(&mut ctx, &console_actor, "#nope", 900, false);
+        let elapsed = started.elapsed();
+        drop(ctx);
+        server.join().unwrap();
+
+        assert!(matches!(result, Err(AppError::Timeout(_))), "{result:?}");
+        assert!(
+            elapsed >= Duration::from_millis(900),
+            "with no idle signal the poll must run its full budget, took {elapsed:?}"
+        );
+    }
+
     /// ("timed out after 0ms (phase: recv)").
     #[test]
     fn poll_js_condition_recv_timeout_surfaces_descriptive_message() {
