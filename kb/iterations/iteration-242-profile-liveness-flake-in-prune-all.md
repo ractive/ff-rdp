@@ -587,7 +587,7 @@ exactly what `ff-rdp launch` creates and what the documented raw command does no
 
 ### Part A follow-up: `daemon stop`'s silent `profile_removed: false`
 
-Closed. `cleanup_profile_dir` returned a bare `ProfileCleanup::Skipped` for four different
+Made answerable, not closed — the remaining half is [[iteration-260-live-owner-removal-race-in-daemon-stop]]. `cleanup_profile_dir` returned a bare `ProfileCleanup::Skipped` for four different
 reasons — root unresolvable, path outside the root, basename not managed, `remove_dir_all`
 failed — and `daemon stop` printed `profile_removed: false` with none of them attached. Only the
 last indicates a problem; the first three are the expected outcome for a `--profile` directory.
@@ -595,6 +595,13 @@ last indicates a problem; the first three are the expected outcome for a `--prof
 `profile_skip_reason` (null when the profile was removed, and when the stop itself failed so
 cleanup was never attempted). That does not yet explain the iteration-224 observation — but it
 means the next occurrence arrives saying `remove-failed` rather than saying nothing.
+
+## Carry-over filed before this PR merged
+
+[[iteration-260-live-owner-removal-race-in-daemon-stop]] — carries the `daemon stop`
+`profile_removed: false` observation (now answerable, because `profile_skip_reason` exists; the
+hypothesis to *test*, not assume, is that it is the same `ENOTEMPTY` race), and the three live
+verifications this iteration wrote but could not run.
 
 ## Closing acceptance criterion (covers all parts) [0/1]
 
