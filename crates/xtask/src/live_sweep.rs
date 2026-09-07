@@ -1450,6 +1450,415 @@ pub fn reap_managed_firefox() -> Vec<u32> {
 }
 
 // ---------------------------------------------------------------------------
+// iter-245 Part A — the real-root orphan guarantee
+// ---------------------------------------------------------------------------
+
+/// Prefix of every ephemeral profile directory ff-rdp creates for itself.
+///
+/// Mirrors the product's private `util::profile_dir::MANAGED_PROFILE_PREFIX`.
+/// The three constants in this block are **duplicated, not imported**, and
+/// that is a deliberate answer to the question iteration 245 asked (Part A,
+/// task A): the alternative is a new `pub` read-only helper on `ff-rdp-cli`
+/// for `xtask` to call, which would make every `cargo run -p xtask -- check-*`
+/// invocation — the discipline gates that run on every iteration — build the
+/// whole CLI and its dependency tree first, to read three file names. The live
+/// test harness already carries exactly this duplication for exactly this
+/// reason (`crates/ff-rdp-cli/tests/common/mod.rs`, which notes the crate
+/// ships no `[lib]` target to import from), so this is the established shape
+/// rather than a new one. Keep the copies in sync by hand; the format is
+/// append-only in practice (a marker has never been renamed) and a stale copy
+/// degrades to "found nothing", never to a false accusation.
+const MANAGED_PROFILE_PREFIX: &str = "ff-rdp-profile-";
+
+/// Owner-PID marker: mirrors `util::profile_dir::OWNER_PID_MARKER`.
+const OWNER_PID_MARKER: &str = ".ff-rdp-owner-pid";
+
+/// Owner-test marker: mirrors `util::profile_dir::OWNER_TEST_MARKER`.
+///
+/// Only ever written when `FF_RDP_LIVE_TEST_NAME` is set, which only the live
+/// test harness does (`tests/common/mod.rs`'s `ff_rdp_launch_command`). Its
+/// presence is therefore positive evidence that a profile belongs to a live
+/// test rather than to a developer's own interactive `ff-rdp launch` — the
+/// signal [`classify_orphans`] uses to keep the check off other people's
+/// business.
+const OWNER_TEST_MARKER: &str = ".ff-rdp-owner-test";
+
+/// A managed profile directory in the real root whose owner PID is alive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedProfile {
+    /// The profile directory itself.
+    pub dir: PathBuf,
+    /// PID recorded in [`OWNER_PID_MARKER`], confirmed present in the process
+    /// listing.
+    pub pid: u32,
+    /// Contents of [`OWNER_TEST_MARKER`], when the profile carries one.
+    pub spawning_test: Option<String>,
+}
+
+impl OwnedProfile {
+    /// `<dir> (pid <n>, spawned by <test>)` — the operator-facing rendering
+    /// AC1 asks for: directory *and* PID, never a bare count.
+    fn describe(&self) -> String {
+        let dir = self
+            .dir
+            .file_name()
+            .map_or_else(|| self.dir.display().to_string(), |n| {
+                n.to_string_lossy().into_owned()
+            });
+        match &self.spawning_test {
+            Some(test) => format!("{dir} (pid {}, spawned by {test})", self.pid),
+            None => format!("{dir} (pid {}, no owner-test marker)", self.pid),
+        }
+    }
+}
+
+/// Resolve the profile root a child process of this sweep would use by
+/// default, mirroring `util::profile_dir::resolve_profile_root`'s order:
+/// `$FF_RDP_HOME`, then `dirs::state_dir()`, then `dirs::data_local_dir()`.
+///
+/// **This is the *real* root, not an isolated one.** The distinction the plan
+/// draws is between the per-user root every ordinary launch lands in and the
+/// per-*test* temp roots several live tests point `$FF_RDP_HOME` at by setting
+/// the variable on their own child `Command` — those are invisible from here,
+/// which is correct: they are removed with their `TempDir` when the owning
+/// test exits, so scanning them would prove nothing.
+///
+/// A process-wide `$FF_RDP_HOME` is honoured rather than ignored, because the
+/// sweep's own children inherit it: with the variable exported, *that* is the
+/// root an un-isolated live test writes into, and the no-override path would
+/// scan a directory nothing in this run ever touched.
+///
+/// Read-only: unlike `secure_profile_root`, this never creates the directory
+/// or changes its mode. A sweep that finds no root simply reports that it
+/// could not check.
+fn real_profile_root() -> Option<PathBuf> {
+    let base = std::env::var_os("FF_RDP_HOME")
+        .map(PathBuf::from)
+        .or_else(dirs::state_dir)
+        .or_else(dirs::data_local_dir)?;
+    Some(base.join("ff-rdp").join("profiles"))
+}
+
+/// Every PID in a `<pid> <command line>` listing.
+///
+/// Liveness is graded from the same snapshot the reaper already takes, rather
+/// than from a `kill(pid, 0)`: the workspace forbids `unsafe`, `xtask` has no
+/// `libc` dependency, and one `ps` invocation answers the question for every
+/// candidate at once.
+pub fn pids_in_listing(listing: &str) -> std::collections::BTreeSet<u32> {
+    listing
+        .lines()
+        .filter_map(|line| {
+            let (pid_text, _) = line.trim_start().split_once(char::is_whitespace)?;
+            pid_text.parse::<u32>().ok()
+        })
+        .collect()
+}
+
+/// Scan `root` for `ff-rdp-profile-*` directories whose owner PID is in
+/// `live_pids`.
+///
+/// Pure with respect to the process table (the caller supplies the snapshot),
+/// so the whole check is unit-testable against a `TempDir` and a synthetic PID
+/// set — no Firefox, no sweep. An unreadable root yields no findings: this is
+/// a diagnostic, and a permissions problem must not fail a sweep.
+pub fn scan_owned_profiles(
+    root: &Path,
+    live_pids: &std::collections::BTreeSet<u32>,
+) -> Vec<OwnedProfile> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut out: Vec<OwnedProfile> = entries
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| n.starts_with(MANAGED_PROFILE_PREFIX))
+        })
+        .filter_map(|e| {
+            let pid: u32 = std::fs::read_to_string(e.path().join(OWNER_PID_MARKER))
+                .ok()?
+                .trim()
+                .parse()
+                .ok()?;
+            if !live_pids.contains(&pid) {
+                return None;
+            }
+            let spawning_test = std::fs::read_to_string(e.path().join(OWNER_TEST_MARKER))
+                .ok()
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty());
+            Some(OwnedProfile {
+                dir: e.path(),
+                pid,
+                spawning_test,
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| a.dir.cmp(&b.dir));
+    out
+}
+
+/// What a live-owned profile found in the real root after a phase means.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct OrphanReport {
+    /// Live-owned, absent from the pre-sweep baseline, and carrying an
+    /// owner-test marker — i.e. a live test's Firefox that outlived it. This
+    /// is the guarantee iteration 146 made loud and iteration 188 accidentally
+    /// dropped, and it fails the sweep.
+    pub leaked: Vec<OwnedProfile>,
+    /// Live-owned and new since the sweep started, but with no owner-test
+    /// marker, so nothing ties it to the live tier. The likeliest owner is a
+    /// developer's own `ff-rdp launch` in another terminal, which is
+    /// explicitly none of the sweep's business — reported, never fatal.
+    pub unattributed: Vec<OwnedProfile>,
+}
+
+impl OrphanReport {
+    /// Nothing to say about this root.
+    pub fn is_clean(&self) -> bool {
+        self.leaked.is_empty() && self.unattributed.is_empty()
+    }
+}
+
+/// Split the profiles found after a phase into "this sweep leaked it" and
+/// "somebody else's", against the `baseline` of directory names that were
+/// already live-owned before the sweep started.
+///
+/// Two independent signals are required before the sweep will call something
+/// its own leak, because a false accusation here fails an otherwise-green
+/// 40-minute run:
+///
+/// 1. **New since the baseline.** A browser the operator already had open when
+///    the sweep started is in the baseline by name and is never reported.
+/// 2. **Carries an owner-test marker.** Only the live harness sets
+///    `FF_RDP_LIVE_TEST_NAME` (see [`OWNER_TEST_MARKER`]), so this separates a
+///    live test's launch from an interactive one started mid-sweep.
+///
+/// The residual false positive is a *second concurrent live sweep* on the same
+/// machine, whose profiles would satisfy both. That configuration is already
+/// unsupported for older reasons — [`reap_managed_firefox`] kills managed
+/// browsers machine-wide, and the `preexisting` tier assumes one client on
+/// port 6000 — so it is called out in the failure message rather than designed
+/// around.
+pub fn classify_orphans(
+    baseline: &std::collections::BTreeSet<String>,
+    found: Vec<OwnedProfile>,
+) -> OrphanReport {
+    let mut report = OrphanReport::default();
+    for profile in found {
+        let name = profile
+            .dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if baseline.contains(&name) {
+            continue;
+        }
+        if profile.spawning_test.is_some() {
+            report.leaked.push(profile);
+        } else {
+            report.unattributed.push(profile);
+        }
+    }
+    report
+}
+
+/// Directory names of every live-owned managed profile in `root`, for use as
+/// [`classify_orphans`]' baseline.
+fn baseline_profile_names(root: &Path) -> std::collections::BTreeSet<String> {
+    let Some(listing) = process_listing() else {
+        // No process table means no liveness grading, so the safest baseline
+        // is "everything currently there was already there" — every existing
+        // directory is excused, and only genuinely new ones can be reported.
+        return std::fs::read_dir(root)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| e.file_name().to_str().map(str::to_owned))
+            .filter(|n| n.starts_with(MANAGED_PROFILE_PREFIX))
+            .collect();
+    };
+    scan_owned_profiles(root, &pids_in_listing(&listing))
+        .into_iter()
+        .filter_map(|p| p.dir.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// iter-245 Part B — capture a stack before the watchdog destroys the evidence
+// ---------------------------------------------------------------------------
+
+/// The one test the stack-capture hook fires for.
+///
+/// Deliberately a single name, not a policy. Iteration 197 gave the sweep a
+/// watchdog that *counts* a hang; what it cannot do is say why, because the
+/// same kill that makes the hang visible destroys the stack. This adds the
+/// missing capture — for the one test that has actually hung (2026-08-23,
+/// iteration 188's third sweep) and for no other, so an ordinary timeout on an
+/// unrelated test never starts shelling out to a debugger.
+pub const CAPTURE_HOOK_TEST: &str = "live_158_launch_survives_contended_bind";
+
+/// Whether the capture hook fires for a phase whose stalled set is `stalled`.
+///
+/// Matches on the *last* `::` segment so a caller may pass either bare or
+/// module-qualified names ([`unreported_tests`] yields the qualified form).
+pub fn capture_hook_should_fire(stalled: &[String]) -> bool {
+    stalled
+        .iter()
+        .any(|name| name.rsplit("::").next().unwrap_or(name) == CAPTURE_HOOK_TEST)
+}
+
+/// `<pid> <ppid> <command line>` for every process, or `None` when the
+/// platform's lister could not be run.
+///
+/// A second listing shape rather than a widening of [`process_listing`]:
+/// [`managed_firefox_pids`] parses that one, and inserting a column would
+/// silently shift `argv[0]` for every existing caller.
+fn process_tree_listing() -> Option<String> {
+    #[cfg(unix)]
+    let mut cmd = {
+        let mut c = Command::new("ps");
+        c.args(["-eo", "pid=,ppid=,args="]);
+        c
+    };
+    #[cfg(not(unix))]
+    let mut cmd = {
+        let mut c = Command::new("powershell");
+        c.args([
+            "-NoProfile",
+            "-Command",
+            "Get-CimInstance Win32_Process | ForEach-Object { \
+             \"$($_.ProcessId) $($_.ParentProcessId) $($_.CommandLine)\" }",
+        ]);
+        c
+    };
+    let out = cmd.stderr(std::process::Stdio::null()).output().ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Every descendant of `root` in a `<pid> <ppid> …` listing, nearest first.
+///
+/// The hung party is never the `cargo` the sweep spawned — it is the test
+/// binary `cargo` started, which is where the stack has to come from.
+pub fn descendant_pids(listing: &str, root: u32) -> Vec<u32> {
+    let mut edges: Vec<(u32, u32)> = Vec::new();
+    for line in listing.lines() {
+        let mut fields = line.split_whitespace();
+        let (Some(pid), Some(ppid)) = (fields.next(), fields.next()) else {
+            continue;
+        };
+        let (Ok(pid), Ok(ppid)) = (pid.parse::<u32>(), ppid.parse::<u32>()) else {
+            continue;
+        };
+        edges.push((pid, ppid));
+    }
+    let mut frontier = vec![root];
+    let mut out: Vec<u32> = Vec::new();
+    while let Some(parent) = frontier.pop() {
+        for (pid, ppid) in &edges {
+            if *ppid == parent && *pid != root && !out.contains(pid) {
+                out.push(*pid);
+                frontier.push(*pid);
+            }
+        }
+    }
+    out
+}
+
+/// Build the platform's stack sampler for `pid`, writing to `out`.
+///
+/// macOS ships `sample(1)`, which needs no debugger entitlement for a process
+/// the same user owns. Linux has no equivalent in the base install, so `gdb`
+/// is used in batch mode when it is present. Windows is out of scope: iteration
+/// 245 Part C establishes that the *process-management* paths work there, not
+/// that a sampler exists, and picking one (`procdump`? WinDbg?) without a
+/// machine to try it on is exactly the untested-Windows-code problem Part C
+/// exists to stop repeating.
+#[cfg(target_os = "macos")]
+fn stack_sampler(pid: u32, out: &Path) -> Option<Command> {
+    let mut cmd = Command::new("sample");
+    cmd.args([&pid.to_string(), "5", "-f"]).arg(out);
+    Some(cmd)
+}
+
+#[cfg(target_os = "linux")]
+fn stack_sampler(pid: u32, out: &Path) -> Option<Command> {
+    let file = std::fs::File::create(out).ok()?;
+    let mut cmd = Command::new("gdb");
+    cmd.args([
+        "-p",
+        &pid.to_string(),
+        "-batch",
+        "-ex",
+        "thread apply all bt",
+    ])
+    .stdout(std::process::Stdio::from(file));
+    Some(cmd)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn stack_sampler(_pid: u32, _out: &Path) -> Option<Command> {
+    None
+}
+
+/// Sample every descendant of the phase's `cargo` **before** the watchdog
+/// kills it, and return the files written.
+///
+/// Best-effort throughout: a missing sampler, an unreadable process table or a
+/// sampler that fails all resolve to "no file", never to an error. The sweep
+/// is already red by the time this runs and the kill must not be delayed by
+/// more than the sampler's own few seconds.
+fn capture_stacks(cargo_pid: u32, dir: &Path) -> Vec<PathBuf> {
+    let Some(listing) = process_tree_listing() else {
+        eprintln!(
+            "live-sweep: CAPTURE — wanted a stack of the hung {CAPTURE_HOOK_TEST} test binary, \
+             but this platform's process lister did not run; nothing captured"
+        );
+        return Vec::new();
+    };
+    let mut targets = descendant_pids(&listing, cargo_pid);
+    // The `cargo` itself last: it is almost certainly just waiting on the test
+    // binary, but a stack of it costs nothing and rules that out.
+    targets.push(cargo_pid);
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        eprintln!(
+            "live-sweep: CAPTURE — could not create {}: {e}; nothing captured",
+            dir.display()
+        );
+        return Vec::new();
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let mut written = Vec::new();
+    for pid in targets {
+        let out = dir.join(format!("{CAPTURE_HOOK_TEST}-{stamp}-pid{pid}.txt"));
+        let Some(mut cmd) = stack_sampler(pid, &out) else {
+            eprintln!(
+                "live-sweep: CAPTURE — no stack sampler is wired up for this platform \
+                 (iter-245 Part B); nothing captured"
+            );
+            return written;
+        };
+        let ran = cmd
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if ran && std::fs::metadata(&out).is_ok_and(|m| m.len() > 0) {
+            written.push(out);
+        } else {
+            let _ = std::fs::remove_file(&out);
+        }
+    }
+    written
+}
+
+// ---------------------------------------------------------------------------
 // run()
 // ---------------------------------------------------------------------------
 
