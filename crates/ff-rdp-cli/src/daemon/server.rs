@@ -5438,17 +5438,25 @@ mod tests {
     /// and reports in `daemon status`. Going through
     /// `ClientWriter::send_bounded` narrows and restores it under the writer's
     /// own lock instead.
+    ///
+    /// The observation is "the socket's write deadline is what it was before
+    /// the goodbye", not a literal `Some(CLIENT_WRITE_DEADLINE)`: Windows does
+    /// not report `SO_SNDTIMEO` back through `getsockopt`, so a literal
+    /// assertion fails there on correct code. Comparing against a baseline read
+    /// from the same socket is true on every platform, and keeps its teeth on
+    /// the ones that answer.
     #[test]
     fn unit_240_goodbye_restores_the_client_write_deadline() {
         let (server, _client) = loopback_pair();
         let sock = server.try_clone().expect("clone");
         let writer = ClientWriter::new(server);
+        let baseline = sock.write_timeout().expect("read back the write timeout");
 
         close_client_with_error(&writer, &sock, "client_frame_undecodable", "boom");
 
         assert_eq!(
             sock.write_timeout().expect("read back the write timeout"),
-            Some(CLIENT_WRITE_DEADLINE),
+            baseline,
             "the goodbye must leave the socket on the writer's own deadline, \
              not on the drain budget"
         );
