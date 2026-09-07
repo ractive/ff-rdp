@@ -16,17 +16,7 @@ use std::net::TcpListener;
 use std::time::{Duration, Instant};
 
 use ff_rdp_core::ProtocolError;
-use ff_rdp_core::transport::{RdpTransport, max_frame_bytes, set_max_frame_bytes};
-
-/// Restores the process-global transport frame cap on drop (panic-safe), so
-/// this test's 1 KiB cap can't leak into later tests in the same binary.
-struct FrameCapGuard(usize);
-
-impl Drop for FrameCapGuard {
-    fn drop(&mut self) {
-        set_max_frame_bytes(self.0);
-    }
-}
+use ff_rdp_core::transport::{RdpTransport, max_frame_bytes};
 
 fn live_tests_enabled() -> bool {
     std::env::var("FF_RDP_LIVE_TESTS").is_ok_and(|v| !v.is_empty() && v != "0")
@@ -48,15 +38,29 @@ fn live_bulk_frame_oversize_rejected() {
         return;
     }
 
-    // Pick a small cap to keep the announcement modest. The cap is a
-    // process-global knob shared with every other test in this binary, so
-    // restore it on exit — including panic unwind — or later in-process
-    // transport users fail with FrameTooLarge on ordinary Firefox packets
-    // (observed as live_console_no_double_delivery red in the iter-114 sweep).
-    let _cap_guard = FrameCapGuard(max_frame_bytes());
-    set_max_frame_bytes(1024);
-    let cap = 1024u64;
-    let announced = cap * 2;
+    // Announce against the cap this process already has, rather than shrinking
+    // the cap to make the announcement small (iteration 235 Part A).
+    //
+    // `RdpTransport::recv` reads the process-global cap, so the only way to
+    // test a *smaller* cap is `set_max_frame_bytes`, which every other test in
+    // this binary shares. The RAII guard this test used to carry restored the
+    // cap on exit — that fixed the leak (DEC-022, iter-114, after a leaked
+    // 1 KiB cap turned `live_console_no_double_delivery` red) but not the
+    // *window*: while this test held 1 KiB, any concurrently-running live test
+    // parsing a screenshot data URL or a `longString` body — routinely far
+    // more than 1 KiB — failed with `FrameTooLarge`. That window is open in
+    // every sweep since iteration 188, which runs the CLI tier with
+    // `--test-threads={jobs}`.
+    //
+    // The 1 KiB cap was never load-bearing. The property under test is
+    // "an over-cap bulk announcement is rejected before any body read", and
+    // announcing more than the *default* 256 MiB proves it just as well: the
+    // cap check precedes the body read, so neither number allocates anything.
+    // All this costs is a longer decimal in the header. No mutation, no
+    // window, and the live suite is safe at `--test-threads>1` with respect to
+    // the frame cap because no test writes the cap any more.
+    let cap = max_frame_bytes() as u64;
+    let announced = cap.saturating_mul(2);
 
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
     let port = listener.local_addr().unwrap().port();
