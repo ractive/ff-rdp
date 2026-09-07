@@ -103,6 +103,27 @@ about the four-launch shape without a live repro:
 - The Windows side of any of this — no stack sampler is chosen here for that platform; see
   [[iteration-248-live-sweep-windows-process-paths-untested]].
 
+## Recurrences
+
+- **2026-09-07, iteration 240's closing sweep** (`FF_RDP_LIVE_TESTS=1
+  FF_RDP_LIVE_NETWORK_TESTS=1 cargo run -p xtask -- live-sweep`, macOS, default
+  `--phase-stall-secs 300`):
+
+  ```text
+  live-sweep: -p ff-rdp-cli --test live was KILLED after 300s of silence (mid-tier). 1 test(s)
+      never reported a verdict and are counted `timed_out`, not `executed`:
+      live_158_launch_lifecycle::live_158_launch_survives_contended_bind
+  live-sweep: libtest's own slow-test notice named: live_158_launch_survives_contended_bind
+  LIVE_SWEEP_SUMMARY executed=326 skipped=0 preexisting=0 vanished=0 launch_timeout=0 timed_out=1 total=327
+  ```
+
+  Every other test in that tier reported a verdict before the watchdog fired, and the test passed
+  in isolation immediately afterwards (`8 passed; 1 failed` over
+  `live_158_launch_lifecycle` + `live_screenshot_shim`, the one failure being the unrelated
+  [[iteration-257-firefox-155-drawsnapshot-dictionary-arg]]). So the hang is still
+  contention-only, still bounded by 197's watchdog, and still uncaptured — which is exactly the
+  event this plan is waiting for.
+
 ## References
 
 - [[iteration-197-live-sweep-has-no-per-test-timeout]] — where the watchdog that finally bounds

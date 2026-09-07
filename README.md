@@ -577,8 +577,31 @@ ff-rdp --no-daemon eval "1+1"
 - Log file: `~/.ff-rdp/daemon.log`
 - Stale registry files are cleaned up automatically when the daemon PID is dead
 
+**Health and diagnostics (iter-240):**
+- `ff-rdp daemon status` reports whether the daemon is *working*, not just
+  running: `dispatcher.alive`, `dispatcher.frames_started` /
+  `frames_finished` / `in_flight`, `dispatcher.current_frame_age_ms`,
+  `dispatcher.last_frame_kind`, `rpc_slot.owner` / `rpc_slot.held_secs`, and
+  `clients_dropped_on_write`. A single thread routes every Firefox frame, so
+  `in_flight > 0` with a `current_frame_age_ms` that keeps growing is a wedged
+  daemon — before these fields it was indistinguishable from a slow page,
+  because the CLI reported only a generic 10 s `phase: recv` timeout.
+- `ff-rdp doctor` runs the same check as a `daemon_dispatcher` probe and fails
+  when the dispatcher has exited or has been stuck on one frame for 15 s.
+- Every daemon→client write is bounded by a 10 s deadline
+  (`client_write_deadline_ms`). A client that stops reading is dropped and
+  counted in `clients_dropped_on_write`, rather than parking the dispatcher —
+  which used to take the whole daemon down with it, silently and permanently.
+- `--log-level <level>` on the invocation that auto-starts the daemon also
+  configures the daemon, as `RUST_LOG` in its environment; an exported
+  `RUST_LOG` reaches it through ordinary inheritance. Either way the output
+  lands in `~/.ff-rdp/daemon.log`. Raising the level does **not** reach a
+  daemon that is already running — stop it first.
+
 **Troubleshooting:**
-- If the daemon seems stuck, delete `~/.ff-rdp/daemon.json` to force a fresh start
+- If the daemon seems stuck, run `ff-rdp daemon status` (or `ff-rdp doctor`)
+  first — it will say whether the dispatcher is stuck; then
+  `ff-rdp daemon stop`
 - Use `--no-daemon` to bypass the daemon and test direct connectivity
 - Check `~/.ff-rdp/daemon.log` for daemon-side errors
 
