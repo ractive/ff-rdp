@@ -800,7 +800,7 @@ fn is_firefox_port_open(host: &str, port: u16) -> bool {
 /// daemon actually addressed (iter-123 Theme B).
 ///
 /// On failure (daemon not found, auth error, etc.) returns an `AppError`.
-fn daemon_rpc(cli: &Cli, port: u16, msg: &serde_json::Value) -> Result<Value, AppError> {
+pub(crate) fn daemon_rpc(cli: &Cli, port: u16, msg: &serde_json::Value) -> Result<Value, AppError> {
     let info = registry::read_registry(port)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("reading daemon registry: {e}")))?
         .ok_or_else(|| AppError::User("no daemon is running".to_owned()))?;
@@ -871,56 +871,67 @@ fn daemon_rpc(cli: &Cli, port: u16, msg: &serde_json::Value) -> Result<Value, Ap
 }
 
 /// `ff-rdp daemon status` — print daemon status as JSON.
+/// The `daemon status` payload for "there is no daemon".
+///
+/// One definition for both no-registry and dead-PID so the two cannot drift —
+/// they had already been copy-pasted twice before iter-240 added fields.
+fn not_running_status() -> Value {
+    json!({
+        "running": false,
+        "pid": null,
+        "port": null,
+        "uptime_seconds": null,
+        "connections": null,
+        "buffer_sizes": null,
+        "target_count": null,
+        "live_target_count": null,
+        "dispatcher": null,
+        "rpc_slot": null,
+        "clients_dropped_on_write": null,
+        "client_write_deadline_ms": null,
+    })
+}
+
 pub(crate) fn run_daemon_status(cli: &Cli) -> Result<(), AppError> {
     let result = match registry::read_registry(cli.port)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("reading daemon registry: {e}")))?
     {
-        None => json!({
-            "running": false,
-            "pid": null,
-            "port": null,
-            "uptime_seconds": null,
-            "connections": null,
-            "buffer_sizes": null,
-        }),
+        None => not_running_status(),
         Some(ref info) if !process::is_process_alive(info.pid) => {
             registry::remove_registry(cli.port).ok();
-            json!({
-                "running": false,
-                "pid": null,
-                "port": null,
-                "uptime_seconds": null,
-                "connections": null,
-                "buffer_sizes": null,
-            })
+            not_running_status()
         }
         Some(ref info) => {
             // Pull live stats from the daemon. If the RPC fails, surface
             // whatever registry data we have with null stats so callers can
             // still see the PID/port.
-            let (uptime_seconds, connections, buffer_sizes, target_count, live_target_count) =
-                match daemon_rpc(cli, cli.port, &json!({"to": "daemon", "type": "status"})) {
-                    Ok(resp) => (
-                        resp.get("uptime_secs").and_then(Value::as_u64),
-                        resp.get("stream_subscriber_count").and_then(Value::as_u64),
-                        resp.get("buffer_sizes").cloned(),
-                        resp.get("target_count").and_then(Value::as_u64),
-                        // iter-137 Theme A: targets alive right now, as opposed
-                        // to the cumulative `target_count`.  This is what a
-                        // proxied `click --frame` / `consent accept` enumerates.
-                        resp.get("live_target_count").and_then(Value::as_u64),
-                    ),
-                    Err(_) => (None, None, None, None, None),
-                };
+            let live = daemon_rpc(cli, cli.port, &json!({"to": "daemon", "type": "status"})).ok();
+            let field = |name: &str| live.as_ref().and_then(|r| r.get(name)).cloned();
+            let number = |name: &str| live.as_ref().and_then(|r| r.get(name)?.as_u64());
             json!({
                 "running": true,
                 "pid": info.pid,
                 "port": info.proxy_port,
-                "uptime_seconds": uptime_seconds,
-                "connections": connections,
-                "buffer_sizes": buffer_sizes,
-                "target_count": target_count,
-                "live_target_count": live_target_count,
+                "uptime_seconds": number("uptime_secs"),
+                "connections": number("stream_subscriber_count"),
+                "buffer_sizes": field("buffer_sizes"),
+                "target_count": number("target_count"),
+                // iter-137 Theme A: targets alive right now, as opposed to the
+                // cumulative `target_count`.  This is what a proxied
+                // `click --frame` / `consent accept` enumerates.
+                "live_target_count": number("live_target_count"),
+                // iter-240 Part B Theme C: the fields that tell a wedged daemon
+                // from a slow page.  A stuck dispatcher shows
+                // `dispatcher.in_flight > 0` with a growing
+                // `current_frame_age_ms`; `rpc_slot.held_secs` names how long
+                // one client has monopolised the Firefox channel.  Before
+                // these, a wedge was indistinguishable from a slow page: the
+                // CLI reported a generic 10 s `phase: recv` timeout and the
+                // daemon log said nothing at all.
+                "dispatcher": field("dispatcher"),
+                "rpc_slot": field("rpc_slot"),
+                "clients_dropped_on_write": number("clients_dropped_on_write"),
+                "client_write_deadline_ms": number("client_write_deadline_ms"),
             })
         }
     };

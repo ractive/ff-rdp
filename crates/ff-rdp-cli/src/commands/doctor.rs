@@ -68,6 +68,14 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
     // 1. Daemon registry
     probes.push(probe_daemon(host, port));
 
+    // 1b. Daemon health (iter-240 Part B Theme C). The registry probe above
+    //     only proves a process exists; the wedge iteration 241 recorded was a
+    //     daemon that was alive, registered, and answering nothing. `daemon
+    //     status` is served by the client's own handler thread, so it still
+    //     answers while the event dispatcher is stuck — which is exactly what
+    //     makes it a usable liveness probe.
+    probes.push(probe_daemon_health(cli, port));
+
     // 2. Port owner — local OS query, only meaningful for loopback hosts.
     //    Looked up before the handshake attempt so we can report PID/uptime
     //    even when the listener is not Firefox.
@@ -244,6 +252,106 @@ fn probe_daemon(host: &str, port: u16) -> Probe {
             detail: format!("daemon registry read error: {e:#}"),
             hint: None,
         },
+    }
+}
+
+/// How long a single in-flight dispatch may run before `doctor` calls the
+/// daemon wedged (iter-240).
+///
+/// Generous: a legitimate fan-out of one large Firefox frame to several
+/// subscribers is bounded by `CLIENT_WRITE_DEADLINE` (10 s), so anything past
+/// that is not a slow write, it is a stuck one.
+const DISPATCH_STALL_MS: u64 = 15_000;
+
+/// Ask a running daemon whether its event dispatcher is still moving.
+///
+/// Skipped when no daemon is running, and reported as a warning — never a
+/// failure — when the daemon cannot be reached at all, because that is already
+/// the registry probe's business.
+fn probe_daemon_health(cli: &Cli, port: u16) -> Probe {
+    let name = "daemon_dispatcher";
+    match find_running_daemon(cli.host.as_str(), port) {
+        Ok(Some(_)) => {}
+        _ => {
+            return Probe {
+                name,
+                status: Status::Skipped,
+                detail: "no daemon running".to_owned(),
+                hint: None,
+            };
+        }
+    }
+
+    let Ok(status) = crate::daemon::client::daemon_rpc(
+        cli,
+        port,
+        &serde_json::json!({"to": "daemon", "type": "status"}),
+    ) else {
+        return Probe {
+            name,
+            status: Status::Warn,
+            detail: "the daemon is registered but did not answer `daemon status`".to_owned(),
+            hint: Some(
+                "it may be shutting down; `ff-rdp daemon stop` clears the registry".to_owned(),
+            ),
+        };
+    };
+
+    let dispatcher = &status["dispatcher"];
+    if dispatcher.is_null() {
+        // A daemon from before iter-240 — it cannot answer the question.
+        return Probe {
+            name,
+            status: Status::Warn,
+            detail: "this daemon build does not report dispatcher health".to_owned(),
+            hint: Some("restart it (`ff-rdp daemon stop`) to pick up the current build".to_owned()),
+        };
+    }
+    if dispatcher["alive"] != serde_json::Value::Bool(true) {
+        return Probe {
+            name,
+            status: Status::Fail,
+            detail: "the daemon's event dispatcher has exited — no Firefox traffic is routed"
+                .to_owned(),
+            hint: Some("`ff-rdp daemon stop`, then re-run the command".to_owned()),
+        };
+    }
+    let in_flight = dispatcher["in_flight"].as_u64().unwrap_or(0);
+    let age_ms = dispatcher["current_frame_age_ms"].as_u64().unwrap_or(0);
+    if in_flight > 0 && age_ms >= DISPATCH_STALL_MS {
+        return Probe {
+            name,
+            status: Status::Fail,
+            detail: format!(
+                "the dispatcher has been stuck on one {} frame for {age_ms} ms —                  the daemon is wedged",
+                dispatcher["last_frame_kind"].as_str().unwrap_or("<unknown>")
+            ),
+            hint: Some("`ff-rdp daemon stop`, then re-run the command".to_owned()),
+        };
+    }
+    let dropped = status["clients_dropped_on_write"].as_u64().unwrap_or(0);
+    if dropped > 0 {
+        return Probe {
+            name,
+            status: Status::Warn,
+            detail: format!(
+                "{dropped} client(s) were dropped for missing the write deadline                  ({} ms)",
+                status["client_write_deadline_ms"].as_u64().unwrap_or(0)
+            ),
+            hint: Some(
+                "a client stopped reading its socket; the daemon dropped it rather than                  blocking on it"
+                    .to_owned(),
+            ),
+        };
+    }
+    Probe {
+        name,
+        status: Status::Pass,
+        detail: format!(
+            "dispatcher alive, {} frame(s) routed, none in flight",
+            dispatcher["frames_finished"].as_u64().unwrap_or(0)
+        ),
+        hint: None,
     }
 }
 
