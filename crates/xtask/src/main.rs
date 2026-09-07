@@ -52,7 +52,12 @@ enum Commands {
     /// away mid-sweep, and a Firefox that never opened its debug port in time)
     /// rather than product failures (iter-173); `timed_out` counts tests whose
     /// phase the watchdog killed before libtest reported a verdict, and is
-    /// always a red (iter-197).
+    /// always a red (iter-197). A second line, `LIVE_SWEEP_PROFILES leaked=N
+    /// unattributed=U root=<path>`, reports managed Firefox profiles still
+    /// live-owned in the real per-user root after each target's phase 1;
+    /// `leaked` (a profile naming the live test that launched it) is a red,
+    /// `unattributed` (no owner-test marker, so probably your own `ff-rdp
+    /// launch`) is a note (iter-245).
     LiveSweep(live_sweep::Args),
     /// Regenerate the marked region of the bundled skill's SKILL.md from the
     /// CLI's own command tables (`ff_rdp_cli::commands::skill_doc`).

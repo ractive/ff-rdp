@@ -335,3 +335,121 @@ Unix has told anyone whether the Windows spellings are right, because nothing ha
 ## Closing acceptance criterion (covers all parts) [0/1]
 
 - [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+
+## Outcome — Part A: the real-root orphan check
+
+### Design decisions (Part A, task A)
+
+**1. Duplicate the marker format in `xtask`; do not expose a helper from `ff-rdp-cli`.**
+`crates/xtask/src/live_sweep.rs` now carries its own `MANAGED_PROFILE_PREFIX`,
+`OWNER_PID_MARKER` and `OWNER_TEST_MARKER` constants plus a ~30-line reader
+(`scan_owned_profiles`). The alternative — a narrow `pub` read-only helper on `ff-rdp-cli` —
+was rejected on build cost, not on taste: `xtask` has no dependency on `ff-rdp-cli` today,
+and adding one would make **every** `cargo run -p xtask -- check-*` invocation (the discipline
+gates that run on every iteration, and in CI) build the whole CLI and its dependency tree
+first, to read three file names. The live-test harness already carries exactly this
+duplication for exactly this reason — `crates/ff-rdp-cli/tests/common/mod.rs` says so in
+`OWNER_PID_MARKER`'s own doc comment — so this is the established shape rather than a new one.
+Failure mode if a copy goes stale: the check finds nothing (a marker rename would make
+`scan_owned_profiles` see an unmarked directory), never a false accusation.
+
+**2. A finding fails the sweep — but only the attributable kind — and it gets its own summary
+line.** Three sub-decisions, each with its reason:
+
+- **`leaked` fails the sweep.** A live test's Firefox still holding a profile after its tier's
+  phase 1 is the exact regression iteration 146 made loud, and iteration 146's own postmortem
+  is that a *quiet* signal let real leaks run for weeks. A warning inside a 40-minute log is a
+  quiet signal.
+- **`unattributed` never fails it.** A live-owned managed profile with no `.ff-rdp-owner-test`
+  marker cannot be tied to the live tier at all — the likeliest owner is the developer's own
+  `ff-rdp launch` in another terminal, which is explicitly none of the sweep's business (the
+  plan's question 2). It is printed as a note and counted separately.
+- **A new `LIVE_SWEEP_PROFILES leaked=N unattributed=U root=<path>` line, not an eighth field
+  on `LIVE_SWEEP_SUMMARY`.** Every field of that line counts a *test* and `total=T` conserves
+  them; several readers depend on that invariant. A leaked profile is not a test, so folding it
+  in would need a permanent explanation of its relationship to `total`. `LIVE_SWEEP_SUMMARY`'s
+  documented shape is therefore **unchanged** (AC2's "existing accounting is unchanged" is
+  satisfied literally, not just numerically).
+
+**3. What separates "this sweep's leak" from "somebody else's browser" (the plan's question 2)
+is the owner-test marker, not the clock.** `FF_RDP_LIVE_TEST_NAME` is set only by the live
+harness (`tests/common/mod.rs::ff_rdp_launch_command`), so a profile carrying that marker was
+launched by a live test and a profile without one was not. The pre-sweep snapshot
+(`preexisting_unmarked_names`) is a second, weaker signal used only for the *unmarked* case:
+an interactive browser that was already open is excused by name, one that appears mid-sweep is
+noted. A marked profile is deliberately **not** excused by the snapshot — a live test's browser
+alive before the sweep even starts is a leak somebody should hear about, not a state to
+normalise, and it is what the `dogfood_path` below reproduces. The residual false positive is a
+*second concurrent live sweep on the same machine*; that configuration is already unsupported
+for older reasons (`reap_managed_firefox` kills managed browsers machine-wide, and the
+`preexisting` tier assumes one client on port 6000), and the failure message says so in as many
+words rather than pretending it cannot happen.
+
+### Where the check runs
+
+After **each target's phase 1**, inside the target loop in `live_sweep::run` — the vantage point
+the plan identified, since at that instant every self-launching test in that target has either
+cleaned up (`daemon stop` / `LiveFirefox::drop`) or already been counted as a failure. Anything
+reported is folded into the excused set so a later target cannot report the same directory
+twice. `--dry-run` skips it (nothing ran, so there is nothing to have leaked).
+
+## Outcome — Part B: the blocking-call enumeration and the capture hook
+
+### Every blocking call between test start and the 30 s port-wait bound (Part B, task A)
+
+The bound in question is `launch`'s own `DEFAULT_PORT_WAIT` (30 s,
+`crates/ff-rdp-cli/src/commands/launch.rs:444`, overridable by `--launch-timeout` /
+`FF_RDP_LAUNCH_TIMEOUT_SECS`). Note that this test does **not** go through `LiveFirefox`, so the
+harness's `FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS` (`tests/common/mod.rs:134`) never applies to it —
+the plan's phrasing assumed it did.
+
+| Call | Site | Bounded? |
+| --- | --- | --- |
+| `ff_rdp_launch_command_for(..).output()` ×4 threads | `tests/live/live_158_launch_lifecycle.rs:89` | **No.** Waits for child exit *and* EOF on both pipes, so it inherits whatever bounds `ff-rdp launch`. A pipe-inheritance hang is **refuted** here: Firefox is spawned with `Stdio::null()` stdout and a `piped()` stderr owned by `ff-rdp` (`launch.rs:402-404`), so the launched browser never holds the test's pipes. |
+| `h.join()` | `live_158_launch_lifecycle.rs:102` | **No** — inherits the row above. |
+| `gc_stale_spawn_locks` / `gc_legacy_spawn_lock` / `gc_stale_throttle_states` / `gc_stale_launch_records` | `launch.rs:812,813,814,821` | No explicit bound, but filesystem-only: no lock is waited on, no subprocess spawned. |
+| `(hooks.is_port_in_use)(port)` | `launch.rs:840` → `port_owner.rs:42-51` | **Yes** — `TcpStream::connect_timeout(200 ms)`. |
+| `identify_running_instance` → `port_owner::find_listener` → `lsof -nP -iTCP:<port> … .output()` | `launch.rs:844` → `port_owner.rs:56-62` | **No — prime suspect.** Reached only once the port probe says something is listening, which is precisely the contended case. `lsof` walks every fd of every process; with four launches racing and ~200 browsers on the machine it is the one unbounded call on the hot path that *scales with load*, which fits a hang that happens once in three whole-tier sweeps and never in isolation. |
+| `reject_if_port_occupied` → the same `lsof` | `launch.rs:855`/`:669` → `port_owner.rs:56` | **No** — same call, other branch. |
+| `(hooks.locate_firefox)()` → `which_binary(..).output()` | `launch.rs:859` → `launch.rs:77` | **No.** A `which`/`where` subprocess with no timeout; fast in practice, unbounded in principle. |
+| `(hooks.spawn)(&mut cmd)` | `launch.rs:880` | Non-blocking (`posix_spawn`/`fork`). |
+| `write_owner_pid_marker` / `write_owner_test_marker` | `launch.rs:902`, `:915` | Filesystem writes (atomic rename); no wait primitive. |
+| `std::thread::sleep(500 ms)` | `launch.rs:919` | **Yes** — fixed 500 ms. |
+| `child.try_wait()` | `launch.rs:921` | **Yes** — non-blocking by construction. |
+| `stderr.read_to_string(..)` | `launch.rs:926` | **No — second suspect.** Reads Firefox's stderr pipe to EOF; a grandchild content process that inherited that pipe keeps it open indefinitely. Reached only on the "Firefox exited immediately" path, which makes it a poorer fit for the observed shape (four live Firefoxes were still running) but it is a genuine unbounded wait. |
+| `(hooks.probe_port)` → `wait_for_port` | `launch.rs:943` → `launch.rs:694-733` | **Yes** — `resolve_port_wait_bound` (flag → env → `DEFAULT_PORT_WAIT` 30 s), per-address `connect_timeout`, 200 ms poll interval, hard deadline. |
+
+Output as the plan asked: a list of suspects with `file:line`, **not** a fix. Nothing here is
+measured — the hang has not recurred since 2026-08-23 — and inventing a fix for an unreproduced
+hang is what iteration 197 already declined to do.
+
+### The capture hook (Part B, task B)
+
+`run_phase` takes a `PhaseWatch` (phase 1 only; phase 2 executes nothing and cannot hang in a
+test body). When the watchdog fires, it computes `unreported_tests` from the output captured so
+far and, **only** if `capture_hook_should_fire` matches `live_158_launch_survives_contended_bind`
+on the final `::` segment, samples the stalled process tree *before* `kill_phase_tree` signals
+it: `descendant_pids` from a `ps -eo pid=,ppid=,args=` snapshot (so the target is the test binary
+`cargo` spawned, not `cargo`), then `sample <pid> 5 -f <out>` on macOS or
+`gdb -p <pid> -batch -ex 'thread apply all bt'` on Linux. Files land in
+`target/live-sweep/live_158_launch_survives_contended_bind-<epoch>-pid<n>.txt` and their paths
+are printed in the same `WATCHDOG` report that names the unreported test (AC2). Windows has no
+sampler wired up on purpose — see Part C's scope decision. Every step is best-effort: a missing
+sampler, an unreadable process table or an empty output file all resolve to "no capture", never
+to a delayed kill or an error.
+
+## Outcome — Part C: the Windows process-tree paths
+
+### Scope decision (Theme C)
+
+**Keep both tests in the ordinary `cargo test --workspace` run on `windows-latest`; do not add a
+Windows `live-sweep` job.** The two tests cost a few seconds inside a job that already runs (CI's
+`test (windows-latest)`, 10-minute budget) and they convert the three never-executed Windows
+branches from an assumption into a checked one. What is *not* warranted is running the live tier
+itself on Windows: that needs headless Firefox on the runner plus profile/path work, which
+iteration 197 did not claim and this plan explicitly puts out of scope. So the module's Windows
+support is: `kill_phase_tree` and `process_listing` are proved against real processes by CI;
+`kill_pid_hard` (`taskkill /F /PID`) remains exercised only indirectly, through
+`windows_live_sweep_kill_phase_tree_reaches_a_real_grandchild`'s cleanup path and
+`reap_managed_firefox`, and that is accepted rather than given a third test — it is a one-line
+spelling of the same `taskkill` the tree test proves is present and functional.
