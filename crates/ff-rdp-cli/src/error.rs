@@ -491,8 +491,17 @@ impl From<ff_rdp_core::ProtocolError> for AppError {
                 },
             },
             // I/O errors on the established connection map to Transport (exit 6).
+            //
+            // iter-240: a half-written frame belongs here too, not in
+            // `Internal`. The connection is unusable and has been shut down, so
+            // the caller's remedy is the one `page_view::collect_settled`
+            // already implements for a lost connection — rebuild it and retry
+            // the *request*, never the truncated frame.
             ff_rdp_core::ProtocolError::RecvFailed(_)
-            | ff_rdp_core::ProtocolError::SendFailed(_) => Self::RdpTransport(format!("{err}")),
+            | ff_rdp_core::ProtocolError::SendFailed(_)
+            | ff_rdp_core::ProtocolError::FrameWriteDesynchronised { .. } => {
+                Self::RdpTransport(format!("{err}"))
+            }
             // Wire-framing errors map to RdpShape (exit 4).
             ff_rdp_core::ProtocolError::InvalidPacket(detail) => Self::RdpShape {
                 path: "frame".to_owned(),

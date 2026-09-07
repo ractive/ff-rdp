@@ -236,6 +236,9 @@ pub const MAX_FRAME_BYTES: usize = DEFAULT_MAX_FRAME_BYTES;
 ///   read exactly that many bytes and parse as JSON.
 pub struct RdpTransport {
     reader: BufReader<TcpStream>,
+    /// Resumable framer state for `reader` (iter-240) — one per stream, kept
+    /// for the life of the stream.
+    decoder: FrameDecoder,
     writer: TcpStream,
     /// Optional sink for packets that arrive on the reply-channel but are in
     /// fact server-pushed events (e.g. `consoleAPICall`, `tabNavigated`).
@@ -302,6 +305,7 @@ impl RdpTransport {
                     );
                     return Ok(Self {
                         reader,
+                        decoder: FrameDecoder::default(),
                         writer: stream,
                         event_sink: None,
                         target_guard: None,
@@ -350,6 +354,7 @@ impl RdpTransport {
     pub(crate) fn from_parts(reader: BufReader<TcpStream>, writer: TcpStream) -> Self {
         Self {
             reader,
+            decoder: FrameDecoder::default(),
             writer,
             event_sink: None,
             target_guard: None,
@@ -360,8 +365,8 @@ impl RdpTransport {
     /// Decompose into the underlying reader/writer halves.
     ///
     /// Called by [`split`](Self::split) to hand the halves to `FramedReader`/`FramedWriter`.
-    fn into_parts(self) -> (BufReader<TcpStream>, TcpStream) {
-        (self.reader, self.writer)
+    fn into_parts(self) -> (BufReader<TcpStream>, FrameDecoder, TcpStream) {
+        (self.reader, self.decoder, self.writer)
     }
 
     /// Install (or clear) the side-channel for stray events encountered by
@@ -459,8 +464,12 @@ impl RdpTransport {
     /// This is the preferred way for the daemon to split the connection so it
     /// never needs to import raw `encode_frame`/`recv_from` from this crate.
     pub fn split(self) -> (FramedReader, FramedWriter) {
-        let (reader, writer) = self.into_parts();
-        (FramedReader { reader }, FramedWriter { writer })
+        // iter-240: the framer state travels with the read half. A split that
+        // reset it would restart decoding mid-frame if the transport were split
+        // between a timeout and its resume — the very desync `FrameDecoder`
+        // exists to remove.
+        let (reader, decoder, writer) = self.into_parts();
+        (FramedReader { reader, decoder }, FramedWriter { writer })
     }
 
     /// Override the socket read timeout.
@@ -527,7 +536,7 @@ impl RdpTransport {
 
     /// Receive a single length-prefixed JSON message.
     pub fn recv(&mut self) -> Result<Value, ProtocolError> {
-        let value = recv_from(&mut self.reader)?;
+        let value = self.decoder.decode(&mut self.reader, max_frame_bytes())?;
 
         if tracing::enabled!(tracing::Level::TRACE) {
             tracing::trace!(
@@ -629,6 +638,9 @@ impl RdpTransport {
 /// Owned exclusively by the Firefox-reader thread in the daemon.
 pub struct FramedReader {
     reader: BufReader<TcpStream>,
+    /// Resumable framer state for `reader` (iter-240) — one per stream, kept
+    /// for the life of the stream.
+    decoder: FrameDecoder,
 }
 
 impl FramedReader {
@@ -639,6 +651,7 @@ impl FramedReader {
     pub fn from_stream(stream: TcpStream) -> Self {
         Self {
             reader: BufReader::new(stream),
+            decoder: FrameDecoder::default(),
         }
     }
 
@@ -646,7 +659,7 @@ impl FramedReader {
     ///
     /// Mirrors [`RdpTransport::recv`].
     pub fn recv(&mut self) -> Result<Value, ProtocolError> {
-        let value = recv_from(&mut self.reader)?;
+        let value = self.decoder.decode(&mut self.reader, max_frame_bytes())?;
 
         if tracing::enabled!(tracing::Level::TRACE) {
             tracing::trace!(
@@ -1282,84 +1295,236 @@ pub(crate) fn recv_from_with_cap(
     reader: &mut impl BufRead,
     cap: usize,
 ) -> Result<Value, ProtocolError> {
-    // Read the first byte to distinguish JSON vs bulk frames.
-    let mut first = [0u8; 1];
-    reader.read_exact(&mut first).map_err(map_recv_io_error)?;
+    FrameDecoder::default().decode(reader, cap)
+}
 
-    if first[0] == b'b' {
-        // Delegate to drain_bulk_frame_with_cap which shares the discard logic with
-        // recv_bulk_with_handler_from.  recv_bulk_frame returns
-        // BulkPacketUnsupported after draining; we map that back from the
-        // existing helper.
-        return recv_bulk_frame(reader, first[0], cap);
-    }
+/// How far into the next frame the reader has got (iter-240).
+#[derive(Default, Debug)]
+enum DecodeState {
+    /// At a frame boundary: nothing of the next frame has been consumed.
+    #[default]
+    Idle,
+    /// Reading the `{len}` prefix; holds the digits seen so far.
+    Prefix(Vec<u8>),
+    /// Reading the payload; `filled` bytes of `body` are valid.
+    Body { body: Vec<u8>, filled: usize },
+    /// A mid-frame failure that is not resumable — every later read fails.
+    Poisoned,
+}
 
-    // Normal JSON frame: read remaining bytes of the length prefix.
-    let mut length_buf = Vec::with_capacity(10);
+/// A **resumable** `{len}:{json}` framer.
+///
+/// # The bug this exists to remove (iteration 240)
+///
+/// Framing used to be a straight-line function: read the length prefix, then
+/// `read_exact` the payload. Every socket in this codebase carries
+/// `SO_RCVTIMEO`, and every read loop built on it treats
+/// [`ProtocolError::Timeout`] as *"nothing arrived, poll again"* — the daemon's
+/// client loop and its Firefox reader both do, at 30 s and 1 s respectively.
+///
+/// But a timeout does not only happen at a frame boundary. When it fired
+/// **mid-frame**, `read_exact` had already consumed the length prefix and part
+/// of the payload, and those bytes were dropped on the floor along with the
+/// stack frame. The caller, told only "timeout", called `recv()` again — and the
+/// framer restarted *inside* the payload it had half-read, reporting things
+/// like:
+///
+/// ```text
+/// daemon: abandoning client 42: client_frame_undecodable: \
+///     invalid packet: unexpected byte 0x3d in length prefix
+/// ```
+///
+/// `0x3d` is `=`; `0x64` is `d`. Both are payload bytes, not framing. That is
+/// the desync iteration 224 recorded and could not explain, reproduced here at
+/// hop 32 of a 40-hop `--with-page` loop.
+///
+/// The decoder keeps its progress across calls, so a timeout is what the
+/// callers already assume it is: *nothing consumed that matters, try again*.
+/// The next call resumes exactly where the last one stopped.
+///
+/// One decoder belongs to one stream, for the life of that stream — sharing or
+/// recreating one mid-stream reintroduces the bug.
+#[derive(Default)]
+pub(crate) struct FrameDecoder {
+    state: DecodeState,
+}
 
-    if first[0] == b':' {
-        // Degenerate: length was empty.
-        return Err(ProtocolError::InvalidPacket(
-            "empty length prefix".to_owned(),
-        ));
-    }
+impl FrameDecoder {
+    /// Decode the next frame, resuming any partially-read one.
+    ///
+    /// Returns [`ProtocolError::Timeout`] when the socket deadline expires
+    /// before the frame is complete; the caller may simply call again.
+    fn decode(
+        &mut self,
+        reader: &mut impl BufRead,
+        cap: usize,
+    ) -> Result<Value, ProtocolError> {
+        loop {
+            match &mut self.state {
+                DecodeState::Poisoned => {
+                    return Err(ProtocolError::InvalidPacket(
+                        "the frame stream desynchronised earlier on this connection".to_owned(),
+                    ));
+                }
+                DecodeState::Idle => {
+                    let mut first = [0u8; 1];
+                    match reader.read_exact(&mut first) {
+                        Ok(()) => {}
+                        // Nothing consumed — the stream is still aligned.
+                        Err(e) => return Err(map_recv_io_error(e)),
+                    }
 
-    if !first[0].is_ascii_digit() {
-        return Err(ProtocolError::InvalidPacket(format!(
-            "unexpected byte {:#x} in length prefix",
-            first[0]
-        )));
-    }
-    length_buf.push(first[0]);
+                    if first[0] == b'b' {
+                        // Bulk frames are drained, not decoded. The drain is not
+                        // resumable, so a timeout inside it *is* fatal: say so
+                        // rather than silently losing the position.
+                        let result = recv_bulk_frame(reader, first[0], cap);
+                        if matches!(
+                            result,
+                            Err(ProtocolError::BulkPacketUnsupported { .. })
+                        ) {
+                            // Fully drained: the stream is aligned again.
+                            self.state = DecodeState::Idle;
+                        } else {
+                            self.state = DecodeState::Poisoned;
+                        }
+                        return result;
+                    }
 
-    loop {
-        let mut byte = [0u8; 1];
-        reader.read_exact(&mut byte).map_err(map_recv_io_error)?;
+                    if first[0] == b':' {
+                        self.state = DecodeState::Poisoned;
+                        return Err(ProtocolError::InvalidPacket(
+                            "empty length prefix".to_owned(),
+                        ));
+                    }
+                    if !first[0].is_ascii_digit() {
+                        self.state = DecodeState::Poisoned;
+                        return Err(ProtocolError::InvalidPacket(format!(
+                            "unexpected byte {:#x} in length prefix",
+                            first[0]
+                        )));
+                    }
+                    self.state = DecodeState::Prefix(vec![first[0]]);
+                }
+                DecodeState::Prefix(digits) => {
+                    let mut byte = [0u8; 1];
+                    match reader.read_exact(&mut byte) {
+                        Ok(()) => {}
+                        Err(e) => {
+                            let err = map_recv_io_error(e);
+                            if matches!(err, ProtocolError::Timeout) {
+                                // Keep the digits; resume on the next call.
+                                trace_resume("length prefix", digits.len());
+                            } else {
+                                self.state = DecodeState::Poisoned;
+                            }
+                            return Err(err);
+                        }
+                    }
 
-        if byte[0] == b':' {
-            break;
+                    if byte[0] == b':' {
+                        let length = match parse_length(digits, cap) {
+                            Ok(n) => n,
+                            Err(e) => {
+                                self.state = DecodeState::Poisoned;
+                                return Err(e);
+                            }
+                        };
+                        self.state = DecodeState::Body {
+                            body: vec![0u8; length],
+                            filled: 0,
+                        };
+                        continue;
+                    }
+                    if !byte[0].is_ascii_digit() {
+                        self.state = DecodeState::Poisoned;
+                        return Err(ProtocolError::InvalidPacket(format!(
+                            "unexpected byte {:#x} in length prefix",
+                            byte[0]
+                        )));
+                    }
+                    digits.push(byte[0]);
+                    // Guard against malformed streams with no ':' separator.
+                    if digits.len() >= 20 {
+                        self.state = DecodeState::Poisoned;
+                        return Err(ProtocolError::InvalidPacket(
+                            "length prefix is 20+ digits".to_owned(),
+                        ));
+                    }
+                }
+                DecodeState::Body { body, filled } => {
+                    while *filled < body.len() {
+                        match reader.read(&mut body[*filled..]) {
+                            Ok(0) => {
+                                self.state = DecodeState::Poisoned;
+                                return Err(ProtocolError::RecvFailed(std::io::Error::new(
+                                    std::io::ErrorKind::UnexpectedEof,
+                                    "peer closed mid-frame",
+                                )));
+                            }
+                            Ok(n) => *filled += n,
+                            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                            Err(e) => {
+                                let err = map_recv_io_error(e);
+                                if matches!(err, ProtocolError::Timeout) {
+                                    // Keep what has arrived; resume next call.
+                                    trace_resume("payload", *filled);
+                                } else {
+                                    self.state = DecodeState::Poisoned;
+                                }
+                                return Err(err);
+                            }
+                        }
+                    }
+
+                    let DecodeState::Body { body, .. } =
+                        std::mem::replace(&mut self.state, DecodeState::Idle)
+                    else {
+                        unreachable!("state was matched as Body")
+                    };
+                    return serde_json::from_slice(&body).map_err(|e| {
+                        // The frame was read in full, so the stream is still
+                        // aligned — only this payload is unusable.
+                        ProtocolError::InvalidPacket(format!("JSON parse error: {e}"))
+                    });
+                }
+            }
         }
-
-        if byte[0].is_ascii_digit() {
-            length_buf.push(byte[0]);
-        } else {
-            return Err(ProtocolError::InvalidPacket(format!(
-                "unexpected byte {:#x} in length prefix",
-                byte[0]
-            )));
-        }
-
-        // Guard against malformed streams with no ':' separator.
-        if length_buf.len() >= 20 {
-            return Err(ProtocolError::InvalidPacket(
-                "length prefix is 20+ digits".to_owned(),
-            ));
-        }
     }
+}
 
-    let length_str = std::str::from_utf8(&length_buf)
+/// Parse an accumulated length prefix, rejecting oversized frames before any
+/// payload allocation.
+fn parse_length(digits: &[u8], cap: usize) -> Result<usize, ProtocolError> {
+    let length_str = std::str::from_utf8(digits)
         .map_err(|_| ProtocolError::InvalidPacket("non-UTF8 in length prefix".to_owned()))?;
-
     let length: usize = length_str
         .parse()
         .map_err(|e| ProtocolError::InvalidPacket(format!("length parse error: {e}")))?;
-
-    // Reject oversized frames before allocating.  A peer that announces more
-    // than the configured cap is either corrupted or malicious.
+    // A peer that announces more than the configured cap is either corrupted
+    // or malicious; refuse before allocating.
     if length > cap {
         return Err(ProtocolError::FrameTooLarge {
             declared: length,
             max: cap,
         });
     }
+    Ok(length)
+}
 
-    let mut body = vec![0u8; length];
-    reader.read_exact(&mut body).map_err(map_recv_io_error)?;
-
-    let value = serde_json::from_slice(&body)
-        .map_err(|e| ProtocolError::InvalidPacket(format!("JSON parse error: {e}")))?;
-
-    Ok(value)
+/// Record that a frame was interrupted by the socket deadline and will resume.
+///
+/// This is the event that used to corrupt the stream silently. Logging it at
+/// debug keeps the mechanism observable — `RUST_LOG=ff_rdp_core::transport=debug`
+/// on a daemon shows exactly which frames straddled a read deadline — without
+/// the volume of a full trace.
+fn trace_resume(part: &'static str, progress: usize) {
+    tracing::debug!(
+        target: "ff_rdp_core::transport",
+        part,
+        progress,
+        "frame read hit the socket deadline mid-frame — progress kept, resuming"
+    );
 }
 
 /// Validate that an outbound bulk-frame length is within the configured cap.
@@ -2171,6 +2336,7 @@ mod tests {
         let reader = BufReader::new(client_stream);
         let mut transport = RdpTransport {
             reader,
+            decoder: FrameDecoder::default(),
             writer,
             event_sink: None,
             target_guard: None,
@@ -2345,6 +2511,112 @@ mod tests {
     use std::io::Write as IoWrite;
     use std::net::TcpListener;
 
+    /// iter-240, the root cause: a read that is interrupted by the socket
+    /// deadline **mid-frame** must resume, not restart.
+    ///
+    /// Every read loop in this codebase polls: it sets `SO_RCVTIMEO`, calls
+    /// `recv()`, and treats `ProtocolError::Timeout` as "nothing arrived, go
+    /// round again" — the daemon's client loop at 30 s and its Firefox reader
+    /// at 1 s both do. Before this, a timeout that fired *inside* a frame threw
+    /// away the length prefix and the payload bytes already consumed, and the
+    /// next `recv()` started decoding in the middle of the payload:
+    /// `invalid packet: unexpected byte 0x3d in length prefix`.
+    ///
+    /// This drives that exact sequence: a frame delivered in two pieces with a
+    /// timeout in between.
+    #[test]
+    fn frame_read_resumes_across_a_mid_frame_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let mut sender = TcpStream::connect(addr).expect("connect");
+        let (receiver, _) = listener.accept().expect("accept");
+        receiver
+            .set_read_timeout(Some(Duration::from_millis(150)))
+            .expect("read timeout");
+        let mut reader = FramedReader::from_stream(receiver);
+
+        let json = r#"{"from":"root","applicationType":"browser"}"#;
+        let frame = encode_frame(json);
+        let split_at = frame.len() / 2;
+
+        // First half only, then stall past the read deadline.
+        IoWrite::write_all(&mut sender, &frame.as_bytes()[..split_at]).expect("first half");
+        sender.flush().expect("flush");
+        assert!(
+            matches!(reader.recv(), Err(ProtocolError::Timeout)),
+            "an incomplete frame must report a timeout, not a decode"
+        );
+
+        // The rest, plus a whole second frame behind it.
+        IoWrite::write_all(&mut sender, &frame.as_bytes()[split_at..]).expect("second half");
+        IoWrite::write_all(&mut sender, encode_frame(r#"{"from":"root"}"#).as_bytes())
+            .expect("next frame");
+        sender.flush().expect("flush");
+
+        let first = reader
+            .recv()
+            .expect("the interrupted frame must complete, not restart mid-payload");
+        assert_eq!(first["applicationType"], "browser");
+        let second = reader
+            .recv()
+            .expect("and the stream must still be aligned for the next frame");
+        assert_eq!(second["from"], "root");
+    }
+
+    /// The same guarantee while the *length prefix* itself straddles the
+    /// deadline — the case that produced a digit-looking byte from a payload.
+    #[test]
+    fn length_prefix_resumes_across_a_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let mut sender = TcpStream::connect(addr).expect("connect");
+        let (receiver, _) = listener.accept().expect("accept");
+        receiver
+            .set_read_timeout(Some(Duration::from_millis(150)))
+            .expect("read timeout");
+        let mut reader = FramedReader::from_stream(receiver);
+
+        // A payload long enough that its length prefix is multi-digit.
+        let json = format!(r#"{{"pad":"{}"}}"#, "y".repeat(1234));
+        let frame = encode_frame(&json);
+        // Stop after the first digit of the prefix.
+        IoWrite::write_all(&mut sender, &frame.as_bytes()[..1]).expect("one digit");
+        sender.flush().expect("flush");
+        assert!(matches!(reader.recv(), Err(ProtocolError::Timeout)));
+
+        IoWrite::write_all(&mut sender, &frame.as_bytes()[1..]).expect("rest");
+        sender.flush().expect("flush");
+        let value = reader.recv().expect("the prefix must resume, not restart");
+        assert_eq!(value["pad"].as_str().map(str::len), Some(1234));
+    }
+
+    /// A frame the decoder could not make sense of poisons the connection: the
+    /// stream position is unknown, so pretending the next read starts at a
+    /// frame boundary is how a single bad byte used to become a cascade.
+    #[test]
+    fn a_desynchronised_stream_stays_refused() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let mut sender = TcpStream::connect(addr).expect("connect");
+        let (receiver, _) = listener.accept().expect("accept");
+        receiver
+            .set_read_timeout(Some(Duration::from_millis(150)))
+            .expect("read timeout");
+        let mut reader = FramedReader::from_stream(receiver);
+
+        // Garbage where a length prefix belongs, then a perfectly good frame.
+        IoWrite::write_all(&mut sender, b"=nonsense").expect("garbage");
+        IoWrite::write_all(&mut sender, encode_frame(r#"{"from":"root"}"#).as_bytes())
+            .expect("good frame");
+        sender.flush().expect("flush");
+
+        assert!(matches!(reader.recv(), Err(ProtocolError::InvalidPacket(_))));
+        assert!(
+            matches!(reader.recv(), Err(ProtocolError::InvalidPacket(_))),
+            "a stream whose position is unknown must not be read as if aligned"
+        );
+    }
+
     /// iter-240: a write that stops **mid-frame** must be reported as a
     /// desynchronisation, not as a retryable timeout.
     ///
@@ -2414,9 +2686,10 @@ mod tests {
         let (server, _) = listener.accept().expect("accept");
         // Both ends closed: the very first write fails outright.
         drop(peer);
-        server
-            .shutdown(std::net::Shutdown::Both)
-            .expect("shutdown");
+        // Best-effort: on some platforms dropping the peer already put the
+        // socket in a state where `shutdown` reports `NotConnected`, which is
+        // the state this test wants either way.
+        let _ = server.shutdown(std::net::Shutdown::Both);
         let mut writer = FramedWriter::from_stream(server);
 
         let err = writer.send_raw(r#"{"a":1}"#).expect_err("closed socket");
