@@ -2,7 +2,7 @@
 title: "Iteration 233: nothing runs the green plan-linter sweep, and one plan is invisible to every hyalo sweep"
 type: iteration
 date: 2026-08-24
-status: planned
+status: done
 branch: iter-233/enforce-plan-linter-sweep
 depends_on: [195]
 first_call_sites: []
@@ -95,19 +95,19 @@ new step for a contributor, and no new judgement call — it either exits 0 or n
 
 ## Tasks
 
-### A. Decide and record [0/2]
-- [ ] A written disposition covering where it runs, what it runs, and blocking vs advisory
-- [ ] `CONTRIBUTING.md`'s "Running it over the whole directory" section says what now runs it
+### A. Decide and record [2/2]
+- [x] A written disposition covering where it runs, what it runs, and blocking vs advisory — `kb/decision-log.md` DEC-052 Part A
+- [x] `CONTRIBUTING.md`'s "Running it over the whole directory" section says what now runs it
 
-### B. Wire it [0/2]
-- [ ] The sweep runs automatically, on a trigger named in the disposition
-- [ ] A deliberately invalid plan makes it red, demonstrated in the PR
+### B. Wire it [2/2]
+- [x] The sweep runs automatically, on a trigger named in the disposition — the `discipline` job in `.github/workflows/ci.yml`, on every `pull_request`
+- [x] A deliberately invalid plan makes it red, demonstrated in the PR — output in Results below, and pinned as a unit test
 
-## Acceptance Criteria [0/3]
+## Acceptance Criteria [3/3]
 
-- [ ] `grep -rn check-iteration-plan .github/workflows/` names a caller
-- [ ] A planted invalid plan fails whatever runs the sweep, shown with output
-- [ ] No new xtask subcommand (iteration 162a's decision still stands)
+- [x] `grep -rn check-iteration-plan .github/workflows/` names a caller — `.github/workflows/ci.yml:155`
+- [x] A planted invalid plan fails whatever runs the sweep, shown with output — see Results
+- [x] No new xtask subcommand (iteration 162a's decision still stands) — `check-iteration-plan` gained a directory argument; `xtask --help` lists the same 12 subcommands as on `origin/main`
 
 ## Out of scope
 
@@ -174,23 +174,23 @@ Pick deliberately and write the reasoning into `kb/decision-log.md`.
 
 ## Tasks
 
-### A. Establish the constraint [0/2]
-- [ ] Determine whether hyalo's ScalarBytes budget is configurable from `.hyalo.toml`
-- [ ] Confirm 84 is the only skipped document, on this branch and on `origin/main`
+### A. Establish the constraint [2/2]
+- [x] Determine whether hyalo's ScalarBytes budget is configurable from `.hyalo.toml` — it is not; `hyalo config` reports no scalar/budget key and no help text names one. Moot in any case: the budget no longer rejects the file.
+- [x] Confirm 84 is the only skipped document, on this branch and on `origin/main` — **zero** documents are skipped on either. The first command run in this iteration, on a clean tree at `origin/main`, wrote 0 bytes to stderr over 450 files.
 
-### B. The fix [0/2]
-- [ ] Make `hyalo find --file kb/iterations/iteration-84-*.md` return its `title` and `status`
-- [ ] Whatever is edited in 84, its recorded outcome and AC state are unchanged
+### B. The fix [2/2]
+- [x] Make `hyalo find --file kb/iterations/iteration-84-*.md` return its `title` and `status` — already true on arrival; fixed upstream in hyalo, not by this iteration
+- [x] Whatever is edited in 84, its recorded outcome and AC state are unchanged — **nothing was edited**; the file is untouched by this branch
 
-### C. Stop it recurring silently [0/1]
-- [ ] A written disposition on whether a hyalo skip should be detectable without reading stderr
+### C. Stop it recurring silently [1/1]
+- [x] A written disposition on whether a hyalo skip should be detectable without reading stderr — DEC-052 Part B: it already is (`hyalo lint --rule HYALO005`, exit 1), documented in `CONTRIBUTING.md`; no repo-side gate
 
-## Acceptance Criteria [0/3]
+## Acceptance Criteria [3/3]
 
-- [ ] `hyalo find --property type=iteration` walks all plans with no `skipping` warning
-- [ ] Iteration 84's outcome, ACs and tick state are byte-identical apart from the
-      frontmatter change the fix requires
-- [ ] No new xtask subcommand (iteration 162a's decision still stands) — duplicate of Part A AC 3; tick together
+- [x] `hyalo find --property type=iteration` walks all plans with no `skipping` warning — **satisfied by hyalo 0.22.0, not by this iteration**; verified, not delivered
+- [x] Iteration 84's outcome, ACs and tick state are byte-identical apart from the
+      frontmatter change the fix requires — no frontmatter change was required, so byte-identical outright
+- [x] No new xtask subcommand (iteration 162a's decision still stands) — duplicate of Part A AC 3; tick together
 
 ## Out of scope
 
@@ -201,3 +201,100 @@ Pick deliberately and write the reasoning into `kb/decision-log.md`.
 
 - `kb/decision-log.md` DEC-047 — the correction that surfaced this
 - `kb/iterations/iteration-195-check-iteration-plan-fails-on-85-of-222-plans.md`
+
+## Results (2026-09-07)
+
+### Part A — the sweep now runs in CI
+
+`check-iteration-plan` accepts a directory. Given one it walks every
+`iteration-*.md`, prints each failing plan's findings, and exits 1 if any failed:
+
+```
+$ cargo run -p xtask -- check-iteration-plan kb/iterations
+check-iteration-plan: swept 260 plan(s) in kb/iterations: 0 failed, 86 with warnings only
+$ echo $?
+0
+```
+
+The `discipline` job in `.github/workflows/ci.yml` runs exactly that line on every
+pull request, blocking. `grep -rn check-iteration-plan .github/workflows/` now
+names `.github/workflows/ci.yml:155`.
+
+**The enforcement bites.** Planting the invalid plan from this iteration's
+`dogfood_path`:
+
+```
+$ printf -- '---\ntitle: "x"\ntype: iteration\nstatus: planned\n---\n\n# x\n' \
+    > kb/iterations/iteration-998-deliberately-invalid.md
+$ cargo run -p xtask -- check-iteration-plan kb/iterations
+check-iteration-plan: 1 finding(s) in kb/iterations/iteration-998-deliberately-invalid.md
+  - missing dogfood_path: add a dogfood_path frontmatter key, a ## Dogfood path section, or a dogfood_script frontmatter key pointing to a sibling .sh file
+check-iteration-plan: swept 261 plan(s) in kb/iterations: 1 failed, 86 with warnings only
+check-iteration-plan: 1 plan(s) failed. Re-run on one file for its warnings too: cargo run -p xtask -- check-iteration-plan <plan>
+$ echo $?
+1
+$ rm -f kb/iterations/iteration-998-deliberately-invalid.md
+$ cargo run -p xtask -- check-iteration-plan kb/iterations
+check-iteration-plan: swept 260 plan(s) in kb/iterations: 0 failed, 86 with warnings only
+```
+
+That demonstration lives only in this PR body, so the same plan content is pinned
+as a unit test (`test_check_plan_content_fails_the_planted_invalid_plan`), along
+with the directory glob and the "a parse failure is one plan's finding, not an
+abort of the walk" behaviour the sweep needs and single-file mode does not have.
+
+Reasoning for all three decisions the plan demanded — where it runs, what it runs,
+blocking vs advisory — is `kb/decision-log.md` DEC-052 Part A.
+
+### Part B — the defect was fixed upstream before this iteration reached it
+
+The plan's own premise check was right. Against
+`hyalo 0.22.0 (625c5c19510d 2026-09-05)`, on a clean tree at `origin/main`:
+
+```
+$ hyalo find --property type=iteration --format text >/tmp/h.out 2>/tmp/h.err
+$ echo "exit=$?  stderr bytes: $(wc -c </tmp/h.err)"
+exit=0  stderr bytes: 0
+```
+
+Zero. `hyalo find --file kb/iterations/iteration-84-dogfood-56-real-real-fixes.md
+--format text` returns its `title` and `status`. The `ScalarBytes` budget is not
+merely raised — a planted plan carrying a 23,979-byte block scalar parses without
+a warning. **Iteration 84 was not edited by this branch.**
+
+So Tasks A/B and ACs 1–2 of the absorbed plan were satisfied by a hyalo release
+rather than by this work, and are ticked as *verified*, not as *delivered*.
+
+Task C survives, and its answer turned out to be better than the plan assumed. The
+detector the plan wanted — a skip that is visible without reading stderr — already
+exists:
+
+```
+$ hyalo lint --rule HYALO005          # frontmatter-parse-error, severity: error
+"errors": 0 … exit 0
+# with a file whose frontmatter will not parse:
+"errors": 1, "rule": "HYALO005", "file": "iterations/iteration-997-badyaml.md" … exit 1
+```
+
+hyalo's own stderr warning now points at it, too: *"skipped 1 file with unparsable
+frontmatter (run hyalo lint --rule HYALO005 for details)"*. Disposition: document
+the command in `CONTRIBUTING.md`, add no gate — hyalo is not installed on the CI
+runners, and a local-only gate nothing runs is the exact shape iteration 162a
+deleted six of. Full reasoning in DEC-052 Part B, including the honest limit: the
+Part A sweep is **not** a substitute, because xtask read iteration 84 fine
+throughout the months hyalo was skipping it.
+
+### Premise corrections
+
+- The plan cites "`kb/decision-log.md`'s record that advisory PR lanes and the
+  ralph-loop do not mix". No DEC records that. The record is in
+  `kb/iterations/iteration-117-release-prep-v0-3.md` Theme B and the
+  `project_ralph_advisory_lane_gotcha` memory note; the reasoning is unaffected and
+  DEC-052 cites the real source.
+- The plan's Part A framing assumed the choice was "shell loop vs a new directory
+  subcommand". It is neither: an existing subcommand's path argument now accepts a
+  directory, which is why AC 3 ticks.
+
+### Carry-over
+
+None. No new work is filed by this iteration.
