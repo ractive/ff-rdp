@@ -192,10 +192,29 @@ unconditionally against `owner_liveness == "live"`. A retry was considered and r
 would quiet the symptom at whatever rate the machine happens to produce, which is precisely the
 "fix justified by reasoning alone" this plan warned against.
 
-The `Unreadable` grading and the atomic marker write below stand on their own merits — an
-unreadable marker being read as "no owner" is a real deletion hazard, and `fs::write`'s truncate
-window really does open against a live profile — but they are **not** what this flake was, and
-must not be credited with having fixed it.
+The `Unreadable` grading and the atomic marker write below stand on their own merits — the
+truncate window really does open against a live profile, and a corrupt marker reaching the
+iter-142 reclaim-immediately rule would delete a directory on no evidence — but they are **not**
+what this flake was, and must not be credited with having fixed it.
+
+### Review findings, and what they changed
+
+A fresh-context review pass found five, all acted on:
+
+1. **HIGH** — `Unreadable` in `keeps_profile_alive` made a permanently-corrupt marker's directory
+   unreclaimable by every age-based path: the iter-171 permanent-leak class through a new door.
+   Fixed (see Theme B above). Found independently by this iteration and by the reviewer.
+2. **MEDIUM** — the fix for (1) contradicted five committed tests and two doc comments. All
+   updated; behaviour, tests, help text and docs now agree.
+3. **MEDIUM** — `remove_dir_all` returning `NotFound` was reported as a removal *failure*, in the
+   two fields this iteration added to make failures visible. Two concurrent prunes, or a prune
+   followed by `daemon stop`, would report `remove-failed` — the one skip reason that means a
+   real problem — for a directory that is gone. `NotFound` is now success at both sites.
+4. **LOW** — a failed marker write left the directory naming ff-rdp's own (about to exit) PID,
+   which the next launch grades `Dead`, and iter-142 then removes a live profile immediately.
+   The stale marker is now cleared on that path, degrading to `Unmarked`.
+5. **LOW** — the temp-file cleanup claim was overstated (a SIGKILL between write and rename leaks
+   one sibling). Reworded with the bound on its cost, rather than swept.
 
 #### A. Attribution [1/2]
 - [x] `profile_is_owned_by_live_process` can report *which* `OwnerLiveness` it derived —
@@ -215,8 +234,15 @@ must not be credited with having fixed it.
       branch. `read_owner_pid_marker` collapsed "no marker file" and "the marker did not read
       back as a PID *this instant*" into one `None`, and only the first of those means "nobody
       owns this". They are now separate gradings (`Unmarked` vs. the new `Unreadable`), and
-      `Unreadable` joins `Unverified` on the keep side of every deletion path while still
-      refusing the kill-scoping gate. Separately, the window that produces it is closed:
+      `Unreadable` can never reach the iter-142 *confidently dead* rule that reclaims a profile
+      immediately regardless of age, while still being refused by the kill-scoping gate.
+      **It is deliberately not an unconditional keep** — the review pass caught that first draft
+      as a HIGH finding, and it was right: `Unreadable` has no live PID behind it, unlike
+      `Unverified`, so keeping unconditionally never terminates and a permanently-corrupt marker
+      would leak its directory forever — the same permanent-unreclaimability class iter-171 was
+      written to close. It falls through to the mtime heuristic instead, which is what actually
+      protects a running browser: its profile is never stale, because it is being written to.
+      Separately, the window that produces it is closed:
       `write_owner_pid_marker` used `fs::write` (truncate, then write), so a concurrent reader
       could observe an empty marker on a directory whose Firefox is running — and iter-175 made
       `launch` enter that window against a live directory on the normal path. Marker writes now

@@ -368,6 +368,16 @@ pub(crate) fn prune_profiles(
                 }
                 removed.push(entry.basename);
             }
+            // iter-242 review: already gone is the outcome, not a failure —
+            // two concurrent prunes (or a `launch`'s orphan sweep) race, and
+            // the loser must not report a removal that "did not happen" for a
+            // directory that is not there.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if entry.live_owner {
+                    removed_live.push(entry.basename.clone());
+                }
+                removed.push(entry.basename);
+            }
             Err(e) => {
                 tracing::warn!(
                     "profiles prune: failed to remove {}: {e}",
@@ -738,16 +748,19 @@ mod tests {
         assert!(!live.exists() && !plain.exists(), "both dirs removed");
     }
 
-    /// AC (iter-242 Part A): the transient case pinned end to end — given an
-    /// owner marker that exists but does not read back as a PID, an age-gated
-    /// prune does **not** remove the profile.
+    /// AC (iter-242 Part A): the transient case pinned end to end — an owner
+    /// marker that exists but does not read back as a PID is graded
+    /// `unreadable`, reported as such, and is never confused with "nobody owns
+    /// this directory".
     ///
-    /// The empty marker is exactly what a reader observes inside
-    /// `fs::write`'s truncate-then-write window, which `launch` enters against
-    /// a directory whose Firefox is already running (iter-175 re-marks the
-    /// directory after the spawn). Before iter-242 that read graded
-    /// `Unmarked`, the profile fell through to the mtime heuristic, and a
-    /// live session's profile was deleted out from under it.
+    /// The empty marker is exactly what a reader observed inside `fs::write`'s
+    /// truncate-then-write window, which `launch` entered against a directory
+    /// whose Firefox was already running (iter-175 re-marks the directory
+    /// after the spawn); iter-242 closed that window at the source by writing
+    /// markers atomically. What survives is the *grading*: the age question is
+    /// still answered by mtime — which is what protects a live browser, whose
+    /// profile is never stale — but the answer is now attributable, and a
+    /// corrupt marker can never reach the iter-142 reclaim-immediately rule.
     #[test]
     fn unit_242_age_gated_prune_keeps_profile_with_unreadable_marker() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -767,15 +780,25 @@ mod tests {
 
         let outcome = prune_profiles(root.path(), Some(Duration::from_hours(168)), false);
 
+        let racing_basename = racing.file_name().unwrap().to_str().unwrap().to_owned();
         let plain_basename = plain.file_name().unwrap().to_str().unwrap().to_owned();
+        let mut removed = outcome.removed.clone();
+        removed.sort();
         assert_eq!(
-            outcome.removed,
-            vec![plain_basename],
-            "only the marker-less stale dir may be removed"
+            removed,
+            vec![racing_basename.clone(), plain_basename],
+            "both stale dirs are age candidates; the unreadable marker changes the *grading*, \
+             not the age answer"
         );
-        assert!(
-            racing.exists(),
-            "a profile whose owner marker could not be read must survive an age-gated prune"
+        let report: std::collections::HashMap<&str, &str> = outcome
+            .owner_liveness
+            .iter()
+            .map(|(name, grading)| (name.as_str(), *grading))
+            .collect();
+        assert_eq!(
+            report.get(racing_basename.as_str()),
+            Some(&"unreadable"),
+            "and the grading must say so rather than claiming the directory was unowned"
         );
     }
 

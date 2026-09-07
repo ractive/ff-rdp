@@ -3196,8 +3196,9 @@ a file created after it listed the directory and fail. Such an entry appears in 
 at all.
 `owner_liveness` reports, per selected directory, the grading that decision came from:
 `live` (owner running), `unverified` (owner alive, identity undisclosed by the OS),
-`unreadable` (an owner marker that exists but did not read back as a PID — treated as
-still-owned), `dead` (owner gone, or its PID recycled), or `unmarked` (no marker at all).
+`unreadable` (an owner marker that exists but did not read back as a PID — graded by age like
+`unmarked`, but never eligible for the age-free dead-owner reclamation), `dead` (owner gone, or
+its PID recycled), or `unmarked` (no marker at all).
 Pass --dry-run to preview without touching disk: `would_remove` is populated and `removed` stays
 empty, and every listed directory still exists afterwards. On a real run it's the other way round:
 `removed` is populated and `would_remove` stays empty.

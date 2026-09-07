@@ -318,6 +318,23 @@ pub(crate) fn write_owner_pid_marker(dir: &Path, pid: u32) {
             "write_owner_pid_marker: could not write {}: {e}",
             marker.display()
         );
+        // iter-242 review: and remove whatever marker is still there. On the
+        // normal path this call is the *re-mark* — `launch` claimed the
+        // directory with its own PID before the spawn (iter-175) — so leaving
+        // the old one behind leaves a directory naming the launcher, which
+        // exits moments later. The next launch then grades it `Dead` and the
+        // iter-142 rule removes it immediately, out from under the Firefox
+        // that is actually running against it. `Unmarked` is the safe
+        // degradation: it falls back to the mtime heuristic, and a live
+        // browser's profile is never stale.
+        if let Err(e) = std::fs::remove_file(&marker)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(
+                "write_owner_pid_marker: could not clear stale {} after a failed write: {e}",
+                marker.display()
+            );
+        }
         // Without the PID marker the start token identifies nothing, and a
         // stray token file would only confuse a later reader.
         return;
@@ -355,9 +372,15 @@ pub(crate) fn write_owner_pid_marker(dir: &Path, pid: u32) {
 /// `MOVEFILE_REPLACE_EXISTING`, which `std::fs::rename` uses on Windows)
 /// replaces the name atomically, so a reader sees either the previous marker
 /// or the new one. The temp file is a sibling rather than in `TMPDIR` so the
-/// rename cannot cross a filesystem boundary, and it is removed on the error
-/// path so a failed write leaves nothing behind for the iter-175
-/// failed-launch fingerprint to trip over.
+/// rename cannot cross a filesystem boundary.
+///
+/// The temp file is removed on the `io::Error` path, but that is not a
+/// guarantee: a SIGKILL between the write and the rename leaks one
+/// `.<marker>.<pid>.tmp` sibling, and nothing collects it. The cost is bounded
+/// — it does not affect [`profile_is_provably_failed_launch`], whose
+/// fingerprint is a directory holding *exactly* `user.js` and which a marked
+/// directory already fails, and [`latest_profile_activity`] ages it along with
+/// the rest of the profile — so it is recorded rather than swept.
 fn write_marker_atomically(marker: &Path, contents: &str) -> std::io::Result<()> {
     let Some(name) = marker.file_name().and_then(|n| n.to_str()) else {
         return Err(std::io::Error::new(
@@ -428,18 +451,22 @@ pub(crate) enum OwnerLiveness {
     /// The [`OWNER_PID_MARKER`] file exists but did not yield a PID at this
     /// instant: an I/O error, or contents that do not parse (iter-242).
     ///
-    /// This is the one grading that can flip between two calls a few hundred
-    /// milliseconds apart without the owner having died, because
-    /// [`write_owner_pid_marker`] re-marks a live directory with
-    /// `fs::write` — truncate-then-write — so a concurrent reader can observe
-    /// the empty intermediate state of a marker that both before and after
-    /// names a running Firefox. Collapsing it into [`OwnerLiveness::Unmarked`]
-    /// reported that momentary read as a confident "nobody owns this", which
-    /// on the deletion paths means deleting a live profile.
+    /// This grading can appear and disappear between two calls a few hundred
+    /// milliseconds apart without the owner having died: pre-iter-242,
+    /// [`write_owner_pid_marker`] re-marked a live directory with `fs::write`
+    /// — truncate, then write — so a concurrent reader could observe the empty
+    /// intermediate state of a marker that both before and after names a
+    /// running Firefox. (That window is now closed at the source; the grading
+    /// remains for markers left corrupt by an older binary, a partial disk
+    /// write, or a permissions change.)
     ///
-    /// So it is graded like [`OwnerLiveness::Unverified`]: "cannot tell",
-    /// which the prune paths resolve toward keeping the directory and the
-    /// kill-scoping gate resolves toward refusing.
+    /// It is kept apart from [`OwnerLiveness::Unmarked`] because the two are
+    /// different claims — "we could not read the owner" is not "there is no
+    /// owner" — and because only the second may ever reach the iter-142
+    /// *confidently dead* reclamation. For the age question they resolve the
+    /// same way: see [`OwnerLiveness::keeps_profile_alive`] for why an
+    /// unconditional keep here would be a permanent leak rather than a safety
+    /// measure.
     Unreadable,
     /// The recorded PID is gone — or, the case iter-171 adds, it is alive but
     /// is provably a *different* process than the one that wrote the marker,
@@ -518,15 +545,27 @@ impl OwnerLiveness {
     /// recycled PID, which before read as live-owned and made the profile
     /// permanently unreclaimable.
     ///
-    /// The three `true` cases are not the same claim. [`Self::Live`] is
-    /// positive proof, while [`Self::Unverified`] (iter-171) and
-    /// [`Self::Unreadable`] (iter-242) are both "cannot tell". They collapse
-    /// here only because a deletion path resolves every uncertainty the same
-    /// way — keep the directory. The kill-scoping gate, whose blast radius
-    /// points the other way, tests for [`Self::Live`] on its own and so
-    /// refuses both.
+    /// The two `true` cases are not the same claim. [`Self::Live`] is positive
+    /// proof; [`Self::Unverified`] (iter-171) is "the PID is alive and I
+    /// cannot confirm its identity", which still has a live process behind it.
+    /// The kill-scoping gate, whose blast radius points the other way, tests
+    /// for [`Self::Live`] on its own and so refuses `Unverified`.
+    ///
+    /// [`Self::Unreadable`] is deliberately **not** here, and the reasoning is
+    /// worth keeping. It is also "cannot tell", but unlike `Unverified` it has
+    /// no live PID behind it — there is no evidence of a process at all — so
+    /// an unconditional keep would never terminate: a marker left permanently
+    /// corrupt by a pre-iter-242 binary killed mid-`fs::write` would make its
+    /// directory unreclaimable **forever**, which is precisely the failure
+    /// iter-171 existed to close for the recycled-PID case. It falls through
+    /// to the iter-96 mtime heuristic instead — the same treatment
+    /// [`Self::Unmarked`] gets, and the thing that actually protects a running
+    /// browser, whose profile is never stale because it is being written to.
+    /// What `Unreadable` buys over `Unmarked` is that it is never the iter-142
+    /// *confidently dead* case: a corrupt marker must not authorise an
+    /// immediate age-free reclamation.
     pub(crate) fn keeps_profile_alive(self) -> bool {
-        matches!(self, Self::Live | Self::Unverified | Self::Unreadable)
+        matches!(self, Self::Live | Self::Unverified)
     }
 }
 
@@ -939,6 +978,19 @@ fn cleanup_profile_dir_under(root: &Path, path: &Path) -> ProfileCleanup {
             tracing::debug!("cleanup_profile_dir: removed {}", path.display());
             ProfileCleanup::Removed(path.to_path_buf())
         }
+        // iter-242 review: a directory that is already gone is the outcome
+        // this function exists to produce, not a failure. Reporting `ENOENT`
+        // as `remove-failed` would tell an operator that a managed directory
+        // "should have gone away and did not" — the one skip reason that means
+        // a real problem — for the case where a concurrent `profiles prune`
+        // got there first.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tracing::debug!(
+                "cleanup_profile_dir: {} was already gone — treating as removed",
+                path.display()
+            );
+            ProfileCleanup::Removed(path.to_path_buf())
+        }
         Err(e) => {
             tracing::warn!(
                 "cleanup_profile_dir: failed to remove {}: {e}",
@@ -1202,11 +1254,7 @@ pub fn prune_orphan_profiles(
         let owner = owner_liveness(&path);
         let marker_pid = read_owner_pid_marker(&path);
         match owner {
-            // iter-242: `Unreadable` joins the keep arm. A marker that exists
-            // but does not read back as a PID right now is "cannot tell", and
-            // this is a deletion path, so it resolves the same way
-            // `Unverified` already does.
-            OwnerLiveness::Live | OwnerLiveness::Unverified | OwnerLiveness::Unreadable => {
+            OwnerLiveness::Live | OwnerLiveness::Unverified => {
                 tracing::debug!(
                     "prune_orphan_profiles: keeping {} — owner PID {marker_pid:?} is alive \
                      ({owner:?})",
@@ -1229,6 +1277,25 @@ pub fn prune_orphan_profiles(
                     ),
                 }
                 continue;
+            }
+            OwnerLiveness::Unreadable => {
+                // iter-242: a marker that exists but does not read back as a
+                // PID. Not the iter-142 dead-owner case above — a corrupt
+                // marker is not proof of abandonment and must never authorise
+                // an age-free reclamation — and not the iter-175 failed-launch
+                // case below, whose fingerprint is a directory holding
+                // *exactly* `user.js`, which a marked directory is not.
+                //
+                // So: fall through to the mtime heuristic, which is what
+                // protects a running browser here. Its profile is never stale,
+                // because it is being written to; a directory whose marker is
+                // corrupt *and* whose newest file is older than the threshold
+                // is abandoned by any reading.
+                tracing::debug!(
+                    "prune_orphan_profiles: {} has an owner marker that did not read back as a \
+                     PID — grading by age rather than by ownership",
+                    path.display()
+                );
             }
             OwnerLiveness::Unmarked => {
                 // No marker (pre-97 profile, a pre-iter-175 failed launch, or
@@ -1683,7 +1750,7 @@ mod tests {
         // produces exactly this state on a *live* profile).
         std::fs::write(dir.path().join(OWNER_PID_MARKER), b"not-a-pid\n").expect("overwrite");
         assert_eq!(owner_liveness(dir.path()), OwnerLiveness::Unreadable);
-        assert!(owner_liveness_of(dir.path()).keeps_profile_alive());
+        assert!(!owner_liveness_of(dir.path()).keeps_profile_alive());
     }
 
     /// AC: `live_151_leaked_profile_names_its_test` (unit half) —
@@ -2220,10 +2287,13 @@ mod tests {
             OwnerLiveness::Unreadable,
             "a marker that exists but yields no PID is 'cannot tell', not 'no owner'"
         );
-        assert!(
-            owner_liveness_of(&dir).keeps_profile_alive(),
-            "the deletion paths must resolve 'cannot tell' toward keeping the directory"
-        );
+        // Not a keep on its own: an unconditional keep for a grading with no
+        // live PID behind it never terminates, so a permanently-corrupt marker
+        // would make the directory unreclaimable forever. What it must never
+        // be is the iter-142 *confidently dead* case, which reclaims
+        // immediately regardless of age.
+        assert!(!owner_liveness_of(&dir).keeps_profile_alive());
+        assert_ne!(owner_liveness(&dir), OwnerLiveness::Dead);
     }
 
     /// The absent case is untouched: no marker file at all still grades
@@ -2240,29 +2310,56 @@ mod tests {
 
     /// An unreadable marker — here a *directory* wearing the marker's name, so
     /// `read_to_string` fails with an I/O error rather than `NotFound` on every
-    /// platform — must not let the orphan sweep reclaim the profile, however
-    /// old it is.
+    /// platform — is graded by **age**, never reclaimed immediately.
     ///
-    /// This is the AC-1 pin for Part A: given the transient condition, an
-    /// age-gated reclamation does **not** remove the profile. Before iter-242
-    /// this directory graded `Unmarked`, fell through to the mtime heuristic,
-    /// and was deleted.
+    /// This is the AC-1 pin for Part A, and the direction it pins matters. The
+    /// hazard is not "a corrupt marker means delete now": that is exactly what
+    /// the iter-142 dead-owner rule does for [`OwnerLiveness::Dead`], and doing
+    /// it for a marker we merely could not *read* would reclaim a directory on
+    /// no evidence at all. A fresh profile with an unreadable marker therefore
+    /// survives; the identical directory back-dated past the threshold does
+    /// not, because an unconditional keep would leak it forever.
     #[test]
-    fn unit_242_unreadable_marker_survives_the_age_gated_orphan_sweep() {
+    fn unit_242_unreadable_marker_is_graded_by_age_not_reclaimed_outright() {
         let root = tempfile::tempdir().expect("tempdir");
-        let dir = seed_fake_profile(root.path(), &"3".repeat(16), Duration::from_hours(192));
-        std::fs::create_dir(dir.join(OWNER_PID_MARKER)).expect("marker path taken by a directory");
 
-        assert_eq!(owner_liveness(&dir), OwnerLiveness::Unreadable);
+        let fresh = seed_fake_profile(root.path(), &"3".repeat(16), Duration::from_secs(1));
+        std::fs::create_dir(fresh.join(OWNER_PID_MARKER)).expect("marker path taken by a dir");
+        assert_eq!(owner_liveness(&fresh), OwnerLiveness::Unreadable);
 
         let summary = prune_orphan_profiles(root.path(), Duration::from_hours(168), 50);
-
         assert!(
             summary.removed.is_empty(),
-            "an owner marker that cannot be read is not proof of abandonment — got {:?}",
+            "an unreadable marker is not proof of abandonment — a fresh profile must survive, \
+             got {:?}",
             summary.removed
         );
-        assert!(dir.exists(), "the profile directory must survive");
+        assert!(fresh.exists());
+
+        // The same directory, older than the threshold: nothing is claiming to
+        // own it, and nothing has touched it in a week.
+        let stale = seed_fake_profile(root.path(), &"7".repeat(16), Duration::from_hours(192));
+        std::fs::write(stale.join(OWNER_PID_MARKER), b"not-a-pid\n").expect("junk marker");
+        let stale_mtime = SystemTime::now()
+            .checked_sub(Duration::from_hours(192))
+            .expect("age fits before now");
+        filetime::set_file_mtime(
+            stale.join(OWNER_PID_MARKER),
+            filetime::FileTime::from_system_time(stale_mtime),
+        )
+        .expect("backdate the marker too");
+        filetime::set_file_mtime(&stale, filetime::FileTime::from_system_time(stale_mtime))
+            .expect("re-backdate the dir");
+        assert_eq!(owner_liveness(&stale), OwnerLiveness::Unreadable);
+
+        let summary = prune_orphan_profiles(root.path(), Duration::from_hours(168), 50);
+        assert_eq!(
+            summary.removed,
+            vec![stale.clone()],
+            "a stale profile whose marker cannot be read must still be reclaimable — an \
+             unconditional keep here is a permanent leak"
+        );
+        assert!(fresh.exists(), "the fresh one is still not a candidate");
     }
 
     /// The kill direction resolves the same uncertainty the opposite way:
@@ -2275,7 +2372,6 @@ mod tests {
         std::fs::write(dir.join(OWNER_PID_MARKER), b"not-a-pid\n").expect("write junk marker");
 
         assert_eq!(owner_liveness(&dir), OwnerLiveness::Unreadable);
-        assert!(owner_liveness_of(&dir).keeps_profile_alive());
         assert!(
             !pid_is_ff_rdp_spawned_under(root.path(), std::process::id()),
             "'cannot tell' must never mean 'go ahead and kill'"

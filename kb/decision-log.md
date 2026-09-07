@@ -2288,11 +2288,22 @@ credit it with having done so.
 
 **Decision**: `owner_liveness` in `crates/ff-rdp-cli/src/util/profile_dir.rs` gains a fifth
 grading, `Unreadable`, for a `.ff-rdp-owner-pid` marker that exists but yields no PID at this
-instant — an I/O error, or contents that do not parse. It sits with `Unverified` on the keep
-side of every deletion path (`profiles prune`, `launch`'s orphan sweep) and, like `Unverified`,
-is refused by the iter-110 kill-scoping gate, which still demands exactly `Live`. Separately,
+instant — an I/O error, or contents that do not parse. It is refused by the iter-110 kill-scoping
+gate (which demands exactly `Live`) and, crucially, can never reach the iter-142 *confidently
+dead* rule that reclaims a profile immediately regardless of age. It is **not** an unconditional
+keep: unlike `Unverified` it has no live PID behind it, so keeping unconditionally never
+terminates and a permanently-corrupt marker would make its directory unreclaimable forever — the
+exact permanent-leak class iter-171 was written to close. It falls through to the iter-96 mtime
+heuristic instead, which is what actually protects a running browser, whose profile is never
+stale because it is being written to. (The first draft of this decision did make it an
+unconditional keep; the review pass caught it, and the plan records the finding.) Separately,
 `write_owner_pid_marker` now writes through a sibling temp file plus `rename` instead of
-`fs::write`.
+`fs::write`, and clears the stale marker if that write fails — otherwise the directory is left
+naming the launcher's own PID, which the next launch grades `Dead`.
+
+`remove_dir_all` returning `NotFound` is treated as success by both `cleanup_profile_dir` and
+`prune_profiles`: a directory that is already gone is the outcome, not a failure, and reporting
+it as `remove-failed` would raise a real-problem signal for a lost race between two prunes.
 
 **Why**: `read_owner_pid_marker` returned `Option<u32>` and collapsed two different answers into
 `None`: "there is no marker file" and "the marker did not read back". Only the first means
