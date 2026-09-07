@@ -2,7 +2,7 @@
 title: "Iteration 239: home view — one RDP connection instead of two"
 type: iteration
 date: 2026-08-30
-status: in-review
+status: done
 branch: iter-239/home-view-single-connect
 depends_on: [212]
 first_call_sites:
