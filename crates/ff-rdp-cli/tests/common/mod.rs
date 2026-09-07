@@ -333,6 +333,106 @@ pub fn guard_launched_firefox(out: &std::process::Output) -> Option<FirefoxGuard
     Some(FirefoxGuard::new(pid))
 }
 
+/// What the live document reported when a readiness poll gave up (iter-242
+/// Part C).
+///
+/// Exists so a test asserting on a third-party page's content can *name* why
+/// it failed instead of only reporting the value it did not get. The two
+/// diagnoses the iteration-175 sweep could not tell apart were "the document
+/// was not there yet" (our readiness contract) and "the site answered with
+/// something else" (theirs), and `document.title == ""` is consistent with
+/// both.
+#[derive(Debug, Clone)]
+pub struct DocumentState {
+    pub ready_state: String,
+    pub title: String,
+    pub href: String,
+    pub waited: Duration,
+}
+
+impl DocumentState {
+    /// A one-line diagnosis naming which side the failure is on.
+    ///
+    /// `readyState` is the discriminator: a document that never completes is a
+    /// readiness/transport problem, while one that completes with the wrong
+    /// title is the site having answered differently — a rate-limit
+    /// interstitial, a redesign, an outage page. Neither is a verdict on which
+    /// side should *change*; it is the evidence that decision needs, which
+    /// asserting on the title alone never produced.
+    pub fn diagnosis(&self, expected: &str) -> String {
+        if self.ready_state != "complete" {
+            format!(
+                "READINESS: document.readyState was {:?} (never \"complete\") after {:?} at \
+                 {} — navigate reported success, so this is our readiness contract or the \
+                 transport, not the page's content",
+                self.ready_state, self.waited, self.href
+            )
+        } else if self.title.is_empty() {
+            format!(
+                "SITE: document.readyState reached \"complete\" after {:?} at {} but \
+                 document.title was empty — the page loaded and answered with no title \
+                 (rate limit, interstitial, or outage), so this is the site, not our readiness",
+                self.waited, self.href
+            )
+        } else {
+            format!(
+                "SITE: document completed at {} with title {:?}, expected {expected:?} — the \
+                 page answered, with different content",
+                self.href, self.title
+            )
+        }
+    }
+}
+
+/// Poll the live document until `document.readyState` is `"complete"` and
+/// `document.title` is non-empty, or `timeout` elapses (iter-242 Part C).
+///
+/// `navigate` reporting success is not the same claim as "the document is
+/// there": the iteration-175 sweep saw `live_eval_on_hn` get `""` back from
+/// `document.title` seconds after a successful navigate, and green three
+/// minutes later in isolation. A bounded readiness wait removes the ambiguity
+/// where it can, and where it cannot, [`DocumentState::diagnosis`] says which
+/// side the remaining failure is on.
+///
+/// Deliberately not a retry of the *assertion*: an accepted retry would hide a
+/// real readiness regression behind a second attempt. This waits for the
+/// document, then the caller asserts once.
+pub fn await_document_ready(port: u16, timeout: Duration) -> DocumentState {
+    let started = std::time::Instant::now();
+    let read = |script: &str| -> String {
+        Command::new(ff_rdp_bin())
+            .args(base_args(port))
+            .args(["eval", script])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| serde_json::from_slice::<serde_json::Value>(&o.stdout).ok())
+            .and_then(|j| j["results"].as_str().map(str::to_owned))
+            .unwrap_or_default()
+    };
+    loop {
+        let ready_state = read("document.readyState");
+        let title = read("document.title");
+        if ready_state == "complete" && !title.is_empty() {
+            return DocumentState {
+                ready_state,
+                title,
+                href: read("window.location.href"),
+                waited: started.elapsed(),
+            };
+        }
+        if started.elapsed() >= timeout {
+            return DocumentState {
+                ready_state,
+                title,
+                href: read("window.location.href"),
+                waited: started.elapsed(),
+            };
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
 /// Owner-PID marker written inside every ff-rdp-managed profile dir; mirrors
 /// the product's private `util::profile_dir::OWNER_PID_MARKER`.
 ///
