@@ -176,22 +176,27 @@ fn build_request_submit_js(escaped_sel: &str) -> String {
   if (!el) throw new Error('Element not found: {escaped_sel}');
   var form = el.form || (el.closest ? el.closest('form') : null);
   if (!form) return '{JSON_SENTINEL}' + JSON.stringify({{requested: false, reason: 'no_form'}});
-  // iter-237 Part A: record whether the page cancelled the submission. A
-  // `submit` handler that calls preventDefault() (every AJAX form) means no
-  // cross-document navigation is coming, and Rust must not spend a navigation
-  // budget waiting for one. An uncancelled submit is the opposite: the load is
-  // guaranteed, so waiting for it is warranted however long it takes.
-  // `form.submit()` (the legacy path below) does not fire `submit` at all and
-  // cannot be cancelled — hence the `!cancelable` default of false.
+  // iter-237 Part A: report whether a cross-document load is actually coming,
+  // so Rust knows whether spending a navigation budget on it is warranted.
+  // Two ways it is not: a `submit` handler calling preventDefault() (every
+  // AJAX form), and constraint validation refusing to submit at all — in
+  // which case `requestSubmit()` fires `invalid` and no `submit` event ever
+  // dispatches. Hence both flags: `fired` separates "submitted" from "never
+  // got that far", `cancelled` separates "will navigate" from "handled in
+  // page".
+  var fired = false;
   var cancelled = false;
-  var onSubmit = function(e) {{ cancelled = e.defaultPrevented; }};
+  var onSubmit = function(e) {{ fired = true; cancelled = e.defaultPrevented; }};
   if (typeof form.requestSubmit === 'function') {{
     form.addEventListener('submit', onSubmit, {{capture: false, once: true}});
     try {{ form.requestSubmit(); }} finally {{ form.removeEventListener('submit', onSubmit); }}
   }} else {{
+    // The legacy path bypasses `submit` entirely and cannot be cancelled, so
+    // it always navigates: report it as an uncancelled submission that fired.
+    fired = true;
     form.submit();
   }}
-  return '{JSON_SENTINEL}' + JSON.stringify({{requested: true, reason: null, cancelled: cancelled}});
+  return '{JSON_SENTINEL}' + JSON.stringify({{requested: true, reason: null, fired: fired, cancelled: cancelled}});
 }})()"#
     )
 }
@@ -273,10 +278,19 @@ fn press_enter_and_submit(
     // share the post-Enter constant, and 600 ms expired mid-flight often
     // enough that `navigated: false` shipped alongside a `results.page` from
     // the destination.
+    // A load is coming only if the `submit` event actually dispatched and no
+    // handler cancelled it. `fired` defaults to true so an older/absent field
+    // keeps the extended poll rather than silently skipping it; `cancelled`
+    // defaults to false for the same reason.
+    let fired = req_json
+        .get("fired")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
     let cancelled = req_json
         .get("cancelled")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
+    let load_expected = fired && !cancelled;
     let started = std::time::Instant::now();
     let mut navigated = navigated_away(
         ctx,
@@ -285,10 +299,10 @@ fn press_enter_and_submit(
         request_submit_grace_ms(wait_timeout_ms),
     );
     // The grace period is the cheap path, not the answer. When it comes back
-    // "no" on a submission the page did *not* cancel, a cross-document load is
-    // still guaranteed to be coming, so ask again where the question can be
-    // answered — see `navigated_after_refresh`.
-    if !navigated && !cancelled {
+    // "no" on a submission that really did start a load, that load is still
+    // coming, so ask again where the question can be answered — see
+    // `navigated_after_refresh`.
+    if !navigated && load_expected {
         let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let remaining = wait_timeout_ms.saturating_sub(elapsed);
         navigated = navigated_after_refresh(ctx, &url_before, remaining);
@@ -655,6 +669,38 @@ mod tests {
         );
         let kept = build_type_js("input", "\"hi\"", false);
         assert!(kept.contains("if (false) { applyValue(''); }"), "{kept}");
+    }
+
+    /// iter-237 Part A: the submitted JS must report both flags the Rust side
+    /// gates the extended navigation poll on. Without them every AJAX form —
+    /// and every form constraint validation refuses — pays the full
+    /// `--timeout` waiting for a load that is not coming.
+    #[test]
+    fn unit_237_request_submit_js_reports_fired_and_cancelled() {
+        let js = build_request_submit_js("form input");
+        assert!(
+            js.contains("addEventListener('submit'"),
+            "the submit event is the only place preventDefault is observable: {js}"
+        );
+        assert!(
+            js.contains("e.defaultPrevented"),
+            "cancellation must be read off the event, not guessed: {js}"
+        );
+        assert!(
+            js.contains("fired: fired") && js.contains("cancelled: cancelled"),
+            "both flags must reach Rust: {js}"
+        );
+        // The legacy `form.submit()` path fires no `submit` event but always
+        // navigates, so it must not be reported as "never got that far".
+        let legacy = js
+            .split("}} else {{")
+            .nth(1)
+            .or_else(|| js.split("} else {").nth(1))
+            .unwrap_or("");
+        assert!(
+            legacy.contains("fired = true"),
+            "form.submit() always navigates and must not skip the poll: {js}"
+        );
     }
 
     /// iter-237 Part A: the post-`requestSubmit()` poll must get a budget
