@@ -272,6 +272,8 @@ pub enum TabListError {
         /// The version from the greeting, which is already known at this point.
         firefox_version: Option<u32>,
         error: AppError,
+        /// The raw actor/transport reason.
+        detail: String,
     },
 }
 
@@ -280,6 +282,14 @@ impl TabListError {
     pub fn into_app_error(self) -> AppError {
         match self {
             Self::Connect { error, .. } | Self::ListTabs { error, .. } => error,
+        }
+    }
+
+    /// The one-line reason, for callers that report the failure as state
+    /// rather than raising it.
+    pub fn detail(&self) -> &str {
+        match self {
+            Self::Connect { detail, .. } | Self::ListTabs { detail, .. } => detail,
         }
     }
 }
@@ -398,9 +408,8 @@ pub fn connect_and_list_tabs(
         } => ("127.0.0.1", proxy_port, true, Some(auth_token)),
     };
 
-    let connection = connect_to_firefox(host, port, cli, via_daemon, auth_token).map_err(
-        |ConnectFailure { app, detail }| TabListError::Connect { error: app, detail },
-    )?;
+    let connection = connect_to_firefox(host, port, cli, via_daemon, auth_token)
+        .map_err(|ConnectFailure { app, detail }| TabListError::Connect { error: app, detail })?;
 
     handshake_and_list_tabs(connection, via_daemon)
 }
@@ -420,9 +429,11 @@ fn handshake_and_list_tabs(
     let tabs = match RootActor::list_tabs(connection.transport_mut()) {
         Ok(tabs) => tabs,
         Err(e) => {
+            let detail = e.to_string();
             return Err(TabListError::ListTabs {
                 firefox_version: greeting_version,
                 error: AppError::from(e),
+                detail,
             });
         }
     };

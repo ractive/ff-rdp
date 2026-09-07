@@ -20,18 +20,18 @@
 //! a nasty surprise.
 
 use std::fmt::Write as _;
-use std::time::Duration;
 
-use ff_rdp_core::{RdpConnection, RootActor};
+use ff_rdp_core::TabInfo;
 use serde_json::{Value, json};
 
 use crate::cli::args::{Cli, HomeArgs};
 use crate::daemon::client::find_running_daemon;
+use crate::daemon::registry::DaemonInfo;
 use crate::error::AppError;
 use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
-use super::connect_tab::{connect_and_get_target, connect_direct};
+use super::connect_tab::{TabListError, TabListRouting, TabListing, connect_and_list_tabs};
 use super::page_view::{self, CollectOptions, DEFAULT_INTERACTIVE_LIMIT};
 use super::skill_doc::{DESCRIPTION, IDIOMS, NAVIGATE_IDIOM};
 
@@ -176,19 +176,24 @@ fn hints_for(state: HintState<'_>) -> Vec<String> {
 }
 
 /// Probe the daemon registry. Never an error: "no daemon" is an answer.
-fn daemon_block(host: &str, port: u16) -> Value {
-    match find_running_daemon(host, port) {
-        Ok(Some(info)) => json!({
+///
+/// A registry read that fails (permissions, corrupt JSON) is reported as "no
+/// daemon" rather than propagated: the home view's contract is that it always
+/// renders, and `doctor` is the command that explains why a layer is unhappy.
+fn find_daemon(host: &str, port: u16) -> Option<DaemonInfo> {
+    find_running_daemon(host, port).ok().flatten()
+}
+
+/// Render the registry entry [`find_daemon`] returned as the `daemon` block.
+fn daemon_block(info: Option<&DaemonInfo>, port: u16) -> Value {
+    match info {
+        Some(info) => json!({
             "running": true,
             "pid": info.pid,
             "proxy_port": info.proxy_port,
             "firefox_port": info.firefox_port,
         }),
-        // A registry read that fails (permissions, corrupt JSON) is reported
-        // as "no daemon" rather than propagated: the home view's contract is
-        // that it always renders, and `doctor` is the command that explains
-        // why a layer is unhappy.
-        Ok(None) | Err(_) => json!({
+        None => json!({
             "running": false,
             "pid": Value::Null,
             "proxy_port": Value::Null,
@@ -197,78 +202,112 @@ fn daemon_block(host: &str, port: u16) -> Value {
     }
 }
 
-/// Reachability + version + tab list, in one connection.
+/// Reachability, version, tab list — and the still-open connection they came
+/// from, so the `page` block can be collected without a second connect
+/// (iter-239).
 ///
-/// Returns `(browser_block, tabs)`. Failure to connect is the expected case
-/// on a cold machine, so it produces `reachable: false` and an empty tab list
-/// rather than an error.
-fn browser_and_tabs(cli: &Cli) -> (Value, Vec<Value>) {
-    let unreachable = |detail: Option<String>| {
-        json!({
-            "reachable": false,
-            "firefox_version": Value::Null,
-            "host": cli.host,
-            "port": cli.port,
-            "detail": detail,
-        })
+/// Failure to connect is the expected case on a cold machine, so it produces
+/// `reachable: false` and an empty tab list rather than an error.
+///
+/// Routed through the daemon **only when one is already running**, so the refs
+/// a later `attach` hands out are live handles without the home view ever
+/// spawning a daemon. See the module docs for why that asymmetry is deliberate.
+fn connect_once(cli: &Cli, daemon: Option<&DaemonInfo>) -> (Value, Vec<Value>, Option<TabListing>) {
+    let browser = |reachable: bool, version: Option<u32>, detail: Option<String>| {
+        browser_block(&cli.host, cli.port, reachable, version, detail)
     };
 
-    let mut connection =
-        match RdpConnection::connect(&cli.host, cli.port, Duration::from_millis(cli.timeout)) {
-            Ok(c) => c,
-            Err(e) => return (unreachable(Some(e.to_string())), Vec::new()),
-        };
-    let firefox_version = connection.firefox_version();
-    crate::connection_meta::remember_version(firefox_version);
+    let route = match (daemon, cli.no_daemon) {
+        (Some(info), false) => Some((info.proxy_port, info.auth_token.as_str())),
+        _ => None,
+    };
 
-    let tabs = match RootActor::list_tabs(connection.transport_mut()) {
-        Ok(tabs) => serde_json::to_value(&tabs).unwrap_or(Value::Null),
-        Err(e) => {
-            // The greeting landed but `listTabs` did not: the browser *is*
-            // reachable, and saying otherwise would send the agent to
-            // `launch` when it should be looking at `doctor`.
-            return (
-                json!({
-                    "reachable": true,
-                    "firefox_version": firefox_version,
-                    "host": cli.host,
-                    "port": cli.port,
-                    "detail": format!("listTabs failed: {e}"),
-                }),
-                Vec::new(),
-            );
+    let mut listing = match route {
+        Some((proxy_port, auth_token)) => connect_and_list_tabs(
+            cli,
+            TabListRouting::RunningDaemon {
+                proxy_port,
+                auth_token,
+            },
+        ),
+        None => connect_and_list_tabs(cli, TabListRouting::Direct),
+    };
+
+    // A registry entry can outlive the daemon that wrote it. Until iter-239
+    // the `browser` block came from its own *direct* connect, so a dead proxy
+    // cost the `page` block and nothing else; now that both share a connection,
+    // retry direct rather than reporting a Firefox that is up as unreachable
+    // and sending the agent to `launch`.
+    if listing.is_err() && route.is_some() {
+        listing = connect_and_list_tabs(cli, TabListRouting::Direct);
+    }
+
+    match listing {
+        Ok(listing) => {
+            let tabs = normalize_tabs(listing.tabs());
+            (
+                browser(true, listing.greeting_version(), None),
+                tabs,
+                Some(listing),
+            )
         }
-    };
-
-    let tabs = normalize_tabs(&tabs);
-    (
-        json!({
-            "reachable": true,
-            "firefox_version": firefox_version,
-            "host": cli.host,
-            "port": cli.port,
-            "detail": Value::Null,
-        }),
-        tabs,
-    )
+        // The greeting landed but `listTabs` did not: the browser *is*
+        // reachable, and saying otherwise would send the agent to `launch`
+        // when it should be looking at `doctor`.
+        Err(TabListError::ListTabs {
+            firefox_version,
+            detail,
+            ..
+        }) => (
+            browser(
+                true,
+                firefox_version,
+                Some(format!("listTabs failed: {detail}")),
+            ),
+            Vec::new(),
+            None,
+        ),
+        Err(e @ TabListError::Connect { .. }) => (
+            browser(false, None, Some(e.detail().to_owned())),
+            Vec::new(),
+            None,
+        ),
+    }
 }
 
-/// Project the raw `listTabs` payload onto the four fields the home view
+/// The `browser` block: what the listener at `host:port` turned out to be.
+///
+/// `detail` is the raw transport or actor reason, not the multi-line
+/// `AppError::Connection` text — the home view emits its own `->  ff-rdp …`
+/// hints and does not want them duplicated inside a JSON field.
+fn browser_block(
+    host: &str,
+    port: u16,
+    reachable: bool,
+    firefox_version: Option<u32>,
+    detail: Option<String>,
+) -> Value {
+    json!({
+        "reachable": reachable,
+        "firefox_version": firefox_version,
+        "host": host,
+        "port": port,
+        "detail": detail,
+    })
+}
+
+/// Project the `listTabs` payload onto the four fields the home view
 /// promises — `{index, title, url, selected}` — with a 1-based index matching
 /// what `--tab N` accepts.
-fn normalize_tabs(raw: &Value) -> Vec<Value> {
-    let Some(items) = raw.as_array() else {
-        return Vec::new();
-    };
-    items
-        .iter()
+fn normalize_tabs(tabs: &[TabInfo]) -> Vec<Value> {
+    tabs.iter()
         .enumerate()
         .map(|(i, tab)| {
             json!({
                 "index": i + 1,
-                "title": tab.get("title").and_then(Value::as_str).unwrap_or_default(),
-                "url": tab.get("url").and_then(Value::as_str).unwrap_or_default(),
-                "selected": tab.get("selected").and_then(Value::as_bool).unwrap_or(false),
+                "title": tab.title,
+                "url": tab.url,
+                "selected": tab.selected,
             })
         })
         .collect()
@@ -284,15 +323,11 @@ fn focused_tab(tabs: &[Value]) -> Option<&Value> {
 /// Collect the accessibility view of the focused tab, or `None` when there is
 /// nothing worth showing.
 ///
-/// Routed through the daemon **only when one is already running**, so the refs
-/// in the output are live handles without the home view ever spawning a
-/// daemon. See the module docs for why that asymmetry is deliberate.
-fn page_block(cli: &Cli, interactive_limit: usize, daemon_running: bool) -> Option<Value> {
-    let mut ctx = if daemon_running && !cli.no_daemon {
-        connect_and_get_target(cli).ok()?
-    } else {
-        connect_direct(cli).ok()?
-    };
+/// Takes the connection [`connect_once`] already opened and attaches to the
+/// focused tab on it — the second connect this used to make is what iter-239
+/// removed.
+fn page_block(cli: &Cli, listing: TabListing, interactive_limit: usize) -> Option<Value> {
+    let mut ctx = listing.attach(cli).ok()?;
     let console_actor = ctx.target.console_actor.clone();
     let page = page_view::collect(
         &mut ctx,
@@ -524,23 +559,23 @@ pub fn run(cli: &Cli, args: &HomeArgs) -> Result<(), AppError> {
         |p| collapse_home(&p.to_string_lossy()),
     );
 
-    let daemon = daemon_block(&cli.host, cli.port);
-    let daemon_running = daemon.get("running").and_then(Value::as_bool) == Some(true);
-    let (browser, tabs) = browser_and_tabs(cli);
+    let daemon_info = find_daemon(&cli.host, cli.port);
+    let daemon = daemon_block(daemon_info.as_ref(), cli.port);
+    let (browser, tabs, listing) = connect_once(cli, daemon_info.as_ref());
 
     let interactive_limit = if args.hook {
         HOOK_INTERACTIVE_LIMIT
     } else {
         DEFAULT_INTERACTIVE_LIMIT
     };
-    let page = if browser.get("reachable").and_then(Value::as_bool) == Some(true)
-        && focused_tab(&tabs)
-            .and_then(|t| t.get("url").and_then(Value::as_str))
-            .is_some_and(|u| !is_blank_url(u))
-    {
-        page_block(cli, interactive_limit, daemon_running)
-    } else {
-        None
+    let worth_a_page = focused_tab(&tabs)
+        .and_then(|t| t.get("url").and_then(Value::as_str))
+        .is_some_and(|u| !is_blank_url(u));
+    // `listing` is `Some` only when the browser answered, so the reachability
+    // half of the old guard is carried by the option itself.
+    let page = match listing {
+        Some(listing) if worth_a_page => page_block(cli, listing, interactive_limit),
+        _ => None,
     };
 
     // The hook runs on every session; landmarks are the least actionable of
@@ -595,6 +630,18 @@ mod tests {
 
     fn no_daemon() -> Value {
         json!({"running": false, "pid": Value::Null, "proxy_port": Value::Null, "firefox_port": 6000})
+    }
+
+    /// A `listTabs` entry, as the shared primitive now hands it to
+    /// [`normalize_tabs`] (iter-239 made that projection typed).
+    fn tab_info(title: &str, url: &str, selected: bool) -> TabInfo {
+        TabInfo {
+            actor: ff_rdp_core::ActorId::from("server1.conn0.tabDescriptor1"),
+            title: title.to_owned(),
+            url: url.to_owned(),
+            selected,
+            browsing_context_id: None,
+        }
     }
 
     fn tab(index: u64, url: &str, selected: bool) -> Value {
@@ -849,10 +896,10 @@ mod tests {
 
     #[test]
     fn unit_212_normalize_tabs_numbers_from_one_and_keeps_four_fields() {
-        let raw = json!([
-            {"title": "A", "url": "https://a.example/", "selected": false, "actor": "server1.conn0.x"},
-            {"title": "B", "url": "https://b.example/", "selected": true, "actor": "server1.conn0.y"},
-        ]);
+        let raw = [
+            tab_info("A", "https://a.example/", false),
+            tab_info("B", "https://b.example/", true),
+        ];
         let tabs = normalize_tabs(&raw);
         assert_eq!(tabs.len(), 2);
         assert_eq!(tabs[0]["index"], json!(1));
@@ -861,7 +908,7 @@ mod tests {
             tabs[0].get("actor").is_none(),
             "the actor id is not part of the home view"
         );
-        assert!(normalize_tabs(&json!({})).is_empty());
+        assert!(normalize_tabs(&[]).is_empty());
     }
 
     /// The description an agent reads at session start comes from the same
@@ -956,6 +1003,112 @@ mod tests {
                 command.contains(flag),
                 "idiom {syntax:?} ({why:?}) has command {command:?}, which never uses {flag}"
             );
+        }
+    }
+
+    /// The `listTabs` reply this crate recorded from a real Firefox — the
+    /// tab list the home view's `tabs` block is a projection of.
+    const RECORDED_LIST_TABS: &str =
+        include_str!("../../tests/fixtures/list_tabs_response.json");
+
+    /// AC `home_view_output_unchanged_by_single_connect`.
+    ///
+    /// iter-239 collapsed the home view's two RDP connections into one. That
+    /// is a round-trip change and nothing else, so the `results` payload for
+    /// the representative scenario — browser up, daemon up, a page loaded with
+    /// refs minted — must be byte-for-byte what the two-connection assembly
+    /// produced. The golden below is that payload, written out in full rather
+    /// than recomputed from the same helpers it is meant to pin.
+    ///
+    /// The `browser` and `tabs` halves are the ones this iteration rewrote
+    /// (`browser_block` replaced a closure inside `browser_and_tabs`, and
+    /// `normalize_tabs` went from `&Value` to `&[TabInfo]`); `hints` is
+    /// derived from [`IDIOMS`], so a deliberate change there lands here too.
+    #[test]
+    fn unit_239_home_view_output_unchanged_by_single_connect() {
+        let listed: Value = serde_json::from_str(RECORDED_LIST_TABS).expect("recorded listTabs");
+        let tabs: Vec<TabInfo> =
+            serde_json::from_value(listed["tabs"].clone()).expect("listTabs tabs array");
+
+        // What `page_block` returns for that first tab: the page view plus the
+        // `refs_registered` flag it splices in.
+        let page = json!({
+            "url": "https://example.com/",
+            "title": "Example Domain",
+            "headings": [{"level": 1, "text": "Example Domain"}],
+            "landmarks": [],
+            "interactive": [
+                {"ref": "e1", "role": "link", "name": "More information...", "href": "https://www.iana.org/domains/example"}
+            ],
+            "refs_registered": true,
+        });
+
+        let results = build_results(
+            "~/.cargo/bin/ff-rdp",
+            "0.3.0",
+            &json!({"running": true, "pid": 4242, "proxy_port": 6001, "firefox_port": 6000}),
+            &browser_block("localhost", 6000, true, Some(143), None),
+            &normalize_tabs(&tabs),
+            Some(page.clone()),
+        );
+
+        assert_eq!(
+            results,
+            json!({
+                "bin": "~/.cargo/bin/ff-rdp",
+                "description": DESCRIPTION,
+                "version": "0.3.0",
+                "daemon": {
+                    "running": true,
+                    "pid": 4242,
+                    "proxy_port": 6001,
+                    "firefox_port": 6000,
+                },
+                "browser": {
+                    "reachable": true,
+                    "firefox_version": 143,
+                    "host": "localhost",
+                    "port": 6000,
+                    "detail": Value::Null,
+                },
+                "tabs": [
+                    {"index": 1, "title": "Example Domain", "url": "https://example.com/", "selected": true},
+                    {"index": 2, "title": "Rust Programming Language", "url": "https://www.rust-lang.org/", "selected": false},
+                ],
+                "page": page,
+                "hints": [
+                    "ff-rdp click --ref e1",
+                    "ff-rdp page-text --query \"<text>\"",
+                    "ff-rdp click --ref e1 --with-page",
+                    "ff-rdp console --limit 20",
+                ],
+            }),
+            "the single-connect refactor must not move a byte of the payload"
+        );
+    }
+
+    /// The `tabs` block drops everything a `listTabs` entry carries beyond the
+    /// four fields the view promises — including `browsingContextID`, which
+    /// [`TabInfo`] does parse and which a naive `serde_json::to_value` would
+    /// have leaked once the projection became typed.
+    #[test]
+    fn unit_239_normalize_tabs_drops_the_untyped_extras() {
+        let listed: Value = serde_json::from_str(RECORDED_LIST_TABS).expect("recorded listTabs");
+        let tabs: Vec<TabInfo> =
+            serde_json::from_value(listed["tabs"].clone()).expect("listTabs tabs array");
+        assert_eq!(
+            tabs[0].browsing_context_id,
+            Some(16),
+            "the fixture must still exercise the field this test is about"
+        );
+        for entry in normalize_tabs(&tabs) {
+            let keys: Vec<&str> = entry
+                .as_object()
+                .expect("tab entry object")
+                .keys()
+                .map(String::as_str)
+                .collect();
+            assert_eq!(keys, ["index", "title", "url", "selected"], "{entry}");
         }
     }
 }
