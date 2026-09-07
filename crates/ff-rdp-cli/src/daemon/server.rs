@@ -24,6 +24,7 @@ use ff_rdp_core::{
 };
 
 use super::buffer::ResourceBuffer;
+use super::client_writer::{CLIENT_WRITE_DEADLINE, ClientWriter};
 use super::registry::{self, DaemonInfo};
 
 /// Recover from a poisoned mutex by unwrapping its inner value.
@@ -200,8 +201,14 @@ struct StreamSubscriber {
     /// on close — a stale fd number could match a *different* live client and
     /// unregister the wrong subscriber.  A monotonic id never collides.
     id: ClientId,
-    /// Write-half of the subscriber's TCP connection (typed, framing-aware).
-    writer: FramedWriter,
+    /// The subscriber's connection writer.
+    ///
+    /// iter-240: a *clone of the client's one* [`ClientWriter`], not a private
+    /// `FramedWriter` over a second `try_clone` of the socket. The dispatcher
+    /// thread writes watcher events here while the client's own thread may be
+    /// writing a daemon response; sharing one mutex-guarded writer is what
+    /// stops those two frames from interleaving on the wire.
+    writer: ClientWriter,
     /// Resource types this subscriber wants to receive.
     types: HashSet<String>,
 }
@@ -219,7 +226,11 @@ struct SharedState {
     /// The `ClientId` is the daemon-issued monotonic identity of the client
     /// (iter-100 Theme D), so disconnect cleanup can reliably compare it
     /// against the id issued to the current handler without fd-reuse hazards.
-    rpc_writer: Mutex<Option<(ClientId, FramedWriter)>>,
+    /// iter-240: the third element is when the slot was claimed, reported by
+    /// `daemon status` as `rpc_slot.held_secs` — a wedged daemon is diagnosable
+    /// from "one client has held the slot for 900 s" in a way it was not when
+    /// the slot recorded only an owner.
+    rpc_writer: Mutex<Option<(ClientId, ClientWriter, Instant)>>,
     /// Signalled whenever the [`rpc_writer`](Self::rpc_writer) slot is released
     /// (iter-137 Theme B).
     ///
@@ -343,12 +354,107 @@ struct SharedState {
     /// pruned to the surviving top-level target on a cross-process target
     /// switch (the outgoing document's frames are dead by then).
     frame_targets: Mutex<Vec<Value>>,
+    /// Event-dispatcher liveness, reported by `daemon status` (iter-240 Part B
+    /// Theme C).
+    ///
+    /// A wedged daemon used to be *completely* silent: no log line, no panic,
+    /// no idle timeout — the CLI reported a generic 10 s `phase: recv` timeout
+    /// and a caller could not tell "this page is slow" from "your daemon is
+    /// gone". These four counters make the difference readable from
+    /// `ff-rdp daemon status`: if `frames_started` exceeds `frames_finished`
+    /// and `current_frame_age_ms` keeps growing, the dispatcher is stuck inside
+    /// one dispatch and the daemon needs restarting.
+    dispatcher: DispatcherHealth,
+    /// How many clients the daemon dropped because it could not write to them
+    /// within [`CLIENT_WRITE_DEADLINE`] (iter-240 Part B).
+    clients_dropped_on_write: AtomicU64,
+}
+
+/// Liveness counters for the single event-dispatcher thread (iter-240 Part B).
+#[derive(Default)]
+struct DispatcherHealth {
+    /// `true` between the dispatcher thread starting and returning.
+    alive: AtomicBool,
+    /// Firefox frames the dispatcher has begun routing.
+    frames_started: AtomicU64,
+    /// Firefox frames it has finished routing.  Equal to `frames_started`
+    /// whenever the dispatcher is idle; one behind while a dispatch is in
+    /// flight; permanently one behind if it is wedged.
+    frames_finished: AtomicU64,
+    /// Milliseconds since daemon start at which the in-flight dispatch began.
+    last_frame_started_ms: AtomicU64,
+    /// `from`/`type` of the last frame the dispatcher picked up, for the log
+    /// line an operator reads first.
+    last_frame_kind: Mutex<String>,
 }
 
 impl SharedState {
     /// Issue a fresh, never-reused client id (iter-100 Theme D).
     fn next_client_id(&self) -> ClientId {
         self.next_client_id.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Milliseconds since the daemon started, saturating.
+    fn elapsed_ms(&self) -> u64 {
+        u64::try_from(self.start_time.elapsed().as_millis()).unwrap_or(u64::MAX)
+    }
+
+    /// Record that the dispatcher has picked up `msg` (iter-240 Part B).
+    fn dispatch_started(&self, msg: &Value) {
+        self.dispatcher
+            .last_frame_started_ms
+            .store(self.elapsed_ms(), Ordering::Relaxed);
+        let kind = msg
+            .get("type")
+            .and_then(Value::as_str)
+            .or_else(|| msg.get("from").and_then(Value::as_str))
+            .unwrap_or("<unknown>");
+        let mut last = lock_or_recover!(self.dispatcher.last_frame_kind);
+        kind.clone_into(&mut *last);
+        drop(last);
+        self.dispatcher
+            .frames_started
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record that the dispatcher finished routing the frame it picked up.
+    fn dispatch_finished(&self) {
+        self.dispatcher
+            .frames_finished
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The `dispatcher` object reported by `daemon status`.
+    fn dispatcher_health(&self) -> Value {
+        let started = self.dispatcher.frames_started.load(Ordering::Relaxed);
+        let finished = self.dispatcher.frames_finished.load(Ordering::Relaxed);
+        let in_flight = started.saturating_sub(finished);
+        // Only meaningful while a dispatch is actually in flight; reporting an
+        // age for an idle dispatcher would read as a stall that is not there.
+        let current_frame_age_ms = (in_flight > 0).then(|| {
+            self.elapsed_ms()
+                .saturating_sub(self.dispatcher.last_frame_started_ms.load(Ordering::Relaxed))
+        });
+        json!({
+            "alive": self.dispatcher.alive.load(Ordering::Relaxed),
+            "frames_started": started,
+            "frames_finished": finished,
+            "in_flight": in_flight,
+            "current_frame_age_ms": current_frame_age_ms,
+            "last_frame_kind": lock_or_recover!(self.dispatcher.last_frame_kind).clone(),
+        })
+    }
+
+    /// The `rpc_slot` object reported by `daemon status`.
+    fn rpc_slot_health(&self) -> Value {
+        let guard = lock_or_recover!(self.rpc_writer);
+        match guard.as_ref() {
+            Some((id, _, claimed_at)) => json!({
+                "owner": id,
+                "held_secs": claimed_at.elapsed().as_secs(),
+            }),
+            None => json!({ "owner": Value::Null, "held_secs": Value::Null }),
+        }
     }
 }
 
@@ -787,6 +893,8 @@ pub(crate) fn run_daemon(
         next_client_id: AtomicU64::new(1),
         top_level_target: Mutex::new(None),
         frame_targets: Mutex::new(Vec::new()),
+        dispatcher: DispatcherHealth::default(),
+        clients_dropped_on_write: AtomicU64::new(0),
     });
 
     setup_signal_handler(&state);
@@ -1175,6 +1283,12 @@ fn event_dispatcher_loop(
     resource_setup_rx: mpsc::Receiver<(ResourceCommand, ResourceReceiver)>,
     firefox_writer: Arc<Mutex<ff_rdp_core::FramedWriter>>,
 ) {
+    state.dispatcher.alive.store(true, Ordering::Relaxed);
+    // The dispatcher is the only thread routing Firefox traffic; if it returns
+    // (channel closed, shutdown) every client is on its own, so say so in
+    // `daemon status` rather than leaving `alive: true` behind.
+    let _alive = DispatcherAliveGuard { state };
+
     // `Some` once a resource subscription exists (either at startup or handed
     // over later by the background establisher).
     let mut subscription: Option<(ResourceCommand, ResourceReceiver)> =
@@ -1194,6 +1308,10 @@ fn event_dispatcher_loop(
         // Use recv_timeout so we can check the shutdown flag periodically.
         match rx.recv_timeout(Duration::from_secs(1)) {
             Ok(msg) => {
+                // iter-240 Part B Theme C: bracket the dispatch so a stall is
+                // visible from `daemon status` as `in_flight: 1` with a growing
+                // `current_frame_age_ms`, instead of as total silence.
+                state.dispatch_started(&msg);
                 match subscription.as_mut() {
                     Some((resource_bus, resource_rx)) => {
                         dispatch_firefox_message(state, &msg, Some((resource_bus, resource_rx)));
@@ -1208,6 +1326,7 @@ fn event_dispatcher_loop(
                         dispatch_firefox_message(state, &msg, None);
                     }
                 }
+                state.dispatch_finished();
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 if state.shutdown.load(Ordering::Relaxed) || termination_requested() {
@@ -1219,6 +1338,18 @@ fn event_dispatcher_loop(
                 break;
             }
         }
+    }
+}
+
+/// Clears [`DispatcherHealth::alive`] when the dispatcher loop returns, on any
+/// path including an unwind (iter-240 Part B).
+struct DispatcherAliveGuard<'a> {
+    state: &'a Arc<SharedState>,
+}
+
+impl Drop for DispatcherAliveGuard<'_> {
+    fn drop(&mut self) {
+        self.state.dispatcher.alive.store(false, Ordering::Relaxed);
     }
 }
 
@@ -1658,7 +1789,7 @@ fn dispatch_console_push_event(state: &SharedState, msg: &Value) {
     let mut subs = lock_or_recover!(state.stream_subs);
     let mut dead: Vec<usize> = Vec::new();
 
-    for (i, sub) in subs.iter_mut().enumerate() {
+    for (i, sub) in subs.iter().enumerate() {
         if sub.types.contains(target_resource_type) && sub.writer.send_raw(&json).is_err() {
             dead.push(i);
         }
@@ -1708,7 +1839,7 @@ fn dispatch_watcher_event_to_stream_subs(state: &SharedState, msg: &Value) {
     // Forward to each subscriber that wants at least one type in this event.
     let mut subs = lock_or_recover!(state.stream_subs);
     let mut dead: Vec<usize> = Vec::new();
-    for (i, sub) in subs.iter_mut().enumerate() {
+    for (i, sub) in subs.iter().enumerate() {
         let wants = event_types.iter().any(|t| sub.types.contains(*t));
         if wants && sub.writer.send_raw(&json).is_err() {
             dead.push(i);
@@ -1734,7 +1865,7 @@ fn forward_nav_event_to_stream_subs(state: &SharedState, event: &Value) {
     };
     let mut subs = lock_or_recover!(state.stream_subs);
     let mut dead: Vec<usize> = Vec::new();
-    for (i, sub) in subs.iter_mut().enumerate() {
+    for (i, sub) in subs.iter().enumerate() {
         if sub.types.contains("network-event") && sub.writer.send_raw(&json).is_err() {
             dead.push(i);
         }
@@ -1840,12 +1971,11 @@ fn daemon_queued_notice(waited_ms: u64) -> Value {
 fn claim_rpc_slot_queued(
     state: &SharedState,
     client_id: ClientId,
-    pending_writer: &mut Option<FramedWriter>,
-    heartbeat_writer: Option<&mut FramedWriter>,
+    pending_writer: &mut Option<ClientWriter>,
+    heartbeat_writer: Option<&ClientWriter>,
     budget: Duration,
 ) -> RpcClaim {
     let started = Instant::now();
-    let mut heartbeat_writer = heartbeat_writer;
 
     loop {
         // One claim attempt plus (if contended) one heartbeat-sized wait.  The
@@ -1892,7 +2022,7 @@ fn claim_rpc_slot_queued(
             // spending a keep-alive frame on it.
             continue;
         }
-        if let Some(writer) = heartbeat_writer.as_deref_mut() {
+        if let Some(writer) = heartbeat_writer {
             let notice = daemon_queued_notice(waited_ms);
             if let Ok(json) = serde_json::to_string(&notice)
                 && writer.send_raw(&json).is_err()
@@ -1909,18 +2039,18 @@ fn claim_rpc_slot_queued(
 /// Returns `Ok(())` on success, or gives the still-locked guard back in `Err`
 /// so the caller can wait on it without re-acquiring.
 fn claim_locked<'a>(
-    mut guard: std::sync::MutexGuard<'a, Option<(ClientId, FramedWriter)>>,
+    mut guard: std::sync::MutexGuard<'a, Option<(ClientId, ClientWriter, Instant)>>,
     client_id: ClientId,
-    pending_writer: &mut Option<FramedWriter>,
-) -> Result<(), std::sync::MutexGuard<'a, Option<(ClientId, FramedWriter)>>> {
+    pending_writer: &mut Option<ClientWriter>,
+) -> Result<(), std::sync::MutexGuard<'a, Option<(ClientId, ClientWriter, Instant)>>> {
     match guard.as_ref() {
         // Someone else owns it — the caller must wait.
-        Some((owner, _)) if *owner != client_id => Err(guard),
+        Some((owner, ..)) if *owner != client_id => Err(guard),
         // Already ours (idempotent).
         Some(_) => Ok(()),
         None => {
             if let Some(writer) = pending_writer.take() {
-                *guard = Some((client_id, writer));
+                *guard = Some((client_id, writer, Instant::now()));
             }
             Ok(())
         }
@@ -1951,11 +2081,30 @@ fn forward_to_rpc_client(state: &SharedState, msg: &Value) {
     };
 
     let mut guard = lock_or_recover!(state.rpc_writer);
-    let Some((_id, writer)) = guard.as_mut() else {
+    let Some((id, writer, _claimed_at)) = guard.as_ref() else {
         return;
     };
-    if writer.send_raw(&json).is_err() {
-        // Client disconnected while we were trying to write.
+    if let Err(failure) = writer.send_raw(&json) {
+        // iter-240 Part B: the write is bounded by `CLIENT_WRITE_DEADLINE`, so
+        // this arm is now reachable for a client that simply stopped reading —
+        // previously that client blocked this thread (the *only* thread routing
+        // Firefox traffic) in `write_all` forever and the daemon served nobody
+        // again until it was restarted, logging nothing at all.
+        let client_id = *id;
+        state
+            .clients_dropped_on_write
+            .fetch_add(1, Ordering::Relaxed);
+        // stderr-ok: (b) debug/diagnostic — the daemon log is the only record.
+        eprintln!(
+            "daemon: dropping client {client_id} from the RPC slot: {}",
+            failure.reason()
+        );
+        tracing::warn!(
+            client_id,
+            reason = failure.reason(),
+            "daemon: dropped a client the dispatcher could not write to"
+        );
+        // Client disconnected (or stopped reading) while we were writing.
         *guard = None;
         // iter-137 Theme B: releasing the slot here must wake queued clients
         // too, otherwise a peer that died mid-command would make every waiter
@@ -2091,6 +2240,17 @@ const CLIENT_DRAIN_BUDGET: Duration = Duration::from_millis(250);
 
 /// One slice of that budget — how long a single drain read blocks.
 const CLIENT_DRAIN_SLICE: Duration = Duration::from_millis(25);
+
+/// How long a freshly-accepted connection has to present its auth frame.
+///
+/// Deliberately short so port-scanners cannot pin a handler thread.
+const AUTH_READ_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Per-read deadline on an authenticated client socket.
+///
+/// This is a *poll* interval as much as a deadline: the read loop treats a
+/// timeout as "nothing to do", re-checks the shutdown flag and reads again.
+const CLIENT_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The structured frame the daemon sends before closing a client connection
 /// it is abandoning (iter-224).
@@ -2254,11 +2414,34 @@ fn handle_client(
     stream: TcpStream,
     firefox_writer: &Arc<Mutex<ff_rdp_core::FramedWriter>>,
 ) -> Result<()> {
-    stream
-        .set_read_timeout(Some(Duration::from_secs(30)))
-        .context("setting client read timeout")?;
     // Best-effort: disable Nagle for lower latency.
     let _ = stream.set_nodelay(true);
+
+    // iter-240 Part A: **one** reader for the whole connection, auth included.
+    //
+    // The auth frame used to be read through a throwaway
+    // `FramedReader::from_stream(stream.try_clone()?)` and the request loop
+    // then built a second `FramedReader` over the original stream. A
+    // `FramedReader` is a `BufReader`: its first fill can pull in whatever the
+    // client had already sent past the auth frame, and every byte it buffered
+    // beyond that frame was dropped on the floor when it went out of scope —
+    // leaving the loop's reader to resume *inside* a later frame's payload and
+    // report `invalid packet: unexpected byte 0x3d in length prefix`. The
+    // window was closed only by the convention that the CLI waits for the
+    // greeting before sending anything else. It is now closed by construction.
+    let mut reader = FramedReader::from_stream(
+        stream
+            .try_clone()
+            .context("cloning client stream for the read half")?,
+    );
+
+    // iter-240: and **one** writer, shared by every daemon→client write on this
+    // socket — greeting, daemon responses, queue heartbeats, `daemon_busy`
+    // refusals, the RPC slot and the stream-subscriber entry alike. Before
+    // this, each of those minted its own `FramedWriter` over its own
+    // `try_clone`, so the dispatcher thread and the client thread could
+    // interleave two frames mid-payload. See `client_writer.rs`.
+    let writer = ClientWriter::new(stream);
 
     // Auth handshake: the very first frame from the client must be
     // `{"auth": "<token>"}`.  Any mismatch (wrong token, malformed frame,
@@ -2266,15 +2449,11 @@ fn handle_client(
     //
     // A short timeout is applied for the auth read only so that probing
     // connections (e.g. from port-scanners) don't hold a thread open forever.
-    let auth_stream = stream
-        .try_clone()
-        .context("cloning client stream for auth read")?;
-    auth_stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
+    reader
+        .set_read_timeout(Some(AUTH_READ_TIMEOUT))
         .context("setting auth read timeout")?;
-    let mut auth_reader = FramedReader::from_stream(auth_stream);
 
-    let auth_ok = match auth_reader.recv() {
+    let auth_ok = match reader.recv() {
         Ok(msg) => msg
             .get("auth")
             .and_then(Value::as_str)
@@ -2286,13 +2465,13 @@ fn handle_client(
 
     if !auth_ok {
         eprintln!("daemon: client failed auth — closing connection");
-        // Stream is dropped here, closing the connection.
+        // Reader and writer are dropped here, closing the connection.
         return Ok(());
     }
 
     // Restore the normal per-operation read timeout after auth.
-    stream
-        .set_read_timeout(Some(Duration::from_secs(30)))
+    reader
+        .set_read_timeout(Some(CLIENT_READ_TIMEOUT))
         .context("restoring client read timeout after auth")?;
 
     // iter-100 Theme D: issue a monotonic, never-recycled client id at accept
@@ -2323,14 +2502,9 @@ fn handle_client(
                 Value::Number(DAEMON_PROTOCOL_VERSION.into()),
             );
         }
-        let mut greeting_writer = FramedWriter::from_stream(
-            stream
-                .try_clone()
-                .context("cloning client stream for greeting")?,
-        );
-        greeting_writer
+        writer
             .send(&greeting_with_version)
-            .map_err(|e| anyhow::anyhow!("sending greeting to CLI client: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("sending greeting to CLI client: {}", e.reason()))?;
     }
 
     // iter-101 Theme B: the RPC-writer slot is claimed *lazily* — only when
@@ -2349,20 +2523,14 @@ fn handle_client(
     // writer eagerly, so the last connection silently stole responses from an
     // in-flight peer (the "KNOWN LIMITATION" this iteration retires).
     //
-    // A pre-cloned writer for this client is kept ready so the lazy claim does
-    // not have to re-clone the socket under the `rpc_writer` lock.
-    let rpc_writer_for_client = FramedWriter::from_stream(
-        stream
-            .try_clone()
-            .context("cloning client stream for RPC forwarding")?,
-    );
     // Whether this client currently owns the RPC-writer slot.  Set true on a
     // successful lazy claim; the cleanup guard clears the shared slot on drop.
     let mut owns_rpc_slot = false;
     // Held until the first forward attempt claims it (moved into the slot).
-    let mut pending_rpc_writer = Some(rpc_writer_for_client);
-
-    let mut reader = FramedReader::from_stream(stream);
+    // It is a *clone of this client's one writer*, so a Firefox reply written
+    // by the dispatcher thread and a daemon ack written by this thread take the
+    // same lock instead of racing (iter-240 Part A).
+    let mut pending_rpc_writer = Some(writer.clone());
 
     // iter-224: every path out of this loop names itself, and the abnormal
     // ones write `daemon_closing_response` to the client before the socket
@@ -2392,10 +2560,7 @@ fn handle_client(
                     // Provide a fresh writer clone for this client so that
                     // handle_daemon_message can register a StreamSubscriber
                     // that writes to the correct connection.
-                    let writer_for_sub = reader
-                        .try_clone_stream()
-                        .ok()
-                        .map(FramedWriter::from_stream);
+                    let writer_for_sub = Some(writer.clone());
                     let response = handle_daemon_message(state, &msg, client_id, writer_for_sub);
                     let resp_json = match serde_json::to_string(&response) {
                         Ok(j) => j,
@@ -2412,13 +2577,10 @@ fn handle_client(
                     // which only worked because every client eagerly owned that
                     // slot; with lazy claiming a stream-only client no longer
                     // owns it, so route the ack to the client directly.
-                    if let Ok(mut own_writer) =
-                        reader.try_clone_stream().map(FramedWriter::from_stream)
-                        && let Err(e) = own_writer.send_raw(&resp_json)
-                    {
+                    if let Err(failure) = writer.send_raw(&resp_json) {
                         break 'client ClientExit::Abandoned {
-                            reason: "client_write_failed",
-                            detail: format!("sending daemon response: {e}"),
+                            reason: failure.reason(),
+                            detail: "sending daemon response".to_owned(),
                         };
                     }
                 } else if matches!(teardown, ResourceTeardown::DropEntirely) {
@@ -2454,38 +2616,30 @@ fn handle_client(
                         // refusing on contention.  `for i in 1 2 3 4; do
                         // ff-rdp page-text & done` used to leave two of the
                         // four dead; now each waits its turn.
-                        let mut heartbeat_writer = reader
-                            .try_clone_stream()
-                            .map(FramedWriter::from_stream)
-                            .ok();
                         match claim_rpc_slot_queued(
                             state,
                             client_id,
                             &mut pending_rpc_writer,
-                            heartbeat_writer.as_mut(),
+                            Some(&writer),
                             RPC_QUEUE_BUDGET,
                         ) {
                             RpcClaim::Claimed => owns_rpc_slot = true,
                             RpcClaim::Busy { waited_ms } => {
-                                if let Ok(mut own_writer) =
-                                    reader.try_clone_stream().map(FramedWriter::from_stream)
-                                {
-                                    let busy = daemon_busy_response(waited_ms);
-                                    let busy_json = match serde_json::to_string(&busy) {
-                                        Ok(j) => j,
-                                        Err(e) => {
-                                            break 'client ClientExit::Abandoned {
-                                                reason: "daemon_response_unserialisable",
-                                                detail: e.to_string(),
-                                            };
-                                        }
-                                    };
-                                    if let Err(e) = own_writer.send_raw(&busy_json) {
+                                let busy = daemon_busy_response(waited_ms);
+                                let busy_json = match serde_json::to_string(&busy) {
+                                    Ok(j) => j,
+                                    Err(e) => {
                                         break 'client ClientExit::Abandoned {
-                                            reason: "client_write_failed",
-                                            detail: format!("sending daemon_busy: {e}"),
+                                            reason: "daemon_response_unserialisable",
+                                            detail: e.to_string(),
                                         };
                                     }
+                                };
+                                if let Err(failure) = writer.send_raw(&busy_json) {
+                                    break 'client ClientExit::Abandoned {
+                                        reason: failure.reason(),
+                                        detail: "sending daemon_busy".to_owned(),
+                                    };
                                 }
                                 // Skip forwarding — the slot belongs to a peer.
                                 continue;
@@ -2529,6 +2683,10 @@ fn handle_client(
 
     // iter-224: say goodbye before the socket closes.  `Disconnected` is the
     // one silent case — nobody is listening.
+    // iter-240: a client whose writer already failed has had its socket shut
+    // down (or has stopped reading entirely); there is no one to say goodbye
+    // to, and attempting it would cost another full write deadline.
+    let writer_failure = writer.failure();
     match exit {
         ClientExit::Disconnected => {
             // Silent on stderr — a CLI process exiting is the normal ending —
@@ -2538,7 +2696,7 @@ fn handle_client(
             tracing::debug!(client_id, owns_rpc_slot, "daemon: client disconnected");
         }
         ClientExit::DaemonShuttingDown => {
-            if let Ok(sock) = reader.try_clone_stream() {
+            if let (None, Ok(sock)) = (&writer_failure, reader.try_clone_stream()) {
                 close_client_with_error(
                     &sock,
                     "daemon_shutting_down",
@@ -2549,6 +2707,10 @@ fn handle_client(
         ClientExit::Abandoned { reason, detail } => {
             // stderr-ok: (b) debug/diagnostic — the daemon log is the only
             // place this is recoverable from after the client is gone.
+            let detail = match &writer_failure {
+                Some((_, io_detail)) => format!("{detail}: {io_detail}"),
+                None => detail,
+            };
             eprintln!("daemon: abandoning client {client_id}: {reason}: {detail}");
             tracing::warn!(
                 client_id,
@@ -2556,7 +2718,9 @@ fn handle_client(
                 detail = %detail,
                 "daemon: abandoning client connection"
             );
-            if let Ok(sock) = reader.try_clone_stream() {
+            if writer_failure.is_none()
+                && let Ok(sock) = reader.try_clone_stream()
+            {
                 close_client_with_error(&sock, reason, &detail);
             }
         }
@@ -2706,7 +2870,7 @@ impl Drop for ClientCleanupGuard<'_> {
         // monotonic id (not a recyclable fd) guarantees we never clear a
         // different, live client's writer.
         let mut guard = lock_or_recover!(self.state.rpc_writer);
-        if guard.as_ref().is_some_and(|(id, _)| *id == self.client_id) {
+        if guard.as_ref().is_some_and(|(id, ..)| *id == self.client_id) {
             *guard = None;
             // iter-137 Theme B: wake every client queued behind this one.
             // Drop the guard first so a woken waiter can take the lock
@@ -2729,16 +2893,16 @@ impl Drop for ClientCleanupGuard<'_> {
 /// recycled, so it cannot collide with a different client the way a raw
 /// socket fd would.
 ///
-/// `client_writer` is the client's own write-half (a `try_clone` of its
-/// original stream), supplied by `handle_client` where the stream is
-/// available.  It is used when a new `StreamSubscriber` entry needs to be
-/// created so that the subscriber's writer is guaranteed to belong to the
-/// correct client, not whatever happens to be stored in `rpc_writer`.
+/// `client_writer` is a clone of the client's single [`ClientWriter`] (iter-240
+/// — it used to be a fresh `FramedWriter` over a second `try_clone` of the
+/// socket).  It is used when a new `StreamSubscriber` entry needs to be created
+/// so that the subscriber's writer is guaranteed to belong to the correct
+/// client, not whatever happens to be stored in `rpc_writer`.
 fn handle_daemon_message(
     state: &SharedState,
     msg: &Value,
     client_id: ClientId,
-    client_writer: Option<FramedWriter>,
+    client_writer: Option<ClientWriter>,
 ) -> Value {
     let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
 
@@ -3031,6 +3195,19 @@ fn handle_daemon_message(
                 // the enumeration bug this iteration fixed, so both are
                 // reported.
                 "live_target_count": frame_targets_snapshot(state).len(),
+                // iter-240 Part B Theme C: a wedged daemon must be diagnosable.
+                // `dispatcher.in_flight > 0` with a growing
+                // `current_frame_age_ms` is a stuck dispatcher; a long
+                // `rpc_slot.held_secs` names the client holding it.
+                "dispatcher": state.dispatcher_health(),
+                "rpc_slot": state.rpc_slot_health(),
+                "clients_dropped_on_write": state
+                    .clients_dropped_on_write
+                    .load(Ordering::Relaxed),
+                "client_write_deadline_ms": u64::try_from(
+                    CLIENT_WRITE_DEADLINE.as_millis()
+                )
+                .unwrap_or(u64::MAX),
             })
         }
         "shutdown" => {
@@ -3235,6 +3412,8 @@ mod tests {
     // A minimal test-only SharedState with no real sockets.
     fn test_state() -> SharedState {
         SharedState {
+            dispatcher: DispatcherHealth::default(),
+            clients_dropped_on_write: AtomicU64::new(0),
             buffer: Mutex::new(ResourceBuffer::new()),
             rpc_writer: Mutex::new(None),
             rpc_slot_released: Condvar::new(),
@@ -3493,11 +3672,19 @@ mod tests {
         );
     }
 
-    /// Build a `FramedWriter` over a throwaway loopback socket for tests that
-    /// need a writer but never inspect what is written.
+    /// Build a `FramedWriter` over a throwaway loopback socket, for the
+    /// *Firefox* write half (which is not a client socket and so is not a
+    /// [`ClientWriter`]).
     fn dummy_framed_writer() -> FramedWriter {
         let (server, _client) = loopback_pair();
         FramedWriter::from_stream(server)
+    }
+
+    /// Build a `ClientWriter` over a throwaway loopback socket for tests that
+    /// need a writer but never inspect what is written.
+    fn dummy_client_writer() -> ClientWriter {
+        let (server, _client) = loopback_pair();
+        ClientWriter::new(server)
     }
 
     // -----------------------------------------------------------------------
@@ -3522,12 +3709,12 @@ mod tests {
             let mut subs = state.stream_subs.lock().expect("lock");
             subs.push(StreamSubscriber {
                 id: id_a,
-                writer: dummy_framed_writer(),
+                writer: dummy_client_writer(),
                 types: HashSet::new(),
             });
             subs.push(StreamSubscriber {
                 id: id_b,
-                writer: dummy_framed_writer(),
+                writer: dummy_client_writer(),
                 types: HashSet::new(),
             });
         }
@@ -3563,11 +3750,11 @@ mod tests {
             let mut subs = state.stream_subs.lock().expect("lock");
             subs.push(StreamSubscriber {
                 id: client_id,
-                writer: dummy_framed_writer(),
+                writer: dummy_client_writer(),
                 types: HashSet::new(),
             });
         }
-        *state.rpc_writer.lock().expect("lock") = Some((client_id, dummy_framed_writer()));
+        *state.rpc_writer.lock().expect("lock") = Some((client_id, dummy_client_writer(), Instant::now()));
 
         // Simulate handle_client returning (normally or via an early `?`):
         // the guard drops here and must clean up both roles.
@@ -3597,7 +3784,7 @@ mod tests {
         let new_id = state.next_client_id();
 
         // A newer client currently owns the rpc_writer slot.
-        *state.rpc_writer.lock().expect("lock") = Some((new_id, dummy_framed_writer()));
+        *state.rpc_writer.lock().expect("lock") = Some((new_id, dummy_client_writer(), Instant::now()));
 
         // The OLD client's guard drops; it must not clear the newer client's
         // writer.
@@ -3610,7 +3797,7 @@ mod tests {
 
         let guard = state.rpc_writer.lock().expect("lock");
         assert!(
-            guard.as_ref().is_some_and(|(id, _)| *id == new_id),
+            guard.as_ref().is_some_and(|(id, ..)| *id == new_id),
             "a stale client's cleanup must not clear a newer client's rpc_writer"
         );
     }
@@ -3631,7 +3818,7 @@ mod tests {
         let client_b = state.next_client_id();
 
         // Client A claims first — the slot is free, so it wins.
-        let mut a_pending = Some(dummy_framed_writer());
+        let mut a_pending = Some(dummy_client_writer());
         assert!(
             matches!(
                 claim_rpc_slot_queued(&state, client_a, &mut a_pending, None, Duration::ZERO),
@@ -3649,13 +3836,13 @@ mod tests {
                 .lock()
                 .expect("lock")
                 .as_ref()
-                .is_some_and(|(id, _)| *id == client_a),
+                .is_some_and(|(id, ..)| *id == client_a),
             "the slot must be owned by client A"
         );
 
         // Client B tries to claim while A holds the slot — it is refused and its
         // pending writer is preserved so a later retry can still succeed.
-        let mut b_pending = Some(dummy_framed_writer());
+        let mut b_pending = Some(dummy_client_writer());
         assert!(
             matches!(
                 claim_rpc_slot_queued(&state, client_b, &mut b_pending, None, Duration::ZERO),
@@ -3674,7 +3861,7 @@ mod tests {
                 .lock()
                 .expect("lock")
                 .as_ref()
-                .is_some_and(|(id, _)| *id == client_a),
+                .is_some_and(|(id, ..)| *id == client_a),
             "a refused claim must not disturb the current owner"
         );
 
@@ -3699,7 +3886,7 @@ mod tests {
                 .lock()
                 .expect("lock")
                 .as_ref()
-                .is_some_and(|(id, _)| *id == client_b),
+                .is_some_and(|(id, ..)| *id == client_b),
             "the slot must now be owned by client B"
         );
     }
@@ -3711,14 +3898,14 @@ mod tests {
         let state = Arc::new(test_state());
         let client = state.next_client_id();
 
-        let mut pending = Some(dummy_framed_writer());
+        let mut pending = Some(dummy_client_writer());
         assert!(matches!(
             claim_rpc_slot_queued(&state, client, &mut pending, None, Duration::ZERO),
             RpcClaim::Claimed
         ));
 
         // Same client claims again — idempotent, still Claimed, slot unchanged.
-        let mut pending2 = Some(dummy_framed_writer());
+        let mut pending2 = Some(dummy_client_writer());
         assert!(matches!(
             claim_rpc_slot_queued(&state, client, &mut pending2, None, Duration::ZERO),
             RpcClaim::Claimed
@@ -3729,7 +3916,7 @@ mod tests {
                 .lock()
                 .expect("lock")
                 .as_ref()
-                .is_some_and(|(id, _)| *id == client),
+                .is_some_and(|(id, ..)| *id == client),
             "owner re-claim must keep the slot owned by the same client"
         );
     }
@@ -3750,7 +3937,7 @@ mod tests {
         let holder: ClientId = 1;
         let waiter: ClientId = 2;
 
-        let mut holder_pending = Some(dummy_framed_writer());
+        let mut holder_pending = Some(dummy_client_writer());
         assert!(matches!(
             claim_rpc_slot_queued(&state, holder, &mut holder_pending, None, Duration::ZERO),
             RpcClaim::Claimed
@@ -3758,7 +3945,7 @@ mod tests {
 
         let state_for_waiter = Arc::clone(&state);
         let handle = std::thread::spawn(move || {
-            let mut pending = Some(dummy_framed_writer());
+            let mut pending = Some(dummy_client_writer());
             let started = Instant::now();
             let claim = claim_rpc_slot_queued(
                 &state_for_waiter,
@@ -3794,7 +3981,7 @@ mod tests {
                 .lock()
                 .expect("lock")
                 .as_ref()
-                .is_some_and(|(id, _)| *id == waiter),
+                .is_some_and(|(id, ..)| *id == waiter),
             "the woken waiter owns the slot"
         );
     }
@@ -3810,13 +3997,13 @@ mod tests {
         let holder: ClientId = 1;
         let waiter: ClientId = 2;
 
-        let mut holder_pending = Some(dummy_framed_writer());
+        let mut holder_pending = Some(dummy_client_writer());
         assert!(matches!(
             claim_rpc_slot_queued(&state, holder, &mut holder_pending, None, Duration::ZERO),
             RpcClaim::Claimed
         ));
 
-        let mut pending = Some(dummy_framed_writer());
+        let mut pending = Some(dummy_client_writer());
         let claim = claim_rpc_slot_queued(
             &state,
             waiter,
@@ -4573,7 +4760,7 @@ mod tests {
         // Register a stream subscriber for "console-message".
         lock_or_recover!(state.stream_subs).push(StreamSubscriber {
             id: 1,
-            writer: FramedWriter::from_stream(server_side),
+            writer: ClientWriter::new(server_side),
             types: {
                 let mut s = HashSet::new();
                 s.insert("console-message".to_owned());
@@ -4624,7 +4811,7 @@ mod tests {
         // Register a stream subscriber for "error-message".
         lock_or_recover!(state.stream_subs).push(StreamSubscriber {
             id: 2,
-            writer: FramedWriter::from_stream(server_side),
+            writer: ClientWriter::new(server_side),
             types: {
                 let mut s = HashSet::new();
                 s.insert("error-message".to_owned());
@@ -4673,7 +4860,7 @@ mod tests {
         // Register subscriber for "network-event" only — NOT console-message.
         lock_or_recover!(state.stream_subs).push(StreamSubscriber {
             id: 3,
-            writer: FramedWriter::from_stream(server_side),
+            writer: ClientWriter::new(server_side),
             types: {
                 let mut s = HashSet::new();
                 s.insert("network-event".to_owned());
