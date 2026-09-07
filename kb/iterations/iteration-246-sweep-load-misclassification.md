@@ -2,7 +2,7 @@
 title: "Iteration 246: live tests red only under sweep load: classification, live_123, live_61q, and the --jobs 6 signatures"
 type: iteration
 date: 2026-08-30
-status: in-review
+status: done
 branch: iter-246/sweep-load-misclassification
 depends_on:
   - 225
