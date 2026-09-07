@@ -306,10 +306,11 @@ ls kb/iterations/ | grep -E '^iteration-[0-9]+[a-z]*-.+\.md$' \
 `CLAUDE.md` sends every agent to `hyalo find` for knowledgebase queries, and hyalo's
 scan is *forgiving*: a document whose frontmatter it cannot parse is skipped with a
 warning on **stderr** while the query still exits 0. Every scripted `hyalo find` in this
-repo discards stderr, so between roughly May and September 2026 one plan —
+repo discards stderr, so one plan —
 `kb/iterations/iteration-84-dogfood-56-real-real-fixes.md`, whose `dogfood_path` block
-scalar is 9086 bytes — was invisible to every status sweep, and nothing said so. See
-`kb/decision-log.md` DEC-052.
+scalar is 9086 bytes — was invisible to every status sweep, and nothing said so. It was
+found on 2026-08-24 while checking a claim iteration 195's plan had made about three
+*other* files (DEC-047), not by anything that was looking. See `kb/decision-log.md` DEC-052.
 
 Two things have changed since, both upstream in hyalo (verified against
 `hyalo 0.22.0 (625c5c19510d 2026-09-05)`):
