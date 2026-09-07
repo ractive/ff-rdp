@@ -141,6 +141,31 @@ written and committed; they need a sweep.
       than tick them on reasoning; do not undo that by ticking them on a sweep that did not
       exercise them.
 
+## Part C: does `live_160_selector_diagnostics_survive` leak its Firefox?
+
+Carry-over from iteration 242's Part C task list (the "still open, and unrelated to the above"
+item), which itself carried it from iteration 176's closing sweep. Iteration 176 (`done`, its own
+diff touches only `eval`'s statement scanner) found an orphaned Firefox (pid 79010) attributed to
+`live_160_selector_diagnostics_survive` five hours after that test should have exited, and closed
+without determining whether the test itself leaked it or the process was an unrelated interrupted
+sweep's orphan. Iteration 242 re-flagged it as open and out of its own scope. It has had no owner
+since 176 closed.
+
+- [ ] Run `live_160_selector_diagnostics_survive` (`tests/live/live_160_envelope_honesty.rs`) in
+      isolation, under `FF_RDP_LIVE_TESTS=1`, and confirm with `ps` that no `firefox` process
+      naming that test's `.ff-rdp-owner-test` marker survives the test's exit.
+- [ ] If it does leak: find the missing guard — Part B of iteration 242 enumerates launch sites,
+      not guard sites, and this file was in scope for that scan
+      (`tests/iter_242_launch_site_ownership.rs`); if the scan already covers it, say why it did
+      not catch this case.
+- [ ] If it does not leak in isolation: say so and close this item as "unreproduced, likely an
+      unrelated interrupted sweep's orphan" rather than leaving it open indefinitely.
+
+### Acceptance Criteria [0/1]
+
+- [ ] The leak question has a landed answer (reproduced-and-fixed, or unreproduced-and-closed),
+      not a re-deferral
+
 ## Out of scope
 
 - `live_137_consent_accept_via_daemon`'s `live_target_count: 0` — [[iteration-251]] owns it.

@@ -2,7 +2,7 @@
 title: "Iteration 242: live-suite ownership: prune --all liveness flake, guard-coverage gaps, sweep-only failures"
 type: iteration
 date: 2026-08-24
-status: in-review
+status: done
 branch: iter-242/profile-liveness-flake-in-prune-all
 depends_on:
   - iteration-193-dogfood-scripts-pkill-and-path-binary
@@ -216,7 +216,7 @@ A fresh-context review pass found five, all acted on:
 5. **LOW** — the temp-file cleanup claim was overstated (a SIGKILL between write and rename leaks
    one sibling). Reworded with the bound on its cost, rather than swept.
 
-#### A. Attribution [1/2]
+#### A. Attribution [2/2]
 - [x] `profile_is_owned_by_live_process` can report *which* `OwnerLiveness` it derived —
       the boolean wrapper is **gone**: `owner_liveness_of()` returns the grading and
       `OwnerLiveness::keeps_profile_alive()` is the decision, so `profiles prune` decides and
@@ -249,7 +249,7 @@ A fresh-context review pass found five, all acted on:
       go through a sibling temp file plus `rename`, which is atomic on both `rename(2)` and
       Windows' `MoveFileEx`.
 
-### Acceptance Criteria [1/2]
+### Acceptance Criteria [2/2]
 
 - [x] A test pins the identified transient case: given that condition, an age-gated prune does
       **not** remove the profile —
@@ -458,6 +458,8 @@ from") is wrong: both files are modules of the *same* `tests/live` binary, and
 > **Renumbered 190 → 244 on 2026-09-06** so the pending queue runs as one contiguous sweep (DEC-051). Older PRs, commits and sweep logs cite it as iteration 190.
 
 > **Premise check (2026-09-06):** AC 1 asks for a sweep in which `live_96_profile_cleanup::live_profiles_prune_removes_all_when_no_firefox_running` passes, but that test was deleted in iteration 188's review (see `live_151_residual_leak.rs` and iteration 245). Leave the AC unticked with that reason rather than rewording it. Theme B task 3 overlaps iteration 251 (`live_137_consent_accept_via_daemon`); 251 owns that signature.
+>
+> **Correction (2026-09-07, this iteration's merge-review):** iteration 251 was itself absorbed into [[iteration-246-sweep-load-misclassification]] Part D that same day (DEC-051 addendum) — the note above went stale within hours of being written. `live_137_consent_accept_via_daemon`'s `live_target_count: 0` is live-tracked there now, not at 251.
 
 Carry-over from [[iteration-175-failed-launch-leaks-unmarked-profile-dir]]'s closing sweeps.
 
@@ -601,10 +603,12 @@ exactly what `ff-rdp launch` creates and what the documented raw command does no
       host so the class cannot grow silently again.
 - [ ] Re-run `live_137_consent_accept_via_daemon` in isolation and decide whether its
       `live_target_count: 0` is load, the site, or a daemon frame-target enumeration gap —
-      **left to iteration 251**, which owns that signature (see the 2026-09-06 premise note).
-      Diagnosing it from here would give one failure two half-owners.
+      **left to iteration 246 Part D** (which absorbed iteration 251 on 2026-09-06, DEC-051 —
+      see the correction above the 2026-09-06 premise note). Diagnosing it from here would give
+      one failure two half-owners.
 - [x] Fix or re-scope, with the reasoning recorded — `live_eval_on_hn` fixed (readiness wait +
-      named diagnosis); the class re-scoped into the census above; `live_137` handed to 251.
+      named diagnosis); the class re-scoped into the census above; `live_137` handed to
+      iteration 246 Part D.
 
 ### Acceptance Criteria [0/2]
 
