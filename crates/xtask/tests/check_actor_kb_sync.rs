@@ -3,6 +3,9 @@
 //! Uses a temporary git repository so git diff invocations don't traverse
 //! out into the real repo.
 
+mod common;
+
+use common::output_note;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -67,24 +70,20 @@ fn git_commit(dir: &Path, msg: &str) {
 
 /// Run check-actor-kb-sync from a sandbox, wiring git env vars so the diff
 /// sees only the sandbox's commits.
+///
+/// iter-246 Part B: invokes the binary the outer `cargo test` already built
+/// (`CARGO_BIN_EXE_xtask`) rather than nesting a `cargo run` inside a test
+/// run that holds Cargo's build-directory lock — see the note on
+/// `check_firefox_refs::run_xtask` for the failure that shape produces.
 fn run_check_in_sandbox(sandbox: &Path, since: &str) -> std::process::Output {
     let root = repo_root();
-    Command::new("cargo")
-        .args([
-            "run",
-            "--quiet",
-            "-p",
-            "xtask",
-            "--",
-            "check-actor-kb-sync",
-            "--since",
-            since,
-        ])
+    Command::new(env!("CARGO_BIN_EXE_xtask"))
+        .args(["check-actor-kb-sync", "--since", since])
         .current_dir(&root)
         .env("GIT_DIR", sandbox.join(".git"))
         .env("GIT_WORK_TREE", sandbox)
         .output()
-        .expect("cargo run xtask")
+        .expect("run the prebuilt xtask binary")
 }
 
 #[test]
@@ -127,7 +126,8 @@ fn actor_changed_without_kb_fails() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("watcher"),
-        "error should mention the actor name; got: {stderr}"
+        "error should mention the actor name; got: {}",
+        output_note(&out)
     );
 }
 
@@ -230,7 +230,7 @@ fn empty_diff_always_passes() {
     let out = run_check_in_sandbox(dir, &head);
     assert!(
         out.status.success(),
-        "expected success on empty diff; stderr: {}",
-        String::from_utf8_lossy(&out.stderr),
+        "expected success on empty diff; {}",
+        output_note(&out)
     );
 }

@@ -3,6 +3,9 @@
 //! All tests use a temp directory as a synthetic Firefox root so no real
 //! Firefox checkout is required (except the last gated test).
 
+mod common;
+
+use common::output_note;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -50,25 +53,27 @@ firefox_refs:
 }
 
 /// Run the xtask binary with the given env overrides and plan content.
+///
+/// iter-246 Part B: this used to spawn `cargo run --quiet -p xtask -- …` from
+/// inside a `cargo test` that already holds Cargo's build-directory lock. The
+/// nested invocation can block on that lock or observe a half-written binary,
+/// and `valid_in_range_ref_passes` failed exactly that way during a workspace
+/// run — with an **empty** stderr, so its assertion message carried no
+/// evidence at all. `CARGO_BIN_EXE_xtask` names the binary the outer `cargo
+/// test` has already built, which removes the nested build entirely rather
+/// than racing it more slowly with a retry. Same hazard, same fix, and the
+/// same rationale `bin_exit_codes.rs` records at the top of the file.
 fn run_xtask(firefox_root: &str, plan_content: &str, tmp: &Path) -> std::process::Output {
     let plan_path = tmp.join("plan.md");
     fs::write(&plan_path, plan_content).unwrap();
 
     let root = repo_root();
-    Command::new("cargo")
-        .args([
-            "run",
-            "--quiet",
-            "-p",
-            "xtask",
-            "--",
-            "check-firefox-refs",
-            plan_path.to_str().unwrap(),
-        ])
+    Command::new(env!("CARGO_BIN_EXE_xtask"))
+        .args(["check-firefox-refs", plan_path.to_str().unwrap()])
         .env("FF_RDP_FIREFOX_PATH", firefox_root)
         .current_dir(&root)
         .output()
-        .expect("cargo run xtask")
+        .expect("run the prebuilt xtask binary")
 }
 
 #[test]
@@ -77,8 +82,8 @@ fn plan_with_no_firefox_refs_is_accepted() {
     let out = run_xtask("/nonexistent-firefox-root", &plan_no_refs(), tmp.path());
     assert!(
         out.status.success(),
-        "expected success for plan with no firefox_refs; stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
+        "expected success for plan with no firefox_refs; {}",
+        output_note(&out)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
@@ -104,8 +109,8 @@ fn valid_in_range_ref_passes() {
     let out = run_xtask(ff_root.to_str().unwrap(), &plan, tmp.path());
     assert!(
         out.status.success(),
-        "expected success for in-range ref; stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
+        "expected success for in-range ref; {}",
+        output_note(&out)
     );
 }
 
@@ -126,12 +131,14 @@ fn out_of_range_ref_fails() {
     let out = run_xtask(ff_root.to_str().unwrap(), &plan, tmp.path());
     assert!(
         !out.status.success(),
-        "expected failure for out-of-range ref"
+        "expected failure for out-of-range ref; {}",
+        output_note(&out)
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("out of range") || stderr.contains("check-firefox-refs"),
-        "expected error message; got: {stderr}"
+        "expected error message; got: {}",
+        output_note(&out)
     );
 }
 
@@ -143,11 +150,16 @@ fn missing_file_ref_fails() {
 
     let plan = plan_with_ref("devtools/shared/specs/does-not-exist.js", "1-5", "missing");
     let out = run_xtask(ff_root.to_str().unwrap(), &plan, tmp.path());
-    assert!(!out.status.success(), "expected failure for missing file");
+    assert!(
+        !out.status.success(),
+        "expected failure for missing file; {}",
+        output_note(&out)
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("not found") || stderr.contains("check-firefox-refs"),
-        "expected 'not found' error; got: {stderr}"
+        "expected 'not found' error; got: {}",
+        output_note(&out)
     );
 }
 
@@ -163,7 +175,8 @@ fn malformed_lines_field_fails() {
     let out = run_xtask(ff_root.to_str().unwrap(), &plan, tmp.path());
     assert!(
         !out.status.success(),
-        "expected failure for malformed lines"
+        "expected failure for malformed lines; {}",
+        output_note(&out)
     );
 }
 
@@ -175,12 +188,14 @@ fn missing_firefox_root_fails_clearly() {
     let out = run_xtask("/tmp/this-does-not-exist-ff-rdp-test", &plan, tmp.path());
     assert!(
         !out.status.success(),
-        "expected failure when firefox root is missing"
+        "expected failure when firefox root is missing; {}",
+        output_note(&out)
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains("Firefox source root") || stderr.contains("FF_RDP_FIREFOX_PATH"),
-        "expected clear error about missing firefox root; got: {stderr}"
+        "expected clear error about missing firefox root; got: {}",
+        output_note(&out)
     );
 }
 
@@ -204,7 +219,7 @@ fn real_firefox_path_iter73_plan_no_refs_passes() {
     let out = run_xtask("/Users/james/devel/firefox", &plan_no_refs(), tmp.path());
     assert!(
         out.status.success(),
-        "expected success with real firefox path; stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
+        "expected success with real firefox path; {}",
+        output_note(&out)
     );
 }
