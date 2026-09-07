@@ -98,6 +98,39 @@ fn build_type_js(escaped_sel: &str, escaped_text_json: &str, clear: bool) -> Str
 /// does nothing, which is the common case that made `--submit` necessary.
 const ENTER_NAVIGATION_GRACE_MS: u64 = 600;
 
+/// How long to watch for a navigation caused by `form.requestSubmit()` — the
+/// *second* `navigated_away` call in [`press_enter_and_submit`], which is
+/// answering a different question than the first one.
+///
+/// iter-237 Part A. Post-Enter (above) the question is local: "did the
+/// untrusted `keydown` alone start anything?" — a decision the page's own JS
+/// makes synchronously, so 600 ms is generous and a longer budget would only
+/// add latency to the usual no-op case. Post-`requestSubmit()` the question
+/// is "did the network round-trip land?": Firefox has to reach the form's
+/// action, get a response, and tear the old docshell down before
+/// `location.href` moves or the console actor goes away. 600 ms is frequently
+/// not enough for that over a real connection — `navigated_away` then hit its
+/// deadline having seen neither the settled `location.href` nor a hard
+/// protocol error, and reported `navigated: false` on a submission that
+/// really did navigate, while `--with-page` (which waits for the destination
+/// properly) reported the destination's heading in the same envelope. The two
+/// fields of one result contradicting each other is the bug; 3 s of headroom
+/// is what closes it.
+///
+/// Capped by the command's own `--timeout` — see [`request_submit_grace_ms`]:
+/// a caller who asked for a 1 s budget must not wait 3 s here.
+const REQUEST_SUBMIT_NAVIGATION_GRACE_MS: u64 = 3_000;
+
+/// The budget for the post-`requestSubmit()` navigation poll, given the
+/// command's auto-wait timeout.
+///
+/// `min` rather than a bare constant so `--timeout` still bounds the command:
+/// the default (10 s) leaves the full [`REQUEST_SUBMIT_NAVIGATION_GRACE_MS`]
+/// in place, while an explicitly short `--timeout` shortens this poll too.
+fn request_submit_grace_ms(wait_timeout_ms: u64) -> u64 {
+    REQUEST_SUBMIT_NAVIGATION_GRACE_MS.min(wait_timeout_ms)
+}
+
 /// JS that presses Enter on the element and reports what it found there.
 ///
 /// It deliberately does NOT submit the form: whether the fallback is needed
@@ -163,6 +196,7 @@ fn press_enter_and_submit(
     ctx: &mut ConnectedTab,
     console_actor: &ff_rdp_core::ActorId,
     escaped_sel: &str,
+    wait_timeout_ms: u64,
 ) -> Result<serde_json::Value, AppError> {
     let enter = eval_or_bail(
         ctx,
@@ -185,6 +219,11 @@ fn press_enter_and_submit(
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
 
+    // Call 1 of 2 — the short, local one: "did the untrusted keydown do
+    // anything at all?" Its answer only decides whether the `requestSubmit()`
+    // fallback below is needed, so a slow check here is pure added latency on
+    // the common (isTrusted-ceiling) no-op page. See
+    // `ENTER_NAVIGATION_GRACE_MS` vs `REQUEST_SUBMIT_NAVIGATION_GRACE_MS`.
     if navigated_away(ctx, console_actor, &url_before, ENTER_NAVIGATION_GRACE_MS) {
         return Ok(json!({"submitted": true, "navigated": true, "method": "enter"}));
     }
@@ -213,7 +252,18 @@ fn press_enter_and_submit(
     if !requested {
         return Ok(json!({"submitted": false, "navigated": false, "method": "no_form"}));
     }
-    let navigated = navigated_away(ctx, console_actor, &url_before, ENTER_NAVIGATION_GRACE_MS);
+    // Call 2 of 2 — the remote one: `requestSubmit()` has really submitted the
+    // form, so this is waiting on a network round-trip plus a docshell
+    // teardown, not on a local script decision. iter-237 Part A: it used to
+    // share the post-Enter constant, and 600 ms expired mid-flight often
+    // enough that `navigated: false` shipped alongside a `results.page` from
+    // the destination.
+    let navigated = navigated_away(
+        ctx,
+        console_actor,
+        &url_before,
+        request_submit_grace_ms(wait_timeout_ms),
+    );
     Ok(json!({
         "submitted": true,
         "navigated": navigated,
@@ -365,7 +415,8 @@ pub fn run_core(
     // iter-210 Theme C: --submit. Runs before --settle/--wait-for so those
     // observe the page the submission produced.
     if opts.submit {
-        let submit_json = press_enter_and_submit(&mut ctx, &console_actor, &escaped_sel)?;
+        let submit_json =
+            press_enter_and_submit(&mut ctx, &console_actor, &escaped_sel, wait_timeout_ms)?;
         let navigated = submit_json
             .get("navigated")
             .and_then(serde_json::Value::as_bool)
@@ -530,6 +581,31 @@ mod tests {
         );
         let kept = build_type_js("input", "\"hi\"", false);
         assert!(kept.contains("if (false) { applyValue(''); }"), "{kept}");
+    }
+
+    /// iter-237 Part A: the post-`requestSubmit()` poll must get a budget
+    /// sized for a network round-trip, not the short local post-Enter one —
+    /// that mismatch is what made `results.navigated` disagree with
+    /// `results.page` on a slow-but-successful submit.
+    #[test]
+    fn unit_237_request_submit_grace_outlives_the_post_enter_one() {
+        // Default `--timeout` (10s) leaves the full constant in place.
+        assert_eq!(
+            request_submit_grace_ms(10_000),
+            REQUEST_SUBMIT_NAVIGATION_GRACE_MS
+        );
+        assert!(
+            request_submit_grace_ms(10_000) > ENTER_NAVIGATION_GRACE_MS,
+            "the post-requestSubmit poll must outlive the post-Enter one"
+        );
+    }
+
+    /// …but `--timeout` still bounds the command: an explicitly short budget
+    /// must not be silently widened to the constant.
+    #[test]
+    fn unit_237_request_submit_grace_is_capped_by_the_command_timeout() {
+        assert_eq!(request_submit_grace_ms(800), 800);
+        assert_eq!(request_submit_grace_ms(0), 0);
     }
 
     /// Regression (review finding on the iter-210 PR): a hard `noSuchActor`
