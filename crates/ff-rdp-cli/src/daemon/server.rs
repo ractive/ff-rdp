@@ -5007,21 +5007,32 @@ mod tests {
                 types: HashSet::from(["console-message".to_owned()]),
             });
 
-        // One Firefox reply, far larger than any socket buffer, aimed at the
-        // stuck client.
-        let big =
-            json!({ "from": "server1.conn0.consoleActor1", "pad": "x".repeat(8 * 1024 * 1024) });
-        let started = Instant::now();
-        forward_to_rpc_client(&state, &big);
-        let blocked_for = started.elapsed();
+        // Firefox replies aimed at the stuck client, until its receive window
+        // fills and one write has to block.
+        //
+        // How much that takes is a platform question, not a product one: a
+        // Windows loopback socket swallowed a single 8 MB frame outright, so a
+        // one-shot write proved nothing there. Pump until the slot clears (or a
+        // cap far past every platform's buffering) and assert on what is
+        // portable — that no *single* dispatch blocked past the deadline, and
+        // that the client was dropped rather than tolerated.
+        let big = json!({ "from": "server1.conn0.consoleActor1", "pad": "x".repeat(256 * 1024) });
+        let mut longest = Duration::ZERO;
+        let mut writes = 0;
+        while state.rpc_writer.lock().expect("lock").is_some() && writes < 400 {
+            let started = Instant::now();
+            forward_to_rpc_client(&state, &big);
+            longest = longest.max(started.elapsed());
+            writes += 1;
+        }
 
         assert!(
-            blocked_for < Duration::from_secs(5),
-            "the dispatcher must be released by the write deadline, blocked for {blocked_for:?}"
+            longest < Duration::from_secs(5),
+            "no single dispatch may block past the write deadline; longest was {longest:?}"
         );
         assert!(
             state.rpc_writer.lock().expect("lock").is_none(),
-            "the stuck client must be dropped from the RPC slot"
+            "the stuck client must be dropped from the RPC slot (gave up after {writes} writes)"
         );
         assert_eq!(
             state.clients_dropped_on_write.load(Ordering::Relaxed),
