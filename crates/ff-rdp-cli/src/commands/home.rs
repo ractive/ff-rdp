@@ -226,7 +226,7 @@ fn daemon_block(info: Option<&DaemonInfo>, port: u16) -> Value {
 /// a later `attach` hands out are live handles without the home view ever
 /// spawning a daemon. See the module docs for why that asymmetry is deliberate.
 fn connect_once(cli: &Cli, daemon: Option<&DaemonInfo>) -> (Value, Vec<Value>, Option<TabListing>) {
-    let browser = |reachable: bool, version: Option<u32>, detail: Option<String>| {
+    let browser = |reachable: bool, version: Option<u32>, detail: Option<&str>| {
         browser_block(&cli.host, cli.port, reachable, version, detail)
     };
 
@@ -271,34 +271,31 @@ fn connect_once(cli: &Cli, daemon: Option<&DaemonInfo>) -> (Value, Vec<Value>, O
             firefox_version,
             detail,
             ..
-        }) => (
-            browser(
-                true,
-                firefox_version,
-                Some(format!("listTabs failed: {detail}")),
-            ),
-            Vec::new(),
-            None,
-        ),
-        Err(e @ TabListError::Connect { .. }) => (
-            browser(false, None, Some(e.detail().to_owned())),
-            Vec::new(),
-            None,
-        ),
+        }) => {
+            let detail = format!("listTabs failed: {detail}");
+            (
+                browser(true, firefox_version, Some(&detail)),
+                Vec::new(),
+                None,
+            )
+        }
+        Err(e @ TabListError::Connect { .. }) => {
+            (browser(false, None, Some(e.detail())), Vec::new(), None)
+        }
     }
 }
 
 /// The `browser` block: what the listener at `host:port` turned out to be.
 ///
 /// `detail` is the raw transport or actor reason, not the multi-line
-/// `AppError::Connection` text — the home view emits its own `->  ff-rdp …`
+/// `AppError::Connection` text — the home view emits its own `-> ff-rdp …`
 /// hints and does not want them duplicated inside a JSON field.
 fn browser_block(
     host: &str,
     port: u16,
     reachable: bool,
     firefox_version: Option<u32>,
-    detail: Option<String>,
+    detail: Option<&str>,
 ) -> Value {
     json!({
         "reachable": reachable,

@@ -124,7 +124,7 @@ fn connect_to_firefox(
                     }
                     other => AppError::from(other),
                 };
-                ConnectFailure { app, detail }
+                ConnectFailure::new(app, detail)
             })?;
 
         // Send the auth frame before any other request.
@@ -155,7 +155,7 @@ fn connect_to_firefox(
                      hint: stop the running daemon (`ff-rdp daemon stop`) or use --no-daemon."
                 ))
             };
-            ConnectFailure { app, detail }
+            ConnectFailure::new(app, detail)
         })?;
 
         // Verify protocol version — a mismatch means the running daemon is a
@@ -201,7 +201,7 @@ fn connect_to_firefox(
             }
             other => AppError::from(other),
         };
-        ConnectFailure { app, detail }
+        ConnectFailure::new(app, detail)
     })
 }
 
@@ -215,21 +215,30 @@ fn connect_to_firefox(
 /// and emits its own hints separately. So the constructor keeps both and each
 /// caller takes the half it needs.
 struct ConnectFailure {
-    app: AppError,
+    /// Boxed because `AppError` is 136 bytes and this rides in the `Err` of a
+    /// `Result` whose `Ok` is smaller (`clippy::result_large_err`).
+    app: Box<AppError>,
     /// The underlying transport error, undressed.
     detail: String,
 }
 
 impl ConnectFailure {
+    fn new(app: AppError, detail: String) -> Self {
+        Self {
+            app: Box::new(app),
+            detail,
+        }
+    }
+
     /// A failure whose raw detail is simply the user-facing message — used for
     /// the daemon-handshake errors that have no distinct transport-level text.
     fn same(app: AppError) -> Self {
         let detail = app.to_string();
-        Self { app, detail }
+        Self::new(app, detail)
     }
 
     fn into_app_error(self) -> AppError {
-        self.app
+        *self.app
     }
 }
 
@@ -241,6 +250,7 @@ impl ConnectFailure {
 /// "the home view starts nothing"). Making the caller hand over the registry
 /// entry it already read turns that rule into something the type system keeps,
 /// and saves the redundant second registry read the old `page_block` paid for.
+#[derive(Clone, Copy)]
 pub enum TabListRouting<'a> {
     /// Straight to Firefox's debugger port. Touches no daemon, starts nothing.
     Direct,
@@ -262,7 +272,8 @@ pub enum TabListRouting<'a> {
 pub enum TabListError {
     /// The TCP connect or the RDP greeting never landed.
     Connect {
-        error: AppError,
+        /// Boxed for the same reason as [`ConnectFailure::app`].
+        error: Box<AppError>,
         /// The raw transport reason, without the multi-line hint text — see
         /// [`ConnectFailure`].
         detail: String,
@@ -271,7 +282,7 @@ pub enum TabListError {
     ListTabs {
         /// The version from the greeting, which is already known at this point.
         firefox_version: Option<u32>,
-        error: AppError,
+        error: Box<AppError>,
         /// The raw actor/transport reason.
         detail: String,
     },
@@ -281,7 +292,7 @@ impl TabListError {
     /// Collapse to the error a normal command would have reported.
     pub fn into_app_error(self) -> AppError {
         match self {
-            Self::Connect { error, .. } | Self::ListTabs { error, .. } => error,
+            Self::Connect { error, .. } | Self::ListTabs { error, .. } => *error,
         }
     }
 
@@ -432,7 +443,7 @@ fn handshake_and_list_tabs(
             let detail = e.to_string();
             return Err(TabListError::ListTabs {
                 firefox_version: greeting_version,
-                error: AppError::from(e),
+                error: Box::new(AppError::from(e)),
                 detail,
             });
         }
