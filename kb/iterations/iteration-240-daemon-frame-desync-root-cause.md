@@ -2,7 +2,7 @@
 title: "Iteration 240: the daemon's frame-stream desync and the ~25-hop wedge — root cause, single writer, write deadlines"
 type: iteration
 date: 2026-08-31
-status: planned
+status: in-progress
 branch: iter-240/daemon-frame-desync-root-cause
 depends_on:
   - 224
@@ -33,6 +33,7 @@ dogfood_path: |
   # "Firefox connection lost", no panic, no idle timeout. Only a daemon restart clears it.
   # expected AFTER: 45/45 hops succeed, or the daemon fails loudly and recovers.
 tags: [iteration, daemon, framing, reliability, defect, carry-over]
+dogfood_script: iteration-240-daemon-frame-desync-root-cause.dogfood.sh
 ---
 
 # Iteration 240: the daemon's frame-stream desync and the ~25-hop wedge — root cause, single writer, write deadlines

@@ -457,6 +457,10 @@ pub struct Cli {
     /// "trace" enables per-packet wire dumps (ff_rdp_core::transport=trace).
     /// Set FF_RDP_TRACE_RAW=1 to disable redaction of sensitive fields in trace output.
     /// Overrides the RUST_LOG environment variable when specified.
+    ///
+    /// iter-240: also configures a daemon this invocation auto-starts, whose
+    /// output goes to ~/.ff-rdp/daemon.log. A daemon that is *already* running
+    /// keeps the level it started with — stop it first to raise it.
     #[arg(long, global = true, value_name = "LEVEL")]
     pub log_level: Option<LogLevel>,
 

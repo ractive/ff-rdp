@@ -93,6 +93,23 @@ whole packet into a String — read length first, then exact bytes.
 - **Choking on bulk packets** even when you don't use them. At minimum
   parse the header and skip.
 
+- **Treating a socket timeout as "nothing was read".** This is the one
+  ff-rdp got wrong for its first 239 iterations, and it is the subtlest
+  of the five. A reader that polls — sets `SO_RCVTIMEO`, calls `recv()`,
+  treats a timeout as "try again" — must keep the framer's *position*
+  across that timeout. A straight-line `read length prefix, then
+  read_exact(N)` throws away everything it consumed when the deadline
+  fires mid-frame, so the retry starts decoding inside a payload and
+  reports something like `unexpected byte 0x3d in length prefix` (`0x3d`
+  is `=`; the byte is JSON, not framing). The frame reader must be a
+  resumable state machine, not a function — see `FrameDecoder` in
+  `crates/ff-rdp-core/src/transport.rs` and
+  [[iterations/iteration-240-daemon-frame-desync-root-cause]].
+- **Retrying a write that failed halfway.** The mirror image. `write_all`
+  on a socket with `SO_SNDTIMEO` can return `TimedOut` having already
+  pushed part of the frame; resending appends a second copy after the
+  stump. A partial write is unrecoverable — close the connection.
+
 ## Relationship to higher layers
 
 The packet body is plain JSON; see [[message-format]] for its shape
