@@ -26,9 +26,48 @@ use crate::common::{
     FirefoxGuard, LiveFirefox, RawFirefox, ff_rdp_bin, ff_rdp_launch_command, kill_pid, pid_alive,
 };
 
-/// Run `ff-rdp --port <port> <args...>` inside an isolated `FF_RDP_HOME` and
-/// return the parsed JSON envelope (or `None` on non-JSON output).
-fn run_json(home: &std::path::Path, port: u16, args: &[&str]) -> Option<(bool, serde_json::Value)> {
+/// The whole result of one `ff-rdp` invocation.
+///
+/// iter-246 Part B: this used to be an `Option<(bool, Value)>`, and every
+/// assertion built on it therefore asserted a **bool**. When
+/// `live_daemon_stop_prior_instance_targets_debug_port_not_cli_port` failed
+/// under a 313-test sweep on 2026-08-30, the entire record of the failure was
+/// the string `eval on decoy port should succeed` — no exit code, no envelope,
+/// no stderr, and so no way to tell a lost daemon-autostart race from a failed
+/// direct-connection fallback from a Firefox that was not listening yet. The
+/// struct keeps the evidence attached to the result so a panic can quote it.
+struct Run {
+    /// Did the CLI exit zero?
+    ok: bool,
+    /// The parsed envelope, or `None` when the CLI printed something that was
+    /// not JSON at all (a panic, a usage error, an empty stdout).
+    json: Option<serde_json::Value>,
+    /// Exit status plus both streams, ready to interpolate into a panic.
+    note: String,
+}
+
+impl Run {
+    /// The parsed envelope, or a panic quoting what the CLI actually printed.
+    fn envelope(&self, what: &str) -> &serde_json::Value {
+        self.json
+            .as_ref()
+            .unwrap_or_else(|| panic!("{what}: expected a JSON envelope — {}", self.note))
+    }
+
+    /// Assert the CLI exited zero, quoting status, stdout and stderr if not.
+    fn expect_ok(&self, what: &str) -> &serde_json::Value {
+        let envelope = self.envelope(what);
+        assert!(self.ok, "{what}: exited non-zero — {}", self.note);
+        envelope
+    }
+}
+
+/// Run `ff-rdp --port <port> <args...>` inside an isolated `FF_RDP_HOME`.
+///
+/// Spawning the binary at all is a harness precondition, so a spawn failure
+/// panics here rather than being folded into the returned value: there is no
+/// product question a failed `fork` could answer.
+fn run_json(home: &std::path::Path, port: u16, args: &[&str]) -> Run {
     let mut full: Vec<String> = vec![
         "--host".into(),
         "127.0.0.1".into(),
@@ -42,17 +81,23 @@ fn run_json(home: &std::path::Path, port: u16, args: &[&str]) -> Option<(bool, s
         .env("FF_RDP_HOME", home)
         .args(&full)
         .output()
-        .ok()?;
-    let ok = out.status.success();
-    let json = serde_json::from_slice::<serde_json::Value>(&out.stdout).ok()?;
-    Some((ok, json))
+        .unwrap_or_else(|e| panic!("failed to spawn `ff-rdp {}`: {e}", full.join(" ")));
+    Run {
+        ok: out.status.success(),
+        json: serde_json::from_slice::<serde_json::Value>(&out.stdout).ok(),
+        note: format!(
+            "`ff-rdp {}` {}",
+            full.join(" "),
+            crate::common::output_note(&out)
+        ),
+    }
 }
 
 /// Poll `daemon status` until `running == true` or the deadline elapses.
 fn wait_daemon_running(home: &std::path::Path, port: u16, timeout: Duration) -> bool {
     let deadline = std::time::Instant::now() + timeout;
     loop {
-        if let Some((_ok, json)) = run_json(home, port, &["daemon", "status"])
+        if let Some(json) = run_json(home, port, &["daemon", "status"]).json
             && json["results"]["running"].as_bool() == Some(true)
         {
             return true;
@@ -84,12 +129,10 @@ fn live_daemon_autostart_tabless() {
 
     // First autostart-triggering command: `eval` routes through
     // resolve_connection_target (unlike `tabs`, which connects directly).
-    let Some((ok, eval_json)) = run_json(home.path(), ff.port(), &["eval", "1"]) else {
-        panic!("live_daemon_autostart_tabless: eval produced no JSON");
-    };
-    assert!(
-        ok,
-        "eval should succeed via the (tabless-tolerant) daemon or direct fallback: {eval_json}"
+    let eval_run = run_json(home.path(), ff.port(), &["eval", "1"]);
+    let eval_json = eval_run.expect_ok(
+        "live_daemon_autostart_tabless: eval should succeed via the (tabless-tolerant) daemon \
+         or direct fallback",
     );
 
     // The triggering command must NOT carry a daemon_autostart_failed warning:
@@ -134,14 +177,8 @@ fn live_daemon_two_ports_no_clobber() {
     let home = tempfile::tempdir().expect("tempdir for FF_RDP_HOME");
 
     // Auto-start a daemon for each port (order matters: start p1 first, then p2).
-    let Some((ok1, _)) = run_json(home.path(), ff1.port(), &["eval", "1"]) else {
-        panic!("two_ports: eval on port1 produced no JSON");
-    };
-    assert!(ok1, "eval on port1 should succeed");
-    let Some((ok2, _)) = run_json(home.path(), ff2.port(), &["eval", "1"]) else {
-        panic!("two_ports: eval on port2 produced no JSON");
-    };
-    assert!(ok2, "eval on port2 should succeed");
+    run_json(home.path(), ff1.port(), &["eval", "1"]).expect_ok("two_ports: eval on port1");
+    run_json(home.path(), ff2.port(), &["eval", "1"]).expect_ok("two_ports: eval on port2");
 
     // Both daemons must be running with their OWN record.
     assert!(
@@ -154,10 +191,10 @@ fn live_daemon_two_ports_no_clobber() {
     );
 
     // Each record must target its own Firefox port — proving no clobber.
-    let (_o1, s1) =
-        run_json(home.path(), ff1.port(), &["daemon", "status"]).expect("status for port1");
-    let (_o2, s2) =
-        run_json(home.path(), ff2.port(), &["daemon", "status"]).expect("status for port2");
+    let r1 = run_json(home.path(), ff1.port(), &["daemon", "status"]);
+    let s1 = r1.envelope("two_ports: status for port1");
+    let r2 = run_json(home.path(), ff2.port(), &["daemon", "status"]);
+    let s2 = r2.envelope("two_ports: status for port2");
     let proxy1 = s1["results"]["port"].as_u64();
     let proxy2 = s2["results"]["port"].as_u64();
     assert!(
@@ -227,8 +264,8 @@ fn live_daemon_warning_text_parity() {
     drop(listener);
 
     // JSON run: capture the `.warnings` array (may be absent → treated as empty).
-    let (_ok_json, json) =
-        run_json(home.path(), port, &["daemon", "status"]).expect("json daemon status");
+    let status_run = run_json(home.path(), port, &["daemon", "status"]);
+    let json = status_run.envelope("warning_text_parity: json daemon status");
     let json_warnings: Vec<String> = json
         .get("warnings")
         .and_then(|w| w.as_array())
@@ -314,14 +351,10 @@ fn live_daemon_stop_prior_instance_targets_debug_port_not_cli_port() {
     // Auto-start a proxy daemon for each port inside the isolated `home`
     // (LiveFirefox itself ran against the real $HOME, so `home` has no
     // DaemonRecord for either port — only what `eval` writes here).
-    let Some((ok_decoy, _)) = run_json(home.path(), ff_decoy.port(), &["eval", "1"]) else {
-        panic!("stop_prior_instance targeting: eval on decoy port produced no JSON");
-    };
-    assert!(ok_decoy, "eval on decoy port should succeed");
-    let Some((ok_target, _)) = run_json(home.path(), ff_target.port(), &["eval", "1"]) else {
-        panic!("stop_prior_instance targeting: eval on target port produced no JSON");
-    };
-    assert!(ok_target, "eval on target port should succeed");
+    run_json(home.path(), ff_decoy.port(), &["eval", "1"])
+        .expect_ok("stop_prior_instance targeting: eval on decoy port");
+    run_json(home.path(), ff_target.port(), &["eval", "1"])
+        .expect_ok("stop_prior_instance targeting: eval on target port");
 
     assert!(
         wait_daemon_running(home.path(), ff_decoy.port(), Duration::from_secs(10)),
@@ -333,16 +366,16 @@ fn live_daemon_stop_prior_instance_targets_debug_port_not_cli_port() {
     );
 
     let decoy_daemon_pid: u32 = {
-        let (_ok, s) = run_json(home.path(), ff_decoy.port(), &["daemon", "status"])
-            .expect("decoy status before replace");
+        let r = run_json(home.path(), ff_decoy.port(), &["daemon", "status"]);
+        let s = r.envelope("decoy status before replace");
         let raw = s["results"]["pid"]
             .as_u64()
             .expect("decoy daemon pid present");
         u32::try_from(raw).expect("decoy daemon pid fits u32")
     };
     let target_daemon_pid: u32 = {
-        let (_ok, s) = run_json(home.path(), ff_target.port(), &["daemon", "status"])
-            .expect("target status before replace");
+        let r = run_json(home.path(), ff_target.port(), &["daemon", "status"]);
+        let s = r.envelope("target status before replace");
         let raw = s["results"]["pid"]
             .as_u64()
             .expect("target daemon pid present");
@@ -443,13 +476,9 @@ fn live_daemon_stop_prior_instance_targets_debug_port_not_cli_port() {
         ff_decoy.port(),
         ff_target.port()
     );
-    let (decoy_ok_after, decoy_status_after) =
-        run_json(home.path(), ff_decoy.port(), &["daemon", "status"])
-            .expect("decoy status after replace");
-    assert!(
-        decoy_ok_after,
-        "decoy daemon status query must still succeed"
-    );
+    let decoy_after = run_json(home.path(), ff_decoy.port(), &["daemon", "status"]);
+    let decoy_status_after =
+        decoy_after.expect_ok("decoy daemon status query must still succeed after --replace");
     assert_eq!(
         decoy_status_after["results"]["running"].as_bool(),
         Some(true),

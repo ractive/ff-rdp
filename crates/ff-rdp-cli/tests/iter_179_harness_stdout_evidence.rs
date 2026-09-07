@@ -343,7 +343,7 @@ fn is_offender(text: &str) -> bool {
 /// that merely starts with those letters?
 fn mentions_the_stream(text: &str) -> bool {
     text.match_indices("stderr")
-        .any(|(i, m)| text[i + m.len()..].chars().next() != Some('-'))
+        .any(|(i, m)| !text[i + m.len()..].starts_with('-'))
 }
 
 /// Positive control. Without this, any bug that made the scan return nothing —

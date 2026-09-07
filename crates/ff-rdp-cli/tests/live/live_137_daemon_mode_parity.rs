@@ -96,37 +96,6 @@ fn firefox_with_daemon(test: &str) -> LiveFirefox {
     ff
 }
 
-/// `ff-rdp daemon status` output as raw JSON text, for assertion messages.
-fn daemon_status(port: u16) -> String {
-    let out = Command::new(ff_rdp_bin())
-        .args(["--host", "127.0.0.1", "--port", &port.to_string()])
-        .args(["daemon", "status"])
-        .output()
-        .expect("daemon status");
-    String::from_utf8_lossy(&out.stdout).into_owned()
-}
-
-/// Poll `daemon status` until it reports at least one **live** target.
-///
-/// `live_target_count` (iter-137) is the number of targets alive right now, as
-/// opposed to the cumulative `target_count`. A daemon that restarted mid-test
-/// re-establishes its `watchTargets("frame")` subscription on a background
-/// thread; until that lands it has recorded nothing, and probing it would
-/// measure the restart rather than the feature under test.
-fn wait_for_live_targets(port: u16) -> bool {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-    while std::time::Instant::now() < deadline {
-        let text = daemon_status(port);
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
-            && json["results"]["live_target_count"].as_u64().unwrap_or(0) >= 1
-        {
-            return true;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(250));
-    }
-    false
-}
-
 /// Run `click --frame <no-match>` and pull the "N frame(s) available" count
 /// out of the resulting error. That error is the only place the CLI prints
 /// the raw enumeration result, which makes it the sharpest probe for the
@@ -178,10 +147,11 @@ fn live_137_frame_targets_via_daemon() {
     // The daemon must have its own frame-target subscription live before the
     // probe means anything; a daemon that restarted mid-test re-establishes it
     // on a background thread.
+    let wait = crate::common::wait_for_live_targets(port);
     assert!(
-        wait_for_live_targets(port),
-        "daemon never reported live frame targets — status: {}",
-        daemon_status(port)
+        wait.reached,
+        "daemon never reported live frame targets — {}",
+        wait.note()
     );
 
     let via_daemon = frame_count_via(&daemon_args(port));
@@ -233,10 +203,11 @@ fn live_137_click_cross_origin_via_daemon() {
         return;
     }
 
+    let wait = crate::common::wait_for_live_targets(port);
     assert!(
-        wait_for_live_targets(port),
-        "daemon never reported live frame targets — status: {}",
-        daemon_status(port)
+        wait.reached,
+        "daemon never reported live frame targets — {}",
+        wait.note()
     );
 
     // The only <a> on the page lives inside the example.com iframe.
@@ -293,10 +264,11 @@ fn live_137_consent_accept_via_daemon() {
         return;
     }
 
+    let wait = crate::common::wait_for_live_targets(port);
     assert!(
-        wait_for_live_targets(port),
-        "daemon never reported live frame targets — status: {}",
-        daemon_status(port)
+        wait.reached,
+        "daemon never reported live frame targets — {}",
+        wait.note()
     );
 
     let consent = Command::new(ff_rdp_bin())

@@ -102,29 +102,6 @@ fn parse_json(output: &Output) -> Value {
     })
 }
 
-/// Poll `daemon status` until it reports at least one **live** target — the
-/// same wait iteration 137's daemon-parity suite uses before a `--frame`
-/// probe, so the frame-scan test below doesn't race the daemon's
-/// `watchTargets("frame")` subscription.
-fn wait_for_live_targets(port: u16) -> bool {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-    while std::time::Instant::now() < deadline {
-        let out = Command::new(ff_rdp_bin())
-            .args(["--host", "127.0.0.1", "--port", &port.to_string()])
-            .args(["daemon", "status"])
-            .output()
-            .expect("daemon status");
-        let text = String::from_utf8_lossy(&out.stdout);
-        if let Ok(json) = serde_json::from_str::<Value>(&text)
-            && json["results"]["live_target_count"].as_u64().unwrap_or(0) >= 1
-        {
-            return true;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(250));
-    }
-    false
-}
-
 /// A self-hosted top page embedding a same-origin `<iframe>` — gives the
 /// frame-scan test a non-top frame target without depending on outbound
 /// network reachability (unlike the `CROSS_ORIGIN_FIXTURE` data: URL
@@ -251,9 +228,11 @@ fn live_145_click_frame_scan_js_exception_envelope() {
         return;
     }
 
+    let wait = crate::common::wait_for_live_targets(port);
     assert!(
-        wait_for_live_targets(port),
-        "daemon never reported live frame targets"
+        wait.reached,
+        "daemon never reported live frame targets — {}",
+        wait.note()
     );
 
     let click = run(port, &["click", INVALID_SELECTOR, "--frame", "/frame"]);
@@ -319,9 +298,11 @@ fn live_145_click_element_not_found_unchanged() {
         return;
     }
 
+    let wait = crate::common::wait_for_live_targets(port);
     assert!(
-        wait_for_live_targets(port),
-        "daemon never reported live frame targets"
+        wait.reached,
+        "daemon never reported live frame targets — {}",
+        wait.note()
     );
 
     let started = std::time::Instant::now();

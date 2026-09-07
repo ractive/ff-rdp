@@ -1034,6 +1034,120 @@ pub fn output_note(out: &std::process::Output) -> String {
     )
 }
 
+/// Env var overriding [`live_target_wait_bound`] (iter-246 Part D).
+///
+/// Deliberately a knob rather than a raised default. Iteration 246 found the
+/// 15 s bound below missed four times across iterations 188, 197, 224 and 239
+/// under a `--jobs 6` sweep, and the plan's own design note forbids widening
+/// it without a measured distribution behind the new value. The knob lets a
+/// measurement raise it *for one run*, on purpose, the way
+/// `FF_RDP_LAUNCH_TIMEOUT_SECS` lets a caller raise the launch budget, without
+/// silently making every future run less sensitive.
+pub const LIVE_TARGET_WAIT_ENV: &str = "FF_RDP_TEST_LIVE_TARGET_WAIT_S";
+
+/// How long [`wait_for_live_targets`] polls for the daemon's frame-target
+/// subscription. 15 s by default; override with [`LIVE_TARGET_WAIT_ENV`].
+pub fn live_target_wait_bound() -> Duration {
+    let secs = std::env::var(LIVE_TARGET_WAIT_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|s| *s > 0)
+        .unwrap_or(15);
+    Duration::from_secs(secs)
+}
+
+/// What [`wait_for_live_targets`] observed — not just whether it succeeded.
+///
+/// iter-246 Part D: three suites carried a byte-identical copy of this wait,
+/// each returning a bare `bool`, so `daemon never reported live frame targets`
+/// was the whole record of four separate sweep failures. It said nothing about
+/// how long the wait actually took, how many times it polled, or what the
+/// daemon last reported — which is why "it only fails under load" survived as
+/// a description for four iterations without ever becoming a diagnosis.
+pub struct LiveTargetWait {
+    /// Did `live_target_count` reach 1 before the bound?
+    pub reached: bool,
+    /// How long the wait actually ran.
+    pub elapsed: Duration,
+    /// How many `daemon status` probes it issued.
+    pub polls: usize,
+    /// The last `daemon status` output seen, JSON or not.
+    pub last_status: String,
+    /// The bound in force for this run.
+    pub bound: Duration,
+}
+
+impl LiveTargetWait {
+    /// A panic-message rendering: the timing *and* what the daemon last said.
+    pub fn note(&self) -> String {
+        format!(
+            "waited {:?} of a {:?} bound over {} poll(s) ({} to raise it deliberately);              last daemon status: {}",
+            self.elapsed,
+            self.bound,
+            self.polls,
+            LIVE_TARGET_WAIT_ENV,
+            self.last_status.trim()
+        )
+    }
+}
+
+/// Poll `daemon status` until it reports at least one **live** target.
+///
+/// `live_target_count` (iter-137) is the number of targets alive right now, as
+/// opposed to the cumulative `target_count`. A daemon that restarted mid-test
+/// re-establishes its `watchTargets("frame")` subscription on a background
+/// thread; until that lands it has recorded nothing, and probing it would
+/// measure the restart rather than the feature under test.
+///
+/// Every call prints one `LIVE_TARGET_WAIT` line to stderr, whether it
+/// succeeded or not. That line is the instrument iteration 246 Part D asks
+/// for: a sweep log then carries the whole *distribution* of subscription
+/// times across every test that waits, idle and under load, instead of a
+/// single number recovered from whichever run happened to fail.
+pub fn wait_for_live_targets(port: u16) -> LiveTargetWait {
+    let bound = live_target_wait_bound();
+    let started = std::time::Instant::now();
+    let deadline = started + bound;
+    let mut polls = 0usize;
+    let mut last_status = String::from("<never probed>");
+    let mut reached = false;
+    while std::time::Instant::now() < deadline {
+        let out = Command::new(ff_rdp_bin())
+            .args(["--host", "127.0.0.1", "--port", &port.to_string()])
+            .args(["daemon", "status"])
+            .output();
+        polls += 1;
+        match out {
+            Ok(out) => {
+                last_status = output_note(&out);
+                let text = String::from_utf8_lossy(&out.stdout);
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
+                    && json["results"]["live_target_count"].as_u64().unwrap_or(0) >= 1
+                {
+                    reached = true;
+                    break;
+                }
+            }
+            Err(e) => last_status = format!("`daemon status` could not be spawned: {e}"),
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let elapsed = started.elapsed();
+    eprintln!(
+        "LIVE_TARGET_WAIT port={port} reached={reached} elapsed_ms={} polls={polls} \
+         bound_ms={}",
+        elapsed.as_millis(),
+        bound.as_millis()
+    );
+    LiveTargetWait {
+        reached,
+        elapsed,
+        polls,
+        last_status,
+        bound,
+    }
+}
+
 /// Env var overriding [`daemon_ready_timeout`] (iter-164).
 pub const DAEMON_READY_TIMEOUT_ENV: &str = "FF_RDP_TEST_DAEMON_READY_TIMEOUT_S";
 
