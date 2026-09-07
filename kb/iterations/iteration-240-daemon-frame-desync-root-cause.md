@@ -204,12 +204,12 @@ old one.
 - [x] Unit: a client that never reads does not stop the dispatcher from serving another client
 - [x] `tests/live/live_227_*.rs`: a sustained-hop loop (N ≥ 40) asserting every hop succeeds
 
-### Acceptance Criteria [2/3]
+### Acceptance Criteria [3/3]
 
 - [x] 60 consecutive daemon hops against the real page all succeed
 - [x] A deliberately non-reading client is dropped within the deadline and no other client is
       delayed by more than it
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q`
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q`
       clean; live sweep reconciles (covers both parts)
 
 ### Out of scope

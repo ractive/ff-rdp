@@ -132,7 +132,10 @@ impl ClientWriter {
         // protected data stays structurally valid across a panic, and refusing
         // to write for the rest of the daemon's life would be a worse outcome
         // than continuing.
-        let mut guard = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         if let Some((failure, _)) = guard.failed {
             return Err(failure);
