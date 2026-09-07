@@ -1613,6 +1613,22 @@ fn map_send_io_error(e: std::io::Error) -> ProtocolError {
 /// A failure at offset 0 is still mapped by [`map_send_io_error`], because a
 /// stream that received nothing is still aligned.
 fn write_frame(stream: &mut TcpStream, frame: &[u8]) -> Result<(), ProtocolError> {
+    let result = write_frame_to(stream, frame);
+    if matches!(result, Err(ProtocolError::FrameWriteDesynchronised { .. })) {
+        // Nothing may be written after a truncated frame: the peer would splice
+        // the next frame onto the stump. Closing is the only honest ending.
+        let _ = stream.shutdown(std::net::Shutdown::Both);
+    }
+    result
+}
+
+/// [`write_frame`] over any `Write`, without the socket shutdown.
+///
+/// Split out so the partial-write branch is testable deterministically: whether
+/// a given platform's loopback socket actually stops mid-frame under
+/// `SO_SNDTIMEO` is a property of that platform (a Windows loopback swallowed a
+/// lone 16 MB frame whole), not of this logic.
+fn write_frame_to<W: Write>(stream: &mut W, frame: &[u8]) -> Result<(), ProtocolError> {
     let total = frame.len();
     let mut written = 0usize;
 
@@ -1626,7 +1642,6 @@ fn write_frame(stream: &mut TcpStream, frame: &[u8]) -> Result<(), ProtocolError
                 if written == 0 {
                     return Err(ProtocolError::SendFailed(source));
                 }
-                let _ = stream.shutdown(std::net::Shutdown::Both);
                 return Err(ProtocolError::FrameWriteDesynchronised {
                     written,
                     total,
@@ -1650,7 +1665,6 @@ fn write_frame(stream: &mut TcpStream, frame: &[u8]) -> Result<(), ProtocolError
                     "frame write stopped mid-frame — closing the connection so no \
                      frame is written after the truncated one"
                 );
-                let _ = stream.shutdown(std::net::Shutdown::Both);
                 return Err(ProtocolError::FrameWriteDesynchronised {
                     written,
                     total,
@@ -2613,6 +2627,35 @@ mod tests {
         );
     }
 
+    /// A `Write` that accepts `budget` bytes and then fails with `kind`.
+    ///
+    /// Whether a real loopback socket actually stops mid-frame under
+    /// `SO_SNDTIMEO` is a platform property — a Windows loopback swallowed a
+    /// lone 16 MB frame whole, and a macOS socket closed at both ends still
+    /// accepted a small write. Neither says anything about the logic under
+    /// test, so the logic is driven directly.
+    struct StallingWriter {
+        budget: usize,
+        written: usize,
+        kind: std::io::ErrorKind,
+    }
+
+    impl Write for StallingWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let room = self.budget.saturating_sub(self.written);
+            if room == 0 {
+                return Err(std::io::Error::new(self.kind, "stalled"));
+            }
+            let n = room.min(buf.len());
+            self.written += n;
+            Ok(n)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
     /// iter-240: a write that stops **mid-frame** must be reported as a
     /// desynchronisation, not as a retryable timeout.
     ///
@@ -2626,30 +2669,21 @@ mod tests {
     /// retry could append a second copy of the frame after it.
     #[test]
     fn partial_frame_write_is_reported_as_desynchronised() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-        let addr = listener.local_addr().expect("addr");
-        // The peer connects and then never reads, so the send window fills.
-        let peer = TcpStream::connect(addr).expect("connect");
-        let (server, _) = listener.accept().expect("accept");
-        server
-            .set_write_timeout(Some(Duration::from_millis(200)))
-            .expect("write timeout");
-        let mut writer = FramedWriter::from_stream(server);
+        let frame = encode_frame(r#"{"pad":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}"#);
+        let mut sink = StallingWriter {
+            budget: 10,
+            written: 0,
+            kind: std::io::ErrorKind::TimedOut,
+        };
 
-        // One frame far larger than any socket buffer: the first `write` moves
-        // bytes, the next blocks and hits the deadline.
-        let body = format!(r#"{{"pad":"{}"}}"#, "x".repeat(16 * 1024 * 1024));
-        let err = writer
-            .send_raw(&body)
-            .expect_err("a frame this large cannot fit a stalled send window");
+        let err =
+            write_frame_to(&mut sink, frame.as_bytes()).expect_err("the sink stops after 10 bytes");
 
         match &err {
             ProtocolError::FrameWriteDesynchronised { written, total, .. } => {
-                assert!(*written > 0, "a desync means bytes reached the wire");
-                assert!(
-                    written < total,
-                    "a desync means the frame was left incomplete ({written} of {total})"
-                );
+                assert_eq!(*written, 10, "a desync reports what reached the wire");
+                assert_eq!(*total, frame.len());
+                assert!(written < total, "the frame was left incomplete");
             }
             other => panic!("expected FrameWriteDesynchronised, got {other:?}"),
         }
@@ -2657,38 +2691,38 @@ mod tests {
             !err.is_transient(),
             "a half-written frame must never be retried — the retry lands on top of the stump"
         );
-
-        // The connection is shut down, so nothing can write a *second* frame
-        // after the truncated one.
-        assert!(
-            writer.send_raw("{}").is_err(),
-            "the desynchronised connection must refuse further frames"
-        );
-
-        drop(peer);
     }
 
     /// A write that fails before moving a single byte leaves the stream aligned
     /// and stays retryable.
     #[test]
     fn write_failing_at_offset_zero_is_not_a_desync() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-        let addr = listener.local_addr().expect("addr");
-        let peer = TcpStream::connect(addr).expect("connect");
-        let (server, _) = listener.accept().expect("accept");
-        // Both ends closed: the very first write fails outright.
-        drop(peer);
-        // Best-effort: on some platforms dropping the peer already put the
-        // socket in a state where `shutdown` reports `NotConnected`, which is
-        // the state this test wants either way.
-        let _ = server.shutdown(std::net::Shutdown::Both);
-        let mut writer = FramedWriter::from_stream(server);
+        for kind in [std::io::ErrorKind::TimedOut, std::io::ErrorKind::BrokenPipe] {
+            let mut sink = StallingWriter {
+                budget: 0,
+                written: 0,
+                kind,
+            };
+            let err = write_frame_to(&mut sink, encode_frame(r#"{"a":1}"#).as_bytes())
+                .expect_err("the sink accepts nothing");
+            assert!(
+                !matches!(err, ProtocolError::FrameWriteDesynchronised { .. }),
+                "nothing was written, so the stream is still aligned: {err:?}"
+            );
+        }
+    }
 
-        let err = writer.send_raw(r#"{"a":1}"#).expect_err("closed socket");
-        assert!(
-            !matches!(err, ProtocolError::FrameWriteDesynchronised { .. }),
-            "nothing was written, so the stream is still aligned: {err:?}"
-        );
+    /// A frame that fits is written whole, in as many chunks as the sink takes.
+    #[test]
+    fn a_frame_that_fits_is_written_whole() {
+        let frame = encode_frame(r#"{"from":"root"}"#);
+        let mut sink = StallingWriter {
+            budget: frame.len(),
+            written: 0,
+            kind: std::io::ErrorKind::TimedOut,
+        };
+        write_frame_to(&mut sink, frame.as_bytes()).expect("the frame fits");
+        assert_eq!(sink.written, frame.len());
     }
 
     fn make_transport_pair() -> (RdpTransport, TcpStream) {
