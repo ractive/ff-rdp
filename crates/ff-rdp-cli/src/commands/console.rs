@@ -294,8 +294,39 @@ fn run_follow_direct(
     jq_filter: Option<&str>,
 ) -> Result<(), AppError> {
     let tab_actor = ctx.target_tab_actor().clone();
+
+    // iter-252: `console-message` and `error-message` are both
+    // `FrameTargetResources` (`devtools/server/actors/resources/index.js`),
+    // i.e. emitted from the content process by a per-frame target actor —
+    // exactly the class iteration 174 found starving on the direct route.
+    //
+    // Two server-side preconditions have to hold before a single one arrives,
+    // and this call site used to satisfy neither:
+    //
+    //  * `isServerTargetSwitchingEnabled: true`. Without it
+    //    `shouldNotifyWindowGlobal` rejects the top-level browsing context
+    //    (`watcher/browsing-context-helpers.sys.mjs:174-182`), so the watcher
+    //    never instantiates a frame target for the page.
+    //  * `watchTargets("frame")` before `watchResources`. The content-process
+    //    half of `watchResources` fans the new resource types out over
+    //    `watcherDataObject.actors`
+    //    (`js-process-actor/DevToolsProcessChild.sys.mjs:409-414`) — the
+    //    targets `watchTargets` created. The top-level target obtained from
+    //    the descriptor's `getTarget` is deliberately *not* in that list
+    //    (only web extensions get a `TargetActorRegistry` fallback), so with
+    //    an empty list the subscription reaches nobody.
+    //
+    // The daemon route has always done both in `establish_watcher`, which is
+    // why it was unaffected. The `get_watcher_with_options` CAUTION about the
+    // flag moving top-level target delivery onto the watcher does not bite
+    // here: `follow_loop` never touches the target actor, it only reads
+    // events off the transport.
     let watcher_actor =
-        TabActor::get_watcher(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;
+        TabActor::get_watcher_with_options(ctx.transport_mut(), &tab_actor, Some(true))
+            .map_err(AppError::from)?;
+
+    WatcherActor::watch_targets(ctx.transport_mut(), &watcher_actor, "frame")
+        .map_err(AppError::from)?;
 
     WatcherActor::watch_resources(
         ctx.transport_mut(),
@@ -312,6 +343,7 @@ fn run_follow_direct(
         &watcher_actor,
         &["console-message", "error-message"],
     );
+    let _ = WatcherActor::unwatch_targets(ctx.transport_mut(), &watcher_actor, Some("frame"), None);
 
     result
 }

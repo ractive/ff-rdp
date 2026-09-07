@@ -46,8 +46,11 @@ cat >"$PAGE" <<'HTML'
 HTML
 PAGE_URL="file://$PAGE"
 
+# `file://` is off by default (it makes local files exfiltratable through
+# `eval`/`page-text`); the page here is one this script just wrote into its own
+# private workdir, so opting in is bounded by the run.
 dogfood_log "navigating to $PAGE_URL"
-ffrdp --port "$PORT" navigate "$PAGE_URL" >"$WORK/navigate.json" 2>&1 \
+ffrdp --port "$PORT" --allow-file-urls navigate "$PAGE_URL" >"$WORK/navigate.json" 2>&1 \
   || dogfood_die "navigate failed: $(cat "$WORK/navigate.json")"
 
 # Measure one route. $1 is the label used in the probe string and the output

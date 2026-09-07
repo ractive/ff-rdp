@@ -923,7 +923,73 @@ fn parse_single_console_resource(item: &Value) -> Option<ConsoleResource> {
         });
     }
 
-    None
+    // Flat `console-message` resource (iter-252).
+    //
+    // The two branches above cover the shapes emitted by `webconsole.js`:
+    // the legacy `consoleAPICall` push wraps its payload in `message`
+    // (`webconsole.js:1453`), and `error-message` resources wrap theirs in
+    // `pageError` (`resources/error-messages.js:180`). A `console-message`
+    // *resource* does neither: `resources/console-messages.js:55` calls
+    // `onAvailable([prepareConsoleMessageForRemote(targetActor, message)])`,
+    // so the payload IS the prepared message, with `arguments` / `level` /
+    // `filename` / `lineNumber` / `columnNumber` / `timeStamp` at the top
+    // level. Measured on Firefox 155.0.1:
+    //
+    // ```json
+    // ["console-message", [{"arguments":["tick"],"lineNumber":1,
+    //   "columnNumber":32,"filename":"debugger eval code","level":"log",
+    //   "timeStamp":1788783444398.958,"sourceId":null,
+    //   "innerWindowID":17179869186}]]
+    // ```
+    //
+    // Until this branch existed every such item parsed to `None`, so
+    // `console --follow` printed nothing even when the frames were arriving
+    // — which is why iteration 174's attempt to measure it saw empty stdout
+    // on *both* routes and could conclude nothing.
+    //
+    // `level` is the discriminator: every prepared console message carries
+    // it, and requiring it keeps this branch from swallowing unrelated
+    // resource shapes that happen to share a key or two.
+    let level = item.get("level").and_then(Value::as_str)?.to_owned();
+
+    let message = item
+        .get("arguments")
+        .and_then(Value::as_array)
+        .map(|args| format_console_args(args))
+        .unwrap_or_default();
+
+    let source = item
+        .get("filename")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let line = item
+        .get("lineNumber")
+        .and_then(Value::as_u64)
+        .unwrap_or_default() as u32;
+
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let column = item
+        .get("columnNumber")
+        .and_then(Value::as_u64)
+        .unwrap_or_default() as u32;
+
+    let timestamp = item
+        .get("timeStamp")
+        .and_then(Value::as_f64)
+        .unwrap_or_default();
+
+    Some(ConsoleResource {
+        level,
+        message,
+        source,
+        line,
+        column,
+        timestamp,
+        resource_id,
+    })
 }
 
 fn parse_single_network_resource(item: &Value) -> Option<NetworkResource> {
