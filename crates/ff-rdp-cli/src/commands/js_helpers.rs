@@ -312,18 +312,38 @@ pub(crate) fn build_stability_check_js(escaped_selector: &str) -> String {
     )
 }
 
-/// iter-237 Part B — how long [`autowait_element`] must watch a page before it
-/// is allowed to conclude that a selector matching nothing never will.
+/// iter-237 Part B — the floor on how long [`autowait_element`] watches a page
+/// before it is allowed to conclude that a selector matching nothing never
+/// will, as a fraction of the caller's own budget.
 ///
 /// The short-circuit's real evidence is the shared settle signal (no XHR/fetch
 /// in flight for 500 ms, no DOM mutation for 200 ms, `document.readyState ===
-/// 'complete'`). This floor is the belt to that braces: a page whose settle
-/// probe was installed by an *earlier* command can report "idle" on the very
-/// first poll, and an element inserted by a bare `setTimeout` — no network, no
-/// mutation until it fires — would be missed. Half a second of unconditional
-/// observation keeps that case cheap to survive while still turning the
-/// guessed-selector stall from ~10 s into ~0.6 s.
+/// 'complete'`). This floor is the belt to that braces. Two cases it buys
+/// cover for, neither of which the idle signal can see:
+///
+/// - a page whose settle probe was installed by an *earlier* command in the
+///   same document reports "idle" on the very first poll, so without a floor
+///   the poll would answer before observing anything itself;
+/// - an element inserted by a bare `setTimeout` on an otherwise-quiet page
+///   leaves no trace to observe *until it fires* — no request, no mutation.
+///
+/// A fraction rather than a constant so the guarantee scales with what the
+/// caller asked for: `--timeout 10000` (the default) keeps 2 s of
+/// unconditional observation and still turns the guessed-selector stall from
+/// 10 s into ~2 s, while a caller who asked for 60 s of patience gets
+/// proportionally more of it before anything is concluded on their behalf.
+const NOT_FOUND_MIN_OBSERVATION_DIVISOR: u64 = 5;
+
+/// Absolute floor under [`NOT_FOUND_MIN_OBSERVATION_DIVISOR`], so a very short
+/// `--timeout` still observes the page for at least one settle window's worth
+/// of polling rather than short-circuiting almost immediately.
 const NOT_FOUND_MIN_OBSERVATION_MS: u64 = 500;
+
+/// How long [`autowait_element`] observes before the not-found short-circuit
+/// is allowed to fire, for a given auto-wait budget.
+fn not_found_min_observation_ms(timeout_ms: u64) -> u64 {
+    (timeout_ms / NOT_FOUND_MIN_OBSERVATION_DIVISOR).max(NOT_FOUND_MIN_OBSERVATION_MS)
+}
 
 /// Whether the shared settle probe ([`SETTLE_INJECT_JS`]) is usable in the
 /// document [`autowait_element`] is polling.
@@ -499,7 +519,7 @@ pub(crate) fn autowait_element(
         // separates them: once the document is complete, nothing is in
         // flight and the DOM has stopped mutating, no amount of further
         // waiting can produce a match, so answer now.
-        if started.elapsed() >= Duration::from_millis(NOT_FOUND_MIN_OBSERVATION_MS) {
+        if started.elapsed() >= Duration::from_millis(not_found_min_observation_ms(timeout_ms)) {
             if settle_probe == SettleProbe::Uninstalled {
                 settle_probe = install_settle_probe(ctx, console_actor, &escaped);
             }
@@ -510,7 +530,7 @@ pub(crate) fn autowait_element(
                 let elapsed_ms = started.elapsed().as_millis();
                 return Err(AppError::Timeout(format!(
                     "{diag} after {elapsed_ms}ms — the page is idle (document complete, no network \
-                     in flight, no DOM mutations), so the remaining {timeout_ms}ms of the auto-wait \
+                     in flight, no DOM mutations), so the rest of the {timeout_ms}ms auto-wait \
                      budget could not have changed the answer"
                 )));
             }
@@ -1666,18 +1686,30 @@ mod tests {
         (ctx, console_actor)
     }
 
+    /// The observation floor scales with the caller's budget, but never drops
+    /// below one settle window's worth of polling.
+    #[test]
+    fn unit_237_observation_floor_scales_with_the_budget() {
+        assert_eq!(not_found_min_observation_ms(10_000), 2_000);
+        assert_eq!(not_found_min_observation_ms(60_000), 12_000);
+        // Short budgets keep the absolute floor rather than a near-zero one.
+        assert_eq!(not_found_min_observation_ms(1_000), 500);
+        assert_eq!(not_found_min_observation_ms(0), 500);
+    }
+
     /// Theme B, the regression this short-circuit must not cause: a selector
     /// that only appears *after* the short-circuit becomes eligible (past
-    /// `NOT_FOUND_MIN_OBSERVATION_MS`) still resolves, because the page is
+    /// [`not_found_min_observation_ms`]) still resolves, because the page is
     /// mutating and the idle predicate therefore stays false.
     #[test]
     fn unit_237_late_selector_still_resolves_when_the_page_is_not_idle() {
         let started = Instant::now();
         let (port, server) = spawn_scripted_console(move |js| match classify_eval(js) {
-            // Not there for the first ~700 ms — well past the 500 ms floor,
-            // so the short-circuit has had every chance to fire wrongly.
+            // Not there for the first ~1.4 s — well past the 1 s floor this
+            // budget implies, so the short-circuit has had every chance to
+            // fire wrongly.
             "readiness" => {
-                if started.elapsed() >= Duration::from_millis(700) {
+                if started.elapsed() >= Duration::from_millis(1_400) {
                     json!("__ffrdp_ready__")
                 } else {
                     json!({"type": "null"})
@@ -1716,9 +1748,9 @@ mod tests {
 
         let (mut ctx, console_actor) = connect_for_test(port);
         let started = Instant::now();
-        // 60 s of budget: if the short-circuit does not fire, this test hangs
-        // for a minute instead of quietly passing.
-        let result = autowait_element(&mut ctx, &console_actor, "#nope", 60_000, false);
+        // The default `--timeout`: if the short-circuit does not fire, this
+        // takes the full 10 s instead of quietly passing.
+        let result = autowait_element(&mut ctx, &console_actor, "#nope", 10_000, false);
         let elapsed = started.elapsed();
         drop(ctx);
         server.join().unwrap();
@@ -1734,9 +1766,12 @@ mod tests {
             msg.contains("the page is idle"),
             "the message must say why it stopped early: {msg:?}"
         );
+        // The floor for a 10 s budget is 2 s; the full budget is 10 s. Half
+        // the budget is a margin wide enough to be immune to CI jitter and
+        // still fail loudly if the poll runs to the end.
         assert!(
-            elapsed < Duration::from_secs(10),
-            "must report well under the 60s budget, took {elapsed:?}"
+            elapsed < Duration::from_secs(5),
+            "must report well under the 10s budget, took {elapsed:?}"
         );
     }
 
