@@ -292,13 +292,13 @@ Unix has told anyone whether the Windows spellings are right, because nothing ha
 
 ### Tasks
 
-#### A. Kill-path proof [0/1]
-- [ ] A `#[cfg(windows)]` test spawns a process with a real child it did not directly launch (the
+#### A. Kill-path proof [1/1]
+- [x] A `#[cfg(windows)]` test spawns a process with a real child it did not directly launch (the
       Windows analogue of the Unix grandchild fixture) and asserts `kill_phase_tree` — via
       `taskkill /F /T` — leaves neither alive; runs on `windows-latest` CI
 
-#### B. Listing-format proof [0/1]
-- [ ] A `#[cfg(windows)]` test spawns a real short-lived process with a distinguishing command
+#### B. Listing-format proof [1/1]
+- [x] A `#[cfg(windows)]` test spawns a real short-lived process with a distinguishing command
       line, calls `process_listing()` for real, and asserts `managed_firefox_pids` finds it —
       proving the PowerShell one-liner's actual output shape, not a hand-written fixture
 
@@ -307,11 +307,11 @@ Unix has told anyone whether the Windows spellings are right, because nothing ha
       any further Windows-specific coverage is warranted or the module is accepted as
       never-exercised-in-CI by design
 
-### Acceptance Criteria [0/2]
+### Acceptance Criteria [2/2]
 
-- [ ] `windows_live_sweep_kill_phase_tree_reaches_a_real_grandchild` (Theme A) passes on
+- [x] `windows_live_sweep_kill_phase_tree_reaches_a_real_grandchild` (Theme A) passes on
       `windows-latest` CI, not just locally
-- [ ] `windows_live_sweep_process_listing_matches_a_real_process` (Theme B) passes on
+- [x] `windows_live_sweep_process_listing_matches_a_real_process` (Theme B) passes on
       `windows-latest` CI
 
 ### Out of scope
@@ -453,3 +453,91 @@ support is: `kill_phase_tree` and `process_listing` are proved against real proc
 `windows_live_sweep_kill_phase_tree_reaches_a_real_grandchild`'s cleanup path and
 `reap_managed_firefox`, and that is accepted rather than given a third test — it is a one-line
 spelling of the same `taskkill` the tree test proves is present and functional.
+
+### Theme A/B first-run result (Part C, Theme C)
+
+Both passed on their **first** `windows-latest` CI run, PR #245, run 34109828660:
+
+```
+test live_sweep::tests::windows_live_sweep_process_listing_matches_a_real_process ... ok
+test live_sweep::tests::windows_live_sweep_kill_phase_tree_reaches_a_real_grandchild ... ok
+```
+
+So the three Windows branches iteration 197 wrote blind are correct as written — `taskkill /F /T`
+does reach a process the phase never launched directly, and `Get-CimInstance Win32_Process`'s
+real output is the `<pid> <command line>` shape `managed_firefox_pids` parses. No fix was needed,
+which is the outcome the plan explicitly refused to guess at up front.
+
+## Outcome — what the check found on its own first real sweep
+
+The first dual-gate sweep with Part A in place reported exactly one leak:
+
+```
+live-sweep: LEAKED PROFILE after -p ff-rdp-cli --test live — ff-rdp-profile-VpRz1nZkhn6wILgF
+  (pid 84108, spawned by live_target_destroyed::live_target_destroyed_invalidates_registry) …
+```
+
+That test **passed**, and its browser was gone by the time anyone looked. The cause is not a
+product leak but a defect in the check itself: `LiveFirefox::drop` signals its Firefox and returns
+without waiting for it to exit ([[iteration-168-livefirefox-drop-does-not-wait-for-exit]]), and the
+check ran the instant `run_phase` returned — so the last tests' browsers were still in the process
+table, *dying*, with their markers intact.
+
+Fixed here, not deferred: `settle_owned_profiles` re-scans `ORPHAN_SETTLE_ATTEMPTS` (5) times at
+`ORPHAN_SETTLE_DELAY` (2 s) and reports only what is still live-owned, matched on directory **and**
+PID, on every scan. A clean root pays exactly one scan and no sleep, so the cost lands only on a
+run that has something to report. Four unit tests cover both directions
+(`iter_245_a_browser_still_exiting_is_not_reported_as_a_leak`,
+`iter_245_a_browser_that_survives_every_scan_is_still_a_leak`,
+`iter_245_a_clean_root_is_scanned_once`,
+`iter_245_still_owned_matches_on_pid_not_just_directory`), and the confirming sweep below reports
+`leaked=0` with the same tier that produced the false positive.
+
+**This is the guarantee working as designed on its first outing** — it found something real (a
+browser alive after its tier finished), and following it to the bottom produced a correction rather
+than a shrug. A warning-only design would have produced a line nobody read.
+
+## Live sweep (closing record)
+
+Two dual-gate sweeps, macOS, `--jobs 6`, a raw `firefox --start-debugger-server 6000 --headless`
+up for the `preexisting` tier. Both quoted with their gates, per the `iteration-close` skill.
+
+**Sweep 1** — before the settle-loop fix (`FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1`):
+
+```
+LIVE_SWEEP_SUMMARY executed=328 skipped=0 preexisting=0 vanished=0 launch_timeout=0 timed_out=0 total=328
+LIVE_SWEEP_PROFILES leaked=1 unattributed=0 root=~/Library/Application Support/ff-rdp/profiles
+ff-rdp-cli tier: 304 passed / 15 failed (449.63 s); ff-rdp-core tiers: 9 passed / 0 failed
+```
+
+**Sweep 2** — the branch as it stands (`FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1`):
+
+```
+LIVE_SWEEP_SUMMARY executed=328 skipped=0 preexisting=0 vanished=0 launch_timeout=0 timed_out=0 total=328
+LIVE_SWEEP_PROFILES leaked=0 unattributed=0 root=~/Library/Application Support/ff-rdp/profiles
+ff-rdp-cli tier: 307 passed / 12 failed (521.27 s); ff-rdp-core tiers: 9 passed / 0 failed
+live-sweep: real profile root … holds no live-owned profile this sweep left behind
+  (checked after -p ff-rdp-cli --test live)
+```
+
+Reconciliation, both runs: `passed + failed = 328 = executed`, so no test went missing.
+
+**Declared contamination:** sweep 2 ran while the host desktop was at load average 400+ on a
+10-core machine (Finder, Chrome, Teams and ~90 WebKit content processes belonging to the operator,
+not the sweep). Sweep 1 is the cleaner of the two and its failure list is the one to compare
+against.
+
+`executed=328` vs the 319 the CLI tier reports is the four `ff-rdp-core` targets (1 + 3 + 3 + 2),
+not a missing verdict.
+
+## Carry-over
+
+| # | Row | Disposition |
+| --- | --- | --- |
+| 1 | 7 `--full-page` screenshot failures in both sweeps, all `TypeError: WindowGlobalParent.drawSnapshot: Argument 4 can't be converted to a dictionary` (`live_61l`, `live_61r_screenshot`, `live_92` ×2, `live_135`, `live_144`, `live_screenshot_shim`) | **fold** — already exactly [[iteration-257-firefox-155-drawsnapshot-dictionary-arg]], which is filed and pending. No edit needed. |
+| 2 | 8 load-shaped live failures whose set is **not stable between two runs on the same commit** (`live_109` block/unblock daemon timeout, `live_145` frame targets, `live_159` CMP, `live_169` direct *and* daemon, `live_174` daemon, `live_212` ref click, `live_237` ×2) | **fold** into [[iteration-246-sweep-load-misclassification]] — added as a dated addendum with the per-run table and the two rows that deserve to be read as more than noise. |
+| 3 | `live_navigate_default_fast::live_navigate_elapsed_matches_wall` — failed in **both** sweeps, in the same direction: reported `elapsed_ms` ~900 ms *smaller* than measured wall | **fold** into [[iteration-246-sweep-load-misclassification]], flagged there as possibly a real honesty regression (iter-122 Theme B) rather than load: load lengthens the wall clock, it does not shorten ff-rdp's own measurement. Re-run in isolation before writing off. |
+| 4 | `live_target_destroyed_invalidates_registry` reported as a leaked profile by the new check | **closed in this PR** — it was the check's own false positive; `settle_owned_profiles` and four unit tests, above. |
+| 5 | Six dead-owner `ff-rdp-profile-*` directories left in the real root after the sweeps (no live owner, so not reported by this check) | **fold** — this is `daemon stop`'s removal race, already [[iteration-260-live-owner-removal-race-in-daemon-stop]]. Named here because the check makes the *live* half visible while the dead half stays that plan's business. |
+| 6 | `live_158_launch_survives_contended_bind` still has not hung, so the capture hook has never fired for real | **no plan, with a stated reason** — there is nothing measured to act on; the hook exists precisely so the next occurrence is diagnosable. If a sweep reports `timed_out` naming it and the capture produces a stack, *that* stack needs its own plan (iteration 197's own disposition, unchanged). |
+| 7 | `kill_pid_hard`'s Windows branch (`taskkill /F /PID`) is still only exercised indirectly | **no plan, with a stated reason** — Part C Theme C's scope decision, above. It is a one-line spelling of the `taskkill` the tree test proves is present and functional; if a Windows reap is ever observed failing, that is when it earns a test. |
