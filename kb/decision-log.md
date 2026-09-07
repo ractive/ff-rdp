@@ -2233,3 +2233,94 @@ assertion in `crates/ff-rdp-cli/tests/live/` is against `FixtureServer`.
 `crates/ff-rdp-cli/tests/live/live_166_navigate_document_status.rs`,
 `kb/iterations/iteration-235-live-bulk-cap-shrinks-a-process-global.md`.
 Supersedes the "Not fixed here" clause of DEC-048 and closes DEC-022's residue.
+
+---
+
+## DEC-054: an owner marker that exists but does not read back is "cannot tell", never "no owner"
+
+**Date**: 2026-09-07 (iter-242, absorbing iter-243 and iter-244)
+
+### Part A — the grading that could flip, and the window that produced it
+
+**Decision**: `owner_liveness` in `crates/ff-rdp-cli/src/util/profile_dir.rs` gains a fifth
+grading, `Unreadable`, for a `.ff-rdp-owner-pid` marker that exists but yields no PID at this
+instant — an I/O error, or contents that do not parse. It sits with `Unverified` on the keep
+side of every deletion path (`profiles prune`, `launch`'s orphan sweep) and, like `Unverified`,
+is refused by the iter-110 kill-scoping gate, which still demands exactly `Live`. Separately,
+`write_owner_pid_marker` now writes through a sibling temp file plus `rename` instead of
+`fs::write`.
+
+**Why**: `read_owner_pid_marker` returned `Option<u32>` and collapsed two different answers into
+`None`: "there is no marker file" and "the marker did not read back". Only the first means
+nobody owns the directory. The second is produced by a window in our own code —
+`fs::write` truncates and then writes, so a concurrent reader sees an empty marker — and
+iteration 175 made `launch` enter that window *against a directory whose Firefox is already
+running*, because `launch` claims the directory with its own PID the moment it exists and
+re-marks it with Firefox's PID after the spawn. A prune landing inside those two syscalls graded
+a live profile `Unmarked`, fell through to the iter-96 mtime heuristic, and deleted it.
+
+That is a mechanism the observed flake is consistent with, not a proven diagnosis of it. The
+iteration-97 dogfood gate's intermittent "`--all` did not report the live-owner profile in
+`removed_live`" (~1 run in 2) was **not reproduced** here, and this decision must not be read as
+having closed it — see the attribution below, which is what will close it.
+
+**Attribution over inference**: the `profile_is_owned_by_live_process` boolean wrapper is
+deleted. `owner_liveness_of()` returns the grading; `OwnerLiveness::keeps_profile_alive()` is
+the decision. `profiles prune` grades once and both decides and reports from that one value —
+re-reading the markers for the report could legitimately disagree with the first read, which is
+the race itself — and emits `owner_liveness` in its JSON as
+`basename -> live|unverified|unreadable|dead|unmarked`. The next occurrence of the flake says
+which branch fired instead of leaving the next iteration to infer it.
+
+`cleanup_profile_dir`'s `ProfileCleanup::Skipped` gets the same treatment: it now carries a
+`ProfileCleanupSkip` reason, surfaced by `daemon stop` as `profile_skip_reason`. Three of the
+four reasons are refusals that are correct by design for a `--profile` directory; only
+`remove-failed` indicates a problem, and `profile_removed: false` alone could not tell them
+apart — which is exactly what the iteration-224 sweep failure arrived as.
+
+### Part B — enumerate launch sites, not guard sites
+
+**Decision**: `crates/ff-rdp-cli/tests/iter_242_launch_site_ownership.rs` enumerates every
+`"launch"` invocation under `tests/live/` and requires two mechanical properties per site: built
+from `common::ff_rdp_launch_command()` (so a leaked profile names its spawning test rather than
+reading `spawned by unknown test`), and an RAII owner bound in — or handed back by — the
+enclosing function. It found eight offenders, all fixed. Its allowlist is empty and is meant to
+stay that way.
+
+**Why this shape**: iteration 151 audited the same seam by searching for *discarded* guards
+(`ManuallyDrop`, `mem::forget`) and missed the `launch --replace` class entirely — a Firefox
+nothing ever owned cannot appear in a search for guards that were thrown away. Starting from
+launch sites is the only enumeration that cannot have that blind spot.
+
+**Honest limit**: a source scan cannot prove the guard is bound *before the next assertion*,
+only that the function binds one. The ordering was corrected by hand where it was wrong
+(`live_142_disk_growth::launch_headless`, `live_90`'s `launch_on_port`) and
+`common::guard_launched_firefox(&output)` — which extracts the PID and constructs the guard in
+one step — makes the correct order the easy one.
+
+`FirefoxGuard::drop` no longer signals a PID that is already dead, and `FirefoxGuard::disarm()`
+exists for paths that have already asserted the process is gone. `kill_pid` checks neither
+liveness nor ownership, so signalling a reaped PID is a signal to whatever the OS reissued the
+number to — the recycled-PID hazard iter-110 guards against in production, reintroduced at test
+scope when iteration 151 removed the `ManuallyDrop` that was incidentally preventing it.
+
+### Part C — a third-party page's content is not ours to assert on blind
+
+**Decision**: `live_eval_on_hn` waits for `document.readyState == "complete"` via
+`common::await_document_ready()` before asserting on `document.title`, and its failure message
+names the side: `READINESS:` when the document never completed, `SITE:` when it completed with
+an empty or different title. Deliberately **not** an accepted retry of the assertion, which
+would hide a real readiness regression behind a second attempt.
+
+The class is inventoried in `crates/ff-rdp-cli/tests/iter_242_third_party_dependencies.rs`:
+seven declared hosts, and the scan fails on an undeclared host or on a third-party navigation
+outside the `FF_RDP_LIVE_NETWORK_TESTS` gate. The audit found every real third-party navigation
+already network-gated, and five of the fourteen files making genuine *content* assertions.
+
+`live_137_consent_accept_via_daemon`'s `live_target_count: 0` signature is left to iteration
+251, which owns it; diagnosing it from here would give one failure two half-owners.
+
+**Applies to**: `crates/ff-rdp-cli/src/util/profile_dir.rs`,
+`crates/ff-rdp-cli/src/commands/profiles.rs`, `crates/ff-rdp-cli/src/daemon/client.rs`,
+`crates/ff-rdp-cli/tests/common/mod.rs`, and the live tier's launch sites.
+Extends DEC-022's ownership-marker line; does not supersede any earlier decision.

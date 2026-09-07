@@ -2,7 +2,7 @@
 title: "Iteration 242: live-suite ownership: prune --all liveness flake, guard-coverage gaps, sweep-only failures"
 type: iteration
 date: 2026-08-24
-status: planned
+status: in-review
 branch: iter-242/profile-liveness-flake-in-prune-all
 depends_on:
   - iteration-193-dogfood-scripts-pkill-and-path-binary
@@ -128,20 +128,45 @@ justified by reasoning alone will not be distinguishable from the flake going qu
 
 ### Tasks
 
-#### A. Attribution [0/2]
-- [ ] `profile_is_owned_by_live_process` can report *which* `OwnerLiveness` it derived
-- [ ] The intermittent failure is reproduced with the branch recorded
+#### A. Attribution [1/2]
+- [x] `profile_is_owned_by_live_process` can report *which* `OwnerLiveness` it derived —
+      the boolean wrapper is **gone**: `owner_liveness_of()` returns the grading and
+      `OwnerLiveness::keeps_profile_alive()` is the decision, so `profiles prune` decides and
+      reports from one read (a second read of a racing marker could disagree with the first,
+      which is the race itself). The grading is in the JSON as `owner_liveness`
+      (`basename -> live|unverified|unreadable|dead|unmarked`).
+- [ ] The intermittent failure is reproduced with the branch recorded — **not done, and the
+      plan asked for this first.** The failure is ~1 run in 2 by the plan's own note, but it
+      needs a real Firefox and a real prune pair; this iteration ran under an unattended agent
+      with no live sweep available. What landed instead is the instrumentation that makes the
+      *next* occurrence self-attributing, plus a fix for one branch that is provably capable of
+      flipping (below). Do not read the flake going quiet as evidence: read the
+      `owner_liveness` field.
 
-#### B. Stability [0/1]
-- [ ] The identified branch either stops firing spuriously or stops being treated as a
-      confident negative on the prune path
+#### B. Stability [1/1]
+- [x] The identified branch either stops firing spuriously or stops being treated as a
+      confident negative on the prune path — **both**, for the `Unmarked`-from-an-unreadable-marker
+      branch. `read_owner_pid_marker` collapsed "no marker file" and "the marker did not read
+      back as a PID *this instant*" into one `None`, and only the first of those means "nobody
+      owns this". They are now separate gradings (`Unmarked` vs. the new `Unreadable`), and
+      `Unreadable` joins `Unverified` on the keep side of every deletion path while still
+      refusing the kill-scoping gate. Separately, the window that produces it is closed:
+      `write_owner_pid_marker` used `fs::write` (truncate, then write), so a concurrent reader
+      could observe an empty marker on a directory whose Firefox is running — and iter-175 made
+      `launch` enter that window against a live directory on the normal path. Marker writes now
+      go through a sibling temp file plus `rename`, which is atomic on both `rename(2)` and
+      Windows' `MoveFileEx`.
 
-### Acceptance Criteria [0/2]
+### Acceptance Criteria [1/2]
 
-- [ ] A test pins the identified transient case: given that condition, an age-gated prune does
-      **not** remove the profile
+- [x] A test pins the identified transient case: given that condition, an age-gated prune does
+      **not** remove the profile —
+      `unit_242_age_gated_prune_keeps_profile_with_unreadable_marker` (`commands/profiles.rs`)
+      and `unit_242_unreadable_marker_survives_the_age_gated_orphan_sweep` (`util/profile_dir.rs`),
+      one per reclamation path. Both fail on `main`.
 - [ ] The iteration-97 dogfood gate passes ten consecutive runs
       (`FF_RDP_LIVE_TESTS=1 cargo run -p xtask -- check-dogfood-script kb/iterations/iteration-97-*.md`)
+      — **not run.** Requires a live Firefox; no live sweep was available to this iteration.
 
 ### Out of scope
 
@@ -268,20 +293,41 @@ from") is wrong: both files are modules of the *same* `tests/live` binary, and
 - The `SPAWNING_TEST_ENV` duplication between `src/` and `tests/` is genuinely unavoidable
   (the product-side constant is private); leave that one and keep its explanatory comment.
 
-### Acceptance Criteria [0/5]
+### Acceptance Criteria [2/5]
 
-- [ ] live_152_no_unowned_launch_sites: a test (or xtask check) enumerates every `"launch"`
+- [x] live_152_no_unowned_launch_sites: a test (or xtask check) enumerates every `"launch"`
       invocation under `crates/ff-rdp-cli/tests/live/` and asserts each one's PID is bound to
-      an RAII guard before the next assertion — enumerating launch sites, not guard sites
+      an RAII guard before the next assertion — enumerating launch sites, not guard sites.
+      `tests/iter_242_launch_site_ownership.rs`, Firefox-free, runs on every `cargo test`. It
+      found eight offending sites, all fixed. **One honest qualification:** it proves each
+      launch site's enclosing function binds an owner, not that the binding happens *before*
+      the next assertion — a source scan cannot order statements reliably. The ordering was
+      fixed by hand where it was wrong (`live_142_disk_growth`, `live_90`) and the helper
+      `common::guard_launched_firefox()` makes the correct order the easy one. A second test
+      in the same file fails if the scan ever stops finding launch sites at all.
+- [x] live_152_guard_drop_skips_dead_pid: a guard whose PID was already reaped does not
+      signal it on drop, proven by observing no kill against a recycled/dead PID —
+      `live_242_launch_ownership::live_242_guard_drop_skips_dead_pid` (needs no Firefox;
+      spawns and reaps a trivial child). `FirefoxGuard::drop` now returns early for a dead PID,
+      and `FirefoxGuard::disarm()` exists for the paths that have already asserted the process
+      is gone (`live_90`'s post-`daemon stop` guard uses it).
 - [ ] live_152_marker_names_test_from_raw_launch: a profile leaked by a raw-`Command` launch
-      site (not `common::LiveFirefox`) still names its spawning test in `.ff-rdp-owner-test`
-- [ ] live_152_guard_drop_skips_dead_pid: a guard whose PID was already reaped does not
-      signal it on drop, proven by observing no kill against a recycled/dead PID
+      site (not `common::LiveFirefox`) still names its spawning test in `.ff-rdp-owner-test` —
+      **written but not run.** `live_242_launch_ownership::live_242_marker_names_test_from_direct_launch`
+      is the test; it needs a live Firefox, and no live sweep was available to this iteration.
+      The gap it targets was also found and closed statically: `live_210_act_and_see`'s `run()`
+      was the last `"launch"` site still built from a bare `Command::new(ff_rdp_bin())`, and
+      the scan above now forbids that shape.
 - [ ] live_152_chunk_a_leaves_no_orphans: a full chunk-A run leaves zero ff-rdp-spawned
-      Firefox processes — the AC 151 could not tick because it never ran the chunk
+      Firefox processes — the AC 151 could not tick because it never ran the chunk.
+      **Premise superseded (see the 2026-09-06 note above) and not run.** The chunk-A/chunk-B
+      `--test-threads=1` split predates `cargo run -p xtask -- live-sweep`; the equivalent
+      evidence is a sweep, which this iteration could not run.
 - [ ] live_152_chunk_b_leaves_no_orphans: the complementary chunk-B run leaves zero
       ff-rdp-spawned Firefox processes, and `live_96_profile_cleanup`'s precondition passes
-      without manual cleanup
+      without manual cleanup — same premise note, and `live_96`'s
+      `live_profiles_prune_removes_all_when_no_firefox_running` was deleted in iteration 188's
+      review, so half of this AC has no subject left.
 
 ### Notes
 
@@ -423,13 +469,31 @@ exactly what `ff-rdp launch` creates and what the documented raw command does no
       (iteration 176) came from an earlier interrupted sweep of that same test. This is an orphan
       question, not a `live_96` question
 
-#### B. live_eval_on_hn
+#### B. live_eval_on_hn [2/4]
 - [ ] Determine whether the empty title is a readiness gap on our side or the site not answering
-- [ ] Audit the live suite for other assertions on third-party page content — start from the two
-      already named (`live_eval_on_hn`, `live_137_consent_accept_via_daemon`)
+      — **not determined, and deliberately not guessed.** The single observation
+      (`document.title == ""` after a successful `navigate`, green in isolation three minutes
+      later) is consistent with both. What landed is the apparatus that makes the *next*
+      occurrence decide it: `common::await_document_ready()` polls `document.readyState` and
+      `document.title`, and `DocumentState::diagnosis()` reports `READINESS:` when the document
+      never reached `complete` and `SITE:` when it completed with an empty or different title.
+      `live_eval_on_hn` now waits, then asserts once, and its failure message names the side.
+- [x] Audit the live suite for other assertions on third-party page content — start from the two
+      already named (`live_eval_on_hn`, `live_137_consent_accept_via_daemon`).
+      Seven third-party hosts across fourteen files; **five** make content assertions
+      (`live_eval_on_hn`, `live_eval_works_on_real_mdn`, `live_137_consent_accept_via_daemon`,
+      `live_cascade_real_site_cli`, and `live_130`'s comparis navigation — the last asserts the
+      committed *URL*, which is a weaker dependency). Every actual third-party navigation is
+      already behind `FF_RDP_LIVE_NETWORK_TESTS`; the five files mentioning `en.wikipedia.org`
+      outside that gate mention it only in prose. Recorded as a checked-in census,
+      `tests/iter_242_third_party_dependencies.rs`, which fails on an undeclared or ungated
+      host so the class cannot grow silently again.
 - [ ] Re-run `live_137_consent_accept_via_daemon` in isolation and decide whether its
-      `live_target_count: 0` is load, the site, or a daemon frame-target enumeration gap
-- [ ] Fix or re-scope, with the reasoning recorded
+      `live_target_count: 0` is load, the site, or a daemon frame-target enumeration gap —
+      **left to iteration 251**, which owns that signature (see the 2026-09-06 premise note).
+      Diagnosing it from here would give one failure two half-owners.
+- [x] Fix or re-scope, with the reasoning recorded — `live_eval_on_hn` fixed (readiness wait +
+      named diagnosis); the class re-scoped into the census above; `live_137` handed to 251.
 
 ### Acceptance Criteria [0/2]
 
@@ -439,7 +503,10 @@ exactly what `ff-rdp launch` creates and what the documented raw command does no
       the raw-browser command is now a setup step in `iteration-close`), but **no sweep was run**
       to demonstrate it, and this AC explicitly forbids closing on reasoning. Tick it when the
       next dual-gate sweep starts its port-6000 browser the documented way and `live_96` passes
-- [ ] Theme B's mechanism is named from evidence (readiness vs. site), not guessed
+- [ ] Theme B's mechanism is named from evidence (readiness vs. site), not guessed —
+      **left unticked on purpose.** No new sweep produced the failure, so there is no evidence
+      to name it from, and this AC forbids closing on reasoning. The test now *collects* that
+      evidence and prints the verdict; tick this when a sweep exercises it.
 
 ### Out of scope
 
@@ -454,7 +521,20 @@ exactly what `ff-rdp launch` creates and what the documented raw command does no
 - [[iteration-173-live-sweep-port-6000-firefox-does-not-survive]] — the `vanished` / `launch_timeout` classification this
   sweep reported as zero, so neither failure is one of those
 
+### Part A follow-up: `daemon stop`'s silent `profile_removed: false`
+
+Closed. `cleanup_profile_dir` returned a bare `ProfileCleanup::Skipped` for four different
+reasons — root unresolvable, path outside the root, basename not managed, `remove_dir_all`
+failed — and `daemon stop` printed `profile_removed: false` with none of them attached. Only the
+last indicates a problem; the first three are the expected outcome for a `--profile` directory.
+`Skipped` now carries a `ProfileCleanupSkip`, and `daemon stop` reports it as
+`profile_skip_reason` (null when the profile was removed, and when the stop itself failed so
+cleanup was never attempted). That does not yet explain the iteration-224 observation — but it
+means the next occurrence arrives saying `remove-failed` rather than saying nothing.
+
 ## Closing acceptance criterion (covers all parts) [0/1]
 
 - [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q`
-      clean, plus a dual-gate live sweep (covers all parts)
+      clean, plus a dual-gate live sweep (covers all parts) — the three local gates are green;
+      **no live sweep was run**, so this stays unticked. Every AC above that depends on a live
+      Firefox is unticked for the same reason and says so.
