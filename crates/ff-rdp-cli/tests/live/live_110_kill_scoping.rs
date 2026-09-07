@@ -63,6 +63,12 @@ fn live_110_replace_never_kills_foreign_firefox() {
         ])
         .output()
         .expect("run ff-rdp launch --replace");
+    // iter-242 Part B: this launch is *expected* to be refused, but the
+    // regression it hunts is precisely "ff-rdp went ahead anyway" — and on
+    // that path it started a replacement Firefox nothing owns. Bind it before
+    // the assertions, so the assertion that catches the regression is not also
+    // what leaks a browser. `None` on the expected path: nothing was started.
+    let _replacement = crate::common::guard_launched_firefox(&output);
 
     // Give any (buggy) kill signal time to land before we assert survival.
     std::thread::sleep(Duration::from_millis(500));
@@ -136,6 +142,8 @@ fn live_110_replace_never_kills_foreign_firefox() {
         ])
         .output()
         .expect("run ff-rdp launch --replace against a planted stale record");
+    // Same reasoning as the phase-A launch above.
+    let _planted_replacement = crate::common::guard_launched_firefox(&planted);
 
     std::thread::sleep(Duration::from_millis(500));
 

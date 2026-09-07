@@ -54,14 +54,15 @@ fn launch_headless() -> (FirefoxGuard, u16, serde_json::Value) {
     let port = free_port().expect("bind 127.0.0.1:0 to discover a free port");
     let out = ff_rdp_launch_command()
         .args(["launch", "--headless", "--debug-port", &port.to_string()])
-        // iter-151 Theme A: identify the spawning test on the owner-test
-        // marker — see `common::SPAWNING_TEST_ENV`'s doc comment.
-        .env(
-            crate::common::SPAWNING_TEST_ENV,
-            std::thread::current().name().unwrap_or("unknown"),
-        )
         .output()
         .expect("spawn `ff-rdp launch`");
+    // iter-242 Theme B: the guard comes first, before the success assertion
+    // and before any parsing. The previous order — assert, parse envelope,
+    // parse `results.pid`, *then* construct the guard — left three panicking
+    // `expect`s between a Firefox that is running and the thing that reaps it,
+    // which is the identical window this file's own doc comment says it
+    // closed.
+    let guard = crate::common::guard_launched_firefox(&out);
     assert!(
         out.status.success(),
         "launch_headless: `ff-rdp launch --headless --debug-port {port}` exited {}\n  stdout: {}\n  stderr: {}",
@@ -69,15 +70,14 @@ fn launch_headless() -> (FirefoxGuard, u16, serde_json::Value) {
         String::from_utf8_lossy(&out.stdout).trim(),
         String::from_utf8_lossy(&out.stderr).trim(),
     );
+    let guard = guard.expect("launch_headless: successful launch reported no results.pid");
     let json: serde_json::Value =
         serde_json::from_slice(&out.stdout).expect("launch stdout is JSON");
     let results = json
         .get("results")
         .expect("launch envelope has a `results` object")
         .clone();
-    let pid =
-        u32::try_from(results["pid"].as_u64().expect("results.pid")).expect("results.pid fits u32");
-    (FirefoxGuard::new(pid), port, results)
+    (guard, port, results)
 }
 
 /// Spawn+reap a trivial child process, returning its now-dead PID.
@@ -227,14 +227,14 @@ fn live_142_throttle_json_gc() {
     let out = ff_rdp_launch_command()
         .env("FF_RDP_HOME", home.path())
         .args(["launch", "--headless", "--debug-port", &port.to_string()])
-        // iter-151 Theme A: identify the spawning test — see
-        // `common::SPAWNING_TEST_ENV`'s doc comment.
-        .env(
-            crate::common::SPAWNING_TEST_ENV,
-            std::thread::current().name().unwrap_or("unknown"),
-        )
         .output()
         .expect("launch spawn failed");
+    // iter-151 Theme B: construct the guard before the assertions below — see
+    // `FirefoxGuard`'s doc comment for why this file can't just use
+    // `common::LiveFirefox` here (the custom `FF_RDP_HOME` env var above).
+    // iter-242 Theme B: and before the *success* assertion and the two
+    // `expect`s that used to sit between the spawn and the guard.
+    let _guard = crate::common::guard_launched_firefox(&out);
     assert!(
         out.status.success(),
         "live_142_throttle_json_gc: `ff-rdp launch --headless --debug-port {port}` exited {}\n  stdout: {}\n  stderr: {}",
@@ -242,14 +242,11 @@ fn live_142_throttle_json_gc() {
         String::from_utf8_lossy(&out.stdout).trim(),
         String::from_utf8_lossy(&out.stderr).trim(),
     );
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("launch JSON parse");
-    let pid =
-        u32::try_from(json["results"]["pid"].as_u64().expect("results.pid")).expect("pid fits u32");
-    // iter-151 Theme B: construct the guard immediately after the PID is
-    // known, before either assertion below — see `FirefoxGuard`'s doc
-    // comment for why this file can't just use `common::LiveFirefox` here
-    // (the custom `FF_RDP_HOME` env var above).
-    let _guard = FirefoxGuard::new(pid);
+    assert!(
+        _guard.is_some(),
+        "live_142_throttle_json_gc: successful launch reported no results.pid; stdout: {}",
+        String::from_utf8_lossy(&out.stdout).trim()
+    );
 
     assert!(
         !dead_path.exists(),
@@ -275,5 +272,7 @@ fn live_142_throttle_json_gc() {
             "stop",
         ])
         .output();
-    kill_pid(pid);
+    // The guard reaps whatever `daemon stop` did not, and skips the PID
+    // entirely when it is already gone (iter-242 Theme D).
+    drop(_guard);
 }

@@ -252,25 +252,138 @@ pub fn pid_alive(pid: u32) -> bool {
 /// `--replace` it reaps a process that is already dead while the replacement
 /// survives the test. Bind this guard from the replacement's `results.pid`
 /// *before* any assertion, so a panic still unwinds through the kill.
-pub struct FirefoxGuard(u32);
+pub struct FirefoxGuard(Option<u32>);
 
 impl FirefoxGuard {
     pub fn new(pid: u32) -> Self {
-        Self(pid)
+        Self(Some(pid))
     }
 
+    /// The PID this guard owns, or `0` once [`disarm`](Self::disarm)ed.
     pub fn pid(&self) -> u32 {
-        self.0
+        self.0.unwrap_or(0)
+    }
+
+    /// Give up ownership: `Drop` will not signal this PID (iter-242 Theme D).
+    ///
+    /// For the paths that have already *asserted* the process is gone — a
+    /// `daemon stop` that reported the port free, a `launch --replace` whose
+    /// replacement was verified to carry a different PID. Keeping the guard
+    /// live past that point means `Drop` unconditionally signals a PID the
+    /// test knows is dead, and [`kill_pid`] does no ownership check, so at
+    /// test scope it reintroduces exactly the recycled-PID hazard iter-110
+    /// guards against in production: between the reap and the drop the OS may
+    /// have reissued the number to something else. Iteration 151 removed the
+    /// `ManuallyDrop` that was incidentally preventing this.
+    ///
+    /// `Drop` also skips a PID that is simply no longer alive, which covers
+    /// the paths that never call this. `disarm` is the stronger statement —
+    /// "this guard is finished" — and does not depend on winning a race
+    /// against PID reuse to be correct.
+    pub fn disarm(mut self) -> u32 {
+        self.0.take().unwrap_or(0)
     }
 }
 
 impl Drop for FirefoxGuard {
     fn drop(&mut self) {
+        let Some(pid) = self.0 else {
+            return;
+        };
+        // iter-242 Theme D: never signal a PID that is already gone. `kill_pid`
+        // checks neither liveness nor ownership, so signalling a reaped PID is
+        // a signal to whatever the OS handed the number to next.
+        if !pid_alive(pid) {
+            return;
+        }
         // iter-168: same bounded wait as `LiveFirefox::drop`. The process this
         // guard owns was started by `ff-rdp launch --replace`, so it carries an
         // owner-PID marker too and leaks the identical liveness window.
-        kill_pid_and_wait(self.0);
+        kill_pid_and_wait(pid);
     }
+}
+
+/// Bind an RAII owner to the Firefox an `ff-rdp launch` started, straight from
+/// its captured output (iter-242 Part B, Themes A and B).
+///
+/// Closes the spawn→guard window by construction: the PID is extracted and the
+/// guard is built in one step, with no fallible parsing or assertion in
+/// between. The shape it replaces —
+///
+/// ```ignore
+/// let json: Value = serde_json::from_slice(&out.stdout).ok()?;   // may return
+/// let pid = json["results"]["pid"].as_u64()?;                     // may return
+/// let guard = FirefoxGuard::new(pid);                             // …too late
+/// ```
+///
+/// drops a launched Firefox on the floor whenever a parse misses, and nothing
+/// reaps it.
+///
+/// `None` means no Firefox to own: the launch exited non-zero, or its stdout
+/// carried no `results.pid`. Callers that *require* a launch to have succeeded
+/// should assert on `out.status` themselves — and must do it **after** calling
+/// this, so the regression path where the launch unexpectedly succeeds is
+/// still owned.
+pub fn guard_launched_firefox(out: &std::process::Output) -> Option<FirefoxGuard> {
+    if !out.status.success() {
+        return None;
+    }
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    let pid = u32::try_from(json["results"]["pid"].as_u64()?).ok()?;
+    Some(FirefoxGuard::new(pid))
+}
+
+/// Owner-PID marker written inside every ff-rdp-managed profile dir; mirrors
+/// the product's private `util::profile_dir::OWNER_PID_MARKER`.
+///
+/// Duplicated rather than imported because this crate ships no `[lib]` target
+/// for an integration-test binary to import from — the same unavoidable
+/// duplication [`SPAWNING_TEST_ENV`] carries. What was *avoidable*, and is
+/// fixed here (iter-242 Theme E), is the same literal appearing in three
+/// separate modules of this one test binary: `live_151_residual_leak`,
+/// `live_168_drop_waits_for_exit` and the since-deleted `live_96` scan all
+/// spelled it out independently.
+pub const OWNER_PID_MARKER: &str = ".ff-rdp-owner-pid";
+
+/// Owner-test marker (iter-151 Theme A), same duplication rationale as
+/// [`OWNER_PID_MARKER`].
+pub const OWNER_TEST_MARKER: &str = ".ff-rdp-owner-test";
+
+/// Scan `root` for `ff-rdp-profile-*` directories whose owner-PID marker names
+/// a still-alive process, as `(dir, pid, spawning_test)` triples.
+///
+/// The single copy of a scan that was previously duplicated across live
+/// modules (iter-242 Theme E). `spawning_test` is `None` when the profile
+/// carries no `.ff-rdp-owner-test` marker — which for a profile spawned under
+/// the live suite is itself the finding, since every launch site is supposed
+/// to route through [`ff_rdp_launch_command`].
+pub fn live_owned_profile_dirs(root: &str) -> Vec<(PathBuf, u32, Option<String>)> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_str()
+                .is_some_and(|n| n.starts_with("ff-rdp-profile-"))
+        })
+        .filter_map(|e| {
+            let pid: u32 = std::fs::read_to_string(e.path().join(OWNER_PID_MARKER))
+                .ok()?
+                .trim()
+                .parse()
+                .ok()?;
+            if !pid_alive(pid) {
+                return None;
+            }
+            let test_name = std::fs::read_to_string(e.path().join(OWNER_TEST_MARKER))
+                .ok()
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty());
+            Some((e.path(), pid, test_name))
+        })
+        .collect()
 }
 
 /// Kill a process by PID, ignoring errors (process may already be gone).

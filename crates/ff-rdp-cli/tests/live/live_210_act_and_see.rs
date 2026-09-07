@@ -28,7 +28,9 @@ use std::process::{Command, Output};
 
 use serde_json::Value;
 
-use crate::common::{FixtureRoute, FixtureServer, LiveFirefox, ff_rdp_bin, live_tests_enabled};
+use crate::common::{
+    FixtureRoute, FixtureServer, LiveFirefox, ff_rdp_bin, ff_rdp_launch_command, live_tests_enabled,
+};
 
 fn daemon_args(port: u16) -> Vec<String> {
     vec![
@@ -58,8 +60,17 @@ fn firefox_with_daemon(test: &str) -> LiveFirefox {
     ff
 }
 
+///
+/// iter-242 Part B Theme C: built from `common::ff_rdp_launch_command()`
+/// rather than a bare `Command::new(ff_rdp_bin())`. This helper carries the
+/// suite's only `"launch"` invocation that was still spawned without
+/// `FF_RDP_LIVE_TEST_NAME` set, so a profile leaked through it recorded
+/// `spawned by unknown test` — the signature that sent iteration 176 hunting
+/// through the whole live suite for an orphan five hours old. The env var is
+/// harmless for the non-launch commands that also go through here: ff-rdp only
+/// reads it when it creates a managed profile.
 fn run(port: u16, args: &[&str]) -> Output {
-    Command::new(ff_rdp_bin())
+    ff_rdp_launch_command()
         .args(daemon_args(port))
         .args(args)
         .output()

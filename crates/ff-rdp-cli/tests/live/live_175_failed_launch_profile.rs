@@ -27,10 +27,9 @@ use crate::common::{
     LiveFirefox, ff_rdp_bin, ff_rdp_launch_command, live_tests_enabled, pid_alive,
 };
 
-/// Duplicated from `src/util/profile_dir.rs` — this crate ships no `[lib]`
-/// target for an integration test to import the constant from, which is why
-/// `live_96`, `live_151` and `live_168` all carry their own copy too.
-const OWNER_PID_MARKER: &str = ".ff-rdp-owner-pid";
+// iter-242 Theme E: the marker name comes from `common` now — one copy
+// against the product's private constant, not one per live module.
+use crate::common::OWNER_PID_MARKER;
 
 /// Ask the CLI itself where the managed profile root is, rather than
 /// re-deriving the platform rules here (dogfooding `profiles list`, and the
@@ -131,6 +130,12 @@ fn live_175_failed_launch_leaves_no_profile_dir() {
         .env("FF_RDP_HOME", home.path())
         .output()
         .expect("`ff-rdp launch` must run");
+    // iter-242 Part B: `--launch-timeout 0` is supposed to fail before Firefox
+    // ever opens the port, so this is `None` on every expected path. It is not
+    // `None` if the deadline logic regresses and the launch succeeds — and
+    // then the assertion immediately below would panic while a Firefox this
+    // test started was owned by nothing.
+    let _unexpected = crate::common::guard_launched_firefox(&out);
 
     assert!(
         !out.status.success(),

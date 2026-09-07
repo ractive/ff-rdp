@@ -2295,7 +2295,10 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .filter(|name| name.ends_with(".tmp"))
             .collect();
-        assert!(strays.is_empty(), "temp marker files left behind: {strays:?}");
+        assert!(
+            strays.is_empty(),
+            "temp marker files left behind: {strays:?}"
+        );
     }
 
     /// Every grading has a distinct, stable label — the attribution
@@ -2314,7 +2317,11 @@ mod tests {
         labels.sort_unstable();
         let distinct = labels.len();
         labels.dedup();
-        assert_eq!(labels.len(), distinct, "labels must be distinct: {labels:?}");
+        assert_eq!(
+            labels.len(),
+            distinct,
+            "labels must be distinct: {labels:?}"
+        );
         assert!(labels.iter().all(|l| !l.is_empty()));
     }
 
@@ -2334,7 +2341,11 @@ mod tests {
         labels.sort_unstable();
         let distinct = labels.len();
         labels.dedup();
-        assert_eq!(labels.len(), distinct, "labels must be distinct: {labels:?}");
+        assert_eq!(
+            labels.len(),
+            distinct,
+            "labels must be distinct: {labels:?}"
+        );
 
         let outside = tempfile::Builder::new()
             .prefix("ff-rdp-profile-")

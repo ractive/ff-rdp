@@ -701,11 +701,8 @@ mod tests {
         let root = tempfile::tempdir().expect("tempdir");
         let old = Duration::from_hours(192);
         let racing = seed_profile(root.path(), &"1".repeat(16), 0, old);
-        std::fs::write(
-            racing.join(crate::util::profile_dir::OWNER_PID_MARKER),
-            b"",
-        )
-        .expect("write truncated owner marker");
+        std::fs::write(racing.join(crate::util::profile_dir::OWNER_PID_MARKER), b"")
+            .expect("write truncated owner marker");
         let stale = SystemTime::now().checked_sub(old).expect("age fits");
         filetime::set_file_mtime(
             racing.join(crate::util::profile_dir::OWNER_PID_MARKER),
@@ -743,11 +740,8 @@ mod tests {
         )
         .expect("write live owner marker");
         let racing = seed_profile(root.path(), &"b".repeat(16), 0, Duration::from_secs(1));
-        std::fs::write(
-            racing.join(crate::util::profile_dir::OWNER_PID_MARKER),
-            b"",
-        )
-        .expect("write truncated owner marker");
+        std::fs::write(racing.join(crate::util::profile_dir::OWNER_PID_MARKER), b"")
+            .expect("write truncated owner marker");
         seed_profile(root.path(), &"c".repeat(16), 0, Duration::from_secs(1));
 
         let outcome = prune_profiles(root.path(), None, true);
@@ -757,10 +751,7 @@ mod tests {
             .iter()
             .map(|(name, grading)| (name.as_str(), *grading))
             .collect();
-        assert_eq!(
-            report.get("ff-rdp-profile-aaaaaaaaaaaaaaaa"),
-            Some(&"live")
-        );
+        assert_eq!(report.get("ff-rdp-profile-aaaaaaaaaaaaaaaa"), Some(&"live"));
         assert_eq!(
             report.get("ff-rdp-profile-bbbbbbbbbbbbbbbb"),
             Some(&"unreadable"),
