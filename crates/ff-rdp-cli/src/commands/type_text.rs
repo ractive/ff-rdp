@@ -114,8 +114,13 @@ const ENTER_NAVIGATION_GRACE_MS: u64 = 600;
 /// protocol error, and reported `navigated: false` on a submission that
 /// really did navigate, while `--with-page` (which waits for the destination
 /// properly) reported the destination's heading in the same envelope. The two
-/// fields of one result contradicting each other is the bug; 3 s of headroom
-/// is what closes it.
+/// fields of one result contradicting each other is the bug.
+///
+/// **3 s is the cheap path, not the fix.** A submission that commits inside it
+/// is answered by this poll alone, with no extra target round-trip. Everything
+/// slower is answered by [`navigated_after_refresh`], which is what actually
+/// closes the defect — the header on that function explains why no value of
+/// this constant could have.
 ///
 /// Capped by the command's own `--timeout` — see [`request_submit_grace_ms`]:
 /// a caller who asked for a 1 s budget must not wait 3 s here.
@@ -171,12 +176,22 @@ fn build_request_submit_js(escaped_sel: &str) -> String {
   if (!el) throw new Error('Element not found: {escaped_sel}');
   var form = el.form || (el.closest ? el.closest('form') : null);
   if (!form) return '{JSON_SENTINEL}' + JSON.stringify({{requested: false, reason: 'no_form'}});
+  // iter-237 Part A: record whether the page cancelled the submission. A
+  // `submit` handler that calls preventDefault() (every AJAX form) means no
+  // cross-document navigation is coming, and Rust must not spend a navigation
+  // budget waiting for one. An uncancelled submit is the opposite: the load is
+  // guaranteed, so waiting for it is warranted however long it takes.
+  // `form.submit()` (the legacy path below) does not fire `submit` at all and
+  // cannot be cancelled — hence the `!cancelable` default of false.
+  var cancelled = false;
+  var onSubmit = function(e) {{ cancelled = e.defaultPrevented; }};
   if (typeof form.requestSubmit === 'function') {{
-    form.requestSubmit();
+    form.addEventListener('submit', onSubmit, {{capture: false, once: true}});
+    try {{ form.requestSubmit(); }} finally {{ form.removeEventListener('submit', onSubmit); }}
   }} else {{
     form.submit();
   }}
-  return '{JSON_SENTINEL}' + JSON.stringify({{requested: true, reason: null}});
+  return '{JSON_SENTINEL}' + JSON.stringify({{requested: true, reason: null, cancelled: cancelled}});
 }})()"#
     )
 }
@@ -258,12 +273,26 @@ fn press_enter_and_submit(
     // share the post-Enter constant, and 600 ms expired mid-flight often
     // enough that `navigated: false` shipped alongside a `results.page` from
     // the destination.
-    let navigated = navigated_away(
+    let cancelled = req_json
+        .get("cancelled")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let started = std::time::Instant::now();
+    let mut navigated = navigated_away(
         ctx,
         console_actor,
         &url_before,
         request_submit_grace_ms(wait_timeout_ms),
-    ) || navigated_after_refresh(ctx, &url_before);
+    );
+    // The grace period is the cheap path, not the answer. When it comes back
+    // "no" on a submission the page did *not* cancel, a cross-document load is
+    // still guaranteed to be coming, so ask again where the question can be
+    // answered — see `navigated_after_refresh`.
+    if !navigated && !cancelled {
+        let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let remaining = wait_timeout_ms.saturating_sub(elapsed);
+        navigated = navigated_after_refresh(ctx, &url_before, remaining);
+    }
     Ok(json!({
         "submitted": true,
         "navigated": navigated,
@@ -272,42 +301,48 @@ fn press_enter_and_submit(
 }
 
 /// The authoritative second opinion after [`navigated_away`] came back "no"
-/// following a real `form.requestSubmit()`.
+/// following a `form.requestSubmit()` the page did not cancel.
 ///
-/// iter-237 Part A. Measured against Wikipedia, the grace period is not what
-/// loses the navigation, and lengthening it alone changes nothing: while
-/// Firefox is committing the new document it stops answering
-/// `evaluateJSAsync` on the pre-submit console actor entirely, so the *first*
-/// poll iteration blocks on the socket read for the transport's own deadline
-/// (`--timeout`, 10 s by default). That single read outlives any grace period
-/// shorter than it; the loop wakes with `ProtocolError::Timeout`, finds its
-/// own deadline long past, and answers "no navigation" having never completed
-/// one probe. Widening `REQUEST_SUBMIT_NAVIGATION_GRACE_MS` moved that
-/// boundary but not the outcome — `navigated: false` still shipped next to a
-/// `results.page` carrying the destination's `<h1>`.
+/// iter-237 Part A. Two things had to be true at once for `navigated: false`
+/// to ship next to a `results.page` from the destination, and the plan only
+/// named one of them.
 ///
-/// So rather than infer navigation from the *absence* of an answer (a plain
-/// timeout is genuinely ambiguous — a same-page handler that never navigates
-/// produces one too), ask the question again where it can be answered: drop
-/// the torn-down target, re-resolve the tab's fronts, and read
-/// `location.href` off the document that actually exists now. That is the
-/// same recovery `--with-page` already performs to collect `results.page`,
-/// which is exactly why `results.page` was right about the destination while
-/// `results.navigated` was wrong about reaching it.
+/// 1. **The grace period is not the binding constraint.** While Firefox
+///    commits the new document it stops answering `evaluateJSAsync` on the
+///    pre-submit console actor entirely, so [`navigated_away`]'s *first* poll
+///    iteration blocks on the socket read for the **transport's** deadline
+///    (`--timeout`, 10 s by default). That single read outlives any grace
+///    period shorter than it: the loop wakes with `ProtocolError::Timeout`,
+///    finds its own deadline long past, and returns "no navigation" having
+///    never completed one probe. Widening
+///    [`REQUEST_SUBMIT_NAVIGATION_GRACE_MS`] moved that boundary and not the
+///    outcome — measured against Wikipedia at 3 s, the envelope still said
+///    `navigated: false` beside `heading: "Turing Award"`.
 ///
-/// Returns `false` on any probe failure: an unreadable location is not
-/// evidence of a navigation.
-fn navigated_after_refresh(ctx: &mut ConnectedTab, url_before: &str) -> bool {
-    use ff_rdp_core::WebConsoleActor;
-
+/// 2. **A single re-read is too early.** A destination that sends its first
+///    byte late (the `/slower` live fixture waits 4.5 s) has not committed
+///    when the grace period expires, so one look at `location.href` sees the
+///    origin URL and is just as wrong.
+///
+/// So: drop the torn-down target, re-resolve the tab's fronts, and poll
+/// `location.href` on the actor that now exists, for whatever is left of the
+/// caller's own `--timeout`. That is the same recovery `--with-page` performs
+/// to collect `results.page`, which is exactly why `results.page` was right
+/// about the destination while `results.navigated` was wrong about reaching
+/// it.
+///
+/// **Why this does not cost every caller the full `--timeout`.** The caller
+/// gates it on the submission not having been cancelled: a `submit` handler
+/// that calls `preventDefault()` — every AJAX form — means no cross-document
+/// load is coming, and those return here immediately rather than waiting out a
+/// navigation that was never going to happen. `build_request_submit_js`
+/// reports that as `cancelled`. The forms that do reach this path have a load
+/// genuinely in flight, and `--timeout` is the budget the caller already
+/// stated for it.
+fn navigated_after_refresh(ctx: &mut ConnectedTab, url_before: &str, timeout_ms: u64) -> bool {
     ctx.refresh_target();
     let console_actor = ctx.target.console_actor.clone();
-    let before_lit = serde_json::to_string(url_before).unwrap_or_else(|_| "\"\"".to_owned());
-    let js = format!("window.location.href !== {before_lit}");
-    match WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, &js) {
-        Ok(result) if result.exception.is_none() => super::js_helpers::is_truthy(&result.result),
-        _ => false,
-    }
+    navigated_away(ctx, &console_actor, url_before, timeout_ms)
 }
 
 /// Poll for `window.location.href` moving away from `url_before`.

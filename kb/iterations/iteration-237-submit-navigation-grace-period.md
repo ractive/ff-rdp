@@ -73,19 +73,63 @@ period or `Ok(_)`'s timeout path.
 
 ### Tasks
 
-#### A. Fix the second `navigated_away` call [0/2]
-- [ ] Give `press_enter_and_submit`'s post-`requestSubmit()` `navigated_away` call its own
+#### A. Fix the second `navigated_away` call [2/2]
+- [x] Give `press_enter_and_submit`'s post-`requestSubmit()` `navigated_away` call its own
       constant (e.g. `REQUEST_SUBMIT_NAVIGATION_GRACE_MS`) sized for a real network round-trip —
       or thread `wait_timeout_ms` through so it honours `--timeout` like the rest of the command —
       rather than reusing `ENTER_NAVIGATION_GRACE_MS`
-- [ ] Document, at the call site, why the two `navigated_away` calls in `press_enter_and_submit`
+      [2026-09-07: `REQUEST_SUBMIT_NAVIGATION_GRACE_MS = 3_000`, capped by `--timeout` via
+      `request_submit_grace_ms`. **This alone did not fix the defect** — see "What the plan got
+      wrong" below.]
+- [x] Document, at the call site, why the two `navigated_away` calls in `press_enter_and_submit`
       need different budgets (post-Enter: "did the untrusted keydown do anything, fast local
       check" vs. post-`requestSubmit`: "did the network round-trip land")
 
-### Acceptance Criteria [0/1]
+### What the plan got wrong (recorded 2026-09-07, rather than reworded away)
 
-- [ ] `live_type_submit_navigates_search_form` (or a new live test) asserts `results.navigated ==
+The plan's root cause — "600 ms is frequently not enough for a network round-trip" — is true but
+is **not** what produces `navigated: false`. Measured against the plan's own `dogfood_path`
+reproduction with `REQUEST_SUBMIT_NAVIGATION_GRACE_MS` already at 3 s:
+
+```
+{"submitted":true,"navigated":false,"method":"request_submit","heading":"Turing Award"}
+```
+
+Unchanged from `main`. While Firefox commits the new document it stops answering
+`evaluateJSAsync` on the pre-submit console actor altogether, so `navigated_away`'s *first* poll
+iteration blocks on the socket read for the **transport's** deadline (`--timeout`, 10 s by
+default). That single read outlives any grace period shorter than it: the loop wakes with
+`ProtocolError::Timeout`, finds its own deadline long past, and returns "no navigation" having
+never completed one probe. Widening the budget moves the boundary and not the outcome — which is
+why the plan's Theme A ("a longer, separate grace period *or* thread `--timeout` through") would
+have failed either way.
+
+The fix that actually closes it is a third one the plan did not consider: `navigated_after_refresh`
+asks the question where it can still be answered — drop the torn-down target, re-resolve the tab's
+fronts, read `location.href` off the document that exists now. That is the same recovery
+`--with-page` already performs, which is exactly why `results.page` was right about the destination
+while `results.navigated` was wrong about reaching it. The grace-period change is kept because it
+is independently correct (a submission that commits inside 3 s is now observed by the cheap poll,
+with no extra target round-trip), but it is the belt, not the braces.
+
+Measured after (same command, same page):
+
+```
+{"submitted":true,"navigated":true,"method":"request_submit","heading":"Turing Award"}
+```
+
+### Acceptance Criteria [1/1]
+
+- [x] `live_type_submit_navigates_search_form` (or a new live test) asserts `results.navigated ==
       true` when `results.page`'s heading demonstrably changed — the two fields must agree
+      [2026-09-07: two new live tests, both in
+      `crates/ff-rdp-cli/tests/live/live_237_act_and_see_timing.rs`.
+      `live_237_submit_navigated_agrees_with_the_page_it_reports` uses a destination that commits
+      after 1.2 s (inside the widened grace period);
+      `live_237_submit_navigated_survives_a_destination_slower_than_the_grace` uses one that
+      commits after 4.5 s, past the grace period entirely, so only the refreshed-target re-check
+      can answer it. The second test exists because the first would have passed on the grace
+      period alone and would therefore not have caught the real defect.]
 
 ### Design notes
 
@@ -162,27 +206,63 @@ shrink the timeout (which would make the legitimate "not rendered yet" case flak
 
 ### Tasks
 
-#### A. Stable-and-empty short-circuit [0/3]
-- [ ] Define "stable" precisely (reuse whatever `settle_page`/network-idle signal `click` already
+#### A. Stable-and-empty short-circuit [3/3]
+- [x] Define "stable" precisely (reuse whatever `settle_page`/network-idle signal `click` already
       computes for `--wait-for-network`, rather than inventing a second notion of idle)
       firstly check `crates/ff-rdp-cli/src/commands/click.rs` for the existing signal before adding
       one
-- [ ] Wire the short-circuit into `autowait_element`'s poll loop, gated so it only fires once the
+      [2026-09-07: the signal lives in `js_helpers::settle_page`, not `click.rs`. Its two inline JS
+      strings were extracted to `SETTLE_INJECT_JS` (XHR/fetch counters + `MutationObserver`,
+      `window.__ffrdpSettleInit`-guarded) and `SETTLE_IDLE_CHECK_JS` (nothing in flight for 500 ms
+      **and** no DOM mutation for 200 ms) so `settle_page` and the short-circuit share one
+      definition of idle rather than two. The short-circuit adds `document.readyState ===
+      'complete'` on top, because a document still parsing grows DOM the observer has not recorded
+      yet.]
+- [x] Wire the short-circuit into `autowait_element`'s poll loop, gated so it only fires once the
       page is stable, never before
-- [ ] Unit test: a selector that appears after 2 polls still resolves (retry case unregressed);
+      [2026-09-07: the probe is installed lazily, on the first poll that *misses* — the happy path
+      pays no extra eval and no page instrumentation. Two further gates: an observation floor
+      (`not_found_min_observation_ms` — `--timeout`/5, minimum 500 ms) so a probe installed into a
+      document an earlier command already instrumented cannot answer on its first poll, and
+      `SettleProbe::Unavailable` (CSP refused the injection, or the eval failed), which falls back
+      to the pre-iter-237 behaviour of polling the whole budget.]
+- [x] Unit test: a selector that appears after 2 polls still resolves (retry case unregressed);
       a selector that never appears on a page that goes stable at poll N reports not-found at
       poll N+1, not at the full timeout
+      [2026-09-07: four unit tests in `js_helpers.rs` driven by a scripted in-process console
+      server — `unit_237_observation_floor_scales_with_the_budget`,
+      `unit_237_late_selector_still_resolves_when_the_page_is_not_idle`,
+      `unit_237_absent_selector_on_an_idle_page_reports_before_the_timeout`,
+      `unit_237_csp_blocked_probe_falls_back_to_the_full_budget`.]
 
-#### B. Live coverage [0/2]
-- [ ] Live Firefox test: guessed selector against a static page (immediately stable) resolves
+#### B. Live coverage [2/2]
+- [x] Live Firefox test: guessed selector against a static page (immediately stable) resolves
       not-found in well under `--timeout`
-- [ ] Live Firefox test: selector that appears after a deliberate delay (dynamically inserted via
+      [2026-09-07: `live_237_absent_selector_reports_well_under_the_timeout`.]
+- [x] Live Firefox test: selector that appears after a deliberate delay (dynamically inserted via
       `eval`) still resolves successfully within the existing timeout budget — the regression case
       Theme B exists to prevent
+      [2026-09-07: `live_237_late_selector_behind_a_request_still_clicks`. Inserted by a `fetch`
+      response rather than by `eval`: the request is what keeps the page non-idle, which is the
+      exact discrimination the short-circuit has to make. A bare `setTimeout` insertion leaves no
+      signal to observe and is covered by the observation floor instead.]
 
-#### C. Measure [0/1]
-- [ ] Re-run this plan's `dogfood_path` reproduction before and after; record both wall-clock
+#### C. Measure [1/1]
+- [x] Re-run this plan's `dogfood_path` reproduction before and after; record both wall-clock
       numbers here
+
+Three runs each of `time ff-rdp click --selector '#definitely-not-on-the-page'` against
+`https://example.com` (default `--timeout`, headless Firefox, same machine, same session),
+`main` @ `f8d278e` built into a separate worktree versus this branch:
+
+| | run 1 | run 2 | run 3 |
+|---|---|---|---|
+| before (`main` f8d278e) | 10.98 s | 10.97 s | 10.95 s |
+| after (iter-237) | 2.95 s | 2.99 s | 2.94 s |
+
+~11.0 s → ~2.96 s, a 3.7× reduction. The residual ~2.9 s is the observation floor
+(`--timeout`/5 = 2 s) plus process start, daemon round-trip and the failure diagnostic — i.e. the
+budget the fix deliberately keeps, not slack left on the table.
 
 ### Acceptance Criteria [0/4]
 
