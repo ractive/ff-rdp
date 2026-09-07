@@ -101,14 +101,32 @@ echo "PASS: Theme B — live-owner profile survived age-gated prune"
 echo ""
 echo "=== Theme C — --all reports live-owner removals ==="
 
+# iter-242 Theme A: capture the marker state the prune is about to read, so a
+# failure below can be attributed instead of only reported. `--all` removes the
+# directory whether or not it grades it live, so after the call there is
+# nothing left to inspect — this is the last moment the evidence exists.
+PRE_MARKER=$(cat "$PROFILE_PATH/$MARKER" 2>/dev/null | tr -d '[:space:]' || echo '<unreadable>')
+PRE_START=$(cat "$PROFILE_PATH/.ff-rdp-owner-start" 2>/dev/null | tr -d '[:space:]' || echo '<absent>')
+if kill -0 "$MARKER_PID" 2>/dev/null; then PRE_ALIVE=yes; else PRE_ALIVE=no; fi
+
 ALL_JSON=$(ffrdp profiles prune --all)
 if ! echo "$ALL_JSON" | jq -e --arg b "$LIVE_BASENAME" \
     '.results.removed_live | index($b)' >/dev/null; then
   echo "FAIL: Theme C — --all did not report $LIVE_BASENAME in removed_live"
+  # iter-242 Theme A: `results.owner_liveness` names which OwnerLiveness the
+  # prune derived — live / unverified / unreadable / dead / unmarked. Without
+  # it this failure was a bare "the boolean was false" and every reproduction
+  # had to start over from guesswork.
+  echo "  owner_liveness: $(echo "$ALL_JSON" | jq -c '.results.owner_liveness')"
+  echo "  results:        $(echo "$ALL_JSON" | jq -c '.results')"
+  echo "  pre-prune marker pid: $PRE_MARKER (expected $MARKER_PID, alive=$PRE_ALIVE)"
+  echo "  pre-prune start token: $PRE_START"
   exit 1
 fi
 if [ -d "$PROFILE_PATH" ]; then
   echo "FAIL: Theme C — --all did not remove live-owner profile $PROFILE_PATH"
+  echo "  owner_liveness: $(echo "$ALL_JSON" | jq -c '.results.owner_liveness')"
+  echo "  results:        $(echo "$ALL_JSON" | jq -c '.results')"
   exit 1
 fi
 echo "PASS: Theme C — --all reclaimed live-owner dir and surfaced it in removed_live"
