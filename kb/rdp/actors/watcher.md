@@ -510,6 +510,15 @@ only carries CSP-blocked and cached requests; ordinary HTTP traffic is the
 parent process's, which is what `network-event` subscribers consume. See the
 `iter-159` note above.
 
+Scope of the `cookies` row, stated precisely rather than broadly: the flag is
+read in three places in `resources/utils/parent-process-storage.js`
+(`:241`, `:300`, `:452`), but all three govern how the `StorageActor` is
+**re-spawned across a navigation or a bfcache traversal**, not whether the
+initial `cookies` resource is delivered. `list_cookies` is a one-shot
+`watchResources` → `getStoreObjects` on a settled page and is unaffected;
+this audit did not measure cookie delivery *across* a navigation on the direct
+route, and nothing here should be read as a claim about that case.
+
 Two mechanisms have to be satisfied before *any* `FrameTargetResources` type
 arrives, and `console --follow`'s direct path satisfied neither:
 

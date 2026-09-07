@@ -1879,7 +1879,6 @@ mod tests {
         assert_eq!(resources[0].message, "no id");
     }
 
-    #[test]
     /// AC (iter-252): a `console-message` **resource** carries its fields at
     /// the top level — `resources/console-messages.js:55` hands
     /// `prepareConsoleMessageForRemote`'s result straight to `onAvailable`,

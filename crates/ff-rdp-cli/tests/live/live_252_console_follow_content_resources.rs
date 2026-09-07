@@ -178,15 +178,14 @@ fn assert_route_sees_console(global: &[String], route: &str) {
 
     assert!(
         !matched.is_empty(),
-        "{route}: `console --follow` saw no `{PROBE}` line in {:?} while the page \
+        "{route}: `console --follow` saw no `{PROBE}` line in {OBSERVE_BUDGET:?} while the page \
          logged one every 250 ms. Either the `console-message` resources never \
          arrived (the iteration-174 shape: a watcher obtained without \
          `isServerTargetSwitchingEnabled`, or `watchResources` issued with no \
          preceding `watchTargets(\"frame\")`, so no content-process frame target \
          exists to emit them), or they arrived and were dropped by \
          `parse_single_console_resource` (which must accept the flat resource \
-         payload, not only the nested `consoleAPICall` `message` wrapper).",
-        OBSERVE_BUDGET
+         payload, not only the nested `consoleAPICall` `message` wrapper)."
     );
 
     // The line has to be a usable console record, not merely a substring match:
