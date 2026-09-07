@@ -128,6 +128,53 @@ justified by reasoning alone will not be distinguishable from the flake going qu
 
 ### Tasks
 
+> **ROOT CAUSE FOUND, 2026-09-07 — this section's premise is wrong.** The predicate never
+> flipped. See "What it actually was" below; the themes and tasks are left as filed, with their
+> boxes ticked against what was done, so the record of the wrong hypothesis survives.
+
+### What it actually was
+
+Running the iteration-97 gate ten times against a real headless Firefox reproduced the failure
+**4 times in 10** — near enough the plan's "~1 run in 2" to be the same thing. With
+`results.owner_liveness` in the output (Theme A's deliverable, added first, exactly as the plan
+demanded) the failing run reports:
+
+```
+FAIL: Theme C — --all did not report ff-rdp-profile-AHxOWYDcdsAeET7f in removed_live
+  owner_liveness: {"ff-rdp-profile-AHxOWYDcdsAeET7f":"live"}
+  results:        {..., "removed":[], "removed_live":[], "owner_liveness":{"…":"live"}, ...}
+  pre-prune marker pid: 72270 (expected 72270, alive=yes)
+  pre-prune start token: 1788770626.957585
+```
+
+`live`. The liveness predicate answered correctly, on the failing run, with the marker intact
+and the owner alive. **`remove_dir_all` failed.** `removed_live` is only appended on `Ok(())`,
+so a failed removal dropped the basename out of `removed`, out of `removed_live`, and out of
+the JSON entirely — leaving a `warn` on stderr that no JSON consumer and no dogfood assertion
+ever sees. That is why "`--all` did not report it in `removed_live`" was indistinguishable from
+"the predicate graded it not-live", and why three iterations' worth of reasoning went to the
+wrong function.
+
+And the removal failing is not itself a defect. `--all` against a live owner races a browser
+that is writing into that directory continuously: `remove_dir_all`'s walk can meet a file
+created after it listed the directory. Theme C was asking `--all` for a guarantee it cannot make
+against a running Firefox.
+
+**Two fixes follow, and no retry.** `PruneOutcome` gains `failed` (`basename -> OS error`),
+reported as `results.failed`, so a removal that did not happen can never again be silent. And
+the iteration-97 Theme C assertion is corrected — per this plan's own "if the assertion rather
+than the predicate is wrong, say so and fix the assertion" — to require `--all` to account for
+the live-owner profile in exactly one of two ways (removed *and* in `removed_live`, or in
+`failed` with the error), while asserting the liveness claim it actually exists for directly and
+unconditionally against `owner_liveness == "live"`. A retry was considered and rejected: it
+would quiet the symptom at whatever rate the machine happens to produce, which is precisely the
+"fix justified by reasoning alone" this plan warned against.
+
+The `Unreadable` grading and the atomic marker write below stand on their own merits — an
+unreadable marker being read as "no owner" is a real deletion hazard, and `fs::write`'s truncate
+window really does open against a live profile — but they are **not** what this flake was, and
+must not be credited with having fixed it.
+
 #### A. Attribution [1/2]
 - [x] `profile_is_owned_by_live_process` can report *which* `OwnerLiveness` it derived —
       the boolean wrapper is **gone**: `owner_liveness_of()` returns the grading and
@@ -135,13 +182,10 @@ justified by reasoning alone will not be distinguishable from the flake going qu
       reports from one read (a second read of a racing marker could disagree with the first,
       which is the race itself). The grading is in the JSON as `owner_liveness`
       (`basename -> live|unverified|unreadable|dead|unmarked`).
-- [ ] The intermittent failure is reproduced with the branch recorded — **not done, and the
-      plan asked for this first.** The failure is ~1 run in 2 by the plan's own note, but it
-      needs a real Firefox and a real prune pair; this iteration ran under an unattended agent
-      with no live sweep available. What landed instead is the instrumentation that makes the
-      *next* occurrence self-attributing, plus a fix for one branch that is provably capable of
-      flipping (below). Do not read the flake going quiet as evidence: read the
-      `owner_liveness` field.
+- [x] The intermittent failure is reproduced with the branch recorded — **4 failures in 10
+      runs of the iteration-97 gate against a real headless Firefox, 2026-09-07**, and the
+      branch recorded is `live`. No branch flipped. See "What it actually was" above: the
+      grading was right and `remove_dir_all` failed, which `removed_live` could not express.
 
 #### B. Stability [1/1]
 - [x] The identified branch either stops firing spuriously or stops being treated as a
@@ -166,7 +210,12 @@ justified by reasoning alone will not be distinguishable from the flake going qu
       one per reclamation path. Both fail on `main`.
 - [ ] The iteration-97 dogfood gate passes ten consecutive runs
       (`FF_RDP_LIVE_TESTS=1 cargo run -p xtask -- check-dogfood-script kb/iterations/iteration-97-*.md`)
-      — **not run.** Requires a live Firefox; no live sweep was available to this iteration.
+      — see the run table below. **Read this AC carefully before ticking it:** ten consecutive
+      passes of the *corrected* assertion is a weaker claim than it was written to be, because
+      the corrected assertion tolerates the removal failing (while requiring it to be reported).
+      That is the right assertion — the old one demanded the impossible — but it means this AC
+      no longer certifies what its author thought it did, so the honest thing is to record the
+      numbers and let a reader judge.
 
 ### Out of scope
 

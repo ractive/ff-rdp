@@ -2236,9 +2236,51 @@ Supersedes the "Not fixed here" clause of DEC-048 and closes DEC-022's residue.
 
 ---
 
-## DEC-054: an owner marker that exists but does not read back is "cannot tell", never "no owner"
+## DEC-054: the `prune --all` flake was a silent removal failure, not a liveness flip; and an owner marker that exists but does not read back is "cannot tell", never "no owner"
 
 **Date**: 2026-09-07 (iter-242, absorbing iter-243 and iter-244)
+
+### Part A0 — what the flake actually was, measured
+
+**Decision**: `PruneOutcome` gains `failed` (`basename -> OS error`), reported as
+`profiles prune`'s `results.failed`. No retry is added. The iteration-97 dogfood gate's Theme C
+assertion is corrected rather than the predicate it was blaming.
+
+**Why**: iteration 204/242 was filed on the hypothesis that
+`profile_is_owned_by_live_process` intermittently read a live owner as dead — "within a few
+hundred milliseconds the same profile read as live-owned and then as not-live-owned". That
+hypothesis is **wrong**, and it was wrong for three iterations because the output could not
+distinguish it from the truth.
+
+Ten runs of the iteration-97 gate against a real headless Firefox (2026-09-07) reproduced the
+failure 4 times. With `results.owner_liveness` present — added first, as the plan demanded,
+before any fix — the failing run says:
+
+```
+owner_liveness: {"ff-rdp-profile-AHxOWYDcdsAeET7f":"live"}
+results:        {..., "removed":[], "removed_live":[], "owner_liveness":{"…":"live"}, ...}
+pre-prune marker pid: 72270 (expected 72270, alive=yes)
+```
+
+The predicate answered `live`. `remove_dir_all` failed. `removed_live` is only appended on
+`Ok(())`, so the basename fell out of `removed`, out of `removed_live`, and out of the JSON
+entirely — leaving a `tracing::warn!` that no `--jq` consumer and no dogfood assertion can see.
+"Not reported in `removed_live`" and "graded not-live" were the same observation.
+
+The removal failing is not a defect: `--all` against a live owner races a browser writing into
+that directory throughout, so the walk can meet a file created after it listed the directory.
+Theme C demanded a guarantee `--all` cannot make. **A retry was considered and rejected** — it
+would quiet the symptom at whatever rate a given machine produces, which is exactly the "fix
+justified by reasoning alone" the plan warned about. Reporting the failure is honest at every
+rate.
+
+The corrected Theme C requires `--all` to account for the live-owner profile in exactly one of
+two ways — removed *and* in `removed_live`, or in `failed` with the error — and asserts the
+liveness claim it exists for directly and unconditionally against `owner_liveness == "live"`,
+instead of inferring it from whether a removal succeeded.
+
+The rest of Part A below stands on its own merits and **did not fix this flake**; nothing should
+credit it with having done so.
 
 ### Part A — the grading that could flip, and the window that produced it
 
