@@ -3786,18 +3786,29 @@ not-a-process-line
     #[test]
     fn windows_live_sweep_kill_phase_tree_reaches_a_real_grandchild() {
         let tmp = tempfile::TempDir::new().expect("tempdir");
-        let pidfile = tmp.path().join("grandchild.pid");
-        // `start /b` detaches a grandchild cmd that records its own PID and
-        // then sleeps; the parent prints one line and waits. Only a tree kill
-        // reaches the grandchild.
-        let script = format!(
-            "start /b cmd /c \"echo %%RANDOM%% > nul & powershell -NoProfile -Command \
-             \"\"$PID | Out-File -Encoding ascii '{pid}'; Start-Sleep 600\"\"\" & \
-             echo running 1 test & ping -n 600 127.0.0.1 > nul",
-            pid = pidfile.display()
-        );
+        // The grandchild is identified by a unique string in its own command
+        // line rather than by a pidfile: `process_listing()` already renders
+        // exactly that, and a marker sidesteps the three levels of quoting a
+        // `cmd`-inside-`cmd`-inside-Rust command line would otherwise need —
+        // untestable from a non-Windows machine, and therefore the most likely
+        // thing to be wrong in a test written to *stop* untested Windows code.
+        let marker = format!("iter245-grandchild-{}", std::process::id());
+        // The phase itself is a batch file for the same reason: nothing about
+        // its contents has to survive Rust's argument escaping.
+        let script = tmp.path().join("phase.bat");
+        std::fs::write(
+            &script,
+            format!(
+                "@echo off\r\n\
+                 start /b cmd /c \"ping -n 600 127.0.0.1 > nul & rem {marker}\"\r\n\
+                 echo running 1 test\r\n\
+                 ping -n 600 127.0.0.1 > nul\r\n"
+            ),
+        )
+        .expect("write phase.bat");
+
         let mut cmd = Command::new("cmd");
-        cmd.args(["/c", &script]);
+        cmd.arg("/c").arg(&script);
         let bounds = PhaseBounds {
             build: Duration::from_secs(60),
             stall: Duration::from_secs(5),
@@ -3809,41 +3820,36 @@ not-a-process-line
             "the phase must have been killed by the watchdog"
         );
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        let mut recorded = String::new();
-        while std::time::Instant::now() < deadline {
-            if let Ok(text) = std::fs::read_to_string(&pidfile)
-                && text.trim().parse::<u32>().is_ok()
-            {
-                recorded = text;
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        let pid: u32 = recorded
-            .trim()
-            .parse()
-            .expect("the grandchild must have recorded its pid");
-
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        let mut alive = true;
-        while std::time::Instant::now() < deadline {
+        // Poll: `taskkill` is asynchronous, the same bounded-wait shape the
+        // Unix sibling uses after its SIGKILL.
+        let survivors = |marker: &str| -> Vec<u32> {
             let listing = process_listing().unwrap_or_default();
-            if !pids_in_listing(&listing).contains(&pid) {
-                alive = false;
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(200));
+            listing
+                .lines()
+                .filter(|line| line.contains(marker))
+                .filter_map(|line| {
+                    line.trim_start()
+                        .split_once(char::is_whitespace)
+                        .and_then(|(pid, _)| pid.parse::<u32>().ok())
+                })
+                .filter(|pid| *pid != std::process::id())
+                .collect()
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let mut left = survivors(&marker);
+        while std::time::Instant::now() < deadline && !left.is_empty() {
+            std::thread::sleep(Duration::from_millis(250));
+            left = survivors(&marker);
         }
-        // Leave nothing behind if the assertion is about to fail.
-        if alive {
-            kill_pid_hard(pid);
+        // Leave nothing behind even if the assertion below is about to fail.
+        for pid in &left {
+            kill_pid_hard(*pid);
         }
         assert!(
-            !alive,
-            "taskkill /F /T must reach grandchild pid {pid}; killing only the direct child \
-             would leave it running, which is the Windows half of the guarantee iteration 197 \
-             only ever proved on Unix"
+            left.is_empty(),
+            "taskkill /F /T must reach the detached grandchild; pid(s) {left:?} survived, which \
+             is what killing only the direct child would leave running — the Windows half of the \
+             guarantee iteration 197 only ever proved on Unix"
         );
     }
 
