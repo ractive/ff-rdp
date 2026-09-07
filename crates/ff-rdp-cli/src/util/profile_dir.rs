@@ -313,7 +313,7 @@ pub(crate) fn write_owner_pid_marker(dir: &Path, pid: u32) {
     }
 
     let marker = dir.join(OWNER_PID_MARKER);
-    if let Err(e) = std::fs::write(&marker, format!("{pid}\n")) {
+    if let Err(e) = write_marker_atomically(&marker, &format!("{pid}\n")) {
         tracing::warn!(
             "write_owner_pid_marker: could not write {}: {e}",
             marker.display()
@@ -331,12 +331,53 @@ pub(crate) fn write_owner_pid_marker(dir: &Path, pid: u32) {
         );
         return;
     };
-    if let Err(e) = std::fs::write(&start_marker, format!("{token}\n")) {
+    if let Err(e) = write_marker_atomically(&start_marker, &format!("{token}\n")) {
         tracing::warn!(
             "write_owner_pid_marker: could not write {}: {e}",
             start_marker.display()
         );
     }
+}
+
+/// Write `contents` to `marker` so a concurrent reader never observes a
+/// partial file (iter-242 Theme B).
+///
+/// `fs::write` truncates and then writes, so between those two syscalls the
+/// marker exists and is empty. On the normal launch path that window is
+/// entered twice against a directory whose Firefox is running — `launch`
+/// claims the directory with its own PID the instant it exists, then re-marks
+/// it with Firefox's PID after the spawn (iter-175) — and a `profiles prune`
+/// or orphan sweep landing inside it read the empty file as "no owner". That
+/// is a live profile graded as abandoned.
+///
+/// Writing to a sibling temp file and renaming closes the window instead of
+/// only reporting it honestly: `rename(2)` (and `MoveFileEx` with
+/// `MOVEFILE_REPLACE_EXISTING`, which `std::fs::rename` uses on Windows)
+/// replaces the name atomically, so a reader sees either the previous marker
+/// or the new one. The temp file is a sibling rather than in `TMPDIR` so the
+/// rename cannot cross a filesystem boundary, and it is removed on the error
+/// path so a failed write leaves nothing behind for the iter-175
+/// failed-launch fingerprint to trip over.
+fn write_marker_atomically(marker: &Path, contents: &str) -> std::io::Result<()> {
+    let Some(name) = marker.file_name().and_then(|n| n.to_str()) else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "marker path has no usable file name",
+        ));
+    };
+    // One temp name per process, so two concurrent ff-rdp launches marking the
+    // same directory cannot clobber each other's half-written file — each
+    // renames its own complete one, and the last rename wins.
+    let temp = marker.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+    if let Err(e) = std::fs::write(&temp, contents) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(e);
+    }
+    if let Err(e) = std::fs::rename(&temp, marker) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(e);
+    }
+    Ok(())
 }
 
 /// Write the owner-test marker ([`OWNER_TEST_MARKER`]) holding `test_name`
@@ -2148,6 +2189,163 @@ mod tests {
         write_owner_pid_marker(&dir, std::process::id());
         assert!(owner_liveness_of(&dir).keeps_profile_alive());
         assert!(pid_is_ff_rdp_spawned_under(root.path(), std::process::id()));
+    }
+
+    // -----------------------------------------------------------------
+    // iter-242: an owner marker that exists but does not read back
+    // -----------------------------------------------------------------
+
+    /// `unit_242_empty_owner_marker_is_unreadable_not_unmarked`: the exact
+    /// state `fs::write` leaves a marker in between truncating and writing.
+    ///
+    /// Before iter-242 this graded `Unmarked`, i.e. "ff-rdp never claimed this
+    /// directory" — a confident negative derived from a file that says
+    /// otherwise by existing at all. The two answers are different claims and
+    /// the deletion paths act on them in opposite directions.
+    #[test]
+    fn unit_242_empty_owner_marker_is_unreadable_not_unmarked() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = seed_fake_profile(root.path(), &"1".repeat(16), Duration::from_secs(1));
+        std::fs::write(dir.join(OWNER_PID_MARKER), b"").expect("truncate the marker");
+
+        assert_eq!(
+            owner_liveness(&dir),
+            OwnerLiveness::Unreadable,
+            "a marker that exists but yields no PID is 'cannot tell', not 'no owner'"
+        );
+        assert!(
+            owner_liveness_of(&dir).keeps_profile_alive(),
+            "the deletion paths must resolve 'cannot tell' toward keeping the directory"
+        );
+    }
+
+    /// The absent case is untouched: no marker file at all still grades
+    /// `Unmarked` and still hands the directory to the iter-96 mtime
+    /// heuristic, so every pre-iter-97 profile behaves exactly as before.
+    #[test]
+    fn unit_242_absent_owner_marker_still_grades_unmarked() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = seed_fake_profile(root.path(), &"2".repeat(16), Duration::from_secs(1));
+
+        assert_eq!(owner_liveness(&dir), OwnerLiveness::Unmarked);
+        assert!(!owner_liveness_of(&dir).keeps_profile_alive());
+    }
+
+    /// An unreadable marker — here a *directory* wearing the marker's name, so
+    /// `read_to_string` fails with an I/O error rather than `NotFound` on every
+    /// platform — must not let the orphan sweep reclaim the profile, however
+    /// old it is.
+    ///
+    /// This is the AC-1 pin for Part A: given the transient condition, an
+    /// age-gated reclamation does **not** remove the profile. Before iter-242
+    /// this directory graded `Unmarked`, fell through to the mtime heuristic,
+    /// and was deleted.
+    #[test]
+    fn unit_242_unreadable_marker_survives_the_age_gated_orphan_sweep() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = seed_fake_profile(root.path(), &"3".repeat(16), Duration::from_hours(192));
+        std::fs::create_dir(dir.join(OWNER_PID_MARKER)).expect("marker path taken by a directory");
+
+        assert_eq!(owner_liveness(&dir), OwnerLiveness::Unreadable);
+
+        let summary = prune_orphan_profiles(root.path(), Duration::from_hours(168), 50);
+
+        assert!(
+            summary.removed.is_empty(),
+            "an owner marker that cannot be read is not proof of abandonment — got {:?}",
+            summary.removed
+        );
+        assert!(dir.exists(), "the profile directory must survive");
+    }
+
+    /// The kill direction resolves the same uncertainty the opposite way:
+    /// `Unreadable` never authorises signalling a process, because
+    /// `pid_is_ff_rdp_spawned_under` demands exactly `Live`.
+    #[test]
+    fn unit_242_unreadable_marker_never_authorises_a_kill() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = seed_fake_profile(root.path(), &"4".repeat(16), Duration::from_secs(1));
+        std::fs::write(dir.join(OWNER_PID_MARKER), b"not-a-pid\n").expect("write junk marker");
+
+        assert_eq!(owner_liveness(&dir), OwnerLiveness::Unreadable);
+        assert!(owner_liveness_of(&dir).keeps_profile_alive());
+        assert!(
+            !pid_is_ff_rdp_spawned_under(root.path(), std::process::id()),
+            "'cannot tell' must never mean 'go ahead and kill'"
+        );
+    }
+
+    /// `write_marker_atomically` leaves no temp file behind on the happy path,
+    /// and a reader either sees the previous marker or the new one — never the
+    /// empty intermediate `fs::write` produces. The absence of the temp file
+    /// also matters to iter-175's failed-launch fingerprint, which insists a
+    /// profile hold *exactly* `user.js`.
+    #[test]
+    fn unit_242_marker_write_is_atomic_and_leaves_no_temp_file() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = seed_fake_profile(root.path(), &"5".repeat(16), Duration::from_secs(1));
+
+        write_owner_pid_marker(&dir, 4242);
+        write_owner_pid_marker(&dir, std::process::id());
+
+        assert_eq!(read_owner_pid_marker(&dir), Some(std::process::id()));
+        let strays: Vec<String> = std::fs::read_dir(&dir)
+            .expect("read profile dir")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
+        assert!(strays.is_empty(), "temp marker files left behind: {strays:?}");
+    }
+
+    /// Every grading has a distinct, stable label — the attribution
+    /// `profiles prune` reports. A duplicated or missing label would make the
+    /// report worse than useless: it would look like an answer.
+    #[test]
+    fn unit_242_owner_liveness_labels_are_distinct() {
+        let all = [
+            OwnerLiveness::Unmarked,
+            OwnerLiveness::Unreadable,
+            OwnerLiveness::Dead,
+            OwnerLiveness::Live,
+            OwnerLiveness::Unverified,
+        ];
+        let mut labels: Vec<&str> = all.iter().map(|o| o.as_str()).collect();
+        labels.sort_unstable();
+        let distinct = labels.len();
+        labels.dedup();
+        assert_eq!(labels.len(), distinct, "labels must be distinct: {labels:?}");
+        assert!(labels.iter().all(|l| !l.is_empty()));
+    }
+
+    /// `cleanup_profile_dir`'s four skip reasons are distinguishable, which is
+    /// what `daemon stop`'s `profile_skip_reason` reports. `profile_removed:
+    /// false` on its own could not tell a refused path from a
+    /// `remove_dir_all` that failed.
+    #[test]
+    fn unit_242_cleanup_skip_reasons_are_distinct() {
+        let all = [
+            ProfileCleanupSkip::NoProfileRoot,
+            ProfileCleanupSkip::OutsideProfileRoot,
+            ProfileCleanupSkip::NotManagedBasename,
+            ProfileCleanupSkip::RemoveFailed,
+        ];
+        let mut labels: Vec<&str> = all.iter().map(|r| r.as_str()).collect();
+        labels.sort_unstable();
+        let distinct = labels.len();
+        labels.dedup();
+        assert_eq!(labels.len(), distinct, "labels must be distinct: {labels:?}");
+
+        let outside = tempfile::Builder::new()
+            .prefix("ff-rdp-profile-")
+            .rand_bytes(16)
+            .tempdir()
+            .expect("tempdir outside profile root");
+        assert_eq!(
+            cleanup_profile_dir(outside.path()).skip_reason(),
+            Some(ProfileCleanupSkip::OutsideProfileRoot),
+            "a refused path must say which check refused it"
+        );
     }
 
     /// AC: `unit_prune_orphan_profiles_bounded_by_max` — 60 stale dirs seeded,

@@ -686,6 +686,98 @@ mod tests {
         assert!(!live.exists() && !plain.exists(), "both dirs removed");
     }
 
+    /// AC (iter-242 Part A): the transient case pinned end to end — given an
+    /// owner marker that exists but does not read back as a PID, an age-gated
+    /// prune does **not** remove the profile.
+    ///
+    /// The empty marker is exactly what a reader observes inside
+    /// `fs::write`'s truncate-then-write window, which `launch` enters against
+    /// a directory whose Firefox is already running (iter-175 re-marks the
+    /// directory after the spawn). Before iter-242 that read graded
+    /// `Unmarked`, the profile fell through to the mtime heuristic, and a
+    /// live session's profile was deleted out from under it.
+    #[test]
+    fn unit_242_age_gated_prune_keeps_profile_with_unreadable_marker() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let old = Duration::from_hours(192);
+        let racing = seed_profile(root.path(), &"1".repeat(16), 0, old);
+        std::fs::write(
+            racing.join(crate::util::profile_dir::OWNER_PID_MARKER),
+            b"",
+        )
+        .expect("write truncated owner marker");
+        let stale = SystemTime::now().checked_sub(old).expect("age fits");
+        filetime::set_file_mtime(
+            racing.join(crate::util::profile_dir::OWNER_PID_MARKER),
+            filetime::FileTime::from_system_time(stale),
+        )
+        .expect("backdate marker");
+        filetime::set_file_mtime(&racing, filetime::FileTime::from_system_time(stale))
+            .expect("re-backdate dir");
+        let plain = seed_profile(root.path(), &"2".repeat(16), 0, old);
+
+        let outcome = prune_profiles(root.path(), Some(Duration::from_hours(168)), false);
+
+        let plain_basename = plain.file_name().unwrap().to_str().unwrap().to_owned();
+        assert_eq!(
+            outcome.removed,
+            vec![plain_basename],
+            "only the marker-less stale dir may be removed"
+        );
+        assert!(
+            racing.exists(),
+            "a profile whose owner marker could not be read must survive an age-gated prune"
+        );
+    }
+
+    /// AC (iter-242 Theme A): `--all` reports the grading it decided from, per
+    /// directory, so a `removed_live` entry that is unexpectedly absent says
+    /// why in the same output instead of requiring the run to be reproduced.
+    #[test]
+    fn unit_242_prune_reports_owner_liveness_attribution() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let live = seed_profile(root.path(), &"a".repeat(16), 0, Duration::from_secs(1));
+        std::fs::write(
+            live.join(crate::util::profile_dir::OWNER_PID_MARKER),
+            format!("{}\n", std::process::id()),
+        )
+        .expect("write live owner marker");
+        let racing = seed_profile(root.path(), &"b".repeat(16), 0, Duration::from_secs(1));
+        std::fs::write(
+            racing.join(crate::util::profile_dir::OWNER_PID_MARKER),
+            b"",
+        )
+        .expect("write truncated owner marker");
+        seed_profile(root.path(), &"c".repeat(16), 0, Duration::from_secs(1));
+
+        let outcome = prune_profiles(root.path(), None, true);
+
+        let report: std::collections::HashMap<&str, &str> = outcome
+            .owner_liveness
+            .iter()
+            .map(|(name, grading)| (name.as_str(), *grading))
+            .collect();
+        assert_eq!(
+            report.get("ff-rdp-profile-aaaaaaaaaaaaaaaa"),
+            Some(&"live")
+        );
+        assert_eq!(
+            report.get("ff-rdp-profile-bbbbbbbbbbbbbbbb"),
+            Some(&"unreadable"),
+            "the grading that keeps a racing marker's profile must be named, not inferred"
+        );
+        assert_eq!(
+            report.get("ff-rdp-profile-cccccccccccccccc"),
+            Some(&"unmarked")
+        );
+        assert_eq!(
+            outcome.owner_liveness.len(),
+            3,
+            "every selected directory is reported: {:?}",
+            outcome.owner_liveness
+        );
+    }
+
     /// AC companion for the age-gated path: a live owner-PID marker keeps a
     /// stale dir off the candidate list for an age-gated (non-`--all`) prune,
     /// while a marker-less stale sibling is still selected.
