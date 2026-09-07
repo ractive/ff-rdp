@@ -47,6 +47,12 @@ struct ManagedProfileEntry {
     /// age-gated path excludes live-owner entries outright); the prune step
     /// uses it to warn and to populate `removed_live`.
     live_owner: bool,
+    /// iter-242 Theme A: the [`crate::util::profile_dir::OwnerLiveness`] that
+    /// produced `live_owner`, as a stable label. `live_owner` collapses four
+    /// gradings into one boolean, which is why the intermittent "a live
+    /// profile was not reported in `removed_live`" failure had nothing to
+    /// diagnose. Reported per entry in `prune`'s JSON.
+    owner_liveness: &'static str,
     /// iter-151 Theme A: the spawning test's name, if the entry carries an
     /// `.ff-rdp-owner-test` marker (only ever written by the live-test
     /// harness — see `util::profile_dir::SPAWNING_TEST_ENV`). Only populated
@@ -95,6 +101,10 @@ fn scan_managed_profiles(root: &Path) -> Vec<ManagedProfileEntry> {
             // aggregation callers (`profiles list`, doctor) never read it.
             live_owner: false,
             owner_test: None,
+            // Set later by `select_prune_targets`; "unscanned" is never
+            // reported, because only entries that reach the prune paths are
+            // graded and only those are surfaced.
+            owner_liveness: "unscanned",
         });
     }
     out
@@ -184,7 +194,7 @@ pub(crate) fn aggregate_profiles_capped(root: &Path, byte_cap: u64) -> ProfileLi
 /// is treated as "not stale" and excluded — the same conservative default.
 ///
 /// iter-97 Theme B/C: a live owner-PID marker
-/// ([`crate::util::profile_dir::profile_is_owned_by_live_process`]) is a
+/// ([`crate::util::profile_dir::owner_liveness_of`]) is a
 /// positive "still in use" signal consulted *before* the mtime heuristics.
 /// For an age-gated prune (`Some`) a live owner always wins — the entry is
 /// excluded entirely. `--all` (`None`) keeps its documented sharp edge and
@@ -195,8 +205,13 @@ fn select_prune_targets(root: &Path, older_than: Option<Duration>) -> Vec<Manage
     scan_managed_profiles(root)
         .into_iter()
         .filter_map(|mut entry| {
-            let live_owner =
-                crate::util::profile_dir::profile_is_owned_by_live_process(&entry.path);
+            // iter-242 Theme A: grade once and keep the grading. Calling
+            // the keep-or-reclaim boolean for the decision and then
+            // re-reading the markers for the report would let the two
+            // disagree — the very race being diagnosed.
+            let liveness = crate::util::profile_dir::owner_liveness_of(&entry.path);
+            let live_owner = liveness.keeps_profile_alive();
+            entry.owner_liveness = liveness.as_str();
             match older_than {
                 // `--all`: age ignored, but a live owner never silently
                 // vanishes — it is selected *and* flagged so the caller warns.
@@ -246,6 +261,21 @@ pub(crate) struct PruneOutcome {
     /// on the `--all` path — its documented sharp edge — so an operator can
     /// see which still-running sessions `--all` reclaimed out from under.
     pub(crate) removed_live: Vec<String>,
+    /// iter-242 Theme A: `basename -> owner-liveness label` for every
+    /// directory this prune selected, sorted by basename. Populated on both
+    /// the dry-run and the real path, and on both the age-gated and `--all`
+    /// paths — the age-gated path's entries are the ones that survived the
+    /// live-owner filter, so a `live` value here would itself be a bug.
+    pub(crate) owner_liveness: Vec<(String, &'static str)>,
+    /// iter-242: `basename -> error` for every selected directory whose
+    /// removal **failed**, sorted by basename.
+    ///
+    /// Before this, such an entry vanished: `prune_profiles` logged a `warn`
+    /// and continued, so the basename appeared in neither `removed` nor
+    /// `removed_live` and the JSON carried no trace of it. That is what the
+    /// iteration-97 dogfood gate's intermittent Theme C failure actually was —
+    /// see this module's `prune_profiles` doc.
+    pub(crate) failed: Vec<(String, String)>,
 }
 
 /// Prune managed profile directories under `root`.
@@ -257,13 +287,39 @@ pub(crate) struct PruneOutcome {
 /// vanishing mid-scan because of a concurrent prune, ...) is logged at
 /// `warn` and skipped rather than aborting the rest of the batch — the same
 /// warn-and-continue tolerance `prune_orphan_profiles` and
-/// `cleanup_profile_dir` use.
+/// `cleanup_profile_dir` use. Since iter-242 it is **also** reported, in
+/// [`PruneOutcome::failed`].
+///
+/// # The `--all`-against-a-live-owner race (iter-242)
+///
+/// `--all` is documented to reclaim a profile whose Firefox is still running.
+/// That removal is inherently racy and cannot be made otherwise: the owner is
+/// writing into the directory throughout, so `remove_dir_all`'s walk can find
+/// a file created after it read the directory and fail (`ENOTEMPTY` on Unix).
+///
+/// Measured 2026-09-07 against a real headless Firefox: the iteration-97
+/// dogfood gate failed 4 runs in 10 this way. The failure had been read as an
+/// intermittent *liveness* flake — "the same profile read as live-owned and
+/// then as not-live-owned" — for the whole of iteration 204/242's filing.
+/// It is not. With `owner_liveness` in the output the failing run reports
+/// `{"ff-rdp-profile-…":"live"}` alongside `removed: []` and
+/// `removed_live: []`: the predicate answered `live` and the *removal* failed.
+/// The basename then vanished from the JSON entirely, because `removed_live`
+/// is only pushed on `Ok(())`, which is what made "not reported in
+/// `removed_live`" indistinguishable from "graded not-live".
+///
+/// No retry is added here. A retry would make the symptom go quiet without
+/// making the race go away — and against an owner that keeps writing, "how
+/// many retries" has no principled answer. Reporting the failure is the fix
+/// that is honest at every rate.
 pub(crate) fn prune_profiles(
     root: &Path,
     older_than: Option<Duration>,
     dry_run: bool,
 ) -> PruneOutcome {
     let targets = select_prune_targets(root, older_than);
+
+    let owner_liveness = owner_liveness_report(&targets);
 
     if dry_run {
         let removed_live = targets
@@ -275,11 +331,15 @@ pub(crate) fn prune_profiles(
             would_remove: targets.into_iter().map(|e| e.basename).collect(),
             removed: Vec::new(),
             removed_live,
+            owner_liveness,
+            // A dry run removes nothing, so nothing can fail to be removed.
+            failed: Vec::new(),
         };
     }
 
     let mut removed = Vec::new();
     let mut removed_live = Vec::new();
+    let mut failed = Vec::new();
     for entry in targets {
         // iter-97 Theme C: `--all` is the explicit escape hatch, so it still
         // removes a live-owner profile — but never silently. Warn per dir and
@@ -308,19 +368,49 @@ pub(crate) fn prune_profiles(
                 }
                 removed.push(entry.basename);
             }
+            // iter-242 review: already gone is the outcome, not a failure —
+            // two concurrent prunes (or a `launch`'s orphan sweep) race, and
+            // the loser must not report a removal that "did not happen" for a
+            // directory that is not there.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if entry.live_owner {
+                    removed_live.push(entry.basename.clone());
+                }
+                removed.push(entry.basename);
+            }
             Err(e) => {
                 tracing::warn!(
                     "profiles prune: failed to remove {}: {e}",
                     entry.path.display()
                 );
+                // iter-242: and say so in the output. A `warn` is invisible to
+                // a `--jq` consumer and to every script that reads this
+                // command's JSON, which is how a failed removal came to look
+                // identical to a directory that was never selected.
+                failed.push((entry.basename, e.to_string()));
             }
         }
     }
+    failed.sort_by(|a, b| a.0.cmp(&b.0));
     PruneOutcome {
         would_remove: Vec::new(),
         removed,
         removed_live,
+        owner_liveness,
+        failed,
     }
+}
+
+/// Pair every selected directory's basename with the owner grading
+/// `select_prune_targets` recorded for it, sorted so the report is stable
+/// across runs (iter-242 Theme A).
+fn owner_liveness_report(targets: &[ManagedProfileEntry]) -> Vec<(String, &'static str)> {
+    let mut report: Vec<(String, &'static str)> = targets
+        .iter()
+        .map(|e| (e.basename.clone(), e.owner_liveness))
+        .collect();
+    report.sort_by(|a, b| a.0.cmp(&b.0));
+    report
 }
 
 /// Parse a `--older-than` value: `<N>d`, `<N>h`, `<N>m`, `<N>s`, or a bare
@@ -397,6 +487,24 @@ pub fn run_prune(cli: &Cli, older_than: &str, all: bool, dry_run: bool) -> Resul
         // be) despite a live owner-PID marker. Only ever non-empty under
         // `--all` — the documented no-age-gate escape hatch.
         "removed_live": outcome.removed_live,
+        // iter-242 Theme A: per-selected-directory owner grading
+        // ("live" | "unverified" | "unreadable" | "dead" | "unmarked"), so a
+        // `removed_live` entry that is unexpectedly absent says *why* in the
+        // same output rather than requiring the run to be reproduced.
+        "owner_liveness": outcome
+            .owner_liveness
+            .iter()
+            .map(|(name, grading)| (name.clone(), json!(grading)))
+            .collect::<serde_json::Map<String, serde_json::Value>>(),
+        // iter-242: directories this prune selected and then could not remove,
+        // with the OS error. Always present, `{}` when nothing failed. A
+        // removal failure used to appear only as a `warn` on stderr, so it was
+        // invisible to every JSON consumer.
+        "failed": outcome
+            .failed
+            .iter()
+            .map(|(name, reason)| (name.clone(), json!(reason)))
+            .collect::<serde_json::Map<String, serde_json::Value>>(),
         "dry_run": dry_run,
     });
 
@@ -638,6 +746,147 @@ mod tests {
             "only the live-owner dir belongs in removed_live"
         );
         assert!(!live.exists() && !plain.exists(), "both dirs removed");
+    }
+
+    /// AC (iter-242 Part A): the transient case pinned end to end — an owner
+    /// marker that exists but does not read back as a PID is graded
+    /// `unreadable`, reported as such, and is never confused with "nobody owns
+    /// this directory".
+    ///
+    /// The empty marker is exactly what a reader observed inside `fs::write`'s
+    /// truncate-then-write window, which `launch` entered against a directory
+    /// whose Firefox was already running (iter-175 re-marks the directory
+    /// after the spawn); iter-242 closed that window at the source by writing
+    /// markers atomically. What survives is the *grading*: the age question is
+    /// still answered by mtime — which is what protects a live browser, whose
+    /// profile is never stale — but the answer is now attributable, and a
+    /// corrupt marker can never reach the iter-142 reclaim-immediately rule.
+    #[test]
+    fn unit_242_age_gated_prune_keeps_profile_with_unreadable_marker() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let old = Duration::from_hours(192);
+        let racing = seed_profile(root.path(), &"1".repeat(16), 0, old);
+        std::fs::write(racing.join(crate::util::profile_dir::OWNER_PID_MARKER), b"")
+            .expect("write truncated owner marker");
+        let stale = SystemTime::now().checked_sub(old).expect("age fits");
+        filetime::set_file_mtime(
+            racing.join(crate::util::profile_dir::OWNER_PID_MARKER),
+            filetime::FileTime::from_system_time(stale),
+        )
+        .expect("backdate marker");
+        filetime::set_file_mtime(&racing, filetime::FileTime::from_system_time(stale))
+            .expect("re-backdate dir");
+        let plain = seed_profile(root.path(), &"2".repeat(16), 0, old);
+
+        let outcome = prune_profiles(root.path(), Some(Duration::from_hours(168)), false);
+
+        let racing_basename = racing.file_name().unwrap().to_str().unwrap().to_owned();
+        let plain_basename = plain.file_name().unwrap().to_str().unwrap().to_owned();
+        let mut removed = outcome.removed.clone();
+        removed.sort();
+        assert_eq!(
+            removed,
+            vec![racing_basename.clone(), plain_basename],
+            "both stale dirs are age candidates; the unreadable marker changes the *grading*, \
+             not the age answer"
+        );
+        let report: std::collections::HashMap<&str, &str> = outcome
+            .owner_liveness
+            .iter()
+            .map(|(name, grading)| (name.as_str(), *grading))
+            .collect();
+        assert_eq!(
+            report.get(racing_basename.as_str()),
+            Some(&"unreadable"),
+            "and the grading must say so rather than claiming the directory was unowned"
+        );
+    }
+
+    /// AC (iter-242 Part A): a selected directory whose removal fails is
+    /// reported in `failed`, not dropped on the floor.
+    ///
+    /// This is the failure the iteration-97 dogfood gate was hitting 4 runs in
+    /// 10 (measured live 2026-09-07): `owner_liveness` said `live`, the
+    /// removal failed against a Firefox still writing into the profile, and
+    /// the basename then appeared in neither `removed` nor `removed_live` —
+    /// indistinguishable, from the JSON alone, from a directory graded
+    /// not-live. Unix-only because it needs a directory the process cannot
+    /// unlink from, which `chmod` gives and Windows ACL inheritance does not.
+    #[cfg(unix)]
+    #[test]
+    fn unit_242_prune_reports_a_removal_that_failed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let stuck = seed_profile(root.path(), &"f".repeat(16), 0, Duration::from_secs(1));
+        // A non-empty directory the process may traverse but not unlink from:
+        // `remove_dir_all` gets far enough to try, and fails.
+        std::fs::set_permissions(&stuck, std::fs::Permissions::from_mode(0o500))
+            .expect("drop write permission on the profile dir");
+
+        let outcome = prune_profiles(root.path(), None, false);
+
+        // Restore before any assertion can unwind past the cleanup.
+        let restored = std::fs::set_permissions(&stuck, std::fs::Permissions::from_mode(0o700));
+
+        assert!(
+            outcome.removed.is_empty(),
+            "the unremovable dir must not be claimed as removed: {:?}",
+            outcome.removed
+        );
+        let failed: Vec<&str> = outcome.failed.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            failed,
+            vec!["ff-rdp-profile-ffffffffffffffff"],
+            "a removal failure must be reported, not only logged"
+        );
+        assert!(
+            !outcome.failed[0].1.is_empty(),
+            "the report must carry the OS error, not just the name"
+        );
+        restored.expect("restore permissions");
+    }
+
+    /// AC (iter-242 Theme A): `--all` reports the grading it decided from, per
+    /// directory, so a `removed_live` entry that is unexpectedly absent says
+    /// why in the same output instead of requiring the run to be reproduced.
+    #[test]
+    fn unit_242_prune_reports_owner_liveness_attribution() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let live = seed_profile(root.path(), &"a".repeat(16), 0, Duration::from_secs(1));
+        std::fs::write(
+            live.join(crate::util::profile_dir::OWNER_PID_MARKER),
+            format!("{}\n", std::process::id()),
+        )
+        .expect("write live owner marker");
+        let racing = seed_profile(root.path(), &"b".repeat(16), 0, Duration::from_secs(1));
+        std::fs::write(racing.join(crate::util::profile_dir::OWNER_PID_MARKER), b"")
+            .expect("write truncated owner marker");
+        seed_profile(root.path(), &"c".repeat(16), 0, Duration::from_secs(1));
+
+        let outcome = prune_profiles(root.path(), None, true);
+
+        let report: std::collections::HashMap<&str, &str> = outcome
+            .owner_liveness
+            .iter()
+            .map(|(name, grading)| (name.as_str(), *grading))
+            .collect();
+        assert_eq!(report.get("ff-rdp-profile-aaaaaaaaaaaaaaaa"), Some(&"live"));
+        assert_eq!(
+            report.get("ff-rdp-profile-bbbbbbbbbbbbbbbb"),
+            Some(&"unreadable"),
+            "the grading that keeps a racing marker's profile must be named, not inferred"
+        );
+        assert_eq!(
+            report.get("ff-rdp-profile-cccccccccccccccc"),
+            Some(&"unmarked")
+        );
+        assert_eq!(
+            outcome.owner_liveness.len(),
+            3,
+            "every selected directory is reported: {:?}",
+            outcome.owner_liveness
+        );
     }
 
     /// AC companion for the age-gated path: a live owner-PID marker keeps a

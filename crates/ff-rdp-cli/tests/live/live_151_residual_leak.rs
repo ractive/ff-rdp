@@ -117,7 +117,7 @@ fn live_151_leaked_profile_names_its_test() {
         .expect("live_151_leaked_profile_names_its_test: results.profile_path")
         .to_owned();
 
-    let marker_path = std::path::Path::new(&profile_path).join(".ff-rdp-owner-test");
+    let marker_path = std::path::Path::new(&profile_path).join(crate::common::OWNER_TEST_MARKER);
     let marker_contents = std::fs::read_to_string(&marker_path).unwrap_or_else(|e| {
         panic!(
             "live_151_leaked_profile_names_its_test: FAIL — {} missing or unreadable: {e} \
@@ -273,39 +273,14 @@ fn profile_root() -> Option<String> {
     json["results"]["path"].as_str().map(str::to_owned)
 }
 
-/// Scan `root` for `ff-rdp-profile-*` directories whose owner-PID marker
-/// names a still-alive process, returning `(dir, pid, spawning_test)`
-/// triples. Duplicates `live_96_profile_cleanup.rs`'s helper of the same
-/// name (not shared — see that file's own duplication note: no `[lib]`
-/// target for an integration-test binary to import from).
-fn live_owned_profile_dirs(root: &str) -> Vec<(std::path::PathBuf, u32, Option<String>)> {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return Vec::new();
-    };
-    entries
-        .flatten()
-        .filter(|e| {
-            e.file_name()
-                .to_str()
-                .is_some_and(|n| n.starts_with("ff-rdp-profile-"))
-        })
-        .filter_map(|e| {
-            let pid: u32 = std::fs::read_to_string(e.path().join(".ff-rdp-owner-pid"))
-                .ok()?
-                .trim()
-                .parse()
-                .ok()?;
-            if !pid_alive(pid) {
-                return None;
-            }
-            let test_name = std::fs::read_to_string(e.path().join(".ff-rdp-owner-test"))
-                .ok()
-                .map(|s| s.trim().to_owned())
-                .filter(|s| !s.is_empty());
-            Some((e.path(), pid, test_name))
-        })
-        .collect()
-}
+// iter-242 Theme E: `live_owned_profile_dirs` now lives in
+// `tests/common/mod.rs` alongside `kill_pid` / `pid_alive` / `FirefoxGuard`,
+// with the `.ff-rdp-owner-pid` and `.ff-rdp-owner-test` literals beside it.
+// The note that used to stand here said the helper could not be shared
+// because this crate has no `[lib]` target — but the files that duplicated it
+// are all modules of the one `tests/live` binary, which `common` is already
+// part of.
+use crate::common::live_owned_profile_dirs;
 
 /// Runs the named chunk (`filter` positional args, `skip` exclusion args) as
 /// a nested subprocess of this very test binary, then asserts zero

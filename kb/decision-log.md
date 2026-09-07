@@ -2233,3 +2233,149 @@ assertion in `crates/ff-rdp-cli/tests/live/` is against `FixtureServer`.
 `crates/ff-rdp-cli/tests/live/live_166_navigate_document_status.rs`,
 `kb/iterations/iteration-235-live-bulk-cap-shrinks-a-process-global.md`.
 Supersedes the "Not fixed here" clause of DEC-048 and closes DEC-022's residue.
+
+---
+
+## DEC-054: the `prune --all` flake was a silent removal failure, not a liveness flip; and an owner marker that exists but does not read back is "cannot tell", never "no owner"
+
+**Date**: 2026-09-07 (iter-242, absorbing iter-243 and iter-244)
+
+### Part A0 — what the flake actually was, measured
+
+**Decision**: `PruneOutcome` gains `failed` (`basename -> OS error`), reported as
+`profiles prune`'s `results.failed`. No retry is added. The iteration-97 dogfood gate's Theme C
+assertion is corrected rather than the predicate it was blaming.
+
+**Why**: iteration 204/242 was filed on the hypothesis that
+`profile_is_owned_by_live_process` intermittently read a live owner as dead — "within a few
+hundred milliseconds the same profile read as live-owned and then as not-live-owned". That
+hypothesis is **wrong**, and it was wrong for three iterations because the output could not
+distinguish it from the truth.
+
+Ten runs of the iteration-97 gate against a real headless Firefox (2026-09-07) reproduced the
+failure 4 times. With `results.owner_liveness` present — added first, as the plan demanded,
+before any fix — the failing run says:
+
+```
+owner_liveness: {"ff-rdp-profile-AHxOWYDcdsAeET7f":"live"}
+results:        {..., "removed":[], "removed_live":[], "owner_liveness":{"…":"live"}, ...}
+pre-prune marker pid: 72270 (expected 72270, alive=yes)
+```
+
+The predicate answered `live`. `remove_dir_all` failed. `removed_live` is only appended on
+`Ok(())`, so the basename fell out of `removed`, out of `removed_live`, and out of the JSON
+entirely — leaving a `tracing::warn!` that no `--jq` consumer and no dogfood assertion can see.
+"Not reported in `removed_live`" and "graded not-live" were the same observation.
+
+The removal failing is not a defect: `--all` against a live owner races a browser writing into
+that directory throughout, so the walk can meet a file created after it listed the directory.
+The corrected gate names the error — `Directory not empty (os error 66)`, ENOTEMPTY — which is
+that race and nothing else.
+Theme C demanded a guarantee `--all` cannot make. **A retry was considered and rejected** — it
+would quiet the symptom at whatever rate a given machine produces, which is exactly the "fix
+justified by reasoning alone" the plan warned about. Reporting the failure is honest at every
+rate.
+
+The corrected Theme C requires `--all` to account for the live-owner profile in exactly one of
+two ways — removed *and* in `removed_live`, or in `failed` with the error — and asserts the
+liveness claim it exists for directly and unconditionally against `owner_liveness == "live"`,
+instead of inferring it from whether a removal succeeded.
+
+The rest of Part A below stands on its own merits and **did not fix this flake**; nothing should
+credit it with having done so.
+
+### Part A — the grading that could flip, and the window that produced it
+
+**Decision**: `owner_liveness` in `crates/ff-rdp-cli/src/util/profile_dir.rs` gains a fifth
+grading, `Unreadable`, for a `.ff-rdp-owner-pid` marker that exists but yields no PID at this
+instant — an I/O error, or contents that do not parse. It is refused by the iter-110 kill-scoping
+gate (which demands exactly `Live`) and, crucially, can never reach the iter-142 *confidently
+dead* rule that reclaims a profile immediately regardless of age. It is **not** an unconditional
+keep: unlike `Unverified` it has no live PID behind it, so keeping unconditionally never
+terminates and a permanently-corrupt marker would make its directory unreclaimable forever — the
+exact permanent-leak class iter-171 was written to close. It falls through to the iter-96 mtime
+heuristic instead, which is what actually protects a running browser, whose profile is never
+stale because it is being written to. (The first draft of this decision did make it an
+unconditional keep; the review pass caught it, and the plan records the finding.) Separately,
+`write_owner_pid_marker` now writes through a sibling temp file plus `rename` instead of
+`fs::write`, and clears the stale marker if that write fails — otherwise the directory is left
+naming the launcher's own PID, which the next launch grades `Dead`.
+
+`remove_dir_all` returning `NotFound` is treated as success by both `cleanup_profile_dir` and
+`prune_profiles`: a directory that is already gone is the outcome, not a failure, and reporting
+it as `remove-failed` would raise a real-problem signal for a lost race between two prunes.
+
+**Why**: `read_owner_pid_marker` returned `Option<u32>` and collapsed two different answers into
+`None`: "there is no marker file" and "the marker did not read back". Only the first means
+nobody owns the directory. The second is produced by a window in our own code —
+`fs::write` truncates and then writes, so a concurrent reader sees an empty marker — and
+iteration 175 made `launch` enter that window *against a directory whose Firefox is already
+running*, because `launch` claims the directory with its own PID the moment it exists and
+re-marks it with Firefox's PID after the spawn. A prune landing inside those two syscalls graded
+a live profile `Unmarked`, fell through to the iter-96 mtime heuristic, and deleted it.
+
+That is a mechanism the observed flake is consistent with, not a proven diagnosis of it. The
+iteration-97 dogfood gate's intermittent "`--all` did not report the live-owner profile in
+`removed_live`" (~1 run in 2) was **not reproduced** here, and this decision must not be read as
+having closed it — see the attribution below, which is what will close it.
+
+**Attribution over inference**: the `profile_is_owned_by_live_process` boolean wrapper is
+deleted. `owner_liveness_of()` returns the grading; `OwnerLiveness::keeps_profile_alive()` is
+the decision. `profiles prune` grades once and both decides and reports from that one value —
+re-reading the markers for the report could legitimately disagree with the first read, which is
+the race itself — and emits `owner_liveness` in its JSON as
+`basename -> live|unverified|unreadable|dead|unmarked`. The next occurrence of the flake says
+which branch fired instead of leaving the next iteration to infer it.
+
+`cleanup_profile_dir`'s `ProfileCleanup::Skipped` gets the same treatment: it now carries a
+`ProfileCleanupSkip` reason, surfaced by `daemon stop` as `profile_skip_reason`. Three of the
+four reasons are refusals that are correct by design for a `--profile` directory; only
+`remove-failed` indicates a problem, and `profile_removed: false` alone could not tell them
+apart — which is exactly what the iteration-224 sweep failure arrived as.
+
+### Part B — enumerate launch sites, not guard sites
+
+**Decision**: `crates/ff-rdp-cli/tests/iter_242_launch_site_ownership.rs` enumerates every
+`"launch"` invocation under `tests/live/` and requires two mechanical properties per site: built
+from `common::ff_rdp_launch_command()` (so a leaked profile names its spawning test rather than
+reading `spawned by unknown test`), and an RAII owner bound in — or handed back by — the
+enclosing function. It found eight offenders, all fixed. Its allowlist is empty and is meant to
+stay that way.
+
+**Why this shape**: iteration 151 audited the same seam by searching for *discarded* guards
+(`ManuallyDrop`, `mem::forget`) and missed the `launch --replace` class entirely — a Firefox
+nothing ever owned cannot appear in a search for guards that were thrown away. Starting from
+launch sites is the only enumeration that cannot have that blind spot.
+
+**Honest limit**: a source scan cannot prove the guard is bound *before the next assertion*,
+only that the function binds one. The ordering was corrected by hand where it was wrong
+(`live_142_disk_growth::launch_headless`, `live_90`'s `launch_on_port`) and
+`common::guard_launched_firefox(&output)` — which extracts the PID and constructs the guard in
+one step — makes the correct order the easy one.
+
+`FirefoxGuard::drop` no longer signals a PID that is already dead, and `FirefoxGuard::disarm()`
+exists for paths that have already asserted the process is gone. `kill_pid` checks neither
+liveness nor ownership, so signalling a reaped PID is a signal to whatever the OS reissued the
+number to — the recycled-PID hazard iter-110 guards against in production, reintroduced at test
+scope when iteration 151 removed the `ManuallyDrop` that was incidentally preventing it.
+
+### Part C — a third-party page's content is not ours to assert on blind
+
+**Decision**: `live_eval_on_hn` waits for `document.readyState == "complete"` via
+`common::await_document_ready()` before asserting on `document.title`, and its failure message
+names the side: `READINESS:` when the document never completed, `SITE:` when it completed with
+an empty or different title. Deliberately **not** an accepted retry of the assertion, which
+would hide a real readiness regression behind a second attempt.
+
+The class is inventoried in `crates/ff-rdp-cli/tests/iter_242_third_party_dependencies.rs`:
+seven declared hosts, and the scan fails on an undeclared host or on a third-party navigation
+outside the `FF_RDP_LIVE_NETWORK_TESTS` gate. The audit found every real third-party navigation
+already network-gated, and five of the fourteen files making genuine *content* assertions.
+
+`live_137_consent_accept_via_daemon`'s `live_target_count: 0` signature is left to iteration
+251, which owns it; diagnosing it from here would give one failure two half-owners.
+
+**Applies to**: `crates/ff-rdp-cli/src/util/profile_dir.rs`,
+`crates/ff-rdp-cli/src/commands/profiles.rs`, `crates/ff-rdp-cli/src/daemon/client.rs`,
+`crates/ff-rdp-cli/tests/common/mod.rs`, and the live tier's launch sites.
+Extends DEC-022's ownership-marker line; does not supersede any earlier decision.

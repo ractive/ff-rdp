@@ -101,17 +101,72 @@ echo "PASS: Theme B — live-owner profile survived age-gated prune"
 echo ""
 echo "=== Theme C — --all reports live-owner removals ==="
 
+# iter-242 Theme A: capture the marker state the prune is about to read, so a
+# failure below can be attributed instead of only reported. `--all` removes the
+# directory whether or not it grades it live, so after the call there is
+# nothing left to inspect — this is the last moment the evidence exists.
+PRE_MARKER=$(cat "$PROFILE_PATH/$MARKER" 2>/dev/null | tr -d '[:space:]' || echo '<unreadable>')
+PRE_START=$(cat "$PROFILE_PATH/.ff-rdp-owner-start" 2>/dev/null | tr -d '[:space:]' || echo '<absent>')
+if kill -0 "$MARKER_PID" 2>/dev/null; then PRE_ALIVE=yes; else PRE_ALIVE=no; fi
+
 ALL_JSON=$(ffrdp profiles prune --all)
-if ! echo "$ALL_JSON" | jq -e --arg b "$LIVE_BASENAME" \
-    '.results.removed_live | index($b)' >/dev/null; then
-  echo "FAIL: Theme C — --all did not report $LIVE_BASENAME in removed_live"
+ALL_RESULTS=$(echo "$ALL_JSON" | jq -c '.results')
+
+# --- iter-242: what this assertion used to be, and why it was wrong ---
+#
+# It required, unconditionally, that `--all` remove the live-owner directory
+# AND list it in `removed_live`. That failed 4 runs in 10 against a real
+# Firefox (measured 2026-09-07), and for the whole of iteration 204/242's
+# filing the failure was read as an intermittent *liveness* flake: "within a
+# few hundred milliseconds the same profile read as live-owned and then as
+# not-live-owned".
+#
+# It is not. `results.owner_liveness` — added by iteration 242 for exactly this
+# question — reports `"live"` on the failing runs, alongside `removed: []` and
+# `removed_live: []`. The predicate answered correctly; the *removal* failed.
+# `removed_live` is only appended on a successful `remove_dir_all`, so a failed
+# removal used to vanish from the JSON completely, which is what made the two
+# indistinguishable.
+#
+# And the removal failing is not a defect: the owner Firefox is writing into
+# that directory continuously, so `remove_dir_all`'s walk can meet a file
+# created after it listed the directory. Demanding an unconditional removal
+# asks `--all` for a guarantee it cannot make against a running browser.
+#
+# So the assertion is the thing that was wrong, and this is the honest form of
+# it: `--all` must account for the live-owner profile in exactly one of two
+# ways, and must never be silent about it.
+#
+#   removed  → it is in `removed_live` (it was live-owned) and the dir is gone
+#   not      → it is in `failed` with the OS error, and the dir is still there
+#
+# The liveness claim Theme C exists for is asserted directly and
+# unconditionally, on `owner_liveness`, rather than inferred from removal.
+OWNER_GRADING=$(echo "$ALL_RESULTS" | jq -r --arg b "$LIVE_BASENAME" '.owner_liveness[$b] // "<absent>"')
+if [ "$OWNER_GRADING" != "live" ]; then
+  echo "FAIL: Theme C — --all graded the live-owner profile $LIVE_BASENAME as '$OWNER_GRADING', not 'live'"
+  echo "  results:               $ALL_RESULTS"
+  echo "  pre-prune marker pid:  $PRE_MARKER (expected $MARKER_PID, alive=$PRE_ALIVE)"
+  echo "  pre-prune start token: $PRE_START"
   exit 1
 fi
-if [ -d "$PROFILE_PATH" ]; then
-  echo "FAIL: Theme C — --all did not remove live-owner profile $PROFILE_PATH"
+
+if echo "$ALL_RESULTS" | jq -e --arg b "$LIVE_BASENAME" '.removed_live | index($b)' >/dev/null; then
+  if [ -d "$PROFILE_PATH" ]; then
+    echo "FAIL: Theme C — --all reported $LIVE_BASENAME removed, but $PROFILE_PATH still exists"
+    echo "  results: $ALL_RESULTS"
+    exit 1
+  fi
+  echo "PASS: Theme C — --all reclaimed live-owner dir and surfaced it in removed_live"
+elif echo "$ALL_RESULTS" | jq -e --arg b "$LIVE_BASENAME" '.failed | has($b)' >/dev/null; then
+  echo "PASS: Theme C — --all could not remove the live owner's dir and said so: $(echo "$ALL_RESULTS" | jq -c --arg b "$LIVE_BASENAME" '.failed[$b]')"
+else
+  echo "FAIL: Theme C — --all reported $LIVE_BASENAME in neither removed_live nor failed"
+  echo "  results:               $ALL_RESULTS"
+  echo "  pre-prune marker pid:  $PRE_MARKER (expected $MARKER_PID, alive=$PRE_ALIVE)"
+  echo "  pre-prune start token: $PRE_START"
   exit 1
 fi
-echo "PASS: Theme C — --all reclaimed live-owner dir and surfaced it in removed_live"
 
 # ---------------------------------------------------------------------------
 # Reclamation after daemon stop: a dead-owner profile is reclaimable.

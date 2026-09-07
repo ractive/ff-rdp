@@ -25,7 +25,13 @@ use crate::common::{LiveFirefox, ff_rdp_bin, ff_rdp_launch_command};
 /// Launch Firefox headless on `port` via the CLI and return its PID.
 ///
 /// Returns `None` if the launch fails or the port is not reachable within 10 s.
-fn launch_on_port(port: u16) -> Option<u32> {
+///
+/// iter-242 Theme A: returns an owning [`common::FirefoxGuard`], not a bare
+/// `u32`. This helper's four assertions used to run against a PID nothing
+/// owned, so any one of them panicking left the Firefox it launched running —
+/// the same "no RAII guard across an assertion" shape iteration 151 Theme B
+/// claimed to have eliminated suite-wide, in a file iteration 151 edited.
+fn launch_on_port(port: u16) -> Option<common::FirefoxGuard> {
     let out = ff_rdp_launch_command()
         .args(["launch", "--headless", "--debug-port", &port.to_string()])
         .output()
@@ -39,10 +45,11 @@ fn launch_on_port(port: u16) -> Option<u32> {
         return None;
     }
 
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
-    let pid = u32::try_from(json["results"]["pid"].as_u64()?).ok()?;
-    eprintln!("launch_on_port({port}): pid={pid}");
-    Some(pid)
+    // Bind the guard from the output directly: no parse step sits between a
+    // successful spawn and the thing that reaps it.
+    let guard = common::guard_launched_firefox(&out)?;
+    eprintln!("launch_on_port({port}): pid={}", guard.pid());
+    Some(guard)
 }
 
 /// Poll until `127.0.0.1:port` refuses connections (port is free) or timeout.
@@ -251,8 +258,9 @@ fn pre_fix_repro_daemon_state_sharing_red_then_green() {
     }
 
     // 1. Launch Firefox via `ff-rdp launch`.
-    let pid = launch_on_port(port)
+    let guard = launch_on_port(port)
         .expect("pre_fix_repro_daemon_state_sharing_red_then_green: launch failed");
+    let pid = guard.pid();
 
     assert!(
         wait_port_open(port, Duration::from_secs(15)),
@@ -299,6 +307,10 @@ fn pre_fix_repro_daemon_state_sharing_red_then_green() {
         "pre_fix_repro_daemon_state_sharing_red_then_green: FAIL — port {port} \
          still listening after daemon stop (pid={pid})"
     );
+    // iter-242 Theme D: `daemon stop` reaped this PID and the assertion above
+    // proved it. Signalling it from `Drop` would signal whatever the OS has
+    // since reissued the number to.
+    let _ = guard.disarm();
 
     // 4. Follow-up launch on the same port must succeed.
     let relaunch_out = ff_rdp_launch_command()
@@ -313,19 +325,20 @@ fn pre_fix_repro_daemon_state_sharing_red_then_green() {
         crate::common::output_note(&relaunch_out)
     );
 
-    let relaunch_json: serde_json::Value =
-        serde_json::from_slice(&relaunch_out.stdout).unwrap_or(serde_json::Value::Null);
-    let new_pid_raw = relaunch_json["results"]["pid"].as_u64().unwrap_or(0);
-    let new_pid = u32::try_from(new_pid_raw).unwrap_or(0);
+    // iter-242 Theme A: bind the guard before anything else touches the
+    // output. The old shape parsed the PID with `unwrap_or(0)` and gated the
+    // cleanup on `new_pid > 0`, so a parse miss silently skipped the kill and
+    // leaked the Firefox instead of failing the test.
+    let relaunch_guard = common::guard_launched_firefox(&relaunch_out).expect(
+        "pre_fix_repro_daemon_state_sharing_red_then_green: relaunch reported no results.pid",
+    );
 
     eprintln!(
         "pre_fix_repro_daemon_state_sharing_red_then_green: PASS — \
-         port {port} freed; follow-up launch succeeded (new pid={new_pid})"
+         port {port} freed; follow-up launch succeeded (new pid={})",
+        relaunch_guard.pid()
     );
 
-    // Cleanup the new Firefox instance (cross-platform via the helper).
-    if new_pid > 0 {
-        common::kill_pid(new_pid);
-        let _ = wait_port_free(port, Duration::from_secs(5));
-    }
+    drop(relaunch_guard);
+    let _ = wait_port_free(port, Duration::from_secs(5));
 }

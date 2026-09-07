@@ -141,7 +141,7 @@ const MANAGED_PROFILE_PREFIX: &str = "ff-rdp-profile-";
 ///
 /// The file holds the owning Firefox process's PID as plain text, newline
 /// terminated. The prune paths read it back through
-/// [`profile_is_owned_by_live_process`] to positively confirm the profile is
+/// [`OwnerLiveness::keeps_profile_alive`] to positively confirm the profile is
 /// still in use before any age-based deletion — a stronger signal than the
 /// iter-96 mtime heuristic, which stays the fallback for profiles that have
 /// no marker (pre-97 dirs, or an owner whose PID has since been reused).
@@ -276,7 +276,7 @@ pub(crate) fn latest_profile_activity(dir: &Path, dir_mtime: SystemTime) -> Syst
 /// token for that PID when the OS will supply one (iter-171).
 ///
 /// Called by `launch` immediately after spawning the Firefox that owns `dir`,
-/// so [`profile_is_owned_by_live_process`] can later confirm the profile is
+/// so [`owner_liveness_of`] can later confirm the profile is
 /// still in use before any age-based prune deletes it.
 ///
 /// The identity token is captured **before** the PID marker is written, so the
@@ -313,11 +313,28 @@ pub(crate) fn write_owner_pid_marker(dir: &Path, pid: u32) {
     }
 
     let marker = dir.join(OWNER_PID_MARKER);
-    if let Err(e) = std::fs::write(&marker, format!("{pid}\n")) {
+    if let Err(e) = write_marker_atomically(&marker, &format!("{pid}\n")) {
         tracing::warn!(
             "write_owner_pid_marker: could not write {}: {e}",
             marker.display()
         );
+        // iter-242 review: and remove whatever marker is still there. On the
+        // normal path this call is the *re-mark* — `launch` claimed the
+        // directory with its own PID before the spawn (iter-175) — so leaving
+        // the old one behind leaves a directory naming the launcher, which
+        // exits moments later. The next launch then grades it `Dead` and the
+        // iter-142 rule removes it immediately, out from under the Firefox
+        // that is actually running against it. `Unmarked` is the safe
+        // degradation: it falls back to the mtime heuristic, and a live
+        // browser's profile is never stale.
+        if let Err(e) = std::fs::remove_file(&marker)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(
+                "write_owner_pid_marker: could not clear stale {} after a failed write: {e}",
+                marker.display()
+            );
+        }
         // Without the PID marker the start token identifies nothing, and a
         // stray token file would only confuse a later reader.
         return;
@@ -331,12 +348,59 @@ pub(crate) fn write_owner_pid_marker(dir: &Path, pid: u32) {
         );
         return;
     };
-    if let Err(e) = std::fs::write(&start_marker, format!("{token}\n")) {
+    if let Err(e) = write_marker_atomically(&start_marker, &format!("{token}\n")) {
         tracing::warn!(
             "write_owner_pid_marker: could not write {}: {e}",
             start_marker.display()
         );
     }
+}
+
+/// Write `contents` to `marker` so a concurrent reader never observes a
+/// partial file (iter-242 Theme B).
+///
+/// `fs::write` truncates and then writes, so between those two syscalls the
+/// marker exists and is empty. On the normal launch path that window is
+/// entered twice against a directory whose Firefox is running — `launch`
+/// claims the directory with its own PID the instant it exists, then re-marks
+/// it with Firefox's PID after the spawn (iter-175) — and a `profiles prune`
+/// or orphan sweep landing inside it read the empty file as "no owner". That
+/// is a live profile graded as abandoned.
+///
+/// Writing to a sibling temp file and renaming closes the window instead of
+/// only reporting it honestly: `rename(2)` (and `MoveFileEx` with
+/// `MOVEFILE_REPLACE_EXISTING`, which `std::fs::rename` uses on Windows)
+/// replaces the name atomically, so a reader sees either the previous marker
+/// or the new one. The temp file is a sibling rather than in `TMPDIR` so the
+/// rename cannot cross a filesystem boundary.
+///
+/// The temp file is removed on the `io::Error` path, but that is not a
+/// guarantee: a SIGKILL between the write and the rename leaks one
+/// `.<marker>.<pid>.tmp` sibling, and nothing collects it. The cost is bounded
+/// — it does not affect [`profile_is_provably_failed_launch`], whose
+/// fingerprint is a directory holding *exactly* `user.js` and which a marked
+/// directory already fails, and [`latest_profile_activity`] ages it along with
+/// the rest of the profile — so it is recorded rather than swept.
+fn write_marker_atomically(marker: &Path, contents: &str) -> std::io::Result<()> {
+    let Some(name) = marker.file_name().and_then(|n| n.to_str()) else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "marker path has no usable file name",
+        ));
+    };
+    // One temp name per process, so two concurrent ff-rdp launches marking the
+    // same directory cannot clobber each other's half-written file — each
+    // renames its own complete one, and the last rename wins.
+    let temp = marker.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
+    if let Err(e) = std::fs::write(&temp, contents) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(e);
+    }
+    if let Err(e) = std::fs::rename(&temp, marker) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(e);
+    }
+    Ok(())
 }
 
 /// Write the owner-test marker ([`OWNER_TEST_MARKER`]) holding `test_name`
@@ -376,10 +440,34 @@ pub(crate) fn read_owner_test_marker(dir: &Path) -> Option<String> {
 /// established, so the ambiguity has to survive as far as the caller instead of
 /// being collapsed at the source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OwnerLiveness {
-    /// No [`OWNER_PID_MARKER`], or it does not parse as a PID. Callers fall
-    /// back to the iter-96 mtime heuristic (every pre-iter-97 profile).
+pub(crate) enum OwnerLiveness {
+    /// No [`OWNER_PID_MARKER`] file at all. Callers fall back to the iter-96
+    /// mtime heuristic (every pre-iter-97 profile).
+    ///
+    /// iter-242: this used to also cover "the marker exists but could not be
+    /// read back as a PID right now", which is a *different* answer — see
+    /// [`OwnerLiveness::Unreadable`].
     Unmarked,
+    /// The [`OWNER_PID_MARKER`] file exists but did not yield a PID at this
+    /// instant: an I/O error, or contents that do not parse (iter-242).
+    ///
+    /// This grading can appear and disappear between two calls a few hundred
+    /// milliseconds apart without the owner having died: pre-iter-242,
+    /// [`write_owner_pid_marker`] re-marked a live directory with `fs::write`
+    /// — truncate, then write — so a concurrent reader could observe the empty
+    /// intermediate state of a marker that both before and after names a
+    /// running Firefox. (That window is now closed at the source; the grading
+    /// remains for markers left corrupt by an older binary, a partial disk
+    /// write, or a permissions change.)
+    ///
+    /// It is kept apart from [`OwnerLiveness::Unmarked`] because the two are
+    /// different claims — "we could not read the owner" is not "there is no
+    /// owner" — and because only the second may ever reach the iter-142
+    /// *confidently dead* reclamation. For the age question they resolve the
+    /// same way: see [`OwnerLiveness::keeps_profile_alive`] for why an
+    /// unconditional keep here would be a permanent leak rather than a safety
+    /// measure.
+    Unreadable,
     /// The recorded PID is gone — or, the case iter-171 adds, it is alive but
     /// is provably a *different* process than the one that wrote the marker,
     /// because the live PID's start token disagrees with the recorded one.
@@ -398,6 +486,26 @@ enum OwnerLiveness {
     Unverified,
 }
 
+impl OwnerLiveness {
+    /// Stable lower-case label for logs and JSON output (iter-242 Theme A).
+    ///
+    /// `profiles prune` reports this per directory so an operator — or the
+    /// iteration-97 dogfood gate, when it fails — can see *which* grading
+    /// produced the verdict instead of inferring it from a `removed_live`
+    /// entry that is present or absent. The intermittent failure this
+    /// iteration exists to close was undiagnosable precisely because the
+    /// four gradings collapse into one boolean before anything is printed.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Unmarked => "unmarked",
+            Self::Unreadable => "unreadable",
+            Self::Dead => "dead",
+            Self::Live => "live",
+            Self::Unverified => "unverified",
+        }
+    }
+}
+
 /// Grade `dir`'s owner markers against the live process table.
 ///
 /// Pure lookup, no side effects. The [`OwnerLiveness`] variants document what
@@ -405,8 +513,10 @@ enum OwnerLiveness {
 /// that *is* alive — that is the PID-reuse false positive this iteration
 /// exists to close.
 fn owner_liveness(dir: &Path) -> OwnerLiveness {
-    let Some(pid) = read_owner_pid_marker(dir) else {
-        return OwnerLiveness::Unmarked;
+    let pid = match read_owner_pid_marker_graded(dir) {
+        OwnerPidMarker::Absent => return OwnerLiveness::Unmarked,
+        OwnerPidMarker::Unreadable => return OwnerLiveness::Unreadable,
+        OwnerPidMarker::Pid(pid) => pid,
     };
     if !crate::daemon::process::is_process_alive(pid) {
         return OwnerLiveness::Dead;
@@ -422,26 +532,55 @@ fn owner_liveness(dir: &Path) -> OwnerLiveness {
     }
 }
 
-/// Returns `true` iff `dir`'s owner markers say a live process still owns it.
+impl OwnerLiveness {
+    /// Whether this grading forbids a deletion path from reclaiming the
+    /// directory: the positive ownership signal the prune paths consult
+    /// *before* the iter-96 mtime heuristics, so a still-running (even fully
+    /// idle) Firefox never has its profile deleted out from under it.
+    ///
+    /// [`Self::Unmarked`] is `false` — the caller then falls back to the mtime
+    /// heuristic, so pre-iter-97 profiles behave exactly as they always did.
+    /// [`Self::Dead`] is `false` too, and since iter-171 that includes a
+    /// marker whose PID is alive but whose recorded start token disagrees: a
+    /// recycled PID, which before read as live-owned and made the profile
+    /// permanently unreclaimable.
+    ///
+    /// The two `true` cases are not the same claim. [`Self::Live`] is positive
+    /// proof; [`Self::Unverified`] (iter-171) is "the PID is alive and I
+    /// cannot confirm its identity", which still has a live process behind it.
+    /// The kill-scoping gate, whose blast radius points the other way, tests
+    /// for [`Self::Live`] on its own and so refuses `Unverified`.
+    ///
+    /// [`Self::Unreadable`] is deliberately **not** here, and the reasoning is
+    /// worth keeping. It is also "cannot tell", but unlike `Unverified` it has
+    /// no live PID behind it — there is no evidence of a process at all — so
+    /// an unconditional keep would never terminate: a marker left permanently
+    /// corrupt by a pre-iter-242 binary killed mid-`fs::write` would make its
+    /// directory unreclaimable **forever**, which is precisely the failure
+    /// iter-171 existed to close for the recycled-PID case. It falls through
+    /// to the iter-96 mtime heuristic instead — the same treatment
+    /// [`Self::Unmarked`] gets, and the thing that actually protects a running
+    /// browser, whose profile is never stale because it is being written to.
+    /// What `Unreadable` buys over `Unmarked` is that it is never the iter-142
+    /// *confidently dead* case: a corrupt marker must not authorise an
+    /// immediate age-free reclamation.
+    pub(crate) fn keeps_profile_alive(self) -> bool {
+        matches!(self, Self::Live | Self::Unverified)
+    }
+}
+
+/// Grade `dir`'s owner markers, exposing *which* [`OwnerLiveness`] a deletion
+/// path's keep-or-reclaim decision came from (iter-242 Theme A).
 ///
-/// This is the positive ownership signal the prune paths consult *before* the
-/// iter-96 mtime heuristics: a live owner always wins, so a still-running
-/// (even fully idle) Firefox never has its profile deleted out from under it.
-///
-/// A missing or unparsable marker returns `false` — the caller then falls
-/// back to the mtime heuristic, so pre-97 profiles (no marker) behave exactly
-/// as before.
-///
-/// iter-171: a marker whose PID is alive but whose recorded start token
-/// disagrees is a *recycled* PID, and now returns `false` — before, the dead
-/// profile read as live-owned and the age-gated prune skipped it forever.
-/// [`OwnerLiveness::Unverified`] still returns `true`: for a deletion path the
-/// unresolvable case must err toward keeping the directory.
-pub(crate) fn profile_is_owned_by_live_process(dir: &Path) -> bool {
-    matches!(
-        owner_liveness(dir),
-        OwnerLiveness::Live | OwnerLiveness::Unverified
-    )
+/// Before this, the prune paths called a `profile_is_owned_by_live_process`
+/// wrapper that returned [`OwnerLiveness::keeps_profile_alive`] and threw the
+/// grading away, so a wrong answer left nothing behind to attribute it to.
+/// `profiles prune` now grades once through this function and both decides
+/// *and* reports from the same value — re-reading the markers for the report
+/// could legitimately disagree with the first read, which is precisely the
+/// race being diagnosed.
+pub(crate) fn owner_liveness_of(dir: &Path) -> OwnerLiveness {
+    owner_liveness(dir)
 }
 
 /// Read back the identity token recorded in `dir`'s [`OWNER_START_MARKER`], if
@@ -456,13 +595,53 @@ fn read_owner_start_marker(dir: &Path) -> Option<String> {
 /// Read and parse the owner PID recorded in `dir`'s [`OWNER_PID_MARKER`], if
 /// any. Returns `None` when the marker is absent or unparsable.
 ///
-/// Split out from [`profile_is_owned_by_live_process`] so the kill-scoping
+/// Split out from [`owner_liveness`] so the kill-scoping
 /// guard (iter-110 Theme A0) can compare a marker PID against a candidate PID
 /// without also asserting liveness (the caller already knows the candidate is
 /// the live port owner).
 fn read_owner_pid_marker(dir: &Path) -> Option<u32> {
-    let contents = std::fs::read_to_string(dir.join(OWNER_PID_MARKER)).ok()?;
-    contents.trim().parse::<u32>().ok()
+    match read_owner_pid_marker_graded(dir) {
+        OwnerPidMarker::Pid(pid) => Some(pid),
+        OwnerPidMarker::Absent | OwnerPidMarker::Unreadable => None,
+    }
+}
+
+/// The three genuinely different outcomes of reading `dir`'s
+/// [`OWNER_PID_MARKER`] (iter-242 Theme A).
+///
+/// [`read_owner_pid_marker`]'s `Option<u32>` collapses the first two, which is
+/// fine for its callers (both want "a PID, or nothing to compare against") but
+/// not for [`owner_liveness`], where the difference decides whether a live
+/// profile survives a prune.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OwnerPidMarker {
+    /// The marker file does not exist. The only reading that actually means
+    /// "ff-rdp never claimed this directory".
+    Absent,
+    /// The marker file exists but yielded no PID: the read failed, or the
+    /// contents did not parse. Both are transient-capable — see
+    /// [`OwnerLiveness::Unreadable`].
+    Unreadable,
+    /// The marker named this PID.
+    Pid(u32),
+}
+
+/// Read `dir`'s [`OWNER_PID_MARKER`], keeping "absent" and "unreadable"
+/// apart (iter-242 Theme A).
+///
+/// Only `NotFound` counts as absent. Every other `io::Error` — a permission
+/// change, an interrupted read, a marker replaced by a directory — is
+/// `Unreadable`, as are contents that do not parse as a `u32`, which is what a
+/// reader sees inside `fs::write`'s truncate-then-write window.
+fn read_owner_pid_marker_graded(dir: &Path) -> OwnerPidMarker {
+    match std::fs::read_to_string(dir.join(OWNER_PID_MARKER)) {
+        Ok(contents) => match contents.trim().parse::<u32>() {
+            Ok(pid) => OwnerPidMarker::Pid(pid),
+            Err(_) => OwnerPidMarker::Unreadable,
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => OwnerPidMarker::Absent,
+        Err(_) => OwnerPidMarker::Unreadable,
+    }
 }
 
 /// Returns `true` iff some managed profile directory under
@@ -687,7 +866,45 @@ pub enum ProfileCleanup {
     /// Nothing was removed — either a safety check refused the path, or
     /// removal itself failed. Both cases are silent (warn-not-fail): see
     /// the function doc for why this never surfaces as an error.
-    Skipped,
+    ///
+    /// iter-242: carries *why*. `daemon stop` reports the outcome as a bare
+    /// `"profile_removed": false` with no reason attached, which is how an
+    /// iteration-224 sweep failure (`stopped: true`, `profile_removed:
+    /// false`, passing in isolation minutes later) arrived with nothing to
+    /// distinguish "the path was refused" from "`remove_dir_all` failed".
+    Skipped(ProfileCleanupSkip),
+}
+
+/// Why [`cleanup_profile_dir`] removed nothing (iter-242).
+///
+/// The four reasons are not interchangeable: the first three are *refusals*
+/// and are the expected outcome for a user-supplied `--profile` directory,
+/// while [`Self::RemoveFailed`] means a managed directory ff-rdp owns was
+/// supposed to go away and did not — the only one that indicates a problem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileCleanupSkip {
+    /// The per-user profile root could not be resolved, so "is this path
+    /// under it" is unanswerable and the function fails closed.
+    NoProfileRoot,
+    /// The path is not under [`secure_profile_root`].
+    OutsideProfileRoot,
+    /// The basename is not `ff-rdp-profile-<16 alphanumeric chars>`.
+    NotManagedBasename,
+    /// Both safety checks passed but `remove_dir_all` failed — a permission
+    /// error, or a file inside the profile still held open.
+    RemoveFailed,
+}
+
+impl ProfileCleanupSkip {
+    /// Stable lower-case label for logs and JSON output.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NoProfileRoot => "no-profile-root",
+            Self::OutsideProfileRoot => "outside-profile-root",
+            Self::NotManagedBasename => "not-managed-basename",
+            Self::RemoveFailed => "remove-failed",
+        }
+    }
 }
 
 impl ProfileCleanup {
@@ -695,7 +912,15 @@ impl ProfileCleanup {
     pub fn removed_path(&self) -> Option<&Path> {
         match self {
             Self::Removed(p) => Some(p),
-            Self::Skipped => None,
+            Self::Skipped(_) => None,
+        }
+    }
+
+    /// `Some(reason)` if nothing was removed, `None` if it was (iter-242).
+    pub fn skip_reason(&self) -> Option<ProfileCleanupSkip> {
+        match self {
+            Self::Removed(_) => None,
+            Self::Skipped(reason) => Some(*reason),
         }
     }
 }
@@ -719,7 +944,7 @@ pub fn cleanup_profile_dir(path: &Path) -> ProfileCleanup {
                 "cleanup_profile_dir: could not resolve secure profile root, skipping {}: {e:#}",
                 path.display()
             );
-            return ProfileCleanup::Skipped;
+            return ProfileCleanup::Skipped(ProfileCleanupSkip::NoProfileRoot);
         }
     };
     cleanup_profile_dir_under(&root, path)
@@ -737,7 +962,7 @@ fn cleanup_profile_dir_under(root: &Path, path: &Path) -> ProfileCleanup {
             path.display(),
             root.display()
         );
-        return ProfileCleanup::Skipped;
+        return ProfileCleanup::Skipped(ProfileCleanupSkip::OutsideProfileRoot);
     }
 
     if !is_managed_profile_path(path) {
@@ -745,7 +970,7 @@ fn cleanup_profile_dir_under(root: &Path, path: &Path) -> ProfileCleanup {
             "cleanup_profile_dir: refusing to remove {} — basename is not a managed ff-rdp profile dir",
             path.display()
         );
-        return ProfileCleanup::Skipped;
+        return ProfileCleanup::Skipped(ProfileCleanupSkip::NotManagedBasename);
     }
 
     match std::fs::remove_dir_all(path) {
@@ -753,12 +978,25 @@ fn cleanup_profile_dir_under(root: &Path, path: &Path) -> ProfileCleanup {
             tracing::debug!("cleanup_profile_dir: removed {}", path.display());
             ProfileCleanup::Removed(path.to_path_buf())
         }
+        // iter-242 review: a directory that is already gone is the outcome
+        // this function exists to produce, not a failure. Reporting `ENOENT`
+        // as `remove-failed` would tell an operator that a managed directory
+        // "should have gone away and did not" — the one skip reason that means
+        // a real problem — for the case where a concurrent `profiles prune`
+        // got there first.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tracing::debug!(
+                "cleanup_profile_dir: {} was already gone — treating as removed",
+                path.display()
+            );
+            ProfileCleanup::Removed(path.to_path_buf())
+        }
         Err(e) => {
             tracing::warn!(
                 "cleanup_profile_dir: failed to remove {}: {e}",
                 path.display()
             );
-            ProfileCleanup::Skipped
+            ProfileCleanup::Skipped(ProfileCleanupSkip::RemoveFailed)
         }
     }
 }
@@ -864,11 +1102,12 @@ impl Drop for ManagedProfileGuard {
                     p.display()
                 );
             }
-            ProfileCleanup::Skipped => {
+            ProfileCleanup::Skipped(reason) => {
                 tracing::warn!(
-                    "ManagedProfileGuard: could not remove {} — it may survive as an orphan until \
-                     the next launch's prune",
-                    path.display()
+                    "ManagedProfileGuard: could not remove {} ({}) — it may survive as an orphan \
+                     until the next launch's prune",
+                    path.display(),
+                    reason.as_str()
                 );
             }
         }
@@ -1038,6 +1277,25 @@ pub fn prune_orphan_profiles(
                     ),
                 }
                 continue;
+            }
+            OwnerLiveness::Unreadable => {
+                // iter-242: a marker that exists but does not read back as a
+                // PID. Not the iter-142 dead-owner case above — a corrupt
+                // marker is not proof of abandonment and must never authorise
+                // an age-free reclamation — and not the iter-175 failed-launch
+                // case below, whose fingerprint is a directory holding
+                // *exactly* `user.js`, which a marked directory is not.
+                //
+                // So: fall through to the mtime heuristic, which is what
+                // protects a running browser here. Its profile is never stale,
+                // because it is being written to; a directory whose marker is
+                // corrupt *and* whose newest file is older than the threshold
+                // is abandoned by any reading.
+                tracing::debug!(
+                    "prune_orphan_profiles: {} has an owner marker that did not read back as a \
+                     PID — grading by age rather than by ownership",
+                    path.display()
+                );
             }
             OwnerLiveness::Unmarked => {
                 // No marker (pre-97 profile, a pre-iter-175 failed launch, or
@@ -1314,7 +1572,10 @@ mod tests {
 
         let result = cleanup_profile_dir(outside.path());
 
-        assert_eq!(result, ProfileCleanup::Skipped);
+        assert_eq!(
+            result,
+            ProfileCleanup::Skipped(ProfileCleanupSkip::OutsideProfileRoot)
+        );
         assert!(
             outside.path().exists(),
             "directory outside secure_profile_root must survive cleanup_profile_dir"
@@ -1346,7 +1607,10 @@ mod tests {
 
         let result = cleanup_profile_dir(&not_managed);
 
-        assert_eq!(result, ProfileCleanup::Skipped);
+        assert_eq!(
+            result,
+            ProfileCleanup::Skipped(ProfileCleanupSkip::NotManagedBasename)
+        );
         assert!(not_managed.exists());
 
         let _ = std::fs::remove_dir_all(&not_managed);
@@ -1462,24 +1726,31 @@ mod tests {
         pid
     }
 
-    /// `write_owner_pid_marker` + `profile_is_owned_by_live_process` round
+    /// `write_owner_pid_marker` + `owner_liveness_of` round
     /// trip: the current process is alive, so a marker naming it reports
     /// `true`; a dir with no marker or a garbage marker reports `false`.
     #[test]
     fn unit_owner_pid_marker_roundtrip() {
         let dir = tempfile::tempdir().expect("tempdir");
         // No marker yet.
-        assert!(!profile_is_owned_by_live_process(dir.path()));
+        assert!(!owner_liveness_of(dir.path()).keeps_profile_alive());
 
         write_owner_pid_marker(dir.path(), std::process::id());
         assert!(
-            profile_is_owned_by_live_process(dir.path()),
+            owner_liveness_of(dir.path()).keeps_profile_alive(),
             "a marker naming the live test process must report alive"
         );
 
-        // Garbage marker → not owned by a live process.
+        // Garbage marker. iter-242 **changed this answer on purpose**: it used
+        // to grade `Unmarked` — "nobody owns this directory" — and so let the
+        // deletion paths reclaim it. A file that exists and does not parse is
+        // not evidence of no owner; it is evidence we could not read the owner,
+        // which on a deletion path resolves toward keeping the directory (see
+        // `OwnerLiveness::Unreadable`, and the `fs::write` truncate window that
+        // produces exactly this state on a *live* profile).
         std::fs::write(dir.path().join(OWNER_PID_MARKER), b"not-a-pid\n").expect("overwrite");
-        assert!(!profile_is_owned_by_live_process(dir.path()));
+        assert_eq!(owner_liveness(dir.path()), OwnerLiveness::Unreadable);
+        assert!(!owner_liveness_of(dir.path()).keeps_profile_alive());
     }
 
     /// AC: `live_151_leaked_profile_names_its_test` (unit half) —
@@ -1851,7 +2122,7 @@ mod tests {
     /// is a *different process* than the one that wrote the marker must not
     /// read as live-owned.
     ///
-    /// On `main` `profile_is_owned_by_live_process` is `kill(pid, 0)` and
+    /// On `main` the ownership predicate is `kill(pid, 0)` and
     /// answers `true` here, because the recycled PID really is alive — which
     /// is what made a leaked directory permanently unreclaimable and what
     /// tripped `live_96_profile_cleanup`'s precondition.
@@ -1867,7 +2138,7 @@ mod tests {
              recycled PID, not the original owner"
         );
         assert!(
-            !profile_is_owned_by_live_process(&recycled),
+            !owner_liveness_of(&recycled).keeps_profile_alive(),
             "a recycled PID must not resurrect a dead profile's ownership"
         );
     }
@@ -1918,7 +2189,7 @@ mod tests {
         write_owner_pid_marker(&dir, std::process::id());
 
         assert_eq!(owner_liveness(&dir), OwnerLiveness::Live);
-        assert!(profile_is_owned_by_live_process(&dir));
+        assert!(owner_liveness_of(&dir).keeps_profile_alive());
         assert!(pid_is_ff_rdp_spawned_under(root.path(), std::process::id()));
 
         let summary = prune_orphan_profiles(root.path(), Duration::from_hours(168), 50);
@@ -1968,7 +2239,7 @@ mod tests {
         std::fs::write(dir.join(OWNER_START_MARKER), b"   \n").expect("blank the start marker");
 
         assert_eq!(owner_liveness(&dir), OwnerLiveness::Live);
-        assert!(profile_is_owned_by_live_process(&dir));
+        assert!(owner_liveness_of(&dir).keeps_profile_alive());
     }
 
     /// `Unverified` (PID alive, token recorded, OS will not disclose the live
@@ -1982,7 +2253,7 @@ mod tests {
             !matches!(OwnerLiveness::Unverified, OwnerLiveness::Live),
             "Unverified must remain distinct from Live"
         );
-        // Deletion direction: `profile_is_owned_by_live_process` (the guard
+        // Deletion direction: `keeps_profile_alive` (the guard
         // every prune path consults) treats Unverified as owned → keep.
         // Kill direction: `pid_is_ff_rdp_spawned_under` requires exactly
         // `Live` → refuse. Both are asserted structurally here because the
@@ -1990,8 +2261,209 @@ mod tests {
         let root = tempfile::tempdir().expect("tempdir");
         let dir = seed_fake_profile(root.path(), &"f".repeat(16), Duration::from_secs(1));
         write_owner_pid_marker(&dir, std::process::id());
-        assert!(profile_is_owned_by_live_process(&dir));
+        assert!(owner_liveness_of(&dir).keeps_profile_alive());
         assert!(pid_is_ff_rdp_spawned_under(root.path(), std::process::id()));
+    }
+
+    // -----------------------------------------------------------------
+    // iter-242: an owner marker that exists but does not read back
+    // -----------------------------------------------------------------
+
+    /// `unit_242_empty_owner_marker_is_unreadable_not_unmarked`: the exact
+    /// state `fs::write` leaves a marker in between truncating and writing.
+    ///
+    /// Before iter-242 this graded `Unmarked`, i.e. "ff-rdp never claimed this
+    /// directory" — a confident negative derived from a file that says
+    /// otherwise by existing at all. The two answers are different claims and
+    /// the deletion paths act on them in opposite directions.
+    #[test]
+    fn unit_242_empty_owner_marker_is_unreadable_not_unmarked() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = seed_fake_profile(root.path(), &"1".repeat(16), Duration::from_secs(1));
+        std::fs::write(dir.join(OWNER_PID_MARKER), b"").expect("truncate the marker");
+
+        assert_eq!(
+            owner_liveness(&dir),
+            OwnerLiveness::Unreadable,
+            "a marker that exists but yields no PID is 'cannot tell', not 'no owner'"
+        );
+        // Not a keep on its own: an unconditional keep for a grading with no
+        // live PID behind it never terminates, so a permanently-corrupt marker
+        // would make the directory unreclaimable forever. What it must never
+        // be is the iter-142 *confidently dead* case, which reclaims
+        // immediately regardless of age.
+        assert!(!owner_liveness_of(&dir).keeps_profile_alive());
+        assert_ne!(owner_liveness(&dir), OwnerLiveness::Dead);
+    }
+
+    /// The absent case is untouched: no marker file at all still grades
+    /// `Unmarked` and still hands the directory to the iter-96 mtime
+    /// heuristic, so every pre-iter-97 profile behaves exactly as before.
+    #[test]
+    fn unit_242_absent_owner_marker_still_grades_unmarked() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = seed_fake_profile(root.path(), &"2".repeat(16), Duration::from_secs(1));
+
+        assert_eq!(owner_liveness(&dir), OwnerLiveness::Unmarked);
+        assert!(!owner_liveness_of(&dir).keeps_profile_alive());
+    }
+
+    /// An unreadable marker — here a *directory* wearing the marker's name, so
+    /// `read_to_string` fails with an I/O error rather than `NotFound` on every
+    /// platform — is graded by **age**, never reclaimed immediately.
+    ///
+    /// This is the AC-1 pin for Part A, and the direction it pins matters. The
+    /// hazard is not "a corrupt marker means delete now": that is exactly what
+    /// the iter-142 dead-owner rule does for [`OwnerLiveness::Dead`], and doing
+    /// it for a marker we merely could not *read* would reclaim a directory on
+    /// no evidence at all. A fresh profile with an unreadable marker therefore
+    /// survives; the identical directory back-dated past the threshold does
+    /// not, because an unconditional keep would leak it forever.
+    #[test]
+    fn unit_242_unreadable_marker_is_graded_by_age_not_reclaimed_outright() {
+        let root = tempfile::tempdir().expect("tempdir");
+
+        let fresh = seed_fake_profile(root.path(), &"3".repeat(16), Duration::from_secs(1));
+        std::fs::create_dir(fresh.join(OWNER_PID_MARKER)).expect("marker path taken by a dir");
+        assert_eq!(owner_liveness(&fresh), OwnerLiveness::Unreadable);
+
+        let summary = prune_orphan_profiles(root.path(), Duration::from_hours(168), 50);
+        assert!(
+            summary.removed.is_empty(),
+            "an unreadable marker is not proof of abandonment — a fresh profile must survive, \
+             got {:?}",
+            summary.removed
+        );
+        assert!(fresh.exists());
+
+        // The same directory, older than the threshold: nothing is claiming to
+        // own it, and nothing has touched it in a week.
+        let stale = seed_fake_profile(root.path(), &"7".repeat(16), Duration::from_hours(192));
+        std::fs::write(stale.join(OWNER_PID_MARKER), b"not-a-pid\n").expect("junk marker");
+        let stale_mtime = SystemTime::now()
+            .checked_sub(Duration::from_hours(192))
+            .expect("age fits before now");
+        filetime::set_file_mtime(
+            stale.join(OWNER_PID_MARKER),
+            filetime::FileTime::from_system_time(stale_mtime),
+        )
+        .expect("backdate the marker too");
+        filetime::set_file_mtime(&stale, filetime::FileTime::from_system_time(stale_mtime))
+            .expect("re-backdate the dir");
+        assert_eq!(owner_liveness(&stale), OwnerLiveness::Unreadable);
+
+        let summary = prune_orphan_profiles(root.path(), Duration::from_hours(168), 50);
+        assert_eq!(
+            summary.removed,
+            vec![stale.clone()],
+            "a stale profile whose marker cannot be read must still be reclaimable — an \
+             unconditional keep here is a permanent leak"
+        );
+        assert!(fresh.exists(), "the fresh one is still not a candidate");
+    }
+
+    /// The kill direction resolves the same uncertainty the opposite way:
+    /// `Unreadable` never authorises signalling a process, because
+    /// `pid_is_ff_rdp_spawned_under` demands exactly `Live`.
+    #[test]
+    fn unit_242_unreadable_marker_never_authorises_a_kill() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = seed_fake_profile(root.path(), &"4".repeat(16), Duration::from_secs(1));
+        std::fs::write(dir.join(OWNER_PID_MARKER), b"not-a-pid\n").expect("write junk marker");
+
+        assert_eq!(owner_liveness(&dir), OwnerLiveness::Unreadable);
+        assert!(
+            !pid_is_ff_rdp_spawned_under(root.path(), std::process::id()),
+            "'cannot tell' must never mean 'go ahead and kill'"
+        );
+    }
+
+    /// `write_marker_atomically` leaves no temp file behind on the happy path,
+    /// and a reader either sees the previous marker or the new one — never the
+    /// empty intermediate `fs::write` produces. The absence of the temp file
+    /// also matters to iter-175's failed-launch fingerprint, which insists a
+    /// profile hold *exactly* `user.js`.
+    #[test]
+    fn unit_242_marker_write_is_atomic_and_leaves_no_temp_file() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = seed_fake_profile(root.path(), &"5".repeat(16), Duration::from_secs(1));
+
+        write_owner_pid_marker(&dir, 4242);
+        write_owner_pid_marker(&dir, std::process::id());
+
+        assert_eq!(read_owner_pid_marker(&dir), Some(std::process::id()));
+        let strays: Vec<String> = std::fs::read_dir(&dir)
+            .expect("read profile dir")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| {
+                std::path::Path::new(name)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("tmp"))
+            })
+            .collect();
+        assert!(
+            strays.is_empty(),
+            "temp marker files left behind: {strays:?}"
+        );
+    }
+
+    /// Every grading has a distinct, stable label — the attribution
+    /// `profiles prune` reports. A duplicated or missing label would make the
+    /// report worse than useless: it would look like an answer.
+    #[test]
+    fn unit_242_owner_liveness_labels_are_distinct() {
+        let all = [
+            OwnerLiveness::Unmarked,
+            OwnerLiveness::Unreadable,
+            OwnerLiveness::Dead,
+            OwnerLiveness::Live,
+            OwnerLiveness::Unverified,
+        ];
+        let mut labels: Vec<&str> = all.iter().map(|o| o.as_str()).collect();
+        labels.sort_unstable();
+        let distinct = labels.len();
+        labels.dedup();
+        assert_eq!(
+            labels.len(),
+            distinct,
+            "labels must be distinct: {labels:?}"
+        );
+        assert!(labels.iter().all(|l| !l.is_empty()));
+    }
+
+    /// `cleanup_profile_dir`'s four skip reasons are distinguishable, which is
+    /// what `daemon stop`'s `profile_skip_reason` reports. `profile_removed:
+    /// false` on its own could not tell a refused path from a
+    /// `remove_dir_all` that failed.
+    #[test]
+    fn unit_242_cleanup_skip_reasons_are_distinct() {
+        let all = [
+            ProfileCleanupSkip::NoProfileRoot,
+            ProfileCleanupSkip::OutsideProfileRoot,
+            ProfileCleanupSkip::NotManagedBasename,
+            ProfileCleanupSkip::RemoveFailed,
+        ];
+        let mut labels: Vec<&str> = all.iter().map(|r| r.as_str()).collect();
+        labels.sort_unstable();
+        let distinct = labels.len();
+        labels.dedup();
+        assert_eq!(
+            labels.len(),
+            distinct,
+            "labels must be distinct: {labels:?}"
+        );
+
+        let outside = tempfile::Builder::new()
+            .prefix("ff-rdp-profile-")
+            .rand_bytes(16)
+            .tempdir()
+            .expect("tempdir outside profile root");
+        assert_eq!(
+            cleanup_profile_dir(outside.path()).skip_reason(),
+            Some(ProfileCleanupSkip::OutsideProfileRoot),
+            "a refused path must say which check refused it"
+        );
     }
 
     /// AC: `unit_prune_orphan_profiles_bounded_by_max` — 60 stale dirs seeded,

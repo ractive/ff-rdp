@@ -3152,7 +3152,13 @@ not succeed within 2 seconds. Cleans up the daemon's per-port registry file
 When Firefox was started via `launch`, stopping it also removes its
 temporary profile directory (never a directory passed via --profile).
 
-Output: {\"results\": {\"stopped\": bool, \"pid\": N, \"port\": N, \"profile_removed\": bool, \"profile_removed_path\": \"...\"|null}, \"total\": 1, \"meta\": {...}}")]
+When the profile directory is NOT removed, `profile_skip_reason` names why:
+`outside-profile-root` / `not-managed-basename` (a --profile directory, refused by design),
+`no-profile-root` (the per-user root could not be resolved), or `remove-failed`
+(a managed directory that should have gone away and did not). It is null when the
+profile was removed, and when the stop itself failed so cleanup was never attempted.
+
+Output: {\"results\": {\"stopped\": bool, \"pid\": N, \"port\": N, \"profile_removed\": bool, \"profile_removed_path\": \"...\"|null, \"profile_skip_reason\": \"...\"|null}, \"total\": 1, \"meta\": {...}}")]
     Stop,
 }
 
@@ -3182,6 +3188,17 @@ Pass --all to remove every managed entry regardless of age (mutually exclusive w
 still alive is still removed (--all is the explicit escape hatch), but each such removal is
 logged as a warning and its basename is listed under `removed_live` in the output. Do not run
 --all while a Firefox launched by ff-rdp is still using one of these profiles.
+`failed` reports, per selected directory, any removal that did NOT happen, with the OS
+error — `{}` when everything selected was removed. This matters most under --all against a
+live owner: the browser is writing into the profile throughout, so `remove_dir_all` can meet
+a file created after it listed the directory and fail. Such an entry appears in neither
+`removed` nor `removed_live`, and before this field existed it left no trace in the output
+at all.
+`owner_liveness` reports, per selected directory, the grading that decision came from:
+`live` (owner running), `unverified` (owner alive, identity undisclosed by the OS),
+`unreadable` (an owner marker that exists but did not read back as a PID — graded by age like
+`unmarked`, but never eligible for the age-free dead-owner reclamation), `dead` (owner gone, or
+its PID recycled), or `unmarked` (no marker at all).
 Pass --dry-run to preview without touching disk: `would_remove` is populated and `removed` stays
 empty, and every listed directory still exists afterwards. On a real run it's the other way round:
 `removed` is populated and `would_remove` stays empty.
@@ -3201,7 +3218,7 @@ Examples:
   ff-rdp profiles prune --older-than 24h
   ff-rdp profiles prune --all
 
-Output: {\"results\": {\"path\": \"...\", \"would_remove\": [...], \"removed\": [...], \"removed_live\": [...], \"dry_run\": bool}, \"total\": N, \"meta\": {...}}"
+Output: {\"results\": {\"path\": \"...\", \"would_remove\": [...], \"removed\": [...], \"removed_live\": [...], \"owner_liveness\": {\"<basename>\": \"live|unverified|unreadable|dead|unmarked\"}, \"failed\": {\"<basename>\": \"<os error>\"}, \"dry_run\": bool}, \"total\": N, \"meta\": {...}}"
     )]
     Prune {
         /// Only remove entries whose mtime is at least this old. Accepts <N>d, <N>h, <N>m, <N>s,

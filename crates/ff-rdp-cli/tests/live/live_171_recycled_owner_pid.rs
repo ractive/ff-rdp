@@ -31,12 +31,9 @@ use crate::common::{
     FirefoxGuard, ff_rdp_bin, ff_rdp_launch_command, kill_pid_and_wait, live_tests_enabled,
 };
 
-/// Owner-PID marker written inside every ff-rdp-managed profile dir; mirrors
-/// the product's private `util::profile_dir::OWNER_PID_MARKER`, duplicated for
-/// the same reason `live_96_profile_cleanup.rs`, `live_151_residual_leak.rs`
-/// and `live_168_drop_waits_for_exit.rs` duplicate it — this crate ships no
-/// `[lib]` target for an integration-test binary to import from.
-const OWNER_PID_MARKER: &str = ".ff-rdp-owner-pid";
+// iter-242 Theme E: the marker name comes from `common` now — one copy
+// against the product's private constant, not one per live module.
+use crate::common::OWNER_PID_MARKER;
 
 /// Owner-start (process identity) marker, iter-171. Same duplication
 /// rationale as [`OWNER_PID_MARKER`]; mirrors

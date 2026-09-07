@@ -17,48 +17,15 @@ use std::process::Command;
 
 use crate::common::{LiveFirefox, ff_rdp_bin, live_tests_enabled, pid_alive};
 
-/// Owner-PID marker written inside every ff-rdp-managed profile dir; mirrors
-/// the product's private `util::profile_dir::OWNER_PID_MARKER`, duplicated for
-/// the same reason `live_96_profile_cleanup.rs` and `live_151_residual_leak.rs`
-/// duplicate it — this crate ships no `[lib]` target to import from.
-const OWNER_PID_MARKER: &str = ".ff-rdp-owner-pid";
-
-/// Owner-test marker (iter-151 Theme A), same duplication rationale.
-const OWNER_TEST_MARKER: &str = ".ff-rdp-owner-test";
-
-/// Scan `root` for `ff-rdp-profile-*` dirs whose owner-PID marker names a
-/// still-alive process, as `(dir, pid, spawning_test)`.
-///
-/// Byte-for-byte the scan `live_96_profile_cleanup`'s precondition runs, so a
-/// pass here means that precondition cannot fire on this test's account.
-fn live_owned_profile_dirs(root: &str) -> Vec<(std::path::PathBuf, u32, Option<String>)> {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return Vec::new();
-    };
-    entries
-        .flatten()
-        .filter(|e| {
-            e.file_name()
-                .to_str()
-                .is_some_and(|n| n.starts_with("ff-rdp-profile-"))
-        })
-        .filter_map(|e| {
-            let pid: u32 = std::fs::read_to_string(e.path().join(OWNER_PID_MARKER))
-                .ok()?
-                .trim()
-                .parse()
-                .ok()?;
-            if !pid_alive(pid) {
-                return None;
-            }
-            let test_name = std::fs::read_to_string(e.path().join(OWNER_TEST_MARKER))
-                .ok()
-                .map(|s| s.trim().to_owned())
-                .filter(|s| !s.is_empty());
-            Some((e.path(), pid, test_name))
-        })
-        .collect()
-}
+// iter-242 Theme E: the owner-marker scan and the two marker-name literals
+// used to be copy-pasted here (and in `live_151_residual_leak.rs`, and in the
+// since-deleted `live_96` precondition). The justification recorded in
+// iteration 151 — "no `[lib]` target for an integration-test binary to import
+// from" — was wrong: every one of those files is a *module of this same
+// `tests/live` binary*, and `tests/common/mod.rs` exists for exactly this. The
+// duplication that genuinely cannot be removed is the one against the product
+// crate's private constants, which `common` now carries in one place.
+use crate::common::live_owned_profile_dirs;
 
 /// The managed profile root, as the product itself reports it.
 fn profile_root() -> String {
