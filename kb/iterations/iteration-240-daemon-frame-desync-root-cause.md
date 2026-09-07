@@ -335,6 +335,24 @@ from a reproduction — and is recorded as unanswered rather than guessed.
 - `ff-rdp doctor` gained a `daemon_dispatcher` probe: it fails when the dispatcher has exited, or
   has been stuck on one frame for 15 s, and warns when clients have been dropped on write.
 
+### The closing sweep
+
+```text
+FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo run -p xtask -- live-sweep
+LIVE_SWEEP_SUMMARY executed=326 skipped=0 preexisting=0 vanished=0 launch_timeout=0 timed_out=1 total=327
+```
+
+Two non-green rows, neither of them this branch's (see the PR's `## Carry-over`):
+`live_screenshot_shim::live_screenshot_unchanged_after_shim` FAILED on Firefox 155's changed
+`drawSnapshot` signature — already filed as
+[[iteration-257-firefox-155-drawsnapshot-dictionary-arg]] — and
+`live_158_launch_lifecycle::live_158_launch_survives_contended_bind` was killed by the watchdog
+at 300 s of silence, the recurrence [[iteration-247-live-158-contended-bind-hang-diagnosis]] is
+waiting for (recorded there). Both were re-run in isolation immediately afterwards: 158 passed,
+the screenshot test failed identically. The CLI tier's own `test result:` line never printed
+because the watchdog killed the phase, so `passed + failed` cannot be reconciled against
+`executed` for that tier; every test in it other than `live_158` did report a verdict in the log.
+
 ### Notes on the plan's premises
 
 - **Theme A's premise was half wrong.** `tracing` output *does* reach `~/.ff-rdp/daemon.log`
