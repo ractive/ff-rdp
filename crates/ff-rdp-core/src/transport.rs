@@ -2345,6 +2345,87 @@ mod tests {
     use std::io::Write as IoWrite;
     use std::net::TcpListener;
 
+    /// iter-240: a write that stops **mid-frame** must be reported as a
+    /// desynchronisation, not as a retryable timeout.
+    ///
+    /// Every socket this crate opens carries `SO_SNDTIMEO` (set from
+    /// `--timeout` in `connect_raw`), and `write_all` on a timed-out socket
+    /// returns `TimedOut` having already pushed an unknown number of bytes.
+    /// That truncated stump on the wire is what made the daemon's framer resume
+    /// inside a payload and report `unexpected byte 0x3d in length prefix`
+    /// (iteration 224) — and because the old mapping produced
+    /// `ProtocolError::Timeout`, which `is_transient()` calls retryable, a
+    /// retry could append a second copy of the frame after it.
+    #[test]
+    fn partial_frame_write_is_reported_as_desynchronised() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        // The peer connects and then never reads, so the send window fills.
+        let peer = TcpStream::connect(addr).expect("connect");
+        let (server, _) = listener.accept().expect("accept");
+        server
+            .set_write_timeout(Some(Duration::from_millis(200)))
+            .expect("write timeout");
+        let mut writer = FramedWriter::from_stream(server);
+
+        // One frame far larger than any socket buffer: the first `write` moves
+        // bytes, the next blocks and hits the deadline.
+        let body = format!(r#"{{"pad":"{}"}}"#, "x".repeat(16 * 1024 * 1024));
+        let err = writer
+            .send_raw(&body)
+            .expect_err("a frame this large cannot fit a stalled send window");
+
+        match &err {
+            ProtocolError::FrameWriteDesynchronised {
+                written,
+                total,
+                ..
+            } => {
+                assert!(*written > 0, "a desync means bytes reached the wire");
+                assert!(
+                    written < total,
+                    "a desync means the frame was left incomplete ({written} of {total})"
+                );
+            }
+            other => panic!("expected FrameWriteDesynchronised, got {other:?}"),
+        }
+        assert!(
+            !err.is_transient(),
+            "a half-written frame must never be retried — the retry lands on top of the stump"
+        );
+
+        // The connection is shut down, so nothing can write a *second* frame
+        // after the truncated one.
+        assert!(
+            writer.send_raw("{}").is_err(),
+            "the desynchronised connection must refuse further frames"
+        );
+
+        drop(peer);
+    }
+
+    /// A write that fails before moving a single byte leaves the stream aligned
+    /// and stays retryable.
+    #[test]
+    fn write_failing_at_offset_zero_is_not_a_desync() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let peer = TcpStream::connect(addr).expect("connect");
+        let (server, _) = listener.accept().expect("accept");
+        // Both ends closed: the very first write fails outright.
+        drop(peer);
+        server
+            .shutdown(std::net::Shutdown::Both)
+            .expect("shutdown");
+        let mut writer = FramedWriter::from_stream(server);
+
+        let err = writer.send_raw(r#"{"a":1}"#).expect_err("closed socket");
+        assert!(
+            !matches!(err, ProtocolError::FrameWriteDesynchronised { .. }),
+            "nothing was written, so the stream is still aligned: {err:?}"
+        );
+    }
+
     fn make_transport_pair() -> (RdpTransport, TcpStream) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();

@@ -533,6 +533,22 @@ fn open_log_file(path: &Path) -> Result<File> {
 // Daemon spawning
 // ---------------------------------------------------------------------------
 
+/// The tracing directive an autostarted daemon should run with (iter-240).
+///
+/// Published by `init_tracing` when the caller passed `--log-level`, consumed
+/// by [`spawn_daemon`] as the child's `RUST_LOG`.  A process-global rather than
+/// a parameter threaded through eight call frames, matching the existing
+/// `error::remember_socket_timeout_ms` precedent.
+static DAEMON_LOG_DIRECTIVE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Record the tracing directive to hand to an autostarted daemon.
+///
+/// Called once, from `init_tracing`, before any daemon can be spawned.  A
+/// second call is ignored — the directive cannot change within one invocation.
+pub(crate) fn remember_daemon_log_directive(directive: String) {
+    let _ = DAEMON_LOG_DIRECTIVE.set(directive);
+}
+
 /// Spawn the daemon as a fully detached background process.
 ///
 /// The child process runs:
@@ -572,6 +588,17 @@ pub fn spawn_daemon(
     .stdout(log_file)
     .stderr(stderr_file)
     .stdin(Stdio::null());
+
+    // iter-240 Part A Theme A: `--log-level` on the invocation that autostarts
+    // the daemon now configures the daemon too, by way of the child's
+    // `RUST_LOG`.  Without this the flag reached only the CLI process, and
+    // `~/.ff-rdp/daemon.log` held nothing but the handful of `eprintln!` lines
+    // — which is why iteration 224 could see *that* the daemon abandoned a
+    // client but not the frames either side of it.  An inherited `RUST_LOG`
+    // still works and is not overridden here unless `--log-level` was given.
+    if let Some(directive) = DAEMON_LOG_DIRECTIVE.get() {
+        cmd.env("RUST_LOG", directive);
+    }
 
     #[cfg(unix)]
     {

@@ -104,8 +104,17 @@ impl ClientWriter {
     /// leaves the writer working exactly as before rather than failing the
     /// connection outright.
     pub(crate) fn new(stream: TcpStream) -> Self {
+        Self::with_deadline(stream, CLIENT_WRITE_DEADLINE)
+    }
+
+    /// [`ClientWriter::new`] with an explicit deadline.
+    ///
+    /// Production always uses [`CLIENT_WRITE_DEADLINE`]; tests that need to
+    /// observe the drop-on-deadline behaviour pass a short one rather than
+    /// spending ten seconds proving it.
+    pub(crate) fn with_deadline(stream: TcpStream, deadline: Duration) -> Self {
         let writer = FramedWriter::from_stream(stream);
-        let _ = writer.set_write_timeout(Some(CLIENT_WRITE_DEADLINE));
+        let _ = writer.set_write_timeout(Some(deadline));
         Self {
             inner: Arc::new(Mutex::new(Inner {
                 writer,
@@ -285,15 +294,8 @@ mod tests {
     #[test]
     fn non_reading_client_fails_within_the_deadline() {
         let (server, client) = socket_pair();
-        let writer = ClientWriter::new(server);
         // Shrink the deadline for the test — the production constant is 10 s.
-        writer
-            .inner
-            .lock()
-            .expect("lock")
-            .writer
-            .set_write_timeout(Some(Duration::from_millis(250)))
-            .expect("set write timeout");
+        let writer = ClientWriter::with_deadline(server, Duration::from_millis(250));
 
         // Never read from `client`; keep it alive so the socket is not reset.
         let body = format!(r#"{{"pad":"{}"}}"#, "x".repeat(200_000));

@@ -4912,6 +4912,172 @@ mod tests {
         client_side
     }
 
+    /// iter-240 Part A, candidate 2: a client that pipelines its auth frame and
+    /// its first request into **one** TCP segment must have both honoured.
+    ///
+    /// `handle_client` used to read the auth frame through a throwaway
+    /// `FramedReader` (a `BufReader`) built over a `try_clone` of the socket,
+    /// then build a second one for the request loop. Whatever the first reader
+    /// buffered past the auth frame went out of scope with it — so the request
+    /// bytes were silently eaten, and the loop's reader resumed *inside* a
+    /// later frame and reported `invalid packet: unexpected byte 0x3d in
+    /// length prefix`, the line iteration 224 recorded and could not explain.
+    /// The window was closed only by the CLI's convention of waiting for the
+    /// greeting; this test closes it by construction.
+    ///
+    /// Pre-fix this hangs at the `status` read and fails on the timeout.
+    #[test]
+    fn unit_240_pipelined_auth_and_request_is_not_dropped() {
+        use std::io::Write as _;
+
+        let mut client = spawn_handle_client_with_token("correct-token");
+        // One write: auth frame immediately followed by a daemon-local request.
+        let mut pipelined =
+            ff_rdp_core::transport::encode_frame(r#"{"auth":"correct-token"}"#);
+        pipelined.push_str(&ff_rdp_core::transport::encode_frame(
+            r#"{"to":"daemon","type":"status"}"#,
+        ));
+        client
+            .write_all(pipelined.as_bytes())
+            .expect("write auth + request");
+
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("set timeout");
+        let mut reader = FramedReader::from_stream(client);
+        let greeting = reader.recv().expect("greeting");
+        assert_eq!(greeting["applicationType"], "browser");
+        let status = reader
+            .recv()
+            .expect("the pipelined status request must still be answered");
+        assert_eq!(status["from"], "daemon");
+        assert!(
+            status.get("uptime_secs").is_some(),
+            "expected a status response, got {status}"
+        );
+    }
+
+    /// iter-240 Part B: a client that never reads must not stop the dispatcher
+    /// from serving another client.
+    ///
+    /// `forward_to_rpc_client` runs on the single event-dispatcher thread and
+    /// had no write deadline, so one CLI process that stopped draining its
+    /// socket parked that thread in `write_all` forever — and with it every
+    /// other client, current and future, until the daemon was restarted. The
+    /// daemon logged nothing across the wedge, which is exactly what made
+    /// iteration 241 unfixable from the outside.
+    #[test]
+    fn unit_240_non_reading_client_does_not_stop_the_dispatcher() {
+        use std::io::Read as _;
+
+        let state = Arc::new(test_state());
+
+        // A client that never reads a byte. Its socket stays open, so writes
+        // block on a full receive window rather than failing fast.
+        let (stuck_server, _stuck_client) = loopback_pair();
+        let stuck_id: ClientId = 1;
+        *state.rpc_writer.lock().expect("lock") = Some((
+            stuck_id,
+            ClientWriter::with_deadline(stuck_server, Duration::from_millis(250)),
+            Instant::now(),
+        ));
+
+        // A healthy subscriber that does read.
+        let (good_server, mut good_client) = loopback_pair();
+        let good_id: ClientId = 2;
+        state
+            .stream_subs
+            .lock()
+            .expect("lock")
+            .push(StreamSubscriber {
+                id: good_id,
+                writer: ClientWriter::new(good_server),
+                types: HashSet::from(["console-message".to_owned()]),
+            });
+
+        // One Firefox reply, far larger than any socket buffer, aimed at the
+        // stuck client.
+        let big = json!({ "from": "server1.conn0.consoleActor1", "pad": "x".repeat(8 * 1024 * 1024) });
+        let started = Instant::now();
+        forward_to_rpc_client(&state, &big);
+        let blocked_for = started.elapsed();
+
+        assert!(
+            blocked_for < Duration::from_secs(5),
+            "the dispatcher must be released by the write deadline, blocked for {blocked_for:?}"
+        );
+        assert!(
+            state.rpc_writer.lock().expect("lock").is_none(),
+            "the stuck client must be dropped from the RPC slot"
+        );
+        assert_eq!(
+            state.clients_dropped_on_write.load(Ordering::Relaxed),
+            1,
+            "the drop must be counted so `daemon status` can report it"
+        );
+
+        // The other client is still served, promptly.
+        dispatch_console_push_event(
+            &state,
+            &json!({ "type": "consoleAPICall", "message": "hello" }),
+        );
+        good_client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("set timeout");
+        let mut buf = [0u8; 256];
+        let n = good_client.read(&mut buf).expect("healthy client is served");
+        assert!(n > 0, "the healthy subscriber must still receive its event");
+    }
+
+    /// `daemon status` must expose enough to tell a wedged daemon from a slow
+    /// page (iter-240 Part B Theme C).
+    #[test]
+    fn unit_240_status_reports_dispatcher_and_rpc_slot_health() {
+        let state = Arc::new(test_state());
+        let idle = handle_daemon_message(
+            &state,
+            &json!({"to": "daemon", "type": "status"}),
+            TEST_CLIENT_ID,
+            None,
+        );
+        assert_eq!(idle["dispatcher"]["in_flight"], 0);
+        assert_eq!(idle["dispatcher"]["alive"], false);
+        assert_eq!(
+            idle["dispatcher"]["current_frame_age_ms"],
+            Value::Null,
+            "an idle dispatcher must not report a frame age"
+        );
+        assert_eq!(idle["rpc_slot"]["owner"], Value::Null);
+        assert_eq!(idle["clients_dropped_on_write"], 0);
+
+        // A dispatch in flight, and a claimed RPC slot.
+        state.dispatch_started(&json!({"type": "target-available-form"}));
+        *state.rpc_writer.lock().expect("lock") =
+            Some((7, dummy_client_writer(), Instant::now()));
+        let busy = handle_daemon_message(
+            &state,
+            &json!({"to": "daemon", "type": "status"}),
+            TEST_CLIENT_ID,
+            None,
+        );
+        assert_eq!(busy["dispatcher"]["in_flight"], 1);
+        assert_eq!(busy["dispatcher"]["last_frame_kind"], "target-available-form");
+        assert!(
+            busy["dispatcher"]["current_frame_age_ms"].is_number(),
+            "an in-flight dispatch must report how long it has been running"
+        );
+        assert_eq!(busy["rpc_slot"]["owner"], 7);
+
+        state.dispatch_finished();
+        let done = handle_daemon_message(
+            &state,
+            &json!({"to": "daemon", "type": "status"}),
+            TEST_CLIENT_ID,
+            None,
+        );
+        assert_eq!(done["dispatcher"]["in_flight"], 0);
+    }
+
     #[test]
     fn handle_client_rejects_wrong_auth_token() {
         use std::io::{Read as _, Write as _};

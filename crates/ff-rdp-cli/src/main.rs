@@ -146,9 +146,23 @@ fn init_tracing(cli: &Cli) {
             LogLevel::Warn => "warn".to_owned(),
             LogLevel::Error => "error".to_owned(),
         };
+        // iter-240 Part A Theme A: hand the same directive to any daemon this
+        // invocation autostarts, as `RUST_LOG` in the child's environment.
+        //
+        // `--log-level trace` used to configure *this* process only. The
+        // daemon is a separate `ff-rdp _daemon` process, and it inherits the
+        // parent's environment — so a daemon started by a plain `ff-rdp
+        // navigate` logged nothing, and re-running with `--log-level trace`
+        // produced a fully-traced CLI talking to a silent daemon that was
+        // already running from before. `RUST_LOG=trace ff-rdp …` did work, by
+        // accident of inheritance, which is how iteration 224 got as far as it
+        // did; making the flag do the same thing removes the trap.
+        crate::daemon::process::remember_daemon_log_directive(directive.clone());
         EnvFilter::new(directive)
     } else {
-        // Fall back to RUST_LOG if set; otherwise suppress everything.
+        // Fall back to RUST_LOG if set; otherwise suppress everything.  A set
+        // `RUST_LOG` reaches an autostarted daemon through plain environment
+        // inheritance, so nothing extra is needed on this path.
         EnvFilter::from_default_env()
     };
 
