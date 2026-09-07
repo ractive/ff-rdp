@@ -152,8 +152,26 @@ which dominates the iteration loop's wall-clock cost.
   become a strict duplicate of `tests/e2e/profiles.rs::profiles_prune_is_scoped_to_ff_rdp_home` and
   was deleted rather than kept as dead weight in the live tier (found in review of this PR). The
   whole-suite guarantee it used to stand in for — no live-owned managed profile survives in the
-  *real* per-user root after a sweep completes — is not asserted anywhere as of this iteration; see
+  *real* per-user root after a sweep completes — is asserted by the sweep itself since iter-245;
+  see the `LIVE_SWEEP_PROFILES` bullet below and
   `kb/iterations/iteration-245-live-sweep-lost-its-real-root-orphan-guarantee.md`.
+- **`LIVE_SWEEP_PROFILES leaked=N unattributed=U root=<path>` is a second summary line**
+  (iter-245). After **each target's phase 1** — the point at which every self-launching test in
+  that target has either cleaned up or been counted as a failure — the sweep scans the *real*
+  per-user profile root (`$FF_RDP_HOME` if exported, else the same `dirs` chain
+  `util::profile_dir::resolve_profile_root` walks) for `ff-rdp-profile-*` directories whose
+  `.ff-rdp-owner-pid` names a process that is still alive. Two signals must both hold before one
+  is called a leak, because a false accusation would fail an otherwise-green 40-minute run: the
+  directory was **not** there when the sweep started (a browser you already had open is excused by
+  name), and it carries an `.ff-rdp-owner-test` marker, which only the live harness ever writes
+  (`tests/common/mod.rs::ff_rdp_launch_command`). Those are reported with directory, PID and
+  owning test, and **fail the sweep**. A new live-owned profile with no owner-test marker — most
+  likely your own `ff-rdp launch` in another terminal — is printed as a note and counted under
+  `unattributed`, which never affects the verdict. The one residual false positive is a *second*
+  concurrent live sweep on the same machine; that configuration is unsupported for older reasons
+  too (the watchdog's reaper kills managed browsers machine-wide), and the failure message says
+  so. This is a **separate line on purpose**: every field of `LIVE_SWEEP_SUMMARY` counts a test
+  and `total=T` conserves them, and a leaked profile is not a test.
 - **`preexisting=K` is the third tier** (iter-158 Theme F). The `ff-rdp-core` live tests never
   launch Firefox — they connect to one somebody else started on the fixed default port 6000
   (`support::recording::firefox_port()`). Pre-158 `live-sweep` neither provided that instance nor
@@ -202,6 +220,15 @@ which dominates the iteration loop's wall-clock cost.
   command line, and the sweep exits non-zero *with* a summary. **`timed_out` always fails the
   sweep.** Pass `--phase-stall-secs 0` to restore the pre-197 wait-forever behaviour when
   attaching a debugger; never in an unattended run.
+- **One hang gets its stack captured before the kill** (iter-245). The watchdog that makes a hang
+  *visible* is also what destroys the evidence for it, so when — and only when — the stalled set
+  names `live_158_launch_survives_contended_bind` (the test that actually hung, on 2026-08-23, and
+  has never reproduced since), the sweep samples the hung process tree before signalling it:
+  `sample(1)` on macOS, `gdb -batch -ex 'thread apply all bt'` on Linux, nothing on Windows. The
+  files land in `target/live-sweep/` and their paths are printed in the same `WATCHDOG` report
+  that names the unreported test. Deliberately scoped to one name rather than made a general
+  facility: an ordinary timeout on an unrelated test must not start shelling out to a debugger.
+  Widen it when a second test demonstrates the same failure shape, not before.
 - **A live test that cannot launch Firefox FAILS** (iter-158 Theme D). `LiveFirefox::
   headless_on_random_port` returns the launcher directly and panics with the launch exit status
   and its captured stdout *and* stderr; there is no `Option` to `else { return; }` on, and the

@@ -1637,10 +1637,10 @@ pub fn scan_owned_profiles(
 /// What a live-owned profile found in the real root after a phase means.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct OrphanReport {
-    /// Live-owned, absent from the pre-sweep baseline, and carrying an
-    /// owner-test marker — i.e. a live test's Firefox that outlived it. This
-    /// is the guarantee iteration 146 made loud and iteration 188 accidentally
-    /// dropped, and it fails the sweep.
+    /// Live-owned and carrying an owner-test marker — i.e. a live test's
+    /// Firefox that outlived the test that asked for it. This is the guarantee
+    /// iteration 146 made loud and iteration 188 accidentally dropped, and it
+    /// fails the sweep.
     pub leaked: Vec<OwnedProfile>,
     /// Live-owned and new since the sweep started, but with no owner-test
     /// marker, so nothing ties it to the live tier. The likeliest owner is a
@@ -1656,28 +1656,34 @@ impl OrphanReport {
     }
 }
 
-/// Split the profiles found after a phase into "this sweep leaked it" and
-/// "somebody else's", against the `baseline` of directory names that were
-/// already live-owned before the sweep started.
+/// Split the profiles found after a phase into "a live test leaked it" and
+/// "somebody else's business", skipping any directory named in `excused`.
 ///
-/// Two independent signals are required before the sweep will call something
-/// its own leak, because a false accusation here fails an otherwise-green
-/// 40-minute run:
+/// **The owner-test marker is the discriminator, not the clock.** Only the
+/// live harness sets `FF_RDP_LIVE_TEST_NAME` (see [`OWNER_TEST_MARKER`]), so
+/// its presence is positive proof that a *live test* asked for this browser,
+/// and a live test's browser that is still running when its tier's phase 1 has
+/// ended is a leak whether it was launched by this sweep or by a previous one
+/// that leaked it — in both cases a real Firefox is holding a real profile
+/// nothing owns any more, and both are actionable in the same way. That answers
+/// the plan's second question (`false positives against a developer's own
+/// interactive session`) without a heuristic: an interactive `ff-rdp launch`
+/// never carries the marker and can therefore never be called a leak.
 ///
-/// 1. **New since the baseline.** A browser the operator already had open when
-///    the sweep started is in the baseline by name and is never reported.
-/// 2. **Carries an owner-test marker.** Only the live harness sets
-///    `FF_RDP_LIVE_TEST_NAME` (see [`OWNER_TEST_MARKER`]), so this separates a
-///    live test's launch from an interactive one started mid-sweep.
+/// A live-owned profile with **no** marker is where the clock does come in:
+/// nothing ties it to the live tier, so it is reported only when it appeared
+/// during the sweep (i.e. is not in `excused`, which the caller seeds with the
+/// unmarked profiles that were already there), and it never affects the
+/// verdict.
 ///
 /// The residual false positive is a *second concurrent live sweep* on the same
-/// machine, whose profiles would satisfy both. That configuration is already
-/// unsupported for older reasons — [`reap_managed_firefox`] kills managed
-/// browsers machine-wide, and the `preexisting` tier assumes one client on
-/// port 6000 — so it is called out in the failure message rather than designed
-/// around.
+/// machine, whose profiles would carry the marker legitimately. That
+/// configuration is already unsupported for older reasons —
+/// [`reap_managed_firefox`] kills managed browsers machine-wide, and the
+/// `preexisting` tier assumes one client on port 6000 — so it is called out in
+/// the failure message rather than designed around.
 pub fn classify_orphans(
-    baseline: &std::collections::BTreeSet<String>,
+    excused: &std::collections::BTreeSet<String>,
     found: Vec<OwnedProfile>,
 ) -> OrphanReport {
     let mut report = OrphanReport::default();
@@ -1687,7 +1693,7 @@ pub fn classify_orphans(
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        if baseline.contains(&name) {
+        if excused.contains(&name) {
             continue;
         }
         if profile.spawning_test.is_some() {
@@ -1699,13 +1705,20 @@ pub fn classify_orphans(
     report
 }
 
-/// Directory names of every live-owned managed profile in `root`, for use as
-/// [`classify_orphans`]' baseline.
-fn baseline_profile_names(root: &Path) -> std::collections::BTreeSet<String> {
+/// Directory names of the live-owned managed profiles in `root` that were
+/// there *before* the sweep started and carry no owner-test marker — i.e. the
+/// browsers the operator already had running, which are never this sweep's
+/// business and seed [`classify_orphans`]' `excused` set.
+///
+/// Deliberately does **not** excuse a pre-existing profile that *does* carry
+/// an owner-test marker: that is a live test's browser still alive before a
+/// single test of this sweep has run, which is a leak somebody should hear
+/// about rather than a state to normalise.
+fn preexisting_unmarked_names(root: &Path) -> std::collections::BTreeSet<String> {
     let Some(listing) = process_listing() else {
-        // No process table means no liveness grading, so the safest baseline
-        // is "everything currently there was already there" — every existing
-        // directory is excused, and only genuinely new ones can be reported.
+        // No process table means no liveness grading at all, so nothing can be
+        // proved either way: excuse every managed directory currently present
+        // and report only ones that appear later.
         return std::fs::read_dir(root)
             .into_iter()
             .flatten()
@@ -1716,6 +1729,7 @@ fn baseline_profile_names(root: &Path) -> std::collections::BTreeSet<String> {
     };
     scan_owned_profiles(root, &pids_in_listing(&listing))
         .into_iter()
+        .filter(|p| p.spawning_test.is_none())
         .filter_map(|p| p.dir.file_name().map(|n| n.to_string_lossy().into_owned()))
         .collect()
 }
@@ -1925,12 +1939,15 @@ pub fn run(args: Args) -> Result<()> {
     let mut totals = SweepSummary::default();
     let mut overall_ok = true;
 
-    // iter-245 Part A. Snapshot what is already live-owned in the real profile
-    // root before a single test runs, so a browser the operator had open when
-    // the sweep started is never mistaken for something the sweep leaked.
+    // iter-245 Part A. Note the browsers the operator already had running in
+    // the real profile root before a single test ran, so an interactive
+    // session of theirs is never mistaken for something the live tier left
+    // behind. A *marked* profile (one a live test launched) is deliberately
+    // not excused even if it predates the sweep — see
+    // [`preexisting_unmarked_names`].
     let real_root = real_profile_root();
-    let mut baseline = match &real_root {
-        Some(root) if !args.dry_run => baseline_profile_names(root),
+    let mut excused = match &real_root {
+        Some(root) if !args.dry_run => preexisting_unmarked_names(root),
         _ => std::collections::BTreeSet::new(),
     };
     let mut leaked_total = 0usize;
@@ -2152,7 +2169,7 @@ pub fn run(args: Args) -> Result<()> {
         {
             let live = process_listing().map(|l| pids_in_listing(&l));
             let found = live.map_or_else(Vec::new, |pids| scan_owned_profiles(root, &pids));
-            let report = classify_orphans(&baseline, found);
+            let report = classify_orphans(&excused, found);
             if report.is_clean() {
                 // Said out loud on the happy path too: a guarantee nobody can
                 // see being checked is how the pre-188 version of this became
@@ -2193,11 +2210,11 @@ pub fn run(args: Args) -> Result<()> {
             if !report.leaked.is_empty() {
                 overall_ok = false;
             }
-            // Fold everything just reported into the baseline so the next
+            // Fold everything just reported into the excused set so the next
             // target does not report the same directory a second time.
             for profile in report.leaked.into_iter().chain(report.unattributed) {
                 if let Some(name) = profile.dir.file_name() {
-                    baseline.insert(name.to_string_lossy().into_owned());
+                    excused.insert(name.to_string_lossy().into_owned());
                 }
             }
         }
@@ -3571,22 +3588,50 @@ not-a-process-line
     }
 
     /// The false positive the plan names explicitly: a browser the operator
-    /// already had open when the sweep started is somebody else's business.
+    /// already had open when the sweep started is somebody else's business,
+    /// and [`preexisting_unmarked_names`] is what excuses it.
     #[test]
-    fn iter_245_a_profile_present_before_the_sweep_is_never_reported() {
+    fn iter_245_an_interactive_browser_open_before_the_sweep_is_never_reported() {
         let tmp = tempfile::TempDir::new().expect("tempdir");
-        seed_profile(tmp.path(), "ff-rdp-profile-cccccccccccccccc", 77, Some("t"));
+        // No owner-test marker: this is what a developer's own `ff-rdp launch`
+        // leaves behind.
+        seed_profile(tmp.path(), "ff-rdp-profile-cccccccccccccccc", 77, None);
 
-        let baseline = baseline_names(&["ff-rdp-profile-cccccccccccccccc"]);
+        let excused = name_set(&["ff-rdp-profile-cccccccccccccccc"]);
         let found = scan_owned_profiles(tmp.path(), &pid_set(&[77]));
         assert_eq!(found.len(), 1, "it is still found by the scan");
         assert!(
-            classify_orphans(&baseline, found).is_clean(),
-            "…and still excused, because it predates the sweep"
+            classify_orphans(&excused, found).is_clean(),
+            "…and still excused, because it predates the sweep and names no test"
         );
     }
 
-    fn baseline_names(names: &[&str]) -> std::collections::BTreeSet<String> {
+    /// …but the *marker* leads, not the clock: a live test's browser that is
+    /// already alive when the sweep starts is a leak somebody should hear
+    /// about, not a state to normalise. This is the case the plan's
+    /// `dogfood_path` walks through by hand.
+    #[test]
+    fn iter_245_a_test_owned_profile_is_reported_even_when_it_predates_the_sweep() {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        seed_profile(
+            tmp.path(),
+            "ff-rdp-profile-ffffffffffffffff",
+            77,
+            Some("live_96_profile_cleanup::live_96_something"),
+        );
+
+        let excused = preexisting_unmarked_names(tmp.path());
+        assert!(
+            excused.is_empty(),
+            "a marked profile is never folded into the excused set: {excused:?}"
+        );
+        let found = scan_owned_profiles(tmp.path(), &pid_set(&[77]));
+        let report = classify_orphans(&excused, found);
+        assert_eq!(report.leaked.len(), 1);
+        assert!(report.leaked[0].describe().contains("live_96_something"));
+    }
+
+    fn name_set(names: &[&str]) -> std::collections::BTreeSet<String> {
         names.iter().map(|n| (*n).to_owned()).collect()
     }
 
