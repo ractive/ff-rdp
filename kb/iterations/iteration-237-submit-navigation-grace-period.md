@@ -2,7 +2,7 @@
 title: "Iteration 237: act-and-see timing: type --submit under-reports navigated; click not-found waits the full --timeout"
 type: iteration
 date: 2026-08-29
-status: in-progress
+status: done
 branch: iter-237/submit-navigation-grace-period
 depends_on: [210]
 first_call_sites:
