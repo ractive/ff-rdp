@@ -297,10 +297,20 @@ budget the fix deliberately keeps, not slack left on the table.
       one-line registration in `tests/live/main.rs`. See the live-sweep line in the PR body for
       the corpus-wide result.]
 - [ ] `cargo run -p xtask -- live-sweep` clean with both env gates set
-      [2026-09-07: see the PR body — the summary line, its gates and its non-green rows are
-      recorded there and each non-green row carries a carry-over disposition. Left unticked here
-      rather than pre-ticked: the sweep is the one AC whose result this plan cannot state until
-      the run it describes has finished.]
+      [2026-09-07: **not met, and not reworded to match what happened.** The run:
+      `FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1` →
+      `LIVE_SWEEP_SUMMARY executed=325 skipped=0 preexisting=0 vanished=0 launch_timeout=0
+      timed_out=0 total=325`, CLI tier `307 passed; 9 failed` (307 + 9 + the 9 across the four
+      non-CLI tiers = 325, so the record reconciles). All five `live_237_*` tests are green.
+      The nine reds are two pre-existing clusters, neither reachable from this diff, each with a
+      row in the PR's `## Carry-over` table and an already-`planned` owner: seven `--full-page`
+      screenshot failures on Firefox 155's `drawSnapshot` signature change
+      ([[iteration-257-firefox-155-drawsnapshot-dictionary-arg]]), and
+      `live_137_consent_accept_via_daemon` + `live_140_frame_error_bounded`, both the daemon's
+      `live_target_count: 0` under sweep load
+      ([[iteration-246-sweep-load-misclassification]] Part D, which absorbed
+      [[iteration-251-live-tests-red-only-under-concurrency]]). The AC asked for a *clean* sweep;
+      the sweep was not clean, so the box stays empty.]
 - [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean. (covers both parts)
       [2026-09-07: all three exit 0 on `stable`; CI's own run is the authority per CLAUDE.md's
       toolchain-skew note.]
