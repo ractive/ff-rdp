@@ -18,6 +18,19 @@
 //! handles — but never auto-starts one, because it runs on every agent session
 //! start and a multi-second daemon spawn hidden behind a bare command would be
 //! a nasty surprise.
+//!
+//! ## One connection (iter-239)
+//!
+//! For the same reason it does not spawn a daemon, it does not connect twice.
+//! Until iter-239 it did: one connect listed the tabs and a second, independent
+//! one attached to the focused tab for the `page` block — two TCP round trips
+//! and two RDP handshakes on the command the `SessionStart` hook runs every
+//! session. [`connect_once`] now does both over
+//! [`super::connect_tab::connect_and_list_tabs`], and the registry entry the
+//! `daemon` block already read is what picks the route, so the daemon registry
+//! is read once too. This changed no output: `unit_239_home_view_output_unchanged_by_single_connect`
+//! pins the payload and `e2e_239_home_with_a_page_opens_one_connection` pins
+//! the count.
 
 use std::fmt::Write as _;
 
@@ -1008,8 +1021,7 @@ mod tests {
 
     /// The `listTabs` reply this crate recorded from a real Firefox — the
     /// tab list the home view's `tabs` block is a projection of.
-    const RECORDED_LIST_TABS: &str =
-        include_str!("../../tests/fixtures/list_tabs_response.json");
+    const RECORDED_LIST_TABS: &str = include_str!("../../tests/fixtures/list_tabs_response.json");
 
     /// AC `home_view_output_unchanged_by_single_connect`.
     ///

@@ -307,7 +307,11 @@ mod single_connect {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
-            let reply = match request.get("type").and_then(Value::as_str).unwrap_or_default() {
+            let reply = match request
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+            {
                 "listTabs" => serde_json::from_str(LIST_TABS_REPLY).expect("recorded listTabs"),
                 "getTarget" => {
                     let mut reply: Value =

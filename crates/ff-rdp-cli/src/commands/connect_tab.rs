@@ -815,7 +815,10 @@ mod tests {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
-            let kind = request.get("type").and_then(Value::as_str).unwrap_or_default();
+            let kind = request
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
 
             let reply = match kind {
                 "listTabs" if list_tabs_ok => {
@@ -848,10 +851,9 @@ mod tests {
         let mock = MockFirefox::start(true);
         let cli = mock.cli(&[]);
 
-        let listing =
-            connect_and_list_tabs(&cli, TabListRouting::Direct).unwrap_or_else(|e| {
-                panic!("connect_and_list_tabs: {}", e.into_app_error());
-            });
+        let listing = connect_and_list_tabs(&cli, TabListRouting::Direct).unwrap_or_else(|e| {
+            panic!("connect_and_list_tabs: {}", e.into_app_error());
+        });
 
         assert_eq!(listing.greeting_version(), Some(143));
         let urls: Vec<&str> = listing.tabs().iter().map(|t| t.url.as_str()).collect();
