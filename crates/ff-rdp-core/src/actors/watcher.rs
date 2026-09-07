@@ -1880,8 +1880,92 @@ mod tests {
     }
 
     #[test]
+    /// AC (iter-252): a `console-message` **resource** carries its fields at
+    /// the top level — `resources/console-messages.js:55` hands
+    /// `prepareConsoleMessageForRemote`'s result straight to `onAvailable`,
+    /// with no `message` wrapper. Recorded verbatim off the wire on Firefox
+    /// 155.0.1 while a page logged once per second; before this shape was
+    /// understood the item parsed to `None`, so `console --follow` printed
+    /// nothing even on the daemon route, which received every frame.
+    #[test]
+    fn parse_console_resources_flat_console_message_resource() {
+        let event = json!({
+            "type": "resources-available-array",
+            "from": "server1.conn6.watcher2.process8//windowGlobalTarget2",
+            "array": [["console-message", [{
+                "arguments": ["iter252tick"],
+                "lineNumber": 1,
+                "columnNumber": 32,
+                "filename": "debugger eval code",
+                "level": "log",
+                "timeStamp": 1_788_783_444_398.958_f64,
+                "sourceId": null,
+                "innerWindowID": 17_179_869_186_u64
+            }]]]
+        });
+
+        let resources = parse_console_resources(&event);
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].level, "log");
+        assert_eq!(resources[0].message, "iter252tick");
+        assert_eq!(resources[0].source, "debugger eval code");
+        assert_eq!(resources[0].line, 1);
+        assert_eq!(resources[0].column, 32);
+        assert!((resources[0].timestamp - 1_788_783_444_398.958_f64).abs() < 1.0);
+        assert!(resources[0].resource_id.is_none());
+    }
+
+    /// AC (iter-252): the flat branch runs the same printf substitution the
+    /// nested one does, so `%s` in a resource-shaped message is not left raw.
+    #[test]
+    fn parse_console_resources_flat_shape_applies_printf_substitution() {
+        let event = json!({
+            "array": [["console-message", [{
+                "arguments": ["hello %s, you are %d", "world", 42],
+                "level": "warn",
+                "filename": "app.js",
+                "lineNumber": 7,
+                "columnNumber": 3,
+                "timeStamp": 1000.0
+            }]]]
+        });
+
+        let resources = parse_console_resources(&event);
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].level, "warn");
+        assert_eq!(resources[0].message, "hello world, you are 42");
+    }
+
+    /// AC (iter-252): the nested `message` wrapper still wins when present, so
+    /// the legacy `consoleAPICall` push shape is unaffected by the flat
+    /// fallback. A payload carrying both must parse from the wrapper.
+    #[test]
+    fn parse_console_resources_nested_wrapper_wins_over_flat_fields() {
+        let event = json!({
+            "array": [["console-message", [{
+                "level": "error",
+                "arguments": ["flat"],
+                "message": {
+                    "level": "log",
+                    "arguments": ["nested"],
+                    "filename": "test.js",
+                    "lineNumber": 1,
+                    "columnNumber": 1,
+                    "timeStamp": 1000.0
+                }
+            }]]]
+        });
+
+        let resources = parse_console_resources(&event);
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].message, "nested");
+        assert_eq!(resources[0].level, "log");
+    }
+
+    #[test]
     fn parse_console_resources_skips_items_with_neither_format() {
-        // Items that have neither "message" nor "pageError" are skipped.
+        // Items with no "message", no "pageError" and no top-level "level"
+        // are skipped — `level` is the flat shape's discriminator (iter-252).
         let event = json!({
             "array": [["console-message", [
                 {"resourceType": "console-message"},
