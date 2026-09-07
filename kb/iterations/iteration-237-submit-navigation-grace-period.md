@@ -104,15 +104,33 @@ never completed one probe. Widening the budget moves the boundary and not the ou
 why the plan's Theme A ("a longer, separate grace period *or* thread `--timeout` through") would
 have failed either way.
 
-The fix that actually closes it is a third one the plan did not consider: `navigated_after_refresh`
-asks the question where it can still be answered — drop the torn-down target, re-resolve the tab's
-fronts, read `location.href` off the document that exists now. That is the same recovery
-`--with-page` already performs, which is exactly why `results.page` was right about the destination
-while `results.navigated` was wrong about reaching it. The grace-period change is kept because it
-is independently correct (a submission that commits inside 3 s is now observed by the cheap poll,
-with no extra target round-trip), but it is the belt, not the braces.
+A second thing the plan did not anticipate, found by the `/slower` live fixture rather than by
+Wikipedia: a *single* re-read after the grace period is also too early. A destination that sends
+its first byte 4.5 s in has not committed when the grace period expires, so one look at
+`location.href` sees the origin URL and is wrong for the same reason.
 
-Measured after (same command, same page):
+The fix that actually closes it is a third option the plan did not consider: `navigated_after_refresh`
+asks the question where it can still be answered — drop the torn-down target, re-resolve the tab's
+fronts, and *poll* `location.href` on the actor that now exists for whatever is left of the
+caller's `--timeout`. That is the same recovery `--with-page` already performs, which is exactly
+why `results.page` was right about the destination while `results.navigated` was wrong about
+reaching it. The grace-period change is kept because it is independently correct (a submission that
+commits inside 3 s is answered by the cheap poll, with no extra target round-trip), but it is the
+belt, not the braces.
+
+### The latency the fix would otherwise have cost, and the gate that prevents it
+
+Polling for the remaining `--timeout` is right for a load that is genuinely in flight and badly
+wrong for a form that will never navigate: every AJAX form (a `submit` handler calling
+`preventDefault()`) would have gone from ~600 ms to the full 10 s — a worse regression than the
+bug being fixed. So `build_request_submit_js` now records `e.defaultPrevented` from a one-shot
+`submit` listener and reports it as `cancelled`, and `press_enter_and_submit` enters the extended
+poll only when the submission was *not* cancelled. An uncancelled submit guarantees a
+cross-document load, so waiting for it is warranted; a cancelled one returns immediately.
+`live_237_cancelled_submit_does_not_wait_out_the_timeout` is the regression guard — it fails on
+exactly the 10 s stall that removing the gate produces.
+
+Measured after (same command, same page as the reproduction above):
 
 ```
 {"submitted":true,"navigated":true,"method":"request_submit","heading":"Turing Award"}
@@ -129,7 +147,9 @@ Measured after (same command, same page):
       `live_237_submit_navigated_survives_a_destination_slower_than_the_grace` uses one that
       commits after 4.5 s, past the grace period entirely, so only the refreshed-target re-check
       can answer it. The second test exists because the first would have passed on the grace
-      period alone and would therefore not have caught the real defect.]
+      period alone and would therefore not have caught the real defect. A third,
+      `live_237_cancelled_submit_does_not_wait_out_the_timeout`, guards the latency the fix would
+      otherwise have cost every AJAX form.]
 
 ### Design notes
 

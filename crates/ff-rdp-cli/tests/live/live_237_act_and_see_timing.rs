@@ -286,6 +286,73 @@ fn live_237_submit_navigated_survives_a_destination_slower_than_the_grace() {
     stop_daemon(port);
 }
 
+/// A form whose `submit` handler cancels the submission — the AJAX shape.
+fn cancelled_form_fixture() -> HashMap<String, FixtureRoute> {
+    let mut routes = HashMap::new();
+    routes.insert(
+        "/".to_owned(),
+        FixtureRoute::html(
+            "<!doctype html><title>t237 ajax</title><body>\
+             <h1>Ada Lovelace</h1>\
+             <form action=\"/slower\" method=\"get\">\
+             <input name=\"q\" aria-label=\"Search\">\
+             </form>\
+             <script>document.querySelector('form')\
+             .addEventListener('submit', function(e) { e.preventDefault(); });</script>\
+             </body>",
+        ),
+    );
+    routes
+}
+
+/// The latency guard on the fix above: a submission the page *cancels* must
+/// still answer fast.
+///
+/// `navigated_after_refresh` polls for whatever is left of `--timeout`, which
+/// is right for a load that is genuinely in flight and badly wrong for a form
+/// that will never navigate — every AJAX form would have gone from ~600 ms to
+/// the full 10 s. `build_request_submit_js` reports `preventDefault()` on the
+/// `submit` event as `cancelled`, and `press_enter_and_submit` skips the
+/// extended poll on that signal. This test is what keeps that gate honest: it
+/// fails on a 10 s stall, which is exactly what removing the gate produces.
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_237_cancelled_submit_does_not_wait_out_the_timeout() {
+    if !live_tests_enabled() {
+        eprintln!(
+            "live_237_cancelled_submit_does_not_wait_out_the_timeout: set FF_RDP_LIVE_TESTS=1"
+        );
+        return;
+    }
+    let ff = firefox_with_daemon("live_237_cancelled_submit_does_not_wait_out_the_timeout");
+    let port = ff.port();
+    let Some(server) = FixtureServer::start(cancelled_form_fixture()) else {
+        eprintln!(
+            "live_237_cancelled_submit_does_not_wait_out_the_timeout: no fixture HTTP — skipping"
+        );
+        stop_daemon(port);
+        return;
+    };
+
+    run_json(port, &["navigate", &server.base_url()]);
+    let started = Instant::now();
+    let typed = run_json(port, &["type", "input[name=q]", "lovelace", "--submit"]);
+    let elapsed = started.elapsed();
+
+    assert_eq!(
+        typed["results"]["navigated"], false,
+        "a cancelled submission does not navigate: {typed}"
+    );
+    // Half the budget: the point is "not the whole timeout", and a tight bound
+    // would turn ordinary CI jitter red.
+    assert!(
+        elapsed < Duration::from_millis(CLICK_TIMEOUT_MS / 2),
+        "a cancelled submission must not wait out the {CLICK_TIMEOUT_MS}ms budget, took {elapsed:?}"
+    );
+
+    stop_daemon(port);
+}
+
 // ---------------------------------------------------------------------------
 // Part B — the not-found short-circuit, both sides
 // ---------------------------------------------------------------------------
