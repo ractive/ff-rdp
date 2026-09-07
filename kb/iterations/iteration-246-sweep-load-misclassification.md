@@ -413,9 +413,17 @@ open plan:
 
 | iter-224 sweep 1, 2026-08-31 | default (6) | `live_171_recycled_owner_pid::live_171_recycled_owner_pid_no_longer_reads_as_live` | `would_remove=[]` — the recycled-PID profile read as owned. **Passed alone** immediately afterwards (`--test-threads=1`, 2 passed in 2.86 s), and passed in sweep 2 of the same branch |
 | iter-224 sweep 2, 2026-08-31 | default (6) | `live_160_envelope_honesty::live_160_type_emits_key_events` | **the second signature again**: `daemon did not respond within the timeout after auth — the daemon may be overloaded or the connection is stale` (`error_type: Timeout`), on the `eval JSON.stringify(window.__keys)` step. Passed in sweep 1 of the same branch. This is the `live_165` row's message on a different test, which is evidence the signature belongs to the daemon under load and not to any one test |
+| iter-239 sweep, 2026-09-07 | default (6) | `live_137_…consent_accept_via_daemon` | `daemon never reported live frame targets` — **the first signature, fourth recurrence**. Re-ran both this and the `live_169` row below together at `--test-threads=1` immediately after the sweep: `2 passed` in 10.57 s |
+| iter-239 sweep, 2026-09-07 | default (6) | `live_169_nav_verb_status_parity::live_169_nav_verbs_report_status_daemon` | `status: null, status_reason: "not_observed"` after `elapsed_ms: 21075` — the run-4 row's message to within 58 ms of its `elapsed_ms`, which is the strongest evidence yet that this pair fails together and for one reason. Passed alone (above) |
 
 **No test failed twice in the same way in consecutive runs, and no run repeated another's failure
 set** — but three of the seven failures carry the *same* message, which is the thread to pull.
+
+The iter-239 sweep (2026-09-07) is the first run to repeat an *earlier run's exact failure pair*:
+`live_137_…consent_accept_via_daemon` **and** `live_169_…nav_verbs_report_status_daemon`, the same
+two that failed together in run 4, with `live_169` reporting `elapsed_ms: 21075` against run 4's
+`21017`. Both passed alone straight afterwards. So the pairing is not coincidence, and whatever
+starves the daemon of frame targets is the same thing that keeps `reload` from observing a status.
 
 iter-197 adds a **second** signature to pull on alongside it: `live_165_repeated_const_matches_help`
 failed with `daemon did not respond within the timeout after auth`, which is the daemon going quiet

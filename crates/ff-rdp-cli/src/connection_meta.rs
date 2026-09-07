@@ -170,10 +170,20 @@ fn cached_owner(host: &str, port: u16) -> Option<PortOwner> {
 /// CLI used to reach Firefox. PID and uptime are looked up from the OS port
 /// table on a best-effort basis; missing fields are simply omitted.
 pub fn build(host: &str, port: u16, firefox_version: Option<u32>) -> Value {
+    build_with_version(host, port, firefox_version.or_else(remembered_version))
+}
+
+/// [`build`], with the version already resolved.
+///
+/// Split out so the assembly can be tested without the process-global
+/// `remembered_version` in play: any test that opens a real connection
+/// populates that global, so a test asserting the *absence* of
+/// `firefox_version` cannot go through [`build`] and stay honest about what it
+/// is proving (iter-239 added the first such tests).
+fn build_with_version(host: &str, port: u16, version: Option<u32>) -> Value {
     let mut obj = serde_json::Map::new();
     obj.insert("host".to_string(), Value::String(host.to_owned()));
     obj.insert("port".to_string(), json!(port));
-    let version = firefox_version.or_else(remembered_version);
     if let Some(v) = version {
         obj.insert("firefox_version".to_string(), json!(v));
     }
@@ -256,15 +266,28 @@ mod tests {
         assert_eq!(meta["port"], 6000);
     }
 
+    /// The remembered version is the fallback, not an override: an explicit
+    /// argument always wins.
+    #[test]
+    fn build_prefers_the_explicit_version_over_the_remembered_one() {
+        remember_version(Some(143));
+        let meta = build("127.0.0.1", 6000, Some(149));
+        assert_eq!(meta["firefox_version"], 149);
+    }
+
     #[test]
     fn build_includes_firefox_version_when_known() {
         let meta = build("127.0.0.1", 6000, Some(149));
         assert_eq!(meta["firefox_version"], 149);
     }
 
+    /// Goes through [`build_with_version`] rather than [`build`]: `build`
+    /// consults the process-global `remembered_version`, which any sibling test
+    /// that opens a connection will have set, and a test whose subject is the
+    /// *absence* of the field must not depend on that.
     #[test]
     fn build_omits_firefox_version_when_unknown() {
-        let meta = build("127.0.0.1", 6000, None);
+        let meta = build_with_version("127.0.0.1", 6000, None);
         assert!(meta.get("firefox_version").is_none());
     }
 

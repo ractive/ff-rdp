@@ -386,6 +386,13 @@ fn command_to_step(cmd: &Command, resolved_selector: Option<&str>) -> Option<Ste
 /// All other commands use `connect_and_get_target`, which routes through
 /// the daemon when available or falls back to direct connection.
 ///
+/// The one exception is the home view (bare `ff-rdp`, and the hidden `home`),
+/// which uses `connect_and_list_tabs` instead: it needs the full tab list *and*
+/// an attached target, and getting both from one connection is the point of
+/// iter-239.  It also picks its own route — through a daemon only when the
+/// registry already names a running one, never by starting one
+/// (`kb/decision-log.md` DEC-050).
+///
 /// **Note:** Non-streaming `network` and `console` intentionally use the
 /// daemon path because they drain events the daemon has been buffering in
 /// the background — this is the daemon's primary value proposition for
