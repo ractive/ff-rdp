@@ -1705,6 +1705,60 @@ pub fn classify_orphans(
     report
 }
 
+/// How many times the orphan check re-scans before believing what it found.
+///
+/// **Why a settle loop is not optional.** `LiveFirefox::drop` signals its
+/// Firefox and returns without waiting for the process to actually exit — that
+/// is [[iteration-168-livefirefox-drop-does-not-wait-for-exit]]'s whole
+/// subject. The check runs the instant `run_phase` returns, which is the
+/// instant libtest printed its summary, so the last tests' browsers are
+/// routinely still in the process table with their profile markers intact,
+/// *dying*. Reporting those would make an honest sweep red for a browser that
+/// is already on its way out. This was measured, not imagined: the first real
+/// dual-gate sweep with this check (2026-09-07, 328 tests) reported exactly one
+/// "leak" — `live_target_destroyed_invalidates_registry`'s browser — and it was
+/// gone by the time anyone looked.
+const ORPHAN_SETTLE_ATTEMPTS: usize = 5;
+
+/// Gap between those re-scans. Five attempts × 2 s bounds the extra cost of a
+/// finding at ~10 s, and only when something *was* found — a clean root pays
+/// one scan.
+const ORPHAN_SETTLE_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The profiles from `first` that `second` still reports live-owned, matched on
+/// directory **and** PID.
+///
+/// The PID has to match too: a directory whose owner changed between scans is a
+/// different browser, not the same one persisting.
+pub fn still_owned(first: &[OwnedProfile], second: &[OwnedProfile]) -> Vec<OwnedProfile> {
+    first
+        .iter()
+        .filter(|a| second.iter().any(|b| b.dir == a.dir && b.pid == a.pid))
+        .cloned()
+        .collect()
+}
+
+/// Re-scan until nothing is left or `attempts` are exhausted, and return only
+/// what survived every scan.
+///
+/// Takes the scan as a closure so the settle policy is unit-testable without a
+/// filesystem, a process table or a two-second wait.
+fn settle_owned_profiles(
+    mut scan: impl FnMut() -> Vec<OwnedProfile>,
+    attempts: usize,
+    delay: std::time::Duration,
+) -> Vec<OwnedProfile> {
+    let mut found = scan();
+    for _ in 0..attempts {
+        if found.is_empty() {
+            break;
+        }
+        std::thread::sleep(delay);
+        found = still_owned(&found, &scan());
+    }
+    found
+}
+
 /// Directory names of the live-owned managed profiles in `root` that were
 /// there *before* the sweep started and carry no owner-test marker — i.e. the
 /// browsers the operator already had running, which are never this sweep's
@@ -2167,8 +2221,12 @@ pub fn run(args: Args) -> Result<()> {
         if let Some(root) = &real_root
             && !args.dry_run
         {
-            let live = process_listing().map(|l| pids_in_listing(&l));
-            let found = live.map_or_else(Vec::new, |pids| scan_owned_profiles(root, &pids));
+            let scan = || {
+                process_listing().map_or_else(Vec::new, |l| {
+                    scan_owned_profiles(root, &pids_in_listing(&l))
+                })
+            };
+            let found = settle_owned_profiles(scan, ORPHAN_SETTLE_ATTEMPTS, ORPHAN_SETTLE_DELAY);
             let report = classify_orphans(&excused, found);
             if report.is_clean() {
                 // Said out loud on the happy path too: a guarantee nobody can
@@ -2184,16 +2242,18 @@ pub fn run(args: Args) -> Result<()> {
             }
             for profile in &report.leaked {
                 eprintln!(
-                    "live-sweep: LEAKED PROFILE after -p {} --test {} — {} is still owned by a \
-                     live process in {}. A live test's Firefox outlived the test that launched \
-                     it (iter-146 / iter-168 cleanup guarantee). If a *second* live sweep is \
-                     running on this machine, this is its browser, not a leak — but that \
-                     configuration is unsupported for other reasons too (the watchdog's reaper \
-                     kills managed browsers machine-wide).",
+                    "live-sweep: LEAKED PROFILE after -p {} --test {} — {} was still owned by a \
+                     live process in {} on every one of {ORPHAN_SETTLE_ATTEMPTS} scans over \
+                     {}s. A live test's Firefox outlived the test that launched it (iter-146 / \
+                     iter-168 cleanup guarantee). If a *second* live sweep is running on this \
+                     machine, this is its browser, not a leak — but that configuration is \
+                     unsupported for other reasons too (the watchdog's reaper kills managed \
+                     browsers machine-wide).",
                     target.package,
                     target.test_name,
                     profile.describe(),
-                    root.display()
+                    root.display(),
+                    ORPHAN_SETTLE_ATTEMPTS as u64 * ORPHAN_SETTLE_DELAY.as_secs()
                 );
             }
             for profile in &report.unattributed {
@@ -3633,6 +3693,83 @@ not-a-process-line
 
     fn name_set(names: &[&str]) -> std::collections::BTreeSet<String> {
         names.iter().map(|n| (*n).to_owned()).collect()
+    }
+
+    fn owned(dir: &str, pid: u32, test: Option<&str>) -> OwnedProfile {
+        OwnedProfile {
+            dir: PathBuf::from(dir),
+            pid,
+            spawning_test: test.map(str::to_owned),
+        }
+    }
+
+    /// The false positive the first real dual-gate sweep with this check
+    /// produced (2026-09-07): `LiveFirefox::drop` signals its browser and
+    /// returns without waiting for it to exit (iter-168), so a browser that is
+    /// *dying* is in the process table at the instant the check runs. It must
+    /// not be reported as a leak.
+    #[test]
+    fn iter_245_a_browser_still_exiting_is_not_reported_as_a_leak() {
+        let dying = vec![owned("/root/ff-rdp-profile-a", 1, Some("live_x::t"))];
+        let mut scans = vec![Vec::new(), dying.clone()];
+        let survivors = settle_owned_profiles(
+            || scans.pop().unwrap_or_default(),
+            ORPHAN_SETTLE_ATTEMPTS,
+            std::time::Duration::ZERO,
+        );
+        assert!(
+            survivors.is_empty(),
+            "a profile whose owner is gone by the second scan is a browser on its way \
+             out, not a leak: {survivors:?}"
+        );
+    }
+
+    /// …while one that is there on every scan still is.
+    #[test]
+    fn iter_245_a_browser_that_survives_every_scan_is_still_a_leak() {
+        let leaked = vec![owned("/root/ff-rdp-profile-b", 7, Some("live_y::t"))];
+        let mut scans = 0usize;
+        let survivors = settle_owned_profiles(
+            || {
+                scans += 1;
+                leaked.clone()
+            },
+            ORPHAN_SETTLE_ATTEMPTS,
+            std::time::Duration::ZERO,
+        );
+        assert_eq!(survivors, leaked);
+        assert_eq!(
+            scans,
+            ORPHAN_SETTLE_ATTEMPTS + 1,
+            "one scan plus one per attempt — the loop must not give up early"
+        );
+    }
+
+    /// A clean root pays for exactly one scan: the settle cost is only ever
+    /// spent when something was found.
+    #[test]
+    fn iter_245_a_clean_root_is_scanned_once() {
+        let mut scans = 0usize;
+        let survivors = settle_owned_profiles(
+            || {
+                scans += 1;
+                Vec::new()
+            },
+            ORPHAN_SETTLE_ATTEMPTS,
+            std::time::Duration::from_secs(600),
+        );
+        assert!(survivors.is_empty());
+        assert_eq!(scans, 1, "an empty first scan must not sleep at all");
+    }
+
+    /// A directory whose owner PID changed between scans is a *different*
+    /// browser, so it does not count as the same one persisting.
+    #[test]
+    fn iter_245_still_owned_matches_on_pid_not_just_directory() {
+        let first = vec![owned("/root/ff-rdp-profile-c", 1, Some("live_z::t"))];
+        let recycled = vec![owned("/root/ff-rdp-profile-c", 2, Some("live_z::t"))];
+        assert!(still_owned(&first, &recycled).is_empty());
+        assert_eq!(still_owned(&first, &first), first);
     }
 
     /// A live-owned profile with no owner-test marker cannot be attributed to
