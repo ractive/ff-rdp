@@ -47,6 +47,12 @@ struct ManagedProfileEntry {
     /// age-gated path excludes live-owner entries outright); the prune step
     /// uses it to warn and to populate `removed_live`.
     live_owner: bool,
+    /// iter-242 Theme A: the [`crate::util::profile_dir::OwnerLiveness`] that
+    /// produced `live_owner`, as a stable label. `live_owner` collapses four
+    /// gradings into one boolean, which is why the intermittent "a live
+    /// profile was not reported in `removed_live`" failure had nothing to
+    /// diagnose. Reported per entry in `prune`'s JSON.
+    owner_liveness: &'static str,
     /// iter-151 Theme A: the spawning test's name, if the entry carries an
     /// `.ff-rdp-owner-test` marker (only ever written by the live-test
     /// harness — see `util::profile_dir::SPAWNING_TEST_ENV`). Only populated
@@ -95,6 +101,10 @@ fn scan_managed_profiles(root: &Path) -> Vec<ManagedProfileEntry> {
             // aggregation callers (`profiles list`, doctor) never read it.
             live_owner: false,
             owner_test: None,
+            // Set later by `select_prune_targets`; "unscanned" is never
+            // reported, because only entries that reach the prune paths are
+            // graded and only those are surfaced.
+            owner_liveness: "unscanned",
         });
     }
     out
@@ -184,7 +194,7 @@ pub(crate) fn aggregate_profiles_capped(root: &Path, byte_cap: u64) -> ProfileLi
 /// is treated as "not stale" and excluded — the same conservative default.
 ///
 /// iter-97 Theme B/C: a live owner-PID marker
-/// ([`crate::util::profile_dir::profile_is_owned_by_live_process`]) is a
+/// ([`crate::util::profile_dir::owner_liveness_of`]) is a
 /// positive "still in use" signal consulted *before* the mtime heuristics.
 /// For an age-gated prune (`Some`) a live owner always wins — the entry is
 /// excluded entirely. `--all` (`None`) keeps its documented sharp edge and
@@ -195,8 +205,13 @@ fn select_prune_targets(root: &Path, older_than: Option<Duration>) -> Vec<Manage
     scan_managed_profiles(root)
         .into_iter()
         .filter_map(|mut entry| {
-            let live_owner =
-                crate::util::profile_dir::profile_is_owned_by_live_process(&entry.path);
+            // iter-242 Theme A: grade once and keep the grading. Calling
+            // the keep-or-reclaim boolean for the decision and then
+            // re-reading the markers for the report would let the two
+            // disagree — the very race being diagnosed.
+            let liveness = crate::util::profile_dir::owner_liveness_of(&entry.path);
+            let live_owner = liveness.keeps_profile_alive();
+            entry.owner_liveness = liveness.as_str();
             match older_than {
                 // `--all`: age ignored, but a live owner never silently
                 // vanishes — it is selected *and* flagged so the caller warns.
@@ -246,6 +261,12 @@ pub(crate) struct PruneOutcome {
     /// on the `--all` path — its documented sharp edge — so an operator can
     /// see which still-running sessions `--all` reclaimed out from under.
     pub(crate) removed_live: Vec<String>,
+    /// iter-242 Theme A: `basename -> owner-liveness label` for every
+    /// directory this prune selected, sorted by basename. Populated on both
+    /// the dry-run and the real path, and on both the age-gated and `--all`
+    /// paths — the age-gated path's entries are the ones that survived the
+    /// live-owner filter, so a `live` value here would itself be a bug.
+    pub(crate) owner_liveness: Vec<(String, &'static str)>,
 }
 
 /// Prune managed profile directories under `root`.
@@ -265,6 +286,8 @@ pub(crate) fn prune_profiles(
 ) -> PruneOutcome {
     let targets = select_prune_targets(root, older_than);
 
+    let owner_liveness = owner_liveness_report(&targets);
+
     if dry_run {
         let removed_live = targets
             .iter()
@@ -275,6 +298,7 @@ pub(crate) fn prune_profiles(
             would_remove: targets.into_iter().map(|e| e.basename).collect(),
             removed: Vec::new(),
             removed_live,
+            owner_liveness,
         };
     }
 
@@ -320,7 +344,20 @@ pub(crate) fn prune_profiles(
         would_remove: Vec::new(),
         removed,
         removed_live,
+        owner_liveness,
     }
+}
+
+/// Pair every selected directory's basename with the owner grading
+/// `select_prune_targets` recorded for it, sorted so the report is stable
+/// across runs (iter-242 Theme A).
+fn owner_liveness_report(targets: &[ManagedProfileEntry]) -> Vec<(String, &'static str)> {
+    let mut report: Vec<(String, &'static str)> = targets
+        .iter()
+        .map(|e| (e.basename.clone(), e.owner_liveness))
+        .collect();
+    report.sort_by(|a, b| a.0.cmp(&b.0));
+    report
 }
 
 /// Parse a `--older-than` value: `<N>d`, `<N>h`, `<N>m`, `<N>s`, or a bare
@@ -397,6 +434,15 @@ pub fn run_prune(cli: &Cli, older_than: &str, all: bool, dry_run: bool) -> Resul
         // be) despite a live owner-PID marker. Only ever non-empty under
         // `--all` — the documented no-age-gate escape hatch.
         "removed_live": outcome.removed_live,
+        // iter-242 Theme A: per-selected-directory owner grading
+        // ("live" | "unverified" | "unreadable" | "dead" | "unmarked"), so a
+        // `removed_live` entry that is unexpectedly absent says *why* in the
+        // same output rather than requiring the run to be reproduced.
+        "owner_liveness": outcome
+            .owner_liveness
+            .iter()
+            .map(|(name, grading)| (name.clone(), json!(grading)))
+            .collect::<serde_json::Map<String, serde_json::Value>>(),
         "dry_run": dry_run,
     });
 

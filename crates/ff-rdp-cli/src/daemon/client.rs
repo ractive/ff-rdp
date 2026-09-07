@@ -1113,13 +1113,31 @@ fn stop_daemon_and_build_result_with(
             // now. `cleanup_profile_dir` refuses anything that isn't a
             // ff-rdp-managed dir under `secure_profile_root()`, so a
             // user-supplied `--profile` path is never touched here.
-            let profile_removed_path = if stopped {
-                crate::util::profile_dir::cleanup_profile_dir(&rec.profile_dir)
-                    .removed_path()
-                    .map(std::path::Path::to_path_buf)
+            //
+            // iter-242: keep the whole `ProfileCleanup`, not just its path.
+            // `profile_removed: false` used to arrive with nothing attached,
+            // so an iteration-224 sweep failure (`stopped: true`,
+            // `profile_removed: false`, green in isolation minutes later) gave
+            // no way to tell a refused path from a `remove_dir_all` that
+            // failed because something still held a file in the profile open.
+            let cleanup = if stopped {
+                Some(crate::util::profile_dir::cleanup_profile_dir(
+                    &rec.profile_dir,
+                ))
             } else {
                 None
             };
+            let profile_removed_path = cleanup
+                .as_ref()
+                .and_then(crate::util::profile_dir::ProfileCleanup::removed_path)
+                .map(std::path::Path::to_path_buf);
+            // `null` when the profile *was* removed, and when the stop itself
+            // failed so cleanup was never attempted — in both cases there is
+            // no skip to explain.
+            let profile_skip_reason = cleanup
+                .as_ref()
+                .and_then(crate::util::profile_dir::ProfileCleanup::skip_reason)
+                .map(crate::util::profile_dir::ProfileCleanupSkip::as_str);
 
             return Ok(json!({
                 "stopped": stopped,
@@ -1129,6 +1147,7 @@ fn stop_daemon_and_build_result_with(
                 "profile_removed_path": profile_removed_path
                     .as_ref()
                     .map(|p| p.to_string_lossy().into_owned()),
+                "profile_skip_reason": profile_skip_reason,
             }));
         }
         _ => {

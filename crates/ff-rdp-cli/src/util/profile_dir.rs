@@ -141,7 +141,7 @@ const MANAGED_PROFILE_PREFIX: &str = "ff-rdp-profile-";
 ///
 /// The file holds the owning Firefox process's PID as plain text, newline
 /// terminated. The prune paths read it back through
-/// [`profile_is_owned_by_live_process`] to positively confirm the profile is
+/// [`OwnerLiveness::keeps_profile_alive`] to positively confirm the profile is
 /// still in use before any age-based deletion — a stronger signal than the
 /// iter-96 mtime heuristic, which stays the fallback for profiles that have
 /// no marker (pre-97 dirs, or an owner whose PID has since been reused).
@@ -276,7 +276,7 @@ pub(crate) fn latest_profile_activity(dir: &Path, dir_mtime: SystemTime) -> Syst
 /// token for that PID when the OS will supply one (iter-171).
 ///
 /// Called by `launch` immediately after spawning the Firefox that owns `dir`,
-/// so [`profile_is_owned_by_live_process`] can later confirm the profile is
+/// so [`owner_liveness_of`] can later confirm the profile is
 /// still in use before any age-based prune deletes it.
 ///
 /// The identity token is captured **before** the PID marker is written, so the
@@ -376,10 +376,30 @@ pub(crate) fn read_owner_test_marker(dir: &Path) -> Option<String> {
 /// established, so the ambiguity has to survive as far as the caller instead of
 /// being collapsed at the source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OwnerLiveness {
-    /// No [`OWNER_PID_MARKER`], or it does not parse as a PID. Callers fall
-    /// back to the iter-96 mtime heuristic (every pre-iter-97 profile).
+pub(crate) enum OwnerLiveness {
+    /// No [`OWNER_PID_MARKER`] file at all. Callers fall back to the iter-96
+    /// mtime heuristic (every pre-iter-97 profile).
+    ///
+    /// iter-242: this used to also cover "the marker exists but could not be
+    /// read back as a PID right now", which is a *different* answer — see
+    /// [`OwnerLiveness::Unreadable`].
     Unmarked,
+    /// The [`OWNER_PID_MARKER`] file exists but did not yield a PID at this
+    /// instant: an I/O error, or contents that do not parse (iter-242).
+    ///
+    /// This is the one grading that can flip between two calls a few hundred
+    /// milliseconds apart without the owner having died, because
+    /// [`write_owner_pid_marker`] re-marks a live directory with
+    /// `fs::write` — truncate-then-write — so a concurrent reader can observe
+    /// the empty intermediate state of a marker that both before and after
+    /// names a running Firefox. Collapsing it into [`OwnerLiveness::Unmarked`]
+    /// reported that momentary read as a confident "nobody owns this", which
+    /// on the deletion paths means deleting a live profile.
+    ///
+    /// So it is graded like [`OwnerLiveness::Unverified`]: "cannot tell",
+    /// which the prune paths resolve toward keeping the directory and the
+    /// kill-scoping gate resolves toward refusing.
+    Unreadable,
     /// The recorded PID is gone — or, the case iter-171 adds, it is alive but
     /// is provably a *different* process than the one that wrote the marker,
     /// because the live PID's start token disagrees with the recorded one.
@@ -398,6 +418,26 @@ enum OwnerLiveness {
     Unverified,
 }
 
+impl OwnerLiveness {
+    /// Stable lower-case label for logs and JSON output (iter-242 Theme A).
+    ///
+    /// `profiles prune` reports this per directory so an operator — or the
+    /// iteration-97 dogfood gate, when it fails — can see *which* grading
+    /// produced the verdict instead of inferring it from a `removed_live`
+    /// entry that is present or absent. The intermittent failure this
+    /// iteration exists to close was undiagnosable precisely because the
+    /// four gradings collapse into one boolean before anything is printed.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Unmarked => "unmarked",
+            Self::Unreadable => "unreadable",
+            Self::Dead => "dead",
+            Self::Live => "live",
+            Self::Unverified => "unverified",
+        }
+    }
+}
+
 /// Grade `dir`'s owner markers against the live process table.
 ///
 /// Pure lookup, no side effects. The [`OwnerLiveness`] variants document what
@@ -405,8 +445,10 @@ enum OwnerLiveness {
 /// that *is* alive — that is the PID-reuse false positive this iteration
 /// exists to close.
 fn owner_liveness(dir: &Path) -> OwnerLiveness {
-    let Some(pid) = read_owner_pid_marker(dir) else {
-        return OwnerLiveness::Unmarked;
+    let pid = match read_owner_pid_marker_graded(dir) {
+        OwnerPidMarker::Absent => return OwnerLiveness::Unmarked,
+        OwnerPidMarker::Unreadable => return OwnerLiveness::Unreadable,
+        OwnerPidMarker::Pid(pid) => pid,
     };
     if !crate::daemon::process::is_process_alive(pid) {
         return OwnerLiveness::Dead;
@@ -422,26 +464,43 @@ fn owner_liveness(dir: &Path) -> OwnerLiveness {
     }
 }
 
-/// Returns `true` iff `dir`'s owner markers say a live process still owns it.
+impl OwnerLiveness {
+    /// Whether this grading forbids a deletion path from reclaiming the
+    /// directory: the positive ownership signal the prune paths consult
+    /// *before* the iter-96 mtime heuristics, so a still-running (even fully
+    /// idle) Firefox never has its profile deleted out from under it.
+    ///
+    /// [`Self::Unmarked`] is `false` — the caller then falls back to the mtime
+    /// heuristic, so pre-iter-97 profiles behave exactly as they always did.
+    /// [`Self::Dead`] is `false` too, and since iter-171 that includes a
+    /// marker whose PID is alive but whose recorded start token disagrees: a
+    /// recycled PID, which before read as live-owned and made the profile
+    /// permanently unreclaimable.
+    ///
+    /// The three `true` cases are not the same claim. [`Self::Live`] is
+    /// positive proof, while [`Self::Unverified`] (iter-171) and
+    /// [`Self::Unreadable`] (iter-242) are both "cannot tell". They collapse
+    /// here only because a deletion path resolves every uncertainty the same
+    /// way — keep the directory. The kill-scoping gate, whose blast radius
+    /// points the other way, tests for [`Self::Live`] on its own and so
+    /// refuses both.
+    pub(crate) fn keeps_profile_alive(self) -> bool {
+        matches!(self, Self::Live | Self::Unverified | Self::Unreadable)
+    }
+}
+
+/// Grade `dir`'s owner markers, exposing *which* [`OwnerLiveness`] a deletion
+/// path's keep-or-reclaim decision came from (iter-242 Theme A).
 ///
-/// This is the positive ownership signal the prune paths consult *before* the
-/// iter-96 mtime heuristics: a live owner always wins, so a still-running
-/// (even fully idle) Firefox never has its profile deleted out from under it.
-///
-/// A missing or unparsable marker returns `false` — the caller then falls
-/// back to the mtime heuristic, so pre-97 profiles (no marker) behave exactly
-/// as before.
-///
-/// iter-171: a marker whose PID is alive but whose recorded start token
-/// disagrees is a *recycled* PID, and now returns `false` — before, the dead
-/// profile read as live-owned and the age-gated prune skipped it forever.
-/// [`OwnerLiveness::Unverified`] still returns `true`: for a deletion path the
-/// unresolvable case must err toward keeping the directory.
-pub(crate) fn profile_is_owned_by_live_process(dir: &Path) -> bool {
-    matches!(
-        owner_liveness(dir),
-        OwnerLiveness::Live | OwnerLiveness::Unverified
-    )
+/// Before this, the prune paths called a `profile_is_owned_by_live_process`
+/// wrapper that returned [`OwnerLiveness::keeps_profile_alive`] and threw the
+/// grading away, so a wrong answer left nothing behind to attribute it to.
+/// `profiles prune` now grades once through this function and both decides
+/// *and* reports from the same value — re-reading the markers for the report
+/// could legitimately disagree with the first read, which is precisely the
+/// race being diagnosed.
+pub(crate) fn owner_liveness_of(dir: &Path) -> OwnerLiveness {
+    owner_liveness(dir)
 }
 
 /// Read back the identity token recorded in `dir`'s [`OWNER_START_MARKER`], if
@@ -456,13 +515,53 @@ fn read_owner_start_marker(dir: &Path) -> Option<String> {
 /// Read and parse the owner PID recorded in `dir`'s [`OWNER_PID_MARKER`], if
 /// any. Returns `None` when the marker is absent or unparsable.
 ///
-/// Split out from [`profile_is_owned_by_live_process`] so the kill-scoping
+/// Split out from [`owner_liveness`] so the kill-scoping
 /// guard (iter-110 Theme A0) can compare a marker PID against a candidate PID
 /// without also asserting liveness (the caller already knows the candidate is
 /// the live port owner).
 fn read_owner_pid_marker(dir: &Path) -> Option<u32> {
-    let contents = std::fs::read_to_string(dir.join(OWNER_PID_MARKER)).ok()?;
-    contents.trim().parse::<u32>().ok()
+    match read_owner_pid_marker_graded(dir) {
+        OwnerPidMarker::Pid(pid) => Some(pid),
+        OwnerPidMarker::Absent | OwnerPidMarker::Unreadable => None,
+    }
+}
+
+/// The three genuinely different outcomes of reading `dir`'s
+/// [`OWNER_PID_MARKER`] (iter-242 Theme A).
+///
+/// [`read_owner_pid_marker`]'s `Option<u32>` collapses the first two, which is
+/// fine for its callers (both want "a PID, or nothing to compare against") but
+/// not for [`owner_liveness`], where the difference decides whether a live
+/// profile survives a prune.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OwnerPidMarker {
+    /// The marker file does not exist. The only reading that actually means
+    /// "ff-rdp never claimed this directory".
+    Absent,
+    /// The marker file exists but yielded no PID: the read failed, or the
+    /// contents did not parse. Both are transient-capable — see
+    /// [`OwnerLiveness::Unreadable`].
+    Unreadable,
+    /// The marker named this PID.
+    Pid(u32),
+}
+
+/// Read `dir`'s [`OWNER_PID_MARKER`], keeping "absent" and "unreadable"
+/// apart (iter-242 Theme A).
+///
+/// Only `NotFound` counts as absent. Every other `io::Error` — a permission
+/// change, an interrupted read, a marker replaced by a directory — is
+/// `Unreadable`, as are contents that do not parse as a `u32`, which is what a
+/// reader sees inside `fs::write`'s truncate-then-write window.
+fn read_owner_pid_marker_graded(dir: &Path) -> OwnerPidMarker {
+    match std::fs::read_to_string(dir.join(OWNER_PID_MARKER)) {
+        Ok(contents) => match contents.trim().parse::<u32>() {
+            Ok(pid) => OwnerPidMarker::Pid(pid),
+            Err(_) => OwnerPidMarker::Unreadable,
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => OwnerPidMarker::Absent,
+        Err(_) => OwnerPidMarker::Unreadable,
+    }
 }
 
 /// Returns `true` iff some managed profile directory under
@@ -687,7 +786,45 @@ pub enum ProfileCleanup {
     /// Nothing was removed — either a safety check refused the path, or
     /// removal itself failed. Both cases are silent (warn-not-fail): see
     /// the function doc for why this never surfaces as an error.
-    Skipped,
+    ///
+    /// iter-242: carries *why*. `daemon stop` reports the outcome as a bare
+    /// `"profile_removed": false` with no reason attached, which is how an
+    /// iteration-224 sweep failure (`stopped: true`, `profile_removed:
+    /// false`, passing in isolation minutes later) arrived with nothing to
+    /// distinguish "the path was refused" from "`remove_dir_all` failed".
+    Skipped(ProfileCleanupSkip),
+}
+
+/// Why [`cleanup_profile_dir`] removed nothing (iter-242).
+///
+/// The four reasons are not interchangeable: the first three are *refusals*
+/// and are the expected outcome for a user-supplied `--profile` directory,
+/// while [`Self::RemoveFailed`] means a managed directory ff-rdp owns was
+/// supposed to go away and did not — the only one that indicates a problem.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileCleanupSkip {
+    /// The per-user profile root could not be resolved, so "is this path
+    /// under it" is unanswerable and the function fails closed.
+    NoProfileRoot,
+    /// The path is not under [`secure_profile_root`].
+    OutsideProfileRoot,
+    /// The basename is not `ff-rdp-profile-<16 alphanumeric chars>`.
+    NotManagedBasename,
+    /// Both safety checks passed but `remove_dir_all` failed — a permission
+    /// error, or a file inside the profile still held open.
+    RemoveFailed,
+}
+
+impl ProfileCleanupSkip {
+    /// Stable lower-case label for logs and JSON output.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NoProfileRoot => "no-profile-root",
+            Self::OutsideProfileRoot => "outside-profile-root",
+            Self::NotManagedBasename => "not-managed-basename",
+            Self::RemoveFailed => "remove-failed",
+        }
+    }
 }
 
 impl ProfileCleanup {
@@ -695,7 +832,15 @@ impl ProfileCleanup {
     pub fn removed_path(&self) -> Option<&Path> {
         match self {
             Self::Removed(p) => Some(p),
-            Self::Skipped => None,
+            Self::Skipped(_) => None,
+        }
+    }
+
+    /// `Some(reason)` if nothing was removed, `None` if it was (iter-242).
+    pub fn skip_reason(&self) -> Option<ProfileCleanupSkip> {
+        match self {
+            Self::Removed(_) => None,
+            Self::Skipped(reason) => Some(*reason),
         }
     }
 }
@@ -719,7 +864,7 @@ pub fn cleanup_profile_dir(path: &Path) -> ProfileCleanup {
                 "cleanup_profile_dir: could not resolve secure profile root, skipping {}: {e:#}",
                 path.display()
             );
-            return ProfileCleanup::Skipped;
+            return ProfileCleanup::Skipped(ProfileCleanupSkip::NoProfileRoot);
         }
     };
     cleanup_profile_dir_under(&root, path)
@@ -737,7 +882,7 @@ fn cleanup_profile_dir_under(root: &Path, path: &Path) -> ProfileCleanup {
             path.display(),
             root.display()
         );
-        return ProfileCleanup::Skipped;
+        return ProfileCleanup::Skipped(ProfileCleanupSkip::OutsideProfileRoot);
     }
 
     if !is_managed_profile_path(path) {
@@ -745,7 +890,7 @@ fn cleanup_profile_dir_under(root: &Path, path: &Path) -> ProfileCleanup {
             "cleanup_profile_dir: refusing to remove {} — basename is not a managed ff-rdp profile dir",
             path.display()
         );
-        return ProfileCleanup::Skipped;
+        return ProfileCleanup::Skipped(ProfileCleanupSkip::NotManagedBasename);
     }
 
     match std::fs::remove_dir_all(path) {
@@ -758,7 +903,7 @@ fn cleanup_profile_dir_under(root: &Path, path: &Path) -> ProfileCleanup {
                 "cleanup_profile_dir: failed to remove {}: {e}",
                 path.display()
             );
-            ProfileCleanup::Skipped
+            ProfileCleanup::Skipped(ProfileCleanupSkip::RemoveFailed)
         }
     }
 }
@@ -864,11 +1009,12 @@ impl Drop for ManagedProfileGuard {
                     p.display()
                 );
             }
-            ProfileCleanup::Skipped => {
+            ProfileCleanup::Skipped(reason) => {
                 tracing::warn!(
-                    "ManagedProfileGuard: could not remove {} — it may survive as an orphan until \
-                     the next launch's prune",
-                    path.display()
+                    "ManagedProfileGuard: could not remove {} ({}) — it may survive as an orphan \
+                     until the next launch's prune",
+                    path.display(),
+                    reason.as_str()
                 );
             }
         }
@@ -1015,7 +1161,11 @@ pub fn prune_orphan_profiles(
         let owner = owner_liveness(&path);
         let marker_pid = read_owner_pid_marker(&path);
         match owner {
-            OwnerLiveness::Live | OwnerLiveness::Unverified => {
+            // iter-242: `Unreadable` joins the keep arm. A marker that exists
+            // but does not read back as a PID right now is "cannot tell", and
+            // this is a deletion path, so it resolves the same way
+            // `Unverified` already does.
+            OwnerLiveness::Live | OwnerLiveness::Unverified | OwnerLiveness::Unreadable => {
                 tracing::debug!(
                     "prune_orphan_profiles: keeping {} — owner PID {marker_pid:?} is alive \
                      ({owner:?})",
@@ -1314,7 +1464,10 @@ mod tests {
 
         let result = cleanup_profile_dir(outside.path());
 
-        assert_eq!(result, ProfileCleanup::Skipped);
+        assert_eq!(
+            result,
+            ProfileCleanup::Skipped(ProfileCleanupSkip::OutsideProfileRoot)
+        );
         assert!(
             outside.path().exists(),
             "directory outside secure_profile_root must survive cleanup_profile_dir"
@@ -1346,7 +1499,10 @@ mod tests {
 
         let result = cleanup_profile_dir(&not_managed);
 
-        assert_eq!(result, ProfileCleanup::Skipped);
+        assert_eq!(
+            result,
+            ProfileCleanup::Skipped(ProfileCleanupSkip::NotManagedBasename)
+        );
         assert!(not_managed.exists());
 
         let _ = std::fs::remove_dir_all(&not_managed);
@@ -1462,24 +1618,24 @@ mod tests {
         pid
     }
 
-    /// `write_owner_pid_marker` + `profile_is_owned_by_live_process` round
+    /// `write_owner_pid_marker` + `owner_liveness_of` round
     /// trip: the current process is alive, so a marker naming it reports
     /// `true`; a dir with no marker or a garbage marker reports `false`.
     #[test]
     fn unit_owner_pid_marker_roundtrip() {
         let dir = tempfile::tempdir().expect("tempdir");
         // No marker yet.
-        assert!(!profile_is_owned_by_live_process(dir.path()));
+        assert!(!owner_liveness_of(dir.path()).keeps_profile_alive());
 
         write_owner_pid_marker(dir.path(), std::process::id());
         assert!(
-            profile_is_owned_by_live_process(dir.path()),
+            owner_liveness_of(dir.path()).keeps_profile_alive(),
             "a marker naming the live test process must report alive"
         );
 
         // Garbage marker → not owned by a live process.
         std::fs::write(dir.path().join(OWNER_PID_MARKER), b"not-a-pid\n").expect("overwrite");
-        assert!(!profile_is_owned_by_live_process(dir.path()));
+        assert!(!owner_liveness_of(dir.path()).keeps_profile_alive());
     }
 
     /// AC: `live_151_leaked_profile_names_its_test` (unit half) —
@@ -1851,7 +2007,7 @@ mod tests {
     /// is a *different process* than the one that wrote the marker must not
     /// read as live-owned.
     ///
-    /// On `main` `profile_is_owned_by_live_process` is `kill(pid, 0)` and
+    /// On `main` the ownership predicate is `kill(pid, 0)` and
     /// answers `true` here, because the recycled PID really is alive — which
     /// is what made a leaked directory permanently unreclaimable and what
     /// tripped `live_96_profile_cleanup`'s precondition.
@@ -1867,7 +2023,7 @@ mod tests {
              recycled PID, not the original owner"
         );
         assert!(
-            !profile_is_owned_by_live_process(&recycled),
+            !owner_liveness_of(&recycled).keeps_profile_alive(),
             "a recycled PID must not resurrect a dead profile's ownership"
         );
     }
@@ -1918,7 +2074,7 @@ mod tests {
         write_owner_pid_marker(&dir, std::process::id());
 
         assert_eq!(owner_liveness(&dir), OwnerLiveness::Live);
-        assert!(profile_is_owned_by_live_process(&dir));
+        assert!(owner_liveness_of(&dir).keeps_profile_alive());
         assert!(pid_is_ff_rdp_spawned_under(root.path(), std::process::id()));
 
         let summary = prune_orphan_profiles(root.path(), Duration::from_hours(168), 50);
@@ -1968,7 +2124,7 @@ mod tests {
         std::fs::write(dir.join(OWNER_START_MARKER), b"   \n").expect("blank the start marker");
 
         assert_eq!(owner_liveness(&dir), OwnerLiveness::Live);
-        assert!(profile_is_owned_by_live_process(&dir));
+        assert!(owner_liveness_of(&dir).keeps_profile_alive());
     }
 
     /// `Unverified` (PID alive, token recorded, OS will not disclose the live
@@ -1982,7 +2138,7 @@ mod tests {
             !matches!(OwnerLiveness::Unverified, OwnerLiveness::Live),
             "Unverified must remain distinct from Live"
         );
-        // Deletion direction: `profile_is_owned_by_live_process` (the guard
+        // Deletion direction: `keeps_profile_alive` (the guard
         // every prune path consults) treats Unverified as owned → keep.
         // Kill direction: `pid_is_ff_rdp_spawned_under` requires exactly
         // `Live` → refuse. Both are asserted structurally here because the
@@ -1990,7 +2146,7 @@ mod tests {
         let root = tempfile::tempdir().expect("tempdir");
         let dir = seed_fake_profile(root.path(), &"f".repeat(16), Duration::from_secs(1));
         write_owner_pid_marker(&dir, std::process::id());
-        assert!(profile_is_owned_by_live_process(&dir));
+        assert!(owner_liveness_of(&dir).keeps_profile_alive());
         assert!(pid_is_ff_rdp_spawned_under(root.path(), std::process::id()));
     }
 
