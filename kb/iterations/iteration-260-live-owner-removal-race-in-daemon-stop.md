@@ -43,6 +43,7 @@ dogfood_path: |
   # → and a dual-gate `cargo run -p xtask -- live-sweep`, which is the only
   #   evidence that closes iteration 242's remaining acceptance criteria.
 tags: [iteration, profiles, daemon, race, live-tests, carry-over]
+takeover_reconciliation_252: "2026-09-09, reconciliation after252: the out-of-scope consent/live_target_count reference to iteration251 is historical; the pending owner is now iteration262-daemon-live-target-never-promoted. PartB overlaps the explicitly authorized242 verification obligation and remains selected separately; PartsA/C are outside this takeover. The252 sweep passed both named PartB tests but does not substitute for the owed distinct242 closure/audit or tick its remaining ACs."
 ---
 
 # Iteration 260: `daemon stop`'s profile removal races the browser it just stopped

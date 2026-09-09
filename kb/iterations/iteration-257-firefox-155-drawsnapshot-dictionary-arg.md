@@ -53,6 +53,7 @@ dogfood_path: |
   FF_RDP_LIVE_TESTS=1 cargo test-live -p ff-rdp-cli --test live live_92_screenshot_full_page
   #    expected: green, PNG taller than the viewport, on both.
 tags: [iteration, screenshot, firefox-155, spec-drift, regression, ff-rdp-core, carry-over]
+takeover_reconciliation_252: "2026-09-09: correct source path is dom/chrome-webidl/WindowGlobalActors.webidl. Release155.0 introduced DrawSnapshotOptions{resetScrollPosition=false,drawView=false}, bug2058388 final commit78f289876b9c2022059c951097c71713142c67a0;154.0.1 and120 use boolean. Local Firefox source0088392 predates this change: use recorded release tags. ThemeB premise needs runtime investigation: CLI screenshot.rs607 unconditionally routes fullpage to process fallback, so sweep failures do NOT establish primary actor failure on155. The155 primary helper already uses the dictionary. Dictionary-first try/catch cannot detect old Firefox because objects coerce to boolean true. Original ACs remain intact; oldest-supported120 runtime proof still required. Official120 DMG downloaded and both SHA256/SHA512 verified, not installed/launched. Evidence saved in takeover firefox257-prep; https://bugzilla.mozilla.org/show_bug.cgi?id=2058388."
 ---
 
 # Iteration 257: Firefox 155 changed `drawSnapshot`'s 4th argument to a dictionary and every `--full-page` screenshot is broken

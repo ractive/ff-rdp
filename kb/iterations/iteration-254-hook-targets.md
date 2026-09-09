@@ -16,6 +16,7 @@ dogfood_path: |
   ff-rdp install-hook --codex --uninstall
   ff-rdp install-hook --opencode --dry-run
 tags: [iteration, cli, agent-ergonomics]
+takeover_reconciliation_252: "2026-09-09: Codex0.153.4 published hooks default ON, while new/changed commands require trust via /hooks. Preserve the original explicit [features] hooks=true refusal AC as ff-rdp opt-in policy and describe it accurately; do not claim it is Codex's current default. hooks.SessionStart[].hooks[] command shape confirmed; matcher group permits ownership metadata in published schema, runtime verification still owed. OpenCode1.3.13 pinned b5b5f7e0190cdd5272b6d2aeb3d4589a822675a6 only supplies a JS/TS plugin contract, permitting ThemeC obsolete disposition. Evidence: https://learn.chatgpt.com/docs/hooks and https://opencode.ai/docs/plugins/; saved full source/schema in takeover hooks254-prep. Original tasks/AC text and ticks unchanged."
 ---
 
 # Iteration 254: install-hook for Codex and OpenCode

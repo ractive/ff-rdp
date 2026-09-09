@@ -21,6 +21,7 @@ takeover_sequencing_2026_09_09: >-
   single PR merges. This explicitly supersedes the status notes land-first phrase
   with prepare-and-verify-first. Original acceptance criteria, harness ownership,
   historical model/prompt, and final measurement coverage are preserved.
+takeover_reconciliation_252: "2026-09-09, reconciliation after252: historical runner and task sources recovered from original Claude transcripts; runner SHA25611659d64e71fa116744f6b837d0b8b246c8623eb0f3cf796a2342a7567a24a8b matches pinned upstream d28c5e79aa7ee7a59a386fc34125f8cd1470fbeb. Use agent AND judge claude-sonnet-4-6. Actual same-model probes twice failed HTTP401 invalid API key before tokens, unlike the historical organization error. ThemeA implementation/export can proceed; real clean-checkout comparison and remaining measurement ACs cannot be claimed satisfied without successful account capability. Keep baseline prompt unchanged and label the separate ambient payload/hook treatment precisely; preserve all historical completed measurements and unmet targets."
 ---
 
 # Iteration 256: re-measure the axi benchmark after act-and-see

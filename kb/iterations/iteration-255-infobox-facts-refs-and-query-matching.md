@@ -33,6 +33,7 @@ takeover_sequencing_2026_09_09: >-
   256 measurement and its single PR. This explicitly changes the historical
   land-first scheduling phrase to prepare-and-verify-first; harness ownership and
   benchmark model/prompt requirements are unchanged.
+takeover_reconciliation_252: "2026-09-09, reconciliation after252: recoverable harness pin d28c5e79aa7ee7a59a386fc34125f8cd1470fbeb and exact agent/judge model claude-sonnet-4-6 established from original transcripts. Preserve historical ff-rdp append-system prompt byte-for-byte for this six-run comparison; keep256 ambient treatment separate. Two minimal same-model capability probes failed HTTP401 invalid API key before tokens; this proves authentication failure, not model entitlement failure. ThemeC remains mandatory and unticked pending successful auth and actual runs. Previously recorded256A-export-before255 sequencing remains binding."
 ---
 
 # Iteration 255: the two costs left in `wikipedia_infobox_hop`
