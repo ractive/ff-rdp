@@ -22,6 +22,7 @@ dogfood_path: |
   #
   # On 2026-09-07 the contended runs printed 319 and the dry-run printed 320.
 tags: [iteration, live-sweep, discipline, false-green, carry-over]
+iteration_252_recheck: "2026-09-09 continuation: both full sweeps included all 320 compiled ignored CLI names and all nine core names. Each had 329 actual verdicts with zero expected/observed name discrepancies. The first is diagnostic only (briefly paused and predates a test-diagnostic repair); the second is the final implementation sweep. No live-sweep parser or guard changed, so this negative observation does not establish that the historical omission was fixed. Keep this plans original acceptance criteria pending."
 ---
 
 # Iteration 263: a sweep that runs 319 of 320 and reports it as a full run

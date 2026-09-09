@@ -24,6 +24,7 @@ dogfood_path: |
   FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo test -p ff-rdp-cli --test live \
     live_137_consent_accept_via_daemon -- --include-ignored --test-threads=1
 tags: [iteration, daemon, frame-targets, race, live-tests, carry-over]
+iteration_252_followup_observations: "2026-09-09 final dual-gate sweep: live_137_consent_accept_via_daemon failed AFTER LIVE_TARGET_WAIT reached=true in 116 ms, with Sourcepoint detected_not_actioned/consent_not_actioned. The exact isolated test failed again after readiness in 113 ms. An untouched origin/main checkout at 05634cbd42f02995f50e06c35d68b868cd39d0ba independently reproduced the same consent error, establishing this predates iteration 252. This is DISTINCT from the original target_count>0/live_target_count=0 failure; do not attribute it to promotion without evidence. Folded here because this plan already requires three full sweeps with this named consent test green: retain both failure shapes and resolve or file the separate consent-action failure when addressing that original AC. The earlier diagnostic sweep also saw live_140_frame_filter_count_accurate report zero frames; it passed the final sweep and isolated rerun, and no target-count instrumentation was captured for that row. Evidence: iteration252 PR closure report and .git/ralph-loop/20260909-takeover/iter252/resume-1 logs. Original scope and acceptance criteria remain unchanged."
 ---
 
 # Iteration 262: the daemon counts a frame target and never promotes it to live

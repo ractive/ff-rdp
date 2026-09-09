@@ -459,12 +459,6 @@ fn follow_server_with_events(console_event: serde_json::Value) -> MockRdpServer 
     MockRdpServer::new()
         .on("listTabs", load_fixture("list_tabs_response.json"))
         .on("getTarget", load_fixture("get_target_response.json"))
-        // run_follow_direct calls startListeners before subscribing via the
-        // Watcher to ensure console events flow through the watcher subscription.
-        .on(
-            "startListeners",
-            load_fixture("start_listeners_response.json"),
-        )
         .on("getWatcher", load_fixture("get_watcher_response.json"))
         // iter-252: `run_follow_direct` now issues `watchTargets("frame")`
         // before `watchResources`, because the content-process half of
@@ -482,6 +476,24 @@ fn follow_server_with_events(console_event: serde_json::Value) -> MockRdpServer 
             load_fixture("unwatch_resources_response.json"),
         )
         .close_after_followups()
+}
+
+fn assert_follow_subscription_requests(requests: &[serde_json::Value]) {
+    let watcher = requests.iter().find(|r| r["type"] == "getWatcher").unwrap();
+    assert_eq!(
+        watcher["isServerTargetSwitchingEnabled"], true,
+        "direct follow needs server target switching: {watcher}"
+    );
+    let targets = requests.iter().position(|r| r["type"] == "watchTargets");
+    let resources = requests
+        .iter()
+        .position(|r| r["type"] == "watchResources")
+        .unwrap();
+    assert!(
+        targets.is_some_and(|targets| targets < resources),
+        "watchTargets must precede watchResources: {requests:?}"
+    );
+    assert_eq!(requests[targets.unwrap()]["targetType"], "frame");
 }
 
 #[test]
@@ -570,7 +582,7 @@ fn console_follow_streams_messages_as_ndjson() {
 fn console_follow_streams_flat_console_message_resources() {
     let console_event = json!({
         "type": "resources-available-array",
-        "from": "server1.conn0.watcher4",
+        "from": "server1.conn0.watcher4.process0//windowGlobalTarget1",
         "array": [
             ["console-message", [
                 {
@@ -595,8 +607,21 @@ fn console_follow_streams_flat_console_message_resources() {
         ]
     });
 
-    let server = follow_server_with_events(console_event);
+    // A content-process resource can precede the watchResources ACK. Replay
+    // this recorded shape before the ACK and ensure setup retains it.
+    let server = MockRdpServer::new()
+        .on("listTabs", load_fixture("list_tabs_response.json"))
+        .on("getTarget", load_fixture("get_target_response.json"))
+        .on("getWatcher", load_fixture("get_watcher_response.json"))
+        .on("watchTargets", load_fixture("watch_targets_response.json"))
+        .on_with_followups(
+            "watchResources",
+            console_event,
+            vec![load_fixture("watch_resources_response.json")],
+        )
+        .close_after_followups();
     let port = server.port();
+    let requests = server.request_log();
     let handle = std::thread::spawn(move || server.serve_one());
 
     let mut args = base_args(port);
@@ -608,6 +633,7 @@ fn console_follow_streams_flat_console_message_resources() {
         .expect("failed to spawn ff-rdp");
 
     handle.join().expect("server thread panicked");
+    assert_follow_subscription_requests(&requests.lock().unwrap());
 
     assert!(
         output.status.success(),
@@ -756,6 +782,7 @@ fn console_follow_handles_direct_consoleapicall_notification() {
 
     let server = follow_server_with_direct_notification(notification);
     let port = server.port();
+    let requests = server.request_log();
     let handle = std::thread::spawn(move || server.serve_one());
 
     let mut args = base_args(port);
@@ -767,6 +794,7 @@ fn console_follow_handles_direct_consoleapicall_notification() {
         .expect("failed to spawn ff-rdp");
 
     handle.join().expect("server thread panicked");
+    assert_follow_subscription_requests(&requests.lock().unwrap());
 
     assert!(
         output.status.success(),

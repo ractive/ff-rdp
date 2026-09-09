@@ -25,6 +25,14 @@ tags:
   - page-view
   - act-and-see
   - carry-over
+takeover_sequencing_2026_09_09: >-
+  Iteration 255 retains its own branch and PR and all original acceptance
+  criteria. Before its Theme C measurement, prepare and verify the iteration-256-owned
+  harness on its own branch, checkpoint it after ordered gates, and use that exact
+  revision from a run-owned external export. Merge 255 first, then complete the final
+  256 measurement and its single PR. This explicitly changes the historical
+  land-first scheduling phrase to prepare-and-verify-first; harness ownership and
+  benchmark model/prompt requirements are unchanged.
 ---
 
 # Iteration 255: the two costs left in `wikipedia_infobox_hop`

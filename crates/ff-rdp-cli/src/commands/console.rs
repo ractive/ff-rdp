@@ -325,17 +325,29 @@ fn run_follow_direct(
         TabActor::get_watcher_with_options(ctx.transport_mut(), &tab_actor, Some(true))
             .map_err(AppError::from)?;
 
-    WatcherActor::watch_targets(ctx.transport_mut(), &watcher_actor, "frame")
-        .map_err(AppError::from)?;
+    // Both subscription requests can emit catch-up events before their ACK.
+    // recv_reply_from forwards those to the sink; retain them in wire order
+    // and drain them before reading newer events from the socket.
+    let (events_tx, events_rx) = std::sync::mpsc::channel();
+    let previous_sink = ctx.transport_mut().swap_event_sink(Some(events_tx));
+    let subscribed = (|| {
+        WatcherActor::watch_targets(ctx.transport_mut(), &watcher_actor, "frame")?;
+        WatcherActor::watch_resources(
+            ctx.transport_mut(),
+            &watcher_actor,
+            &["console-message", "error-message"],
+        )
+    })();
+    ctx.transport_mut().set_event_sink(previous_sink);
+    subscribed.map_err(AppError::from)?;
 
-    WatcherActor::watch_resources(
+    let result = follow_loop(
         ctx.transport_mut(),
-        &watcher_actor,
-        &["console-message", "error-message"],
-    )
-    .map_err(AppError::from)?;
-
-    let result = follow_loop(ctx.transport_mut(), level, regex, jq_filter);
+        events_rx.try_iter(),
+        level,
+        regex,
+        jq_filter,
+    );
 
     // Best-effort cleanup — ignore errors since we may be exiting anyway.
     let _ = WatcherActor::unwatch_resources(
@@ -359,7 +371,13 @@ fn run_follow_daemon(
     start_daemon_stream(ctx.transport_mut(), "console-message").map_err(AppError::from)?;
     start_daemon_stream(ctx.transport_mut(), "error-message").map_err(AppError::from)?;
 
-    let result = follow_loop(ctx.transport_mut(), level, regex, jq_filter);
+    let result = follow_loop(
+        ctx.transport_mut(),
+        std::iter::empty(),
+        level,
+        regex,
+        jq_filter,
+    );
 
     // Best-effort cleanup — ignore errors since we may be exiting anyway.
     let _ = stop_daemon_stream(ctx.transport_mut(), "console-message");
@@ -385,14 +403,16 @@ fn run_follow_daemon(
 /// emits them without an explicit `startListeners` call — see iter-71c.
 fn follow_loop(
     transport: &mut RdpTransport,
+    mut catch_up: impl Iterator<Item = Value>,
     level: Option<&str>,
     regex: Option<&regex::Regex>,
     jq_filter: Option<&str>,
 ) -> Result<(), AppError> {
     use std::io::Write;
 
+    let mut deliveries = ConsoleDeliveries::default();
     loop {
-        match transport.recv() {
+        match catch_up.next().map_or_else(|| transport.recv(), Ok) {
             Ok(msg) => {
                 let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
 
@@ -419,6 +439,9 @@ fn follow_loop(
                 };
 
                 for res in resources {
+                    if deliveries.is_duplicate(&res, msg_type == "resources-available-array") {
+                        continue;
+                    }
                     if let Some(l) = level
                         && !res.level.eq_ignore_ascii_case(l)
                     {
@@ -473,8 +496,67 @@ fn follow_loop(
     }
 }
 
+/// Pair the resource and legacy copies of one console call without collapsing
+/// repeated calls on the same channel. Keep a bounded recent window for a
+/// long-lived follow; timestamp-less messages cannot be identified safely.
+#[derive(Default)]
+struct ConsoleDeliveries {
+    unmatched: std::collections::VecDeque<(ConsoleResource, bool)>,
+}
+
+impl ConsoleDeliveries {
+    fn is_duplicate(&mut self, message: &ConsoleResource, resource_channel: bool) -> bool {
+        if !message.timestamp.is_finite() || message.timestamp <= 0.0 {
+            return false;
+        }
+        if let Some(index) = self.unmatched.iter().position(|(seen, channel)| {
+            *channel != resource_channel
+                && seen.timestamp.to_bits() == message.timestamp.to_bits()
+                && seen.level == message.level
+                && seen.message == message.message
+                && seen.source == message.source
+                && seen.line == message.line
+                && seen.column == message.column
+        }) {
+            self.unmatched.remove(index);
+            return true;
+        }
+        if self.unmatched.len() == 1024 {
+            self.unmatched.pop_front();
+        }
+        self.unmatched
+            .push_back((message.clone(), resource_channel));
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn console_deliveries_pair_channels_and_preserve_repeated_calls() {
+        let mut deliveries = ConsoleDeliveries::default();
+        let mut message = ConsoleResource {
+            level: "log".into(),
+            message: "same".into(),
+            source: "page.js".into(),
+            line: 1,
+            column: 1,
+            timestamp: 1000.0,
+            resource_id: None,
+        };
+        assert!(!deliveries.is_duplicate(&message, true));
+        assert!(!deliveries.is_duplicate(&message, true));
+        assert!(deliveries.is_duplicate(&message, false));
+        assert!(deliveries.is_duplicate(&message, false));
+        message.timestamp += 1.0;
+        assert!(!deliveries.is_duplicate(&message, false));
+        assert!(deliveries.is_duplicate(&message, true));
+        message.timestamp = 0.0;
+        assert!(!deliveries.is_duplicate(&message, false));
+        assert!(!deliveries.is_duplicate(&message, true));
+    }
     /// Verify that a normal pattern compiles successfully under the size limit.
     #[test]
     fn accepts_reasonable_regex() {

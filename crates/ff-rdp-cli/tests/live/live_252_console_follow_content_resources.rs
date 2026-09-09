@@ -78,7 +78,7 @@ fn fixture_routes() -> HashMap<String, FixtureRoute> {
         FixtureRoute::html(format!(
             "<!doctype html><title>iter-252 console ticker</title>\
              <body>iter-252</body>\
-             <script>setInterval(function(){{console.log('{PROBE}');}}, 250);</script>"
+             <script>let tick=0;setInterval(function(){{console.log('{PROBE}:'+ ++tick);}}, 250);</script>"
         )),
     );
     routes
@@ -159,7 +159,7 @@ fn follow_console(global: &[String], label: &str) -> Vec<String> {
                 .cloned()
                 .collect();
         }
-        if !matched.is_empty() {
+        if matched.len() >= 12 {
             break;
         }
         std::thread::sleep(Duration::from_millis(200));
@@ -193,13 +193,29 @@ fn assert_route_sees_console(global: &[String], route: &str) {
     // probe token via some other field.
     let parsed: serde_json::Value = serde_json::from_str(&matched[0])
         .unwrap_or_else(|e| panic!("{route}: follow line is not JSON: {e}\n{}", matched[0]));
-    assert_eq!(
-        parsed["message"], PROBE,
+    assert!(
+        parsed["message"].as_str().unwrap().starts_with(PROBE),
         "{route}: `message` must carry the logged text, got {parsed}"
     );
     assert_eq!(
         parsed["level"], "log",
         "{route}: `level` must survive parsing, got {parsed}"
+    );
+    let mut counts = std::collections::BTreeMap::new();
+    for line in &matched {
+        let entry: serde_json::Value = serde_json::from_str(line).unwrap();
+        *counts
+            .entry(entry["message"].as_str().unwrap().to_owned())
+            .or_insert(0) += 1;
+    }
+    eprintln!(
+        "iter252 measurement route={route} lines={} unique={} counts={counts:?}",
+        matched.len(),
+        counts.len()
+    );
+    assert!(
+        counts.values().all(|count| *count == 1),
+        "{route}: duplicate timer logs: {counts:?}"
     );
 }
 
@@ -253,6 +269,21 @@ fn live_252_console_follow_sees_content_process_messages_both_routes() {
         "live_252: the proxy daemon did not start for Firefox on port {port}"
     );
     assert_route_sees_console(&base_args(port), "daemon");
+
+    // Plain console arms startListeners on the daemon's shared connection.
+    // A later follow must not emit the legacy push and resource copies twice.
+    let prime = Command::new(ff_rdp_bin())
+        .args(base_args(port))
+        .arg("console")
+        .output()
+        .expect("prime daemon console listeners");
+    assert!(
+        prime.status.success(),
+        "prime failed: {}{}",
+        String::from_utf8_lossy(&prime.stdout),
+        String::from_utf8_lossy(&prime.stderr)
+    );
+    assert_route_sees_console(&base_args(port), "daemon-primed");
 
     stop_daemon(port);
 }

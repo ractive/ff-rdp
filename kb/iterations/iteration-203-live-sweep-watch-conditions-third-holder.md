@@ -30,6 +30,7 @@ dogfood_path: |
   gh run list --workflow=toolchain-watch.yml --limit=10 \
     --json conclusion,createdAt,event   # conditions 10, 11, 13
 tags: [iteration, testing, live-tests, tooling, carry-over]
+iteration_252_additional_watch: "2026-09-09: fold post-auth daemon Timeout observations into this watch holder as distinct observations, without claiming condition 5 fired. The diagnostic sweep failed live_109_throttle_block::live_block_url_pattern and live_160_envelope_honesty::live_160_click_reachable_fires_handler; both passed the unpaused final sweep and isolated reruns. The final sweep failed live_160_envelope_honesty::live_160_consent_allow_no_cmp_exits_zero with the same post-auth Timeout envelope; its isolated rerun passed. No source change was made for these rows and no common cause is proved. On recurrence in another unpaused sweep or isolation, capture daemon auth/request/dispatcher timing and file a scoped follow-up rather than changing bounds. The diagnostic tabless-launch failure overlapped the brief paused test phase; that test passed both the final sweep and its independent rerun. Preserve its no-tabs error as a failure, not a launch_timeout reclassification. All original watch ACs remain untouched."
 ---
 
 # Iteration 203: still watching, two sweeps later

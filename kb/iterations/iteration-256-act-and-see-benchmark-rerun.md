@@ -12,6 +12,15 @@ dogfood_path: |
   ff-rdp click --ref e<N> --with-page --jq '.results.page.headings[0].text'
   # expected: "Charles Babbage" — the two-command trajectory, measured end to end
 tags: [iteration, benchmark, agent-ergonomics, measurement]
+takeover_sequencing_2026_09_09: >-
+  To resolve the 255/256 cycle while preserving one iteration per PR, Theme A is
+  prepared and verified first on the 256 branch, checkpointed only after ordered
+  gates, and exported at that exact revision outside the active product tree for 255
+  Theme C. Park that branch while 255 is implemented, reviewed and merged; then
+  update 256 onto the merged baseline and perform its final measurements before its
+  single PR merges. This explicitly supersedes the status notes land-first phrase
+  with prepare-and-verify-first. Original acceptance criteria, harness ownership,
+  historical model/prompt, and final measurement coverage are preserved.
 ---
 
 # Iteration 256: re-measure the axi benchmark after act-and-see

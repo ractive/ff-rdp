@@ -23,6 +23,7 @@ dogfood_path: |
   #   … likewise live_237_cancelled_submit_does_not_wait_out_the_timeout
   #   … likewise live_navigate_default_fast::live_navigate_elapsed_matches_wall
 tags: [iteration, testing, live-tests, timing, carry-over]
+iteration_252_recheck: "2026-09-09 final dual-gate sweep: all three named timing-bound tests passed. Each also passed one subsequent serial isolated rerun with both live env gates enabled. This is one isolated observation per test, not the ten-run isolated and loaded distributions required by this plan; no bound was changed, no historical measurement was erased, and all original ACs remain pending. Exact logs are included in the iteration252 PR evidence package."
 ---
 
 # Iteration 264: a timing bound that only fails under load says nothing either way

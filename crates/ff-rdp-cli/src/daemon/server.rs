@@ -1820,11 +1820,20 @@ fn dispatch_console_push_event(state: &SharedState, msg: &Value) {
         }
     };
 
+    // The dispatcher also forwards this packet through the RPC slot. A
+    // follow client owns that slot and subscribes on the same socket; send
+    // its copy through the RPC path only.
+    let rpc_client_id = lock_or_recover!(state.rpc_writer)
+        .as_ref()
+        .map(|(id, _, _)| *id);
     let mut subs = lock_or_recover!(state.stream_subs);
     let mut dead: Vec<usize> = Vec::new();
 
     for (i, sub) in subs.iter().enumerate() {
-        if sub.types.contains(target_resource_type) && sub.writer.send_raw(&json).is_err() {
+        if Some(sub.id) != rpc_client_id
+            && sub.types.contains(target_resource_type)
+            && sub.writer.send_raw(&json).is_err()
+        {
             dead.push(i);
         }
     }
@@ -4825,6 +4834,40 @@ mod tests {
         let client = TcpStream::connect(addr).expect("connect");
         let (server, _) = listener.accept().expect("accept");
         (server, client)
+    }
+
+    #[test]
+    fn console_push_rpc_subscriber_receives_one_copy() {
+        use std::io::Read;
+
+        let state = test_state();
+        let (server_side, mut client_side) = loopback_pair();
+        let writer = ClientWriter::new(server_side);
+        *state.rpc_writer.lock().expect("rpc writer lock") =
+            Some((1, writer.clone(), Instant::now()));
+        state
+            .stream_subs
+            .lock()
+            .expect("stream subscriber lock")
+            .push(StreamSubscriber {
+                id: 1,
+                writer,
+                types: HashSet::from(["console-message".to_owned()]),
+            });
+        let msg = json!({"type": "consoleAPICall", "from": "console", "message": {"arguments": ["once"], "level": "log"}});
+        dispatch_console_push_event(&state, &msg);
+        forward_to_rpc_client(&state, &msg);
+        client_side
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let mut bytes = Vec::new();
+        let _ = client_side.read_to_end(&mut bytes);
+        assert_eq!(
+            String::from_utf8_lossy(&bytes)
+                .matches("consoleAPICall")
+                .count(),
+            1
+        );
     }
 
     #[test]

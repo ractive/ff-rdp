@@ -13,6 +13,14 @@ firefox_files:
   - devtools/server/actors/webconsole/eval-with-debugger.js
   - devtools/shared/specs/webconsole.js
 title: WebConsoleActor
+iteration_252_review: >-
+  Priming plain console on the shared daemon connection arms legacy pushes.
+  Follow receives both the legacy push and the watcher resource. The daemon sends a
+  legacy push only once to a socket that is both RPC owner and stream subscriber;
+  console follow pairs exact timestamp/source/message matches across channels using a
+  bounded recent window. Same-channel repetitions and timestamp-less messages are
+  preserved. Direct watchTargets/watchResources catch-up events are buffered until the
+  subscription ACK and emitted before newer socket events.
 ---
 
 # WebConsoleActor (typeName `"console"`)
