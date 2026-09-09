@@ -34,6 +34,7 @@ takeover_sequencing_2026_09_09: >-
   land-first scheduling phrase to prepare-and-verify-first; harness ownership and
   benchmark model/prompt requirements are unchanged.
 takeover_reconciliation_252: "2026-09-09, reconciliation after252: recoverable harness pin d28c5e79aa7ee7a59a386fc34125f8cd1470fbeb and exact agent/judge model claude-sonnet-4-6 established from original transcripts. Preserve historical ff-rdp append-system prompt byte-for-byte for this six-run comparison; keep256 ambient treatment separate. Two minimal same-model capability probes failed HTTP401 invalid API key before tokens; this proves authentication failure, not model entitlement failure. ThemeC remains mandatory and unticked pending successful auth and actual runs. Previously recorded256A-export-before255 sequencing remains binding."
+benchmark_auth_resolution_252: "2026-09-09: the two earlier HTTP401 probes are retained as history. A third exact same-model probe succeeded with CAPABILITY_OK, exit0, claude-sonnet-4-6 modelUsage and 900ms duration, using the already cached claude.ai Team session with only the stale ANTHROPIC_API_KEY omitted per process. No login, global configuration or model/prompt change. Use that scoped environment for actual harness runs. This resolves account capability only; actual benchmark acceptance criteria remain unticked until measured. Evidence: .git/ralph-loop/20260909-takeover/harness-prep/auth-resolution.md and capability-cached-session.stdout."
 ---
 
 # Iteration 255: the two costs left in `wikipedia_infobox_hop`

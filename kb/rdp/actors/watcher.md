@@ -14,6 +14,12 @@ firefox_files:
   - devtools/server/actors/watcher/session-context.js
   - devtools/server/actors/resources/index.js
 title: WatcherActor
+iteration_252_review_repair: >-
+  Flat console-message resources carry arguments already formatted by Firefox
+  Console.cpp::ProcessArguments. The flat parser joins them verbatim; remaining
+  percent tokens are literal even when introduced by substitution. Firefox155.0.1
+  recorded fixtures and both-route live measurements cover literal %s and substituted %s
+  plus longString grips. See iteration252 review-repair-1 evidence.
 ---
 
 # WatcherActor (typeName `"watcher"`)

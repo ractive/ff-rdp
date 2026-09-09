@@ -1,0 +1,124 @@
+[
+  {
+    "type": "resources-available-array",
+    "array": [
+      [
+        "console-message",
+        [
+          {
+            "arguments": [
+              "iter252-record:literal:%s"
+            ],
+            "lineNumber": 1,
+            "columnNumber": 9,
+            "filename": "debugger eval code",
+            "level": "log",
+            "timeStamp": 1788957009698.376,
+            "sourceId": null,
+            "innerWindowID": 8589934593
+          }
+        ]
+      ]
+    ],
+    "from": "server1.conn0.watcher2.process4//windowGlobalTarget2"
+  },
+  {
+    "type": "consoleAPICall",
+    "message": {
+      "arguments": [
+        "iter252-record:literal:%s"
+      ],
+      "chromeContext": false,
+      "columnNumber": 9,
+      "filename": "debugger eval code",
+      "level": "log",
+      "lineNumber": 1,
+      "timeStamp": 1788957009698.376,
+      "sourceId": null,
+      "category": "webdev",
+      "innerWindowID": 8589934593
+    },
+    "from": "server1.conn0.child0/consoleActor3"
+  },
+  {
+    "type": "consoleAPICall",
+    "message": {
+      "arguments": [
+        "iter252-record:substituted:%s"
+      ],
+      "chromeContext": false,
+      "columnNumber": 51,
+      "filename": "debugger eval code",
+      "level": "log",
+      "lineNumber": 1,
+      "timeStamp": 1788957009699.38,
+      "sourceId": null,
+      "category": "webdev",
+      "innerWindowID": 8589934593
+    },
+    "from": "server1.conn0.child0/consoleActor3"
+  },
+  {
+    "type": "consoleAPICall",
+    "message": {
+      "arguments": [
+        {
+          "type": "longString",
+          "actor": "server1.conn0.child0/longstractor19",
+          "length": 10020,
+          "initial": "iter252-record:long:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        }
+      ],
+      "chromeContext": false,
+      "columnNumber": 103,
+      "filename": "debugger eval code",
+      "level": "log",
+      "lineNumber": 1,
+      "timeStamp": 1788957009699.571,
+      "sourceId": null,
+      "category": "webdev",
+      "innerWindowID": 8589934593
+    },
+    "from": "server1.conn0.child0/consoleActor3"
+  },
+  {
+    "type": "resources-available-array",
+    "array": [
+      [
+        "console-message",
+        [
+          {
+            "arguments": [
+              "iter252-record:substituted:%s"
+            ],
+            "lineNumber": 1,
+            "columnNumber": 51,
+            "filename": "debugger eval code",
+            "level": "log",
+            "timeStamp": 1788957009699.38,
+            "sourceId": null,
+            "innerWindowID": 8589934593
+          },
+          {
+            "arguments": [
+              {
+                "type": "longString",
+                "actor": "server1.conn0.watcher2.process4//longstractor19",
+                "length": 10020,
+                "initial": "iter252-record:long:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+              }
+            ],
+            "lineNumber": 1,
+            "columnNumber": 103,
+            "filename": "debugger eval code",
+            "level": "log",
+            "timeStamp": 1788957009699.571,
+            "sourceId": null,
+            "innerWindowID": 8589934593
+          }
+        ]
+      ]
+    ],
+    "from": "server1.conn0.watcher2.process4//windowGlobalTarget2"
+  }
+]

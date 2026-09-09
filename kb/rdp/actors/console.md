@@ -21,6 +21,7 @@ iteration_252_review: >-
   bounded recent window. Same-channel repetitions and timestamp-less messages are
   preserved. Direct watchTargets/watchResources catch-up events are buffered until the
   subscription ACK and emitted before newer socket events.
+iteration_252_review_repair: "Follow comparison strips delivery-specific actor IDs from protocol grip objects on a private comparison copy while output retains every original grip. Timestamp/source/line/column/level and canonical message content identify opposite-channel pairs; same-channel repeats and timestamp-less events remain preserved. Recorded and live primed-daemon regressions cover percent-token fidelity and longString duplicate delivery. Evidence: .git/ralph-loop/20260909-takeover/iter252/review-repair-1."
 ---
 
 # WebConsoleActor (typeName `"console"`)

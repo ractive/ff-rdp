@@ -417,29 +417,15 @@ fn follow_loop(
                 let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
 
                 // Collect resources from whichever channel delivered this message.
-                let resources: Vec<ConsoleResource> = if msg_type == "resources-available-array" {
-                    // Watcher stream: batch of console/error-message resources.
-                    parse_console_resources(&msg)
-                } else if let Some(notification) = parse_console_notification(&msg) {
-                    // Direct push from the console actor (consoleAPICall / pageError).
-                    // Convert ConsoleMessage → ConsoleResource so both paths share
-                    // the same filtering and emission logic below.
-                    vec![ConsoleResource {
-                        level: notification.level,
-                        message: notification.message,
-                        source: notification.source,
-                        line: notification.line,
-                        column: notification.column,
-                        timestamp: notification.timestamp,
-                        resource_id: None,
-                    }]
-                } else {
-                    // Unrecognised message type — skip silently.
-                    continue;
-                };
-
-                for res in resources {
-                    if deliveries.is_duplicate(&res, msg_type == "resources-available-array") {
+                let resources = parse_follow_messages(&msg);
+                // Identity is derived from protocol values, never by parsing
+                // rendered text (which may itself be a literal JSON string).
+                // Keep the original grips in the emitted output.
+                let mut identity_event = msg.clone();
+                remove_grip_actor_ids(&mut identity_event);
+                let identities = parse_follow_messages(&identity_event);
+                for (res, identity) in resources.into_iter().zip(identities) {
+                    if deliveries.is_duplicate(&identity, msg_type == "resources-available-array") {
                         continue;
                     }
                     if let Some(l) = level
@@ -496,6 +482,50 @@ fn follow_loop(
     }
 }
 
+fn parse_follow_messages(event: &Value) -> Vec<ConsoleResource> {
+    if event["type"] == "resources-available-array" {
+        parse_console_resources(event)
+    } else if let Some(notification) = parse_console_notification(event) {
+        vec![ConsoleResource {
+            level: notification.level,
+            message: notification.message,
+            source: notification.source,
+            line: notification.line,
+            column: notification.column,
+            timestamp: notification.timestamp,
+            resource_id: None,
+        }]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Firefox allocates grips separately for legacy and resource delivery. Their
+/// actor IDs identify those handles, not the console call. Retain every other
+/// value (including string length/initial text and object previews), and never
+/// alter strings that merely look like JSON or contain an actor's name.
+fn remove_grip_actor_ids(value: &mut Value) {
+    match value {
+        Value::Object(fields) => {
+            if matches!(
+                fields.get("type").and_then(Value::as_str),
+                Some("longString" | "object")
+            ) {
+                fields.remove("actor");
+            }
+            for field in fields.values_mut() {
+                remove_grip_actor_ids(field);
+            }
+        }
+        Value::Array(values) => {
+            for item in values {
+                remove_grip_actor_ids(item);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Pair the resource and legacy copies of one console call without collapsing
 /// repeated calls on the same channel. Keep a bounded recent window for a
 /// long-lived follow; timestamp-less messages cannot be identified safely.
@@ -533,6 +563,55 @@ impl ConsoleDeliveries {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn console_identity_excludes_only_grip_handles() {
+        let events: Vec<Value> = serde_json::from_str(include_str!(
+            "../../tests/fixtures/console_follow_preformatted_events.json"
+        ))
+        .unwrap();
+        let mut deliveries = ConsoleDeliveries::default();
+        let mut emitted = Vec::new();
+        for mut event in events {
+            let channel = event["type"] == "resources-available-array";
+            remove_grip_actor_ids(&mut event);
+            for message in parse_follow_messages(&event) {
+                if !deliveries.is_duplicate(&message, channel) {
+                    emitted.push(message);
+                }
+            }
+        }
+        assert_eq!(emitted.len(), 3);
+        let long = &emitted[2];
+        assert!(long.message.contains("iter252-record:long:"));
+        let mut distinct = long.clone();
+        distinct.message = distinct.message.replace("10020", "10021");
+        assert!(!deliveries.is_duplicate(long, true));
+        assert!(
+            !deliveries.is_duplicate(&distinct, false),
+            "length remains significant"
+        );
+        distinct = long.clone();
+        distinct.message = distinct.message.replace("long:", "other:");
+        assert!(
+            !deliveries.is_duplicate(&distinct, false),
+            "initial text remains significant"
+        );
+        distinct = long.clone();
+        distinct.timestamp += 1.0;
+        assert!(
+            !deliveries.is_duplicate(&distinct, false),
+            "separate calls remain significant"
+        );
+        assert!(deliveries.is_duplicate(long, false));
+
+        // An ordinary logged string may contain literal JSON, including keys
+        // named type/actor. It must not be parsed and normalized as a grip.
+        let mut literal = Value::String(r#"{"type":"longString","actor":"literal"}"#.into());
+        let original = literal.clone();
+        remove_grip_actor_ids(&mut literal);
+        assert_eq!(literal, original);
+    }
 
     #[test]
     fn console_deliveries_pair_channels_and_preserve_repeated_calls() {

@@ -580,32 +580,13 @@ fn console_follow_streams_messages_as_ndjson() {
 /// all use the wrapped shape and therefore could not catch it.
 #[test]
 fn console_follow_streams_flat_console_message_resources() {
-    let console_event = json!({
-        "type": "resources-available-array",
-        "from": "server1.conn0.watcher4.process0//windowGlobalTarget1",
-        "array": [
-            ["console-message", [
-                {
-                    "arguments": ["flat resource 1"],
-                    "lineNumber": 1,
-                    "columnNumber": 32,
-                    "filename": "debugger eval code",
-                    "level": "log",
-                    "timeStamp": 1000.0,
-                    "sourceId": null,
-                    "innerWindowID": 17_179_869_186_u64
-                },
-                {
-                    "arguments": ["flat resource %s", "two"],
-                    "lineNumber": 2,
-                    "columnNumber": 1,
-                    "filename": "app.js",
-                    "level": "warn",
-                    "timeStamp": 2000.0
-                }
-            ]]
-        ]
-    });
+    // Recorded by live_252_record_preformatted_console_deliveries. Replay
+    // both channels, including their distinct longString actor IDs.
+    let recording = load_fixture("console_follow_preformatted_events.json");
+    let mut events = recording.as_array().unwrap().clone().into_iter();
+    let console_event = events.next().unwrap();
+    let mut followups: Vec<_> = events.collect();
+    followups.push(load_fixture("watch_resources_response.json"));
 
     // A content-process resource can precede the watchResources ACK. Replay
     // this recorded shape before the ACK and ensure setup retains it.
@@ -614,11 +595,7 @@ fn console_follow_streams_flat_console_message_resources() {
         .on("getTarget", load_fixture("get_target_response.json"))
         .on("getWatcher", load_fixture("get_watcher_response.json"))
         .on("watchTargets", load_fixture("watch_targets_response.json"))
-        .on_with_followups(
-            "watchResources",
-            console_event,
-            vec![load_fixture("watch_resources_response.json")],
-        )
+        .on_with_followups("watchResources", console_event, followups)
         .close_after_followups();
     let port = server.port();
     let requests = server.request_log();
@@ -645,22 +622,30 @@ fn console_follow_streams_flat_console_message_resources() {
     let lines: Vec<&str> = stdout.trim().lines().collect();
     assert_eq!(
         lines.len(),
-        2,
+        3,
         "flat console-message resources must stream like wrapped ones, got: {stdout}"
     );
 
     let msg1: serde_json::Value =
         serde_json::from_str(lines[0]).expect("line 1 must be valid JSON");
     assert_eq!(msg1["level"], "log");
-    assert_eq!(msg1["message"], "flat resource 1");
+    assert_eq!(msg1["message"], "iter252-record:literal:%s");
     assert_eq!(msg1["source"], "debugger eval code");
     assert_eq!(msg1["line"], 1);
 
-    // printf substitution must run on the flat branch too.
+    // Formatting already ran in Firefox; percent tokens must remain literal.
     let msg2: serde_json::Value =
         serde_json::from_str(lines[1]).expect("line 2 must be valid JSON");
-    assert_eq!(msg2["level"], "warn");
-    assert_eq!(msg2["message"], "flat resource two");
+    assert_eq!(msg2["level"], "log");
+    assert_eq!(msg2["message"], "iter252-record:substituted:%s");
+    let msg3: serde_json::Value = serde_json::from_str(lines[2]).unwrap();
+    let grip: serde_json::Value = serde_json::from_str(msg3["message"].as_str().unwrap()).unwrap();
+    assert_eq!(grip["type"], "longString");
+    assert_eq!(grip["length"], 10020);
+    assert!(
+        grip["actor"].as_str().is_some(),
+        "output must retain grip handles"
+    );
 }
 
 #[test]

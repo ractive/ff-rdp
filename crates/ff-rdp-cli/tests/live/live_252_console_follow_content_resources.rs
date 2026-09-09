@@ -78,7 +78,12 @@ fn fixture_routes() -> HashMap<String, FixtureRoute> {
         FixtureRoute::html(format!(
             "<!doctype html><title>iter-252 console ticker</title>\
              <body>iter-252</body>\
-             <script>let tick=0;setInterval(function(){{console.log('{PROBE}:'+ ++tick);}}, 250);</script>"
+             <script>let tick=0;setInterval(function(){{++tick;\
+             console.log('{PROBE}:tick:'+tick);\
+             console.log('{PROBE}:literal:'+tick+':%s');\
+             console.log('%s','{PROBE}:substituted:'+tick+':%s');\
+             console.log('{PROBE}:long:'+tick+':'+ 'x'.repeat(10000));\
+             }}, 250);</script>"
         )),
     );
     routes
@@ -132,7 +137,7 @@ fn follow_console(global: &[String], label: &str) -> Vec<String> {
         .args(global)
         .args(["console", "--follow", "--pattern", PROBE])
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::inherit())
         .spawn()
         .unwrap_or_else(|e| panic!("{label}: spawn `console --follow`: {e}"));
 
@@ -159,7 +164,7 @@ fn follow_console(global: &[String], label: &str) -> Vec<String> {
                 .cloned()
                 .collect();
         }
-        if matched.len() >= 12 {
+        if matched.len() >= 24 {
             break;
         }
         std::thread::sleep(Duration::from_millis(200));
@@ -172,7 +177,7 @@ fn follow_console(global: &[String], label: &str) -> Vec<String> {
 
 /// Assert one route delivered the page's console output, with the failure text
 /// naming the two mechanisms that can produce silence here.
-fn assert_route_sees_console(global: &[String], route: &str) {
+fn assert_route_sees_console(global: &[String], route: &str) -> Vec<String> {
     let label = format!("{route}: console --follow");
     let matched = follow_console(global, &label);
 
@@ -194,7 +199,7 @@ fn assert_route_sees_console(global: &[String], route: &str) {
     let parsed: serde_json::Value = serde_json::from_str(&matched[0])
         .unwrap_or_else(|e| panic!("{route}: follow line is not JSON: {e}\n{}", matched[0]));
     assert!(
-        parsed["message"].as_str().unwrap().starts_with(PROBE),
+        parsed["message"].as_str().unwrap().contains(PROBE),
         "{route}: `message` must carry the logged text, got {parsed}"
     );
     assert_eq!(
@@ -202,21 +207,54 @@ fn assert_route_sees_console(global: &[String], route: &str) {
         "{route}: `level` must survive parsing, got {parsed}"
     );
     let mut counts = std::collections::BTreeMap::new();
+    let mut kinds = std::collections::BTreeSet::new();
+    let mut violations = Vec::new();
     for line in &matched {
         let entry: serde_json::Value = serde_json::from_str(line).unwrap();
-        *counts
-            .entry(entry["message"].as_str().unwrap().to_owned())
-            .or_insert(0) += 1;
+        let message = entry["message"].as_str().unwrap();
+        let text = if message.starts_with('{') {
+            let grip: serde_json::Value = serde_json::from_str(message).unwrap();
+            assert_eq!(grip["type"], "longString", "{route}: {grip}");
+            assert!(grip["length"].as_u64().unwrap() > 10000);
+            assert!(
+                grip["actor"].as_str().is_some(),
+                "output must retain grip actor"
+            );
+            let initial = grip["initial"].as_str().unwrap();
+            let prefix = initial.split(':').take(3).collect::<Vec<_>>().join(":");
+            eprintln!(
+                "iter252 long grip route={route} prefix={prefix} actor={} length={}",
+                grip["actor"], grip["length"]
+            );
+            prefix
+        } else {
+            message.to_owned()
+        };
+        assert!(
+            text.starts_with(PROBE),
+            "{route}: logged text must survive: {text}"
+        );
+        let kind = text.split(':').nth(1).unwrap();
+        kinds.insert(kind.to_owned());
+        if matches!(kind, "literal" | "substituted") && !text.ends_with(":%s") {
+            violations.push(format!("{route}: corrupted percent token: {text}"));
+        }
+        *counts.entry(text).or_insert(0) += 1;
     }
     eprintln!(
         "iter252 measurement route={route} lines={} unique={} counts={counts:?}",
         matched.len(),
         counts.len()
     );
-    assert!(
-        counts.values().all(|count| *count == 1),
-        "{route}: duplicate timer logs: {counts:?}"
+    assert_eq!(
+        kinds.len(),
+        4,
+        "{route}: every probe kind must arrive: {kinds:?}"
     );
+    if !counts.values().all(|count| *count == 1) {
+        violations.push(format!("{route}: duplicate timer logs: {counts:?}"));
+    }
+    violations
 }
 
 /// AC (iteration 252): every content-process subscriber is measured on both
@@ -258,7 +296,7 @@ fn live_252_console_follow_sees_content_process_messages_both_routes() {
     // --- direct route ----------------------------------------------------
     // The leg that reproduces the defect. Run first, before any daemon exists,
     // so nothing about the daemon's watcher can mask it.
-    assert_route_sees_console(&direct_args(port), "direct");
+    let mut violations = assert_route_sees_console(&direct_args(port), "direct");
 
     // --- daemon route ----------------------------------------------------
     // The control. If this leg fails the harness is not measuring anything and
@@ -268,7 +306,7 @@ fn live_252_console_follow_sees_content_process_messages_both_routes() {
         ff.with_daemon().is_some(),
         "live_252: the proxy daemon did not start for Firefox on port {port}"
     );
-    assert_route_sees_console(&base_args(port), "daemon");
+    violations.extend(assert_route_sees_console(&base_args(port), "daemon"));
 
     // Plain console arms startListeners on the daemon's shared connection.
     // A later follow must not emit the legacy push and resource copies twice.
@@ -283,7 +321,8 @@ fn live_252_console_follow_sees_content_process_messages_both_routes() {
         String::from_utf8_lossy(&prime.stdout),
         String::from_utf8_lossy(&prime.stderr)
     );
-    assert_route_sees_console(&base_args(port), "daemon-primed");
+    violations.extend(assert_route_sees_console(&base_args(port), "daemon-primed"));
 
     stop_daemon(port);
+    assert!(violations.is_empty(), "{}", violations.join("\n"));
 }

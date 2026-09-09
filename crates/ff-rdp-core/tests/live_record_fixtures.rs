@@ -24,6 +24,74 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 /// always terminates — even if Firefox never issues the request (iter-136).
 const HTTP_SERVER_ACCEPT_DEADLINE: Duration = Duration::from_secs(30);
 
+/// Record both deliveries of preformatted percent tokens and a long-string
+/// grip. The actor IDs differ between channels although each timestamp matches.
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_252_record_preformatted_console_deliveries() {
+    if !should_run_live() {
+        return;
+    }
+    let mut conn = connect();
+    let transport = conn.transport_mut();
+    transport
+        .send(&json!({"to": "root", "type": "listTabs"}))
+        .unwrap();
+    let tabs = recv_from_actor(transport, "root");
+    let tab = tabs["tabs"][0]["actor"].as_str().unwrap();
+    transport
+        .send(&json!({"to": tab, "type": "getWatcher", "isServerTargetSwitchingEnabled": true}))
+        .unwrap();
+    let watcher_reply = recv_from_actor(transport, tab);
+    let watcher = watcher_reply["actor"].as_str().unwrap();
+    transport
+        .send(&json!({"to": watcher, "type": "watchTargets", "targetType": "frame"}))
+        .unwrap();
+    drain_messages(transport, Duration::from_secs(1));
+    transport
+        .send(
+            &json!({"to": watcher, "type": "watchResources", "resourceTypes": ["console-message"]}),
+        )
+        .unwrap();
+    drain_messages(transport, Duration::from_secs(1));
+    transport
+        .send(&json!({"to": tab, "type": "getTarget"}))
+        .unwrap();
+    let target = recv_from_actor(transport, tab);
+    let console = target["frame"]["consoleActor"].as_str().unwrap();
+    transport
+        .send(&json!({"to": console, "type": "startListeners", "listeners": ["ConsoleAPI"]}))
+        .unwrap();
+    recv_from_actor(transport, console);
+    transport.send(&json!({
+        "to": console,
+        "type": "evaluateJSAsync",
+        "text": "console.log('iter252-record:literal:%s'); console.log('%s', 'iter252-record:substituted:%s'); console.log('iter252-record:long:' + 'x'.repeat(10000));"
+    })).unwrap();
+    let events: Vec<_> = drain_messages(transport, Duration::from_secs(2))
+        .into_iter()
+        .filter(|event| {
+            matches!(
+                event["type"].as_str(),
+                Some("consoleAPICall" | "resources-available-array")
+            ) && event.to_string().contains("iter252-record:")
+        })
+        .collect();
+    let legacy = events
+        .iter()
+        .filter(|event| event["type"] == "consoleAPICall")
+        .count();
+    let resources: usize = events
+        .iter()
+        .map(|event| ff_rdp_core::parse_console_resources(event).len())
+        .sum();
+    assert_eq!(legacy, 3, "legacy delivery: {events:?}");
+    assert_eq!(resources, 3, "resource delivery: {events:?}");
+    let recording = Value::Array(events);
+    save_cli_fixture("console_follow_preformatted_events.json", &recording);
+    save_core_fixture("console_follow_preformatted_events.json", &recording);
+}
+
 fn connect() -> RdpConnection {
     RdpConnection::connect("127.0.0.1", firefox_port(), TIMEOUT).expect("connect to Firefox")
 }

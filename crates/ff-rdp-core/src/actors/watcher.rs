@@ -952,10 +952,13 @@ fn parse_single_console_resource(item: &Value) -> Option<ConsoleResource> {
     // resource shapes that happen to share a key or two.
     let level = item.get("level").and_then(Value::as_str)?.to_owned();
 
+    // Console.cpp::ProcessArguments already applied formatting before this
+    // resource was prepared. A remaining `%s` is literal, including one that
+    // came from a substituted string; interpreting it again loses output.
     let message = item
         .get("arguments")
         .and_then(Value::as_array)
-        .map(|args| format_console_args(args))
+        .map(|args| join_console_args_plain(args))
         .unwrap_or_default();
 
     let source = item
@@ -1914,25 +1917,17 @@ mod tests {
         assert!(resources[0].resource_id.is_none());
     }
 
-    /// AC (iter-252): the flat branch runs the same printf substitution the
-    /// nested one does, so `%s` in a resource-shaped message is not left raw.
+    /// Firefox has already substituted format arguments in flat resources.
     #[test]
-    fn parse_console_resources_flat_shape_applies_printf_substitution() {
-        let event = json!({
-            "array": [["console-message", [{
-                "arguments": ["hello %s, you are %d", "world", 42],
-                "level": "warn",
-                "filename": "app.js",
-                "lineNumber": 7,
-                "columnNumber": 3,
-                "timeStamp": 1000.0
-            }]]]
-        });
-
-        let resources = parse_console_resources(&event);
-        assert_eq!(resources.len(), 1);
-        assert_eq!(resources[0].level, "warn");
-        assert_eq!(resources[0].message, "hello world, you are 42");
+    fn parse_console_resources_preserves_preformatted_percent_tokens() {
+        let events: Vec<Value> = serde_json::from_str(include_str!(
+            "../../tests/fixtures/console_follow_preformatted_events.json"
+        ))
+        .unwrap();
+        let resources: Vec<_> = events.iter().flat_map(parse_console_resources).collect();
+        assert_eq!(resources.len(), 3);
+        assert_eq!(resources[0].message, "iter252-record:literal:%s");
+        assert_eq!(resources[1].message, "iter252-record:substituted:%s");
     }
 
     /// AC (iter-252): the nested `message` wrapper still wins when present, so
