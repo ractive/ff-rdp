@@ -23,6 +23,7 @@ fn run(home: &Path, extra: &[&str]) -> std::process::Output {
         .args(extra)
         .env("HOME", home)
         .env("USERPROFILE", home)
+        .env_remove("CODEX_HOME")
         .env_remove("RUST_LOG")
         .output()
         .expect("spawn ff-rdp")
@@ -253,6 +254,93 @@ fn codex_home() -> TempDir {
 
 fn codex_path(home: &Path) -> std::path::PathBuf {
     home.join(".codex/hooks.json")
+}
+
+#[test]
+fn install_hook_codex_custom_home_controls_gate_and_all_mutations() {
+    let home = codex_home();
+    let custom = TempDir::new().unwrap();
+    let custom_path = custom.path().join("hooks.json");
+    let default_path = codex_path(home.path());
+    let unrelated = include_str!("../fixtures/codex-hooks-documented.json");
+    fs::write(&default_path, unrelated).unwrap();
+    let invoke = |args: &[&str]| {
+        Command::new(ff_rdp_bin())
+            .arg("install-hook")
+            .arg("--codex")
+            .args(args)
+            .env("HOME", home.path())
+            .env("USERPROFILE", home.path())
+            .env("CODEX_HOME", custom.path())
+            .env_remove("RUST_LOG")
+            .output()
+            .unwrap()
+    };
+    // An enabled default home must never bypass the active home's missing gate.
+    for args in [vec![], vec!["--dry-run"]] {
+        let out = invoke(&args);
+        assert_eq!(out.status.code(), Some(1), "{}", support::output_note(&out));
+        assert!(String::from_utf8_lossy(&out.stdout).contains(custom.path().to_str().unwrap()));
+        assert!(!custom_path.exists());
+        assert!(!custom.path().join("config.toml").exists());
+        assert_eq!(fs::read_to_string(&default_path).unwrap(), unrelated);
+    }
+    let enabled = "[features]\nhooks = true\n";
+    fs::write(custom.path().join("config.toml"), enabled).unwrap();
+    // The inverse proves installation reads the custom gate, not the default.
+    let disabled = "[features]\nhooks = false\n";
+    fs::write(home.path().join(".codex/config.toml"), disabled).unwrap();
+    fs::write(&custom_path, unrelated).unwrap();
+    assert!(invoke(&["--dry-run"]).status.success());
+    assert_eq!(fs::read_to_string(&custom_path).unwrap(), unrelated);
+    let first = invoke(&[]);
+    assert!(first.status.success(), "{}", support::output_note(&first));
+    assert_eq!(results(&first)["action"], "installed");
+    let installed = fs::read(&custom_path).unwrap();
+    assert_eq!(results(&invoke(&[]))["action"], "no-op");
+    assert_eq!(fs::read(&custom_path).unwrap(), installed);
+    assert!(invoke(&["--uninstall", "--dry-run"]).status.success());
+    assert_eq!(fs::read(&custom_path).unwrap(), installed);
+    fs::write(custom.path().join("config.toml"), disabled).unwrap();
+    let removed = invoke(&["--uninstall"]);
+    assert!(
+        removed.status.success(),
+        "{}",
+        support::output_note(&removed)
+    );
+    assert_eq!(results(&removed)["action"], "uninstalled");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&fs::read(&custom_path).unwrap()).unwrap(),
+        serde_json::from_str::<serde_json::Value>(unrelated).unwrap()
+    );
+    assert_eq!(
+        results(&invoke(&["--uninstall"]))["action"],
+        "not-installed"
+    );
+    assert_eq!(fs::read_to_string(&default_path).unwrap(), unrelated);
+    assert_eq!(
+        fs::read_to_string(home.path().join(".codex/config.toml")).unwrap(),
+        disabled
+    );
+    assert_eq!(
+        fs::read_to_string(custom.path().join("config.toml")).unwrap(),
+        disabled
+    );
+}
+
+#[test]
+fn install_hook_codex_empty_custom_home_uses_default() {
+    let home = codex_home();
+    let output = Command::new(ff_rdp_bin())
+        .args(["install-hook", "--codex"])
+        .env("HOME", home.path())
+        .env("USERPROFILE", home.path())
+        .env("CODEX_HOME", "")
+        .env_remove("RUST_LOG")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", support::output_note(&output));
+    assert!(codex_path(home.path()).exists());
 }
 
 #[test]

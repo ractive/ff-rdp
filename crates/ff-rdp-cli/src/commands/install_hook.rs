@@ -108,8 +108,11 @@ fn settings_path(target: Target, project: bool) -> Result<PathBuf, AppError> {
                 Ok(home.join(".claude").join("settings.json"))
             }
         }
-        Target::Codex if !project => resolve_home_dir()
-            .map(|home| home.join(".codex/hooks.json"))
+        Target::Codex if !project => std::env::var_os("CODEX_HOME")
+            .filter(|home| !home.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| resolve_home_dir().map(|home| home.join(".codex")))
+            .map(|home| home.join("hooks.json"))
             .ok_or_else(|| AppError::User("could not determine home directory".to_owned())),
         Target::Codex => Err(AppError::User(
             "--project is only supported with --claude; omit it for a user-level Codex hook"

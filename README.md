@@ -113,8 +113,9 @@ byte-identical), repairs its own path in place if the binary moves, and never
 touches any hook it does not own.
 
 For Codex, use `ff-rdp install-hook --codex` (also supports `--dry-run` and
-`--uninstall`) to merge a managed entry into `~/.codex/hooks.json`. First set
-`hooks = true` under `[features]` in `~/.codex/config.toml` yourself. This is
+`--uninstall`) to merge a managed entry into `$CODEX_HOME/hooks.json`, defaulting
+to `~/.codex/hooks.json` when `CODEX_HOME` is unset or empty. First set
+`hooks = true` under `[features]` in that directory's `config.toml` yourself. This is
 ff-rdp's explicit installer opt-in policy: Codex 0.153.4 already enables hooks
 by default. ff-rdp never edits config or trust and does not check effective
 enterprise/project policy. Uninstall works without that opt-in.

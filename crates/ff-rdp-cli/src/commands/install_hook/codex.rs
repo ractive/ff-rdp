@@ -106,18 +106,27 @@ fn command_for_path(path: &str) -> String {
     }
     #[cfg(windows)]
     {
-        use base64::Engine;
         // Codex's Windows default is COMSPEC /C, where percent expansion still
-        // happens inside quotes. Transport a literal PowerShell invocation as
-        // UTF-16LE base64 so cmd never sees any path metacharacters.
-        let script = format!(
-            "& '{}' {HOOK_ARGS}; exit $LASTEXITCODE",
-            path.replace('\'', "''")
-        );
-        let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
-        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        // happens inside quotes. cmd sees only base64, never path characters.
+        let encoded = powershell_encoded_command(path);
         format!("powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand {encoded}")
     }
+}
+
+#[cfg(any(windows, test))]
+fn powershell_encoded_command(path: &str) -> String {
+    use base64::Engine;
+    // Encode the path separately as data: PowerShell also interprets typographic
+    // apostrophes as quote delimiters. Encoding an interpolated script alone
+    // would still let those characters become syntax after decoding.
+    let data = base64::engine::general_purpose::STANDARD.encode(path.as_bytes());
+    // Invocation errors otherwise leave LASTEXITCODE unset and `exit $null`
+    // reports success. Native child failures still retain their own exit code.
+    let script = format!(
+        "$ErrorActionPreference = 'Stop'; $exe = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{data}')); & $exe {HOOK_ARGS}; exit $LASTEXITCODE"
+    );
+    let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
 #[cfg(test)]
@@ -143,29 +152,29 @@ mod tests {
         #[cfg(not(windows))]
         let name = " space'\";$()`touch INJECTED`&|<>*?\\\n";
         #[cfg(windows)]
-        let name = " space';&()%FF_RDP_QUOTE_PROBE% ! ";
+        let name = " James’s‘‚‛ space';&()%FF_RDP_QUOTE_PROBE% ! end";
         let dir = temp.path().join(name);
         std::fs::create_dir(&dir).unwrap();
         let binary = dir.join(if cfg!(windows) { "probe.exe" } else { "probe" });
         // A compiled argv probe avoids confusing shell-script parsing with the
         // hook command's parsing. A safe-path control proves the harness runs.
         let source = temp.path().join("probe.rs");
-        std::fs::write(&source, "fn main() { let a: Vec<_> = std::env::args().skip(1).collect(); assert_eq!(a, [\"home\", \"--hook\"]); println!(\"ARGV_OK\"); }").unwrap();
-        assert!(
-            std::process::Command::new("rustc")
-                .arg(&source)
-                .arg("-o")
-                .arg(&binary)
-                .status()
-                .unwrap()
-                .success()
-        );
         let control = temp.path().join(if cfg!(windows) {
             "control.exe"
         } else {
             "control"
         });
-        std::fs::copy(&binary, &control).unwrap();
+        std::fs::write(&source, "fn main() { let a: Vec<_> = std::env::args().skip(1).collect(); assert_eq!(a, [\"home\", \"--hook\"]); println!(\"ARGV_OK\"); std::process::exit(23); }").unwrap();
+        assert!(
+            std::process::Command::new("rustc")
+                .arg(&source)
+                .arg("-o")
+                .arg(&control)
+                .status()
+                .unwrap()
+                .success()
+        );
+        std::fs::copy(&control, &binary).unwrap();
         #[cfg(not(windows))]
         let shells: Vec<_> = ["/bin/sh", "/bin/bash", "/bin/zsh"]
             .into_iter()
@@ -196,9 +205,111 @@ mod tests {
                 .env("FF_RDP_QUOTE_PROBE", "EXPANDED")
                 .output()
                 .unwrap();
-            assert!(output.status.success(), "{output:?}");
+            assert_eq!(output.status.code(), Some(23), "{output:?}");
             assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), "ARGV_OK");
             assert!(!temp.path().join("INJECTED").exists());
         }
+    }
+
+    #[test]
+    fn codex_powershell_preserves_unicode_path_data_and_exit_status() {
+        // Native Windows always exercises Windows PowerShell. Unix CI can also
+        // run the same encoded payload when PowerShell Core is installed; that
+        // verifies its parser semantics, not cmd.exe or Windows execution.
+        let shell = if cfg!(windows) {
+            "powershell.exe"
+        } else {
+            "pwsh"
+        };
+        match std::process::Command::new(shell)
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "exit 0",
+            ])
+            .output()
+        {
+            Err(error) if !cfg!(windows) && error.kind() == std::io::ErrorKind::NotFound => {
+                eprintln!("PowerShell Core unavailable; native Windows CI owns this control");
+                return;
+            }
+            result => assert!(result.unwrap().status.success()),
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("probe.rs");
+        let control = temp.path().join(if cfg!(windows) {
+            "control.exe"
+        } else {
+            "control"
+        });
+        std::fs::write(&source, "fn main() { let a: Vec<_> = std::env::args().skip(1).collect(); assert_eq!(a, [\"home\", \"--hook\"]); println!(\"ARGV_OK\"); std::process::exit(std::env::var(\"PROBE_EXIT\").unwrap().parse().unwrap()); }").unwrap();
+        assert!(
+            std::process::Command::new("rustc")
+                .arg(&source)
+                .arg("-o")
+                .arg(&control)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let mut paths = Vec::new();
+        for name in [
+            "James’s Tools",
+            "left‘quote",
+            "low‚quote",
+            "reversed‛quote",
+            "x’; Set-Content INJECTED pwned; #",
+            " space';&()%FF_RDP_QUOTE_PROBE% ! $() ` end",
+        ] {
+            let dir = temp.path().join(name);
+            std::fs::create_dir(&dir).unwrap();
+            let path = dir.join(if cfg!(windows) { "probe.exe" } else { "probe" });
+            std::fs::copy(&control, &path).unwrap();
+            paths.push(path);
+        }
+        paths.insert(0, control);
+        for path in paths {
+            for exit in [0, 23] {
+                let output = std::process::Command::new(shell)
+                    .args([
+                        "-NoLogo",
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-EncodedCommand",
+                        &powershell_encoded_command(path.to_str().unwrap()),
+                    ])
+                    .current_dir(temp.path())
+                    .env("PROBE_EXIT", exit.to_string())
+                    .env("FF_RDP_QUOTE_PROBE", "EXPANDED")
+                    .output()
+                    .unwrap();
+                assert!(
+                    !temp.path().join("INJECTED").exists(),
+                    "injection from {path:?}: {output:?}"
+                );
+                assert_eq!(output.status.code(), Some(exit), "{path:?}: {output:?}");
+                assert_eq!(String::from_utf8(output.stdout).unwrap().trim(), "ARGV_OK");
+            }
+        }
+        let missing = temp.path().join("missing.exe");
+        assert!(!missing.exists());
+        let output = std::process::Command::new(shell)
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-EncodedCommand",
+                &powershell_encoded_command(missing.to_str().unwrap()),
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "missing executable must fail: {output:?}"
+        );
+        assert!(!output.stderr.is_empty(), "launch error must be visible");
     }
 }

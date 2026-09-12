@@ -8,23 +8,26 @@ dogfood_init
 
 # Per-command environment assignments leave the real user configuration alone.
 hook_home="$FF_RDP_DOGFOOD_WORKDIR/hook-home"
-mkdir -p "$hook_home/.codex"
-printf '[features]\nhooks = true\n' > "$hook_home/.codex/config.toml"
+hook_codex="$FF_RDP_DOGFOOD_WORKDIR/custom-codex"
+mkdir -p "$hook_home/.codex" "$hook_codex"
+printf '[features]\nhooks = false\n' > "$hook_home/.codex/config.toml"
+printf '[features]\nhooks = true\n' > "$hook_codex/config.toml"
 hook_cli() {
-    HOME="$hook_home" USERPROFILE="$hook_home" CODEX_HOME="$hook_home/.codex" ffrdp install-hook "$@"
+    HOME="$hook_home" USERPROFILE="$hook_home" CODEX_HOME="$hook_codex" ffrdp install-hook "$@"
 }
 hook_cli --codex --dry-run | jq -e '.results.dry_run == true'
-[ ! -e "$hook_home/.codex/hooks.json" ]
+[ ! -e "$hook_codex/hooks.json" ]
 hook_cli --codex | jq -e '.results.action == "installed" and (.results.next_step | contains("/hooks"))'
-cp "$hook_home/.codex/hooks.json" "$FF_RDP_DOGFOOD_WORKDIR/first.json"
+cp "$hook_codex/hooks.json" "$FF_RDP_DOGFOOD_WORKDIR/first.json"
 hook_cli --codex | jq -e '.results.action == "no-op"'
-cmp "$hook_home/.codex/hooks.json" "$FF_RDP_DOGFOOD_WORKDIR/first.json"
-printf '[features]\nhooks = false\n' > "$hook_home/.codex/config.toml"
+cmp "$hook_codex/hooks.json" "$FF_RDP_DOGFOOD_WORKDIR/first.json"
+printf '[features]\nhooks = false\n' > "$hook_codex/config.toml"
 if hook_cli --codex > "$FF_RDP_DOGFOOD_WORKDIR/refused.json"; then
     dogfood_die "Codex installer accepted an explicit false gate"
 fi
-cmp "$hook_home/.codex/hooks.json" "$FF_RDP_DOGFOOD_WORKDIR/first.json"
+cmp "$hook_codex/hooks.json" "$FF_RDP_DOGFOOD_WORKDIR/first.json"
 hook_cli --codex --uninstall | jq -e '.results.action == "uninstalled"'
+[ ! -e "$hook_home/.codex/hooks.json" ]
 if hook_cli --opencode --dry-run; then
     dogfood_die "OpenCode must retain its module-contract refusal"
 fi
