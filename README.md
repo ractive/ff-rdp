@@ -340,7 +340,8 @@ ff-rdp navigate <URL> --with-page --query "Stable release" \
 
 # The page is collected LAST — after the command's own wait and after
 # `document.readyState == "complete"` — so a click that navigates reports the
-# DESTINATION page. `meta.page_ready` is false if that wait timed out;
+# DESTINATION page. `meta.page_ready` is false if that wait timed out or an
+# announced navigation has not confirmed its document handover;
 # `meta.page_refs_registered` says whether the refs are usable (daemon only).
 #
 # Since iter-220 that holds on a slow destination too. Firefox keeps handing
@@ -349,7 +350,12 @@ ff-rdp navigate <URL> --with-page --query "Stable release" \
 # collecting from it returned the page you left, or hung until `--timeout`
 # because Firefox drops a request whose docshell has gone. `--with-page` now
 # waits (up to 3 s) for the navigation the action started to hand over a
-# document. Nothing navigated, nothing waited for.
+# document. If that bounded wait cannot confirm handover, a successful full
+# collection may still describe the OUTGOING page: `meta.page_ready=false`
+# labels it explicitly. Read again with `a11y summary` after navigation settles.
+# An unchanged URL does not confirm a same-URL replacement, and a navigation
+# start received during target refresh or collection also makes the view unready.
+# Nothing navigated, nothing waited for.
 #
 # And since iter-224 a connection that dies mid-collection no longer costs you
 # the action. On the daemon route, roughly one hop in fifteen used to come back

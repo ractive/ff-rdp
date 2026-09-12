@@ -2,25 +2,152 @@
 title: "Iteration 253: --with-page cannot tell a fast outgoing-document answer from the real destination"
 type: iteration
 date: 2026-08-31
-status: planned
+status: done
 branch: iter-253/with-page-outgoing-doc-race-detection
 depends_on: [220]
-first_call_sites:
-  - primitive: (none yet — investigation first; see Themes)
-    site: crates/ff-rdp-cli/src/commands/page_view.rs (collect_settled / settle_after_navigation)
-dogfood_path: |
-  ff-rdp launch --headless
-  # Needs a route that answers a ~10-50KB collection eval in well under the
-  # target-destroyed-form latency (observed 55ms on Wikipedia) while a
-  # navigation is in flight. No such fixture exists yet — Theme A is building
-  # one (a `/race` route serving a tiny, fast document as the outgoing page,
-  # linking to a slow-committing destination).
-  ff-rdp navigate <fixture>/race --with-page
-  ff-rdp click --ref <link-to-slow-dest> --with-page --jq '.results.page.headings[0].text'
-  # expected AFTER this iteration: either "slow-dest" (the real fix), or a
-  # documented, tested failure mode if Theme A concludes detection is not
-  # affordable — see Themes B.
+first_call_sites: []
+dogfood_path: >-
+  FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo run -p xtask --
+  check-dogfood-script kb/iterations/iteration-253-with-page-outgoing-doc-race-detection.md.
+  Exercises a non-navigating control and full-payload 50/700/3200/6000 ms
+  destination matrix on direct and daemon routes. Destinations that have not handed over
+  their document must not return an outgoing view with meta.page_ready=true.
 tags: [iteration, act-and-see, page-view, carry-over, defect]
+dogfood_script: iteration-253-with-page-outgoing-doc-race-detection.dogfood.sh
+implementation_evidence_2026_09_12: "Baseline09cfee1c: full-payload click --no-wait --with-page, fresh Readability injection on each document, Firefox155.0.1. Delays50/700ms returned destination ready=true on both routes; delays3200/6000ms returned outgoing ready=true on both routes (daemon3160/3144ms; direct3099/3079ms; parse1–4ms). The residual is reachable after the existing3s settle cap, not during a concurrent settle poll: collection follows the poll. Conservative labeling closes false confidence without making the action hostage to the destination: the settle outcome now gates page_ready. No broader deadline fix or unbounded navigation wait. Pre-fix2test failures and post-fix results retained in the assigned iter253 artifacts. Original AC wording remains unchanged; final closure pending."
+outcome_2026_09_12: |-
+  ## Outcome — 2026-09-12
+  The outgoing-document answer is reproducible on post-220 main
+  `09cfee1c6464896394f0e5ee1877b3894431cd06`, with the normal full collection and
+  cold Readability injection, on Firefox 155.0.1. The actual opening is after the
+  existing three-second settlement bound. Collection follows settlement; it does
+  not run concurrently with the next settle poll. No reduced payload or artificial
+  teardown event was used. Delaying the destination's first byte delays its commit
+  and leaves the outgoing document able to answer.
+  | Route | Destination delay | Before: heading / readiness / action wall time | After: heading / readiness / action wall time |
+  |---|---:|---|---|
+  | daemon | 3200 ms | outgoing / true / 3160 ms | outgoing / false / 3128 ms |
+  | daemon | 6000 ms | outgoing / true / 3144 ms | outgoing / false / 3150 ms |
+  | direct | 3200 ms | outgoing / true / 3099 ms | outgoing / false / 3092 ms |
+  | direct | 6000 ms | outgoing / true / 3079 ms | outgoing / false / 3089 ms |
+  The 50/700 ms controls returned the destination, ready, on both routes before
+  and after. Every sample freshly injected Readability, ran the headings and
+  interactive scan and reader pass, and reported parse time 1–4 ms before the fix.
+  The two vendored reader inputs alone are 36,819 bytes; the injection wrapper and
+  collection program are additional. Parse time is not whole-collection latency,
+  and these measurements do not establish the historical Wikipedia 55 ms teardown
+  timing for this fixture.
+  The fix closes the confidently-wrong answer through the plan's labeling
+  mechanism: `settle_after_navigation` returns whether it observed document
+  handover, and `collect_settled` intersects that with `page.ready`. A complete
+  outgoing DOM therefore remains useful but explicitly unready when the bounded
+  wait expires. Checking a fresh target only *after* collection would not prove
+  that the already-collected view belongs to that target. The navigation latch,
+  teardown guard, bounded retries and no-navigation fast path remain intact; no
+  iteration 258 deadline work is included. The no-signal branch still returns
+  immediately and now labels uncertainty. A missing new ID is not positive evidence
+  of a changed document. README documents the semantics.
+  Two live tests fail on main and pass after the fix. Reversing the readiness
+  intersection makes the direct live test fail again. A non-live test drives the
+  real settlement loop against the recorded target shape, covering unchanged,
+  missing, changed, fragment and no-signal identity cases. Mutating the expired
+  poll to report success makes that test fail. Both mutations were restored.
+  The conditional unreproducibility task remains unticked because its premise is
+  false; no unreproducibility claim or extra carry-over work is appropriate.
+  Validation: stable updated to Rust 1.98.1; ordered formatting, strict Clippy
+  0.1.98 and workspace tests passed (2445 passed, 0 failed, 404 ignored across
+  36 result summaries). An initial unit-mock handshake error and missing
+  daemon-parity annotation were repaired before the passing run. The original
+  dogfood control used a data URL without its required opt-in, and correctly
+  received the existing User error; the corrected control populates the owned
+  blank document with `eval`. Its gate then passed, including both live routes and
+  a fresh sentinel. These were authoring/setup errors, not deferred product bugs.
+  The closing sweep used both `FF_RDP_LIVE_TESTS=1` and
+  `FF_RDP_LIVE_NETWORK_TESTS=1`, with a raw owned Firefox on port 6000:
+  ```text
+  LIVE_SWEEP_SUMMARY executed=332 skipped=0 preexisting=0 vanished=0 launch_timeout=0 timed_out=0 total=332
+  LIVE_SWEEP_PROFILES leaked=0 unattributed=0 root=/Users/james/Library/Application Support/ff-rdp/profiles
+  ```
+  CLI: 315 passed, 8 failed. Core tiers: 1 + 3 + 3 + 2 passed, zero failed.
+  Total 324 + 8 = 332. All 332 compiled qualified names match actual verdicts;
+  there are no missing, extra or reclassified results. All five real-root scans
+  and the final profile summary are preserved. Both new regressions and all five
+  iteration 220 live tests passed in the sweep. All nine actual xtask checks ran
+  afterward and passed after the dogfood correction. Firefox refs had no declared
+  references to validate; actor/KB sync had no changed actor source to check.
+  ## Carry-over — 2026-09-12
+  | Observation | Disposition |
+  |---|---|
+  | `live_135_screenshot_ff153::live_135_screenshot_full_page_taller` failed in sweep and exact isolation with fourth-argument dictionary TypeError | Fold: [[iteration-257-firefox-155-drawsnapshot-dictionary-arg]], already explicitly covers this test |
+  | `live_144_session_hygiene_followup::live_144_full_page_no_duplicate_header` same error in sweep and exact isolation | Fold: [[iteration-257-firefox-155-drawsnapshot-dictionary-arg]] |
+  | `live_61l::live_screenshot_full_page` same error in sweep and exact isolation | Fold: [[iteration-257-firefox-155-drawsnapshot-dictionary-arg]] |
+  | `live_61r_screenshot::live_screenshot_full_page` same error in sweep and exact isolation | Fold: [[iteration-257-firefox-155-drawsnapshot-dictionary-arg]] |
+  | `live_92_screenshot_full_page::pre_fix_repro_screenshot_full_page_taller_than_viewport` same error in sweep and exact isolation | Fold: [[iteration-257-firefox-155-drawsnapshot-dictionary-arg]] |
+  | `live_92_screenshot_full_page::live_screenshot_full_page_md5_differs_from_viewport` same error in sweep and exact isolation | Fold: [[iteration-257-firefox-155-drawsnapshot-dictionary-arg]] |
+  | `live_screenshot_shim::live_screenshot_unchanged_after_shim` same error in sweep and exact isolation | Fold: [[iteration-257-firefox-155-drawsnapshot-dictionary-arg]] |
+  | `live_137_daemon_mode_parity::live_137_consent_accept_via_daemon` failed after 15038 ms / 47 polls; daemon PID 80419, uptime 16 s, target_count 1 / live_target_count 0, dispatcher alive and 90/90 frames, network buffer 464; isolation passed in 5.60 s (target ready in 29 ms / one poll) | Fold: [[iteration-262-daemon-live-target-never-promoted]] and record condition 8 recurrence in [[iteration-203-live-sweep-watch-conditions-third-holder]]. A successful isolation is not a fix or one of 262's required three green sweeps |
+  | Conditional task to explain inability to reproduce remains unticked | No plan: race reproduced with the full payload; this alternative premise is false |
+  | Failed authoring/setup attempts: unit mock handshake, missing daemon-parity annotation, dogfood data URL opt-in | Closed in this PR: raw mock connection, actual parity annotation and eval control; passing unit/workspace/dogfood evidence retained |
+  | Plan body editor unavailable in installed Hyalo | No product plan: substantive current outcome/carry-over evidence is stored in dated Hyalo metadata; this exact body addendum is supplied as an unapplied patch, and original AC wording is preserved |
+  No post-auth timeout, pre-auth EOF, timing-bound, omitted-name, watchdog or leak
+  trigger occurred in this sweep. Their existing plans and unticked ACs remain
+  open. Root owns independent review, final status and reconciliation of every
+  upcoming pending plan before publication.
+precheckpoint_outcome_2026_09_12: |-
+  # Iteration 253 pre-checkpoint edge verification
+  This followup supersedes the initial worker handoff for current source and closure evidence. Initial reports, sweeps, and failed setup attempts are preserved as historical artifacts, not reused as the final sweep.
+  ## Both supervisor cases
+  1. **Late navigation starts: confirmed and closed.** The existing transport permits a start before a successful `getTarget` reply, and permits a full collection reply after a start when the target omitted its optional document ID. A scripted transport regression sends these messages in a deterministic order, using recorded target/result shapes and the actual complete Readability injection. It also covers a new start after a previous navigation settled. Baseline failed all three originally tested cases; the expanded four-case test fails all four when the final latch intersection is removed. `collect_settled` now consumes the latch after every collection, including successful ones, and labels that collected view unready when a new start was observed. It does not try to bind an old view to a later target probe. A reconnect retains the latest latch. Existing navigation latch and target guard remain in place.
+  2. **Same-URL cross-document replacement: confirmed and closed.** A localhost fixture serves generation 1 immediately and delays generation 2 at the identical `/same` URL for six seconds. Full collection on real Firefox155.0.1 returned generation 1 confidently ready before the fix: daemon135ms, direct49ms. Actual before/after evals show the identical URL and generations1/2; both route envelopes are asserted. The fix permits URL-based settlement only when a known pre-navigation URL differs from the announced destination. Same document ID plus already-equal URL no longer proves handover. Corrected live tests return generation1 unready after the bounded wait, then observe generation2 at the identical URL. Final fragment controls show the URL changing to `#here` while generation2 remains, page_ready=true, daemon142ms/direct30ms. Unit controls retain changed-ID redirects, fragment URL changes, missing-ID behavior, and the no-signal single-probe fast path. Removing the URL distinction fails the same-ID/same-URL unit regression.
+  The first same-URL test attempt exposed fixture setup errors (nonblocking accepted sockets and JSON string parsing) and a daemon-host mismatch that selected direct fallback. These were fixed in the fixture/command setup, and all route assertions passed in the corrected before/after tests. They are not counted as product regressions. No broader architecture, timeout-budget258, screenshot257, or daemon-promotion262 work was performed.
+  ## Validation completed before sweep
+  - `before-late-event-all.log`: regression failed before the late-latch fix.
+  - `before-same-url-corrected.log`: two meaningful pre-fix live failures with actual route and before-URL evidence.
+  - `after-live.log`: four tests passed, full delayed-destination matrix plus same-URL replacements on both routes.
+  - `mutation-late-latch.log` and `mutation-same-url.log`: exit101 at the intended assertions; exact correct source restored after each.
+  - `final-fragment-live.log`: two tests passed, 23.53s; both same-URL and fragment controls.
+  - `rustup.log`, `fmt.log`, `clippy.log`, `workspace-test.log`: ordered gates exit0 on final source. Workspace2446passed,0failed,406ignored,36summaries.
+  - Sweep input frozen in `sweep.tree` and `sweep.patch`: tree95eedae226ee976937c55bda15a83fd35306d845. Real Git index remains byte-identical to baseline; no commits or publication.
+  Final dual-gate sweep16:36:24–16:41:14CEST:334executed=322passed+12failed; CLI313+12 and core1+3+3+2. Exact334 names reconcile, all reclassification/skip counts zero, all five profile-root checks clean, final leaked0/unattributed0. Every failed test received an exact isolated rerun. Detailed individual dispositions are in carryover.md. All nine xtask gates ran after the sweep and exited0, including actual dogfood non-navigating control and all four live tests48.61s. Owned rawFirefox56568 stopped/reaped143, port6000 free; unrelated desktop37270 preserved. Final status/review/checkpoint are supervisor responsibilities.
+precheckpoint_carryover_2026_09_12: |-
+  ## Carry-over from the final pre-checkpoint sweep
+  The closing sweep ran with both live gates enabled. It executed334=322passed+12failed (CLI313passed+12failed; core tiers1+3+3+2passed). Exactly334 qualified names match334 actual verdicts, with no missing/extra names. All skips, preexisting, vanished, launch_timeout and timed_out counts are zero. Each of five actual managed-profile-root checks reports no live-owned profile left behind; final leaked=0/unattributed=0. This supersedes the initial253 sweep332=324+8 as current evidence; that initial sweep remains historical.
+  | Exact failed test or diagnostic | Disposition and evidence |
+  |---|---|
+  | live_135_screenshot_ff153::live_135_screenshot_full_page_taller | Fold257: Firefox155 fourth-argument dictionary TypeError; exact isolation also failed2.47s. |
+  | live_144_session_hygiene_followup::live_144_full_page_no_duplicate_header | Fold257: same explicit dictionary TypeError; isolation failed2.29s. |
+  | live_61l::live_screenshot_full_page | Fold257: same explicit dictionary TypeError; isolation failed2.39s. |
+  | live_61r_screenshot::live_screenshot_full_page | Fold257: same explicit dictionary TypeError; isolation failed2.70s. |
+  | live_92_screenshot_full_page::pre_fix_repro_screenshot_full_page_taller_than_viewport | Fold257: same explicit dictionary TypeError; isolation failed2.44s. |
+  | live_92_screenshot_full_page::live_screenshot_full_page_md5_differs_from_viewport | Fold257: same explicit dictionary TypeError; isolation failed2.46s. |
+  | live_screenshot_shim::live_screenshot_unchanged_after_shim | Fold257: same explicit dictionary TypeError; isolation failed2.80s. |
+  | live_137_daemon_mode_parity::live_137_consent_accept_via_daemon, sweep | Fold262 and203 condition8: promotion failed15108ms/47polls. DaemonPID60752 uptime16s, target1/live0, dispatcher99started/99finished, in_flight0, no RPCowner, network buffer438. This is the original promotion signature. |
+  | Same consent test, exact isolation | Fold262 separately: live targets ready37ms/1poll, then Sourcepoint consent_not_actioned/detected_not_actioned. Testfailed5.81s. This is the previously documented consent-action observation; it does not reproduce promotion failure or imply a common cause. |
+  | live_161_eval_and_flag_strictness::live_161_fields_and_sort_reject_unknown_names | Fold267: autostart eval1 exited124 with post-auth Timeout before flag assertions. Firefoxport58109. Isolation passed4.99s. Failed-occurrence auth/request/dispatcher timing remains uncaptured and required; no cause established. |
+  | live_219_reader_view::live_219_collection_leaves_the_dom_byte_identical | Fold267: eval of DOM length/ref count returned post-auth Timeout; daemon proxy60330. Isolation passed5.13s. No causal or DOM-mutation conclusion follows; preserve missing failed-occurrence timing. |
+  | live_240_daemon_frame_desync_and_wedge::live_240_sustained_hops_never_desynchronise | Fold267: hop28 of40 failed with post-auth Timeout on origin page, reconnects0, daemon proxy61263. Isolation passed all40hops28.71s. This is DISTINCT from prior pre-auth EOF at hop27 carried by203; neither frame desynchronization nor common cause is proved. |
+  | live_styles_applied::live_styles_applied_returns_real_rules | Fold203 as a new explicit watch: readystate navigation to a data fixture exited successfully, then styles p --applied returned User/no element matching selector p. Isolation passed2.21s. The test never requests --with-page, so it does not execute253's changed collection path; no cause or environmental explanation established. On another unpaused sweep or exact-isolation recurrence, capture navigation envelope, before/after URL, document identity/readyState/DOM, route and styles actor target, then file a scoped diagnostic plan. Do not raise waits or infer a style-filter defect from a missing element. |
+  | Initial same-URL fixture setup and route errors | Closed here: accept sockets changed to blocking with bounded read; JSON string result parsed; commands explicitly match daemon registry host127.0.0.1 and assert actual route. Corrected meaningful pre-fix failures and post-fix passes retained. No product issue assigned from invalid setup. |
+  | Conditional unreproducibility task | No plan, false premise: the realistic complete-payload race was reproduced on real Firefox and receives detection/labeling. Original conditional task remains unticked and wording unchanged. |
+  | General Markdown body editing unavailable through Hyalo | Metadata contains current dated Outcome/Carry-over. Original task/AC wording preserved; old heading counts remain honest tooling debt. Unapplied body patch supplied, never raw-applied. Root owns final status and disposition before publication. |
+  | Raw profile cleanup | Owned Firefox56568 stopped and waited143; port6000 free, desktop37270 preserved. Fresh raw profile retained as an optional artifact. Earlier rawprofile removal was automatically rejected; no retry or approval requested. No running browser is retained. |
+  Plans264's three named timing tests passed this sweep; no new timing-bound trigger or distribution evidence is claimed. No pre-auth EOF recurred. Existing203/262/267 ACs remain unmet and untouched. Canary/locale watch checks and every-upcoming-plan reconciliation remain supervisor responsibilities before checkpoint/merge.
+precheckpoint_final_validation_2026_09_12: >-
+  Final source tree95eedae226ee976937c55bda15a83fd35306d845 completed
+  stable-update/fmt/clippy/workspace tests in order:2446passed,0failed,406ignored,36summaries.
+  Final dual-gate sweep16:36:24–16:41:14CEST:334executed=322passed+12failed;
+  CLI313+12 and core1+3+3+2; exact334names, no
+  skips/preexisting/vanished/launch_timeout/timed_out or profile leaks. All actual9xtask checks ran afterward and exited0;
+  real dogfood executed non-navigating control plus all4 live regression tests48.61s
+  and wrote a fresh sentinel. Firefox-reference check has no declared refs;
+  actor-sync compares base...HEAD and the entire working diff separately confirms no
+  actors changed. Current carried failures are explicit in
+  precheckpoint_carryover_2026_09_12; historical332sweep is not final closure evidence. Owned rawFirefox56568
+  stopped/reaped143, port6000 free, unrelated desktop37270 preserved. No commit,
+  publication or independent review performed; supervisor owns final
+  status/checkpoint/review and all-upcoming-plan reconciliation. Evidence directory
+  .git/ralph-loop/20260912-validation-efficiency/iter253/precheckpoint-edge-verification.
+supervisor_closure_2026_09_12: "2026-09-12 supervisor verified frozen implementation 41f4de9a69a637232e405ff77e09814605492c2b against swept source 95eedae226ee976937c55bda15a83fd35306d845: product, tests, README and dogfood are identical. All 334 distinct expected names equal 334 observed verdicts: 322 passed and 12 failed across five tiers, with all five profile checks clean. Ordered gates passed (2446 passed, 0 failed, 406 ignored), as did all nine actual xtask gates. Original AC/task wording is preserved. The conditional unreproducibility task remains unticked because the realistic race reproduced. Both actual ACs are fulfilled; status done describes implementation and closure, while the supervisor still owns exact-head PR review, CI and authorized merge. All 17 pending iterations were read and reconciled, including metadata-only plans 265/266/267; outside-range work remains pending. Next: 254, then prepare/verify/export the 256 Theme A harness before 255 measurement, then final 256 measurement and its single PR; the separate 242 sweep, 246 KB-only correction and 257 compatibility work follow. The architecture audit does not authorize broader implementation. Hyalo has no general body editor: correct heading counts are Tasks A 1/2, B-or-C 1/1, AC 2/2. Original body heading counters remain stale; the exact unapplied patch is retained. The user's Hyalo-only KB rule is preserved; no raw body patch was applied."
 ---
 
 # Iteration 253: `--with-page` cannot tell a fast outgoing-document answer from the real destination
@@ -82,21 +209,21 @@ plan rather than a comment.
 ## Tasks
 
 ### A. Reproduce or bound the window [0/2]
-- [ ] Fixture route(s) that isolate the race (fast outgoing page, slow-to-commit destination
+- [x] Fixture route(s) that isolate the race (fast outgoing page, slow-to-commit destination
       with a `target-destroyed-form` delay) and a live test that fails on `main`
       (post-iter-220) if the race is real
 - [ ] If unreproducible against a realistic collection payload, measure and record why
       (timing numbers), and note the theme this narrows the iteration to
 
 ### B or C. Close the window or label it [0/1]
-- [ ] Implement whichever of Theme B or Theme C the Task A finding points at, with a live test
+- [x] Implement whichever of Theme B or Theme C the Task A finding points at, with a live test
 
 ## Acceptance Criteria [0/2]
 
-- [ ] Either: the reproduction test from Task A fails on `main` and passes after the fix — OR:
+- [x] Either: the reproduction test from Task A fails on `main` and passes after the fix — OR:
       Task A's write-up in Outcome explains, with measured numbers, why no such test exists,
       and Task B instead ships detection/labeling with its own live test
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q`
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q`
       clean; live sweep reconciles
 
 ## Out of scope

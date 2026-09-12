@@ -121,8 +121,9 @@ pub struct PageView {
     /// How the view was produced — see [`PAGE_SOURCE_JS_FALLBACK`].
     pub source: &'static str,
     /// Whether `document.readyState` reached `complete` before collection.
-    /// `false` means the wait timed out and the view describes a still-loading
-    /// document — reported rather than swallowed.
+    /// For an attached view, also requires confirmation that an announced
+    /// navigation handed over its document. `false` can describe the outgoing
+    /// document after the bounded navigation wait, even if its DOM is complete.
     pub ready: bool,
     /// Milliseconds the in-page clone-and-parse took, as measured by
     /// `performance.now()` inside the content process. `None` when the reader
@@ -885,7 +886,7 @@ pub(crate) fn attach(
 /// *poll of `getTarget`*, which the parent process answers in a millisecond or
 /// two even while the content process is busy, so 3 s is many times what a
 /// commit needs. Exceeding it means the destination is genuinely slow, and a
-/// view of the outgoing page beats no view at all.
+/// view of the outgoing page, labeled unready, beats no view at all.
 ///
 /// This bounds one call to [`settle_after_navigation`] — `collect_settled`
 /// additionally shrinks it against the caller's own `--timeout` on later
@@ -1042,16 +1043,17 @@ fn collect_settled(
         // The document the action ran against. When a navigation is under way
         // this is precisely the docshell that must NOT be collected from.
         let before = ctx.target.inner_window_id;
-        if let Some(dest) = pending.as_deref() {
+        let navigation_settled = if let Some(dest) = pending.as_deref() {
             let settle_budget =
                 overall_deadline.map_or(Duration::from_millis(NAV_SETTLE_BUDGET_MS), |deadline| {
                     Duration::from_millis(NAV_SETTLE_BUDGET_MS)
                         .min(deadline.saturating_duration_since(Instant::now()))
                 });
-            settle_after_navigation(ctx, dest, before, settle_budget);
+            settle_after_navigation(ctx, dest, before, settle_budget)
         } else {
             ctx.refresh_target();
-        }
+            true
+        };
 
         let console_actor = ctx.target.console_actor.clone();
         // Arm the guard for the collection only — the returned scope disarms
@@ -1062,18 +1064,22 @@ fn collect_settled(
         let (outcome, latched) = {
             let mut guarded = ctx.arm_target_guard(ctx.target.inner_window_id);
             let outcome = collect(&mut guarded, &console_actor, opts);
-            // Only meaningful when the collection lost its document: `recv`
-            // latched the destination of the navigation that took it away.
-            let latched = if matches!(outcome, Err(AppError::RdpActorDestroyed { .. })) {
-                guarded.take_navigation_started()
-            } else {
-                None
-            };
+            // A start can arrive during the unguarded target refresh, or
+            // during a successful collection when Firefox omitted its ID and
+            // the teardown guard could not be armed. It also can announce a
+            // second navigation after the one we just settled. Consume every
+            // attempt's latch, not only an interrupted collection's latch.
+            let latched = guarded.take_navigation_started();
             (outcome, latched)
         };
 
         match outcome {
-            Ok(page) => {
+            Ok(mut page) => {
+                // A complete outgoing DOM can answer the entire collection
+                // before teardown. Completion is not evidence that the action's
+                // destination committed. Keep the useful view, but never call
+                // it ready when the bounded settle wait could not confirm that.
+                page.ready &= navigation_settled && latched.is_none();
                 return Ok(SettledPage {
                     page,
                     attempts,
@@ -1095,6 +1101,7 @@ fn collect_settled(
             // the caller already granted. Retrying on the *same* connection is
             // not an option: every subsequent send would fail the same way.
             Err(e) if is_connection_lost(&e) => {
+                pending = latched.or(pending);
                 if reconnects >= NAV_RECONNECT_ATTEMPTS
                     || overall_deadline.is_some_and(|deadline| Instant::now() >= deadline)
                 {
@@ -1149,46 +1156,61 @@ fn collect_settled(
 ///
 /// - **`innerWindowId` changed** — a cross-document load committed. This is the
 ///   Wikipedia case.
-/// - **the target's URL is the announced destination** — a *same-document*
-///   navigation (a `#fragment` link) flips the URL and never changes
+/// - **the target's URL changed to the announced destination** — a *same-document*
+///   navigation (a `#fragment` link) flips the pre-navigation URL and never changes
 ///   `innerWindowId`, so waiting on the id alone would burn the whole budget on
-///   a page that was ready immediately.
+///   a page that was ready immediately. An already-equal URL proves nothing:
+///   a same-URL cross-document replacement retains it before committing.
 ///
 /// When **neither** signal is available — `before` is `None` because this
 /// Firefox build's `getTarget` reply omitted `innerWindowId`
 /// ([`ff_rdp_core::TargetInfo::inner_window_id`] tolerates that; see
 /// `actors::tab`'s "tolerates absent" test), and `destination` is empty because the
-/// navigation announcement carried no `url` — there is nothing here that can
+/// navigation announcement carried no `url` (or there is no different known
+/// pre-navigation URL to compare it to) — there is nothing here that can
 /// ever flip, so this returns immediately instead of silently spending the
 /// whole `budget` on every navigating collection for a case waiting cannot
 /// help (iter-220 review finding).
 ///
-/// Returning after the budget (or immediately, in the no-signal case) is not
-/// an error: the caller collects whatever the tab reports and the view says
-/// which document it describes.
+/// Returns whether handover was confirmed. Exhausting the budget (or having
+/// no signals) is not an error: the caller still collects, but labels the view
+/// unready. Checking only after collection would be unsafe: a new target then
+/// does not prove that the already-collected view belongs to that target.
 fn settle_after_navigation(
     ctx: &mut ConnectedTab,
     destination: &str,
     before: Option<u64>,
     budget: Duration,
-) {
-    if before.is_none() && destination.is_empty() {
+) -> bool {
+    let url_can_prove_handover = !destination.is_empty()
+        && ctx
+            .target
+            .url
+            .as_deref()
+            .is_some_and(|url| url != destination);
+    if before.is_none() && !url_can_prove_handover {
         tracing::debug!(
             target: "ff_rdp_cli::page_view",
-            "collect_settled: no innerWindowId and no destination URL — cannot detect \
+            "collect_settled: no innerWindowId and no observable URL change — cannot detect \
              settlement, collecting without waiting"
         );
         ctx.refresh_target();
-        return;
+        return false;
     }
     let deadline = Instant::now() + budget;
     loop {
         ctx.refresh_target();
-        let changed_document = before.is_some() && ctx.target.inner_window_id != before;
+        let changed_document = matches!(
+            (before, ctx.target.inner_window_id),
+            (Some(old), Some(new)) if old != new
+        );
         let at_destination =
-            !destination.is_empty() && ctx.target.url.as_deref() == Some(destination);
-        if changed_document || at_destination || Instant::now() >= deadline {
-            return;
+            url_can_prove_handover && ctx.target.url.as_deref() == Some(destination);
+        if changed_document || at_destination {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
         }
         std::thread::sleep(Duration::from_millis(NAV_SETTLE_POLL_MS));
     }
@@ -1446,6 +1468,169 @@ mod tests {
     use super::*;
     use crate::cli::args::QueryArgs;
     use clap::Parser as _;
+
+    #[test]
+    fn unit_253_late_navigation_cannot_leave_successful_collection_ready() {
+        use ff_rdp_core::RdpTransport;
+        use ff_rdp_core::transport::{encode_frame, recv_from};
+        use std::io::{BufReader, Write as _};
+        use std::net::TcpListener;
+
+        // A guard with a known ID catches starts inside collection already.
+        // Missing IDs are supported, so also exercise successful collection
+        // with a start between its eval ACK and its full Readability reply.
+        let mut incorrect = Vec::new();
+        for (during_refresh, previous_navigation) in
+            [(true, false), (false, false), (false, true), (true, true)]
+        {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let send = |stream: &mut std::net::TcpStream, value: &Value| {
+                    stream
+                        .write_all(encode_frame(&value.to_string()).as_bytes())
+                        .unwrap();
+                };
+                let start = |url| json!({"from":"conn0/target1", "type":"tabNavigated", "state":"start", "url":url});
+                if previous_navigation {
+                    send(&mut stream, &start("https://a/"));
+                }
+                let target_request = recv_from(&mut reader).unwrap();
+                assert_eq!(target_request["type"], "getTarget");
+                if during_refresh {
+                    send(&mut stream, &start("https://b/"));
+                }
+                let mut target: Value = serde_json::from_str(include_str!(
+                    "../../tests/fixtures/get_target_response.json"
+                ))
+                .unwrap();
+                target["from"] = target_request["to"].clone();
+                target["frame"]["innerWindowId"] = if during_refresh {
+                    json!(7)
+                } else {
+                    Value::Null
+                };
+                target["frame"]["url"] = json!("https://a/");
+                send(&mut stream, &target);
+                for eval_number in 0..2 {
+                    let request = recv_from(&mut reader).unwrap();
+                    assert_eq!(request["type"], "evaluateJSAsync");
+                    let js = request["text"].as_str().unwrap();
+                    if eval_number == 1 {
+                        assert!(js.len() > 36_819, "must send the complete reader injection");
+                    }
+                    send(&mut stream, &json!({"from":request["to"], "resultID":"r"}));
+                    if !during_refresh && eval_number == 1 {
+                        send(&mut stream, &start("https://b/"));
+                    }
+                    let mut reply: Value = serde_json::from_str(include_str!(
+                        "../../tests/fixtures/eval_result_a11y_summary.json"
+                    ))
+                    .unwrap();
+                    reply["from"] = request["to"].clone();
+                    reply["resultID"] = json!("r");
+                    if eval_number == 0 {
+                        reply["result"] = json!("__FF_RDP_JSON__{\"reader_missing\":true}");
+                    }
+                    send(&mut stream, &reply);
+                }
+            });
+            let mut transport =
+                RdpTransport::connect_raw("127.0.0.1", port, Duration::from_secs(2)).unwrap();
+            if previous_navigation {
+                transport.recv().unwrap();
+            }
+            let mut ctx = ConnectedTab::for_test(transport, ActorId::from("conn0/console1"));
+            ctx.target.inner_window_id = during_refresh.then_some(7);
+            ctx.target.url = Some("https://previous/".to_owned());
+            let page = collect_settled(
+                &test_cli(&["ff-rdp", "tabs"]),
+                &mut ctx,
+                &CollectOptions::with_page(DEFAULT_PAGE_CHARS, no_query(), 2),
+            )
+            .unwrap();
+            server.join().unwrap();
+            assert!(page.page.readability_injected);
+            if page.page.ready {
+                incorrect.push((during_refresh, previous_navigation));
+            }
+        }
+        assert!(
+            incorrect.is_empty(),
+            "late starts left outgoing views ready: (during_refresh, previous_navigation)={incorrect:?}"
+        );
+    }
+
+    #[test]
+    fn unit_253_settlement_requires_positive_document_evidence() {
+        use ff_rdp_core::RdpTransport;
+        use ff_rdp_core::transport::{encode_frame, recv_from};
+        use std::io::{BufReader, Write as _};
+        use std::net::TcpListener;
+
+        // Drive the real poll against the recorded Firefox target shape. A
+        // zero budget must still accept positive evidence from its first poll;
+        // exhausting that budget alone must never make an outgoing view ready.
+        for (before, after, url, destination, expected) in [
+            (Some(7), Some(7), "https://a/", "https://b/", false),
+            (Some(7), None, "https://a/", "https://b/", false),
+            (Some(7), Some(8), "https://redirect/", "https://b/", true),
+            (Some(7), Some(7), "https://a/#here", "https://a/#here", true),
+            (Some(7), Some(7), "https://a/", "https://a/", false),
+            (None, None, "https://a/", "https://a/", false),
+            (None, None, "https://a/", "", false),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let request = recv_from(&mut reader).unwrap();
+                assert_eq!(request["type"], "getTarget");
+                let mut reply: Value = serde_json::from_str(include_str!(
+                    "../../tests/fixtures/get_target_response.json"
+                ))
+                .unwrap();
+                reply["from"] = request["to"].clone();
+                reply["frame"]["innerWindowId"] = json!(after);
+                reply["frame"]["url"] = json!(url);
+                stream
+                    .write_all(encode_frame(&reply.to_string()).as_bytes())
+                    .unwrap();
+                // The caller should issue only one probe in each case.
+                assert!(recv_from(&mut reader).is_err());
+            });
+            let transport =
+                RdpTransport::connect_raw("127.0.0.1", port, Duration::from_secs(2)).unwrap();
+            let mut ctx = ConnectedTab::for_test(transport, ActorId::from("conn0/console1"));
+            ctx.target.inner_window_id = before;
+            ctx.target.url = Some("https://a/".to_owned());
+            // A no-signal case must return after one refresh even with a
+            // nonzero budget. The mock rejects a second probe, so deleting
+            // the fast path fails without relying on a wall-clock assertion.
+            let budget =
+                if before.is_none() && (destination.is_empty() || destination == "https://a/") {
+                    Duration::from_millis(200)
+                } else {
+                    Duration::ZERO
+                };
+            assert_eq!(
+                settle_after_navigation(&mut ctx, destination, before, budget),
+                expected,
+                "before={before:?}, after={after:?}, destination={destination}"
+            );
+            drop(ctx);
+            server.join().unwrap();
+        }
+    }
 
     /// Parse a `Cli` from argv for the flag-reading helpers under test.
     fn test_cli(argv: &[&str]) -> Cli {
