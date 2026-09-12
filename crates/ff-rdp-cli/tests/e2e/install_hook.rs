@@ -187,24 +187,26 @@ fn e2e_212_dry_run_writes_nothing() {
 /// that would look installed and never fire.
 #[test]
 fn e2e_212_unsupported_targets_refuse_and_write_nothing() {
-    for target in ["--codex", "--opencode"] {
-        let home = TempDir::new().expect("tempdir");
-        let out = run(home.path(), &[target]);
-        assert!(
-            !out.status.success(),
-            "{target} must exit non-zero: {}",
-            support::output_note(&out)
-        );
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(
-            stdout.contains("not supported yet"),
-            "the refusal must say why: {stdout}"
-        );
-        assert!(
-            !settings_path(home.path()).exists(),
-            "{target} must not write a Claude settings file"
-        );
-    }
+    let contract = include_str!("../fixtures/opencode-plugin-contract.txt");
+    assert!(contract.contains("=> Promise<Hooks>"));
+    assert!(contract.contains("event?: (input: { event: Event }) => Promise<void>"));
+    let target = "--opencode";
+    let home = TempDir::new().expect("tempdir");
+    let out = run(home.path(), &[target]);
+    assert!(
+        !out.status.success(),
+        "{target} must exit non-zero: {}",
+        support::output_note(&out)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("not supported yet"),
+        "the refusal must say why: {stdout}"
+    );
+    assert!(
+        !settings_path(home.path()).exists(),
+        "{target} must not write a Claude settings file"
+    );
 }
 
 /// No target flag at all is a usage error, not a silent default to Claude.
@@ -236,4 +238,209 @@ fn e2e_212_malformed_settings_are_refused_not_clobbered() {
         original,
         "the file must be left exactly as it was"
     );
+}
+
+fn codex_home() -> TempDir {
+    let home = TempDir::new().expect("tempdir");
+    fs::create_dir(home.path().join(".codex")).expect("mkdir");
+    fs::write(
+        home.path().join(".codex/config.toml"),
+        "[features]\nhooks = true\n",
+    )
+    .expect("config");
+    home
+}
+
+fn codex_path(home: &Path) -> std::path::PathBuf {
+    home.join(".codex/hooks.json")
+}
+
+#[test]
+fn install_hook_codex_is_idempotent() {
+    let home = codex_home();
+    let path = codex_path(home.path());
+    let first = run(home.path(), &["--codex"]);
+    assert!(first.status.success(), "{}", support::output_note(&first));
+    assert_eq!(results(&first)["action"], "installed");
+    assert!(
+        results(&first)["next_step"]
+            .as_str()
+            .unwrap()
+            .contains("/hooks")
+    );
+    let bytes = fs::read(&path).unwrap();
+    // A fixed historical mtime proves the writer wasn't reached on the no-op.
+    let old = filetime::FileTime::from_unix_time(1_600_000_000, 0);
+    filetime::set_file_mtime(&path, old).unwrap();
+    let second = run(home.path(), &["--codex"]);
+    assert!(second.status.success(), "{}", support::output_note(&second));
+    assert_eq!(results(&second)["action"], "no-op");
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    assert_eq!(
+        filetime::FileTime::from_last_modification_time(&fs::metadata(&path).unwrap()),
+        old
+    );
+    let schema: serde_json::Value =
+        serde_json::from_str(include_str!("../fixtures/codex-hooks-schema.json")).unwrap();
+    let installed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    // HooksToml is the value under `hooks`, not the app-server response model.
+    assert!(validator.is_valid(&installed["hooks"]), "{installed}");
+    let mut broken = installed["hooks"].clone();
+    broken["SessionStart"][0]["hooks"][0]["type"] = serde_json::json!("invented");
+    assert!(
+        !validator.is_valid(&broken),
+        "schema control must reject an invalid handler"
+    );
+}
+
+#[test]
+fn install_hook_codex_refuses_without_the_features_gate() {
+    for config in [
+        None,
+        Some(""),
+        Some("# [features]\n# hooks = true\n"),
+        Some("[features]\nhooks = false\n"),
+        Some("[features]\nhooks = 'true'\n"),
+        Some("[other.features]\nhooks = true\n"),
+        Some("[features\nhooks = true\n"),
+        Some("[features]\nhooks=true\nhooks=false\n"),
+    ] {
+        let home = TempDir::new().unwrap();
+        let config_path = home.path().join(".codex/config.toml");
+        if let Some(config) = config {
+            fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+            fs::write(&config_path, config).unwrap();
+        }
+        for extra in [vec!["--codex"], vec!["--codex", "--dry-run"]] {
+            let output = run(home.path(), &extra);
+            assert_eq!(
+                output.status.code(),
+                Some(1),
+                "{config:?}: {}",
+                support::output_note(&output)
+            );
+            assert!(!codex_path(home.path()).exists());
+            assert_eq!(fs::read_to_string(&config_path).ok().as_deref(), config);
+        }
+        // Existing hooks must also remain byte-identical on a refused install.
+        fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        fs::write(codex_path(home.path()), "{\"untouched\":true}\n").unwrap();
+        assert_eq!(run(home.path(), &["--codex"]).status.code(), Some(1));
+        assert_eq!(
+            fs::read_to_string(codex_path(home.path())).unwrap(),
+            "{\"untouched\":true}\n"
+        );
+    }
+}
+
+#[test]
+fn install_hook_codex_accepts_real_toml_forms() {
+    for config in [
+        "features.hooks = true\n",
+        "features = { hooks = true }\n",
+        "[features]\n\"hooks\" = true # opt in\n",
+    ] {
+        let home = codex_home();
+        fs::write(home.path().join(".codex/config.toml"), config).unwrap();
+        let output = run(home.path(), &["--codex"]);
+        assert!(output.status.success(), "{}", support::output_note(&output));
+        assert_eq!(
+            fs::read_to_string(home.path().join(".codex/config.toml")).unwrap(),
+            config
+        );
+    }
+}
+
+#[test]
+fn install_hook_codex_leaves_other_entries_untouched() {
+    let home = codex_home();
+    let path = codex_path(home.path());
+    let original: serde_json::Value =
+        serde_json::from_str(include_str!("../fixtures/codex-hooks-documented.json")).unwrap();
+    fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
+    assert!(run(home.path(), &["--codex"]).status.success());
+    let mut installed: serde_json::Value =
+        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let groups = installed["hooks"]["SessionStart"].as_array_mut().unwrap();
+    let owned = groups.last_mut().unwrap();
+    owned["hooks"][0]["command"] = serde_json::json!("/gone/ff-rdp home --hook");
+    fs::write(&path, serde_json::to_vec(&installed).unwrap()).unwrap();
+    let repaired = run(home.path(), &["--codex"]);
+    assert!(
+        repaired.status.success(),
+        "{}",
+        support::output_note(&repaired)
+    );
+    assert_eq!(results(&repaired)["action"], "repaired");
+    assert!(
+        run(home.path(), &["--codex", "--uninstall"])
+            .status
+            .success()
+    );
+    let remaining: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(remaining, original);
+}
+
+#[test]
+fn install_hook_codex_uninstall_removes_only_its_entry() {
+    let home = codex_home();
+    let path = codex_path(home.path());
+    let original = serde_json::json!({"hooks":{"SessionStart":[
+        {"hooks":[{"type":"command","command":"ff-rdp home --hook"}]},
+        {"ff_rdp_managed":"true","hooks":[]}, {"ff_rdp_managed":false,"hooks":[]}
+    ]}});
+    fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
+    assert!(run(home.path(), &["--codex"]).status.success());
+    fs::write(home.path().join(".codex/config.toml"), "malformed = [").unwrap();
+    let output = run(home.path(), &["--codex", "--uninstall"]);
+    assert!(output.status.success(), "{}", support::output_note(&output));
+    assert_eq!(results(&output)["action"], "uninstalled");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&fs::read(&path).unwrap()).unwrap(),
+        original
+    );
+    assert_eq!(
+        results(&run(home.path(), &["--codex", "--uninstall"]))["action"],
+        "not-installed"
+    );
+}
+
+#[test]
+fn install_hook_codex_dry_run_and_project_refusal_write_nothing() {
+    let home = codex_home();
+    let output = run(home.path(), &["--codex", "--dry-run"]);
+    assert!(output.status.success(), "{}", support::output_note(&output));
+    assert!(!codex_path(home.path()).exists());
+    assert_eq!(results(&output)["dry_run"], true);
+    assert_eq!(
+        run(home.path(), &["--codex", "--project"]).status.code(),
+        Some(1)
+    );
+    assert!(!codex_path(home.path()).exists());
+    assert!(run(home.path(), &["--codex"]).status.success());
+    let bytes = fs::read(codex_path(home.path())).unwrap();
+    let output = run(home.path(), &["--codex", "--uninstall", "--dry-run"]);
+    assert!(output.status.success(), "{}", support::output_note(&output));
+    assert_eq!(results(&output)["action"], "uninstalled");
+    assert_eq!(fs::read(codex_path(home.path())).unwrap(), bytes);
+}
+
+#[test]
+fn install_hook_codex_refuses_malformed_containers_without_rewrite() {
+    for content in [
+        "null",
+        "[]",
+        "{bad",
+        "{\"hooks\":null}",
+        "{\"hooks\":{\"SessionStart\":{}}}",
+    ] {
+        let home = codex_home();
+        fs::write(codex_path(home.path()), content).unwrap();
+        assert_eq!(run(home.path(), &["--codex"]).status.code(), Some(1));
+        assert_eq!(
+            fs::read_to_string(codex_path(home.path())).unwrap(),
+            content
+        );
+    }
 }

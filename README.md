@@ -110,9 +110,21 @@ ff-rdp install-hook --claude --uninstall # remove only the entry ff-rdp owns
 
 It is idempotent (a second run reports a no-op and leaves the file
 byte-identical), repairs its own path in place if the binary moves, and never
-touches any hook it does not own. `--codex` and `--opencode` name their file
-locations and exit 1 rather than writing an entry whose format this build cannot
-verify would ever fire.
+touches any hook it does not own.
+
+For Codex, use `ff-rdp install-hook --codex` (also supports `--dry-run` and
+`--uninstall`) to merge a managed entry into `~/.codex/hooks.json`. First set
+`hooks = true` under `[features]` in `~/.codex/config.toml` yourself. This is
+ff-rdp's explicit installer opt-in policy: Codex 0.153.4 already enables hooks
+by default. ff-rdp never edits config or trust and does not check effective
+enterprise/project policy. Uninstall works without that opt-in.
+
+After installing or repairing a moved command, review and trust it in Codex
+`/hooks`. Other active hook sources accumulate, so review those for duplicate
+commands too. `--project` is Claude-only. `--opencode` retains its refusal:
+OpenCode 1.3.13 requires a JavaScript/TypeScript plugin module, which this Rust
+installer does not ship. Contract sources: [Codex hooks](https://learn.chatgpt.com/docs/hooks)
+and [OpenCode plugins](https://opencode.ai/docs/plugins/).
 
 If anything goes wrong, run `ff-rdp doctor` — it pinpoints connection,
 port, and version issues in one shot. The probes are:

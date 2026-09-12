@@ -26,6 +26,8 @@ use crate::error::AppError;
 use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
+mod codex;
+
 /// Key stamped on the hook group this command owns.
 ///
 /// Ownership must be explicit rather than inferred from the command string: a
@@ -106,10 +108,17 @@ fn settings_path(target: Target, project: bool) -> Result<PathBuf, AppError> {
                 Ok(home.join(".claude").join("settings.json"))
             }
         }
-        // Unreachable in practice: `run` refuses these targets before asking
+        Target::Codex if !project => resolve_home_dir()
+            .map(|home| home.join(".codex/hooks.json"))
+            .ok_or_else(|| AppError::User("could not determine home directory".to_owned())),
+        Target::Codex => Err(AppError::User(
+            "--project is only supported with --claude; omit it for a user-level Codex hook"
+                .to_owned(),
+        )),
+        // Unreachable in practice: `run` refuses this target before asking
         // for a path. Kept total so adding a target cannot silently fall
         // through to the Claude location.
-        Target::Codex | Target::OpenCode => Err(unsupported_target(target)),
+        Target::OpenCode => Err(unsupported_target(target)),
     }
 }
 
@@ -124,9 +133,8 @@ fn unsupported_target(target: Target) -> AppError {
     let (name, location, why) = match target {
         Target::Codex => (
             "codex",
-            "~/.codex/hooks.json (with [features] hooks = true in ~/.codex/config.toml)",
-            "the entry schema inside hooks.json is not pinned by anything this build can verify, \
-             and an entry with the wrong shape parses but never fires",
+            "~/.codex/hooks.json",
+            "this target is supported; reaching this message is a wiring bug",
         ),
         Target::OpenCode => (
             "opencode",
@@ -446,7 +454,8 @@ fn selected_target(args: &InstallHookArgs) -> Result<Target, AppError> {
     match selected.as_slice() {
         [one] => Ok(*one),
         [] => Err(AppError::User(
-            "install-hook needs a target: --claude (supported), --codex or --opencode".to_owned(),
+            "install-hook needs a target: --claude or --codex (supported), or --opencode"
+                .to_owned(),
         )),
         _ => Err(AppError::User(
             "install-hook takes exactly one target flag".to_owned(),
@@ -456,16 +465,25 @@ fn selected_target(args: &InstallHookArgs) -> Result<Target, AppError> {
 
 pub fn run(cli: &Cli, args: &InstallHookArgs) -> Result<(), AppError> {
     let target = selected_target(args)?;
-    if target != Target::Claude {
+    if target == Target::OpenCode {
         return Err(unsupported_target(target));
     }
 
     let path = settings_path(target, args.project)?;
-    let command = resolve_hook_command();
+    if target == Target::Codex && !args.uninstall {
+        codex::check_gate(&path.with_file_name("config.toml"))?;
+    }
+    let command = if target == Target::Codex {
+        codex::resolve_command()?
+    } else {
+        resolve_hook_command()
+    };
     let mut settings = read_settings(&path)?;
 
     let action = if args.uninstall {
         apply_uninstall(&mut settings)
+    } else if target == Target::Codex {
+        codex::install(&mut settings, &command)?
     } else {
         apply_install(&mut settings, &command)
     };
@@ -474,7 +492,7 @@ pub fn run(cli: &Cli, args: &InstallHookArgs) -> Result<(), AppError> {
         write_settings(&path, &settings)?;
     }
 
-    let results = json!({
+    let mut results = json!({
         "target": target.as_str(),
         "scope": if args.project { "project" } else { "user" },
         "path": path.to_string_lossy(),
@@ -483,6 +501,9 @@ pub fn run(cli: &Cli, args: &InstallHookArgs) -> Result<(), AppError> {
         "dry_run": args.dry_run,
         "entry": if args.uninstall { Value::Null } else { managed_group(&command) },
     });
+    if target == Target::Codex && !args.uninstall {
+        results["next_step"] = json!(codex::TRUST_NOTE);
+    }
 
     if cli.format == "text" && cli.jq.is_none() {
         // `--dry-run` must never read as a completed write: the whole point of
@@ -494,6 +515,9 @@ pub fn run(cli: &Cli, args: &InstallHookArgs) -> Result<(), AppError> {
         };
         println!("{prefix}{} {}", action.as_str(), path.display());
         if !args.uninstall {
+            if target == Target::Codex {
+                println!("{}", codex::TRUST_NOTE);
+            }
             println!("SessionStart hook command: {command}");
             println!(
                 "{}",
@@ -676,14 +700,13 @@ mod tests {
     /// rather than writing a hook entry that would never fire.
     #[test]
     fn unit_212_unsupported_targets_refuse_with_a_reason() {
-        for target in [Target::Codex, Target::OpenCode] {
-            let AppError::User(msg) = unsupported_target(target) else {
-                panic!("expected a user error for {target:?}");
-            };
-            assert!(msg.contains("not supported yet"), "{msg}");
-            assert!(msg.contains("install-hook --claude"), "{msg}");
-            assert!(settings_path(target, false).is_err(), "{target:?}");
-        }
+        let target = Target::OpenCode;
+        let AppError::User(msg) = unsupported_target(target) else {
+            panic!("expected a user error for {target:?}");
+        };
+        assert!(msg.contains("not supported yet"), "{msg}");
+        assert!(msg.contains("install-hook --claude"), "{msg}");
+        assert!(settings_path(target, false).is_err(), "{target:?}");
     }
 
     #[test]

@@ -3322,7 +3322,8 @@ pub struct InstallHookArgs {
     #[arg(long)]
     pub claude: bool,
 
-    /// Target Codex — not supported yet; exits 1 naming the file location
+    /// Target Codex (~/.codex/hooks.json); requires explicit features.hooks = true;
+    /// review and trust new/changed hooks in Codex /hooks after installation
     #[arg(long)]
     pub codex: bool,
 
