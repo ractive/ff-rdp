@@ -508,7 +508,7 @@ fn release_follow_grips(transport: &mut RdpTransport, event: &Value) -> Result<(
         if let Err(error) = transport.send(&json!({"to": actor, "type": "release"})) {
             if matches!(&error, ProtocolError::SendFailed(io) if matches!(io.kind(),
                 std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
-                | std::io::ErrorKind::NotConnected))
+                | std::io::ErrorKind::ConnectionAborted | std::io::ErrorKind::NotConnected))
             {
                 // Disconnection frees the pool. Still emit any buffered
                 // catch-up records before the receive loop observes EOF.
