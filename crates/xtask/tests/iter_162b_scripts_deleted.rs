@@ -260,32 +260,20 @@ fn ci_162b_discipline_job_xtask_steps_are_pinned() {
     let invocations: Vec<&str> = ci
         .lines()
         .map(str::trim)
-        // A YAML comment mentioning the command is not an invocation.
-        .filter(|l| !l.starts_with('#'))
-        .filter(|l| l.contains("cargo run -p xtask --"))
+        .filter_map(|line| line.strip_prefix("run: ./target/debug/xtask "))
         .collect();
-    // 2 after iter-162b, 3 after iter-212 added `check-skill-drift`, 5 after
-    // iter-219 added `check-help-idioms` and `check-vendored-js`, 6 after
-    // iter-233 added `check-iteration-plan kb/iterations`. The point of the
-    // count is that growing CI's gate list is a deliberate edit here, not that
-    // the number is 2 forever.
+    // Pin the semantic gates and their arguments, not repeated Cargo startup.
     assert_eq!(
-        invocations.len(),
-        6,
-        "expected exactly 6 xtask steps in CI, found: {invocations:#?}"
+        invocations,
+        [
+            "check-iteration-plan kb/iterations",
+            "check-live-test-layout",
+            "check-source-invariants",
+            "check-skill-drift",
+            "check-help-idioms",
+            "check-vendored-js",
+        ]
     );
-    for line in &invocations {
-        // Take the subcommand only — trailing arguments are legitimate.
-        let name = line
-            .rsplit("xtask -- ")
-            .next()
-            .expect("subcommand after `xtask -- `")
-            .split_whitespace()
-            .next()
-            .expect("non-empty subcommand");
-        assert!(
-            EXPECTED_SUBCOMMANDS.contains(&name),
-            "CI invokes `{name}`, which xtask does not ship"
-        );
-    }
+    assert!(ci.contains("run: cargo build -p ff-rdp-cli -p xtask --bins"));
+    assert!(ci.contains("FF_RDP_BIN: ${{ github.workspace }}/target/debug/ff-rdp"));
 }

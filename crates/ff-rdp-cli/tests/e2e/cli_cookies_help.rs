@@ -8,14 +8,9 @@
 //!
 //! # Running
 //!
-//!   cargo test -p ff-rdp-cli --test cli_cookies_help
-
-#[path = "common/mod.rs"]
-mod common;
+//!   cargo test -p ff-rdp-cli --test e2e cli_cookies_help::
 
 use std::process::Command;
-
-use common::ff_rdp_bin;
 
 /// `cookies_help_no_fields_paragraph_leak` (iter-83 AC):
 ///
@@ -27,7 +22,7 @@ use common::ff_rdp_bin;
 ///     bleed into the `--fields` description paragraph.
 #[test]
 fn cookies_help_no_fields_paragraph_leak() {
-    let output = Command::new(ff_rdp_bin())
+    let output = Command::new(env!("CARGO_BIN_EXE_ff-rdp"))
         .args(["cookies", "--help"])
         .output()
         .expect("ff-rdp cookies --help");
@@ -37,8 +32,9 @@ fn cookies_help_no_fields_paragraph_leak() {
     assert!(
         exit_ok,
         "cookies_help_no_fields_paragraph_leak: ff-rdp cookies --help exited with unexpected \
-         status {:?}; stderr={}",
+         status {:?}; stdout={} stderr={}",
         output.status,
+        String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
 

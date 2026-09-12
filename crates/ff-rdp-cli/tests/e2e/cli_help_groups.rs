@@ -16,8 +16,9 @@ fn cli_help_groups_commands_by_role() {
 
     assert!(
         output.status.success(),
-        "ff-rdp --help must exit 0; status={:?} stderr={}",
+        "ff-rdp --help must exit 0; status={:?} stdout={} stderr={}",
         output.status,
+        String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
 

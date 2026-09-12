@@ -13,12 +13,7 @@
 //! args.rs (see `build_version_string_returns_pkg_version_without_sha` there),
 //! while this file covers the binary behaviour.
 
-#[path = "common/mod.rs"]
-mod common;
-
 use std::process::Command;
-
-use common::ff_rdp_bin;
 
 /// `version_includes_git_sha_when_built_from_git`:
 /// Run `ff-rdp --version` against the binary under test (which was built
@@ -31,14 +26,15 @@ use common::ff_rdp_bin;
 /// the test is not flaky in offline environments.
 #[test]
 fn test_version_includes_git_sha_when_built_from_git() {
-    let out = Command::new(ff_rdp_bin())
+    let out = Command::new(env!("CARGO_BIN_EXE_ff-rdp"))
         .arg("--version")
         .output()
         .expect("ff-rdp --version");
 
     assert!(
         out.status.success(),
-        "ff-rdp --version must exit 0; stderr={}",
+        "ff-rdp --version must exit 0; stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
 

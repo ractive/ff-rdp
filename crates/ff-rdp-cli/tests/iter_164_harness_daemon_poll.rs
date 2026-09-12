@@ -23,6 +23,9 @@ use serde_json::json;
 #[path = "common/mod.rs"]
 mod common;
 
+#[path = "common/color_tests.rs"]
+mod color_tests;
+
 use common::{daemon_port_from_status, daemon_ready_timeout, poll_for_daemon_port};
 
 /// AC `unit_164_with_daemon_polls_instead_of_sleeping`: a daemon that registers

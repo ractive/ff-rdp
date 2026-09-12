@@ -3258,25 +3258,15 @@ failures:
     // test_155_skipped_live_test_is_not_counted_passed (AC1) — integration
     // -----------------------------------------------------------------------
 
-    /// `test_155_skipped_live_test_is_not_counted_passed`: classify the real
-    /// `live_109_throttle_block::live_block_url_pattern` test (named in the
-    /// plan's own dogfood_path), partition it as unqualified (network gate
-    /// unset), build the resulting phase-2 command (no `--include-ignored`),
-    /// and actually run it — asserting from libtest's own summary output
-    /// that the test is reported `ignored`, never `ok`. This proves the fix
-    /// at the mechanism the defect lives in, not by reading the source.
+    /// Classify and partition the real network test, then check the actual
+    /// production phase-2 command. The real libtest ignored verdict is proved
+    /// by `ignored_verdict::test_155_skipped_live_test_is_not_counted_passed`
+    /// inside the already-built CLI live target, avoiding nested Cargo builds.
     #[test]
     fn test_155_skipped_live_test_is_not_counted_passed() {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let workspace_root = manifest_dir.join("..").join("..");
         let cli_live_dir = workspace_root.join("crates/ff-rdp-cli/tests/live");
-        if !cli_live_dir.is_dir() {
-            eprintln!(
-                "test_155_skipped_live_test_is_not_counted_passed: tests/live not found — skipping"
-            );
-            return;
-        }
-
         let gated = scan_modules_dir(&cli_live_dir).expect("scan_modules_dir");
         let target_name = "live_109_throttle_block::live_block_url_pattern";
         let target = gated
@@ -3299,7 +3289,7 @@ failures:
             "with FF_RDP_LIVE_NETWORK_TESTS unset, {target_name} must be unqualified"
         );
 
-        let mut cmd = phase_command(
+        let cmd = phase_command(
             "ff-rdp-cli",
             "live",
             std::slice::from_ref(&target.full_name),
@@ -3307,23 +3297,19 @@ failures:
             1,
         )
         .expect("phase command for a non-empty name list");
-        cmd.env_remove("FF_RDP_LIVE_TESTS");
-        cmd.env_remove("FF_RDP_LIVE_NETWORK_TESTS");
-        cmd.current_dir(&workspace_root);
-        let output = cmd
-            .output()
-            .expect("failed to run `cargo test -p ff-rdp-cli --test live` subprocess");
-        let stdout = String::from_utf8_lossy(&output.stdout);
-
-        assert!(
-            stdout.contains(&format!("test {target_name} ... ignored")),
-            "expected libtest to report {target_name} as `ignored` \
-             (env gate unset, --include-ignored absent); stdout:\n{stdout}"
-        );
-        assert!(
-            !stdout.contains(&format!("test {target_name} ... ok")),
-            "the unqualified test must never be reported `ok` — that is exactly \
-             the iter-155 defect (a skipped live test reporting green); stdout:\n{stdout}"
+        assert_eq!(cmd.get_program(), "cargo");
+        assert_eq!(
+            arg_strings(&cmd),
+            [
+                "test",
+                "-p",
+                "ff-rdp-cli",
+                "--test",
+                "live",
+                "--",
+                "--exact",
+                target_name
+            ]
         );
     }
 

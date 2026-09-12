@@ -31,6 +31,8 @@
 #[path = "../common/mod.rs"]
 mod common;
 
+mod ignored_verdict;
+
 mod live_100_daemon_lifecycle_hardening;
 mod live_102_longstring_and_reload;
 mod live_103_emulate;
