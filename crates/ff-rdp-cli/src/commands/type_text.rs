@@ -235,6 +235,7 @@ fn press_enter_and_submit(
     console_actor: &ff_rdp_core::ActorId,
     escaped_sel: &str,
     wait_timeout_ms: u64,
+    page_origin: &mut Option<super::page_view::NavigationOrigin>,
 ) -> Result<serde_json::Value, AppError> {
     let enter = eval_or_bail(
         ctx,
@@ -323,7 +324,7 @@ fn press_enter_and_submit(
     if !navigated && load_expected {
         let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let remaining = wait_timeout_ms.saturating_sub(elapsed);
-        navigated = navigated_after_refresh(ctx, &url_before, remaining);
+        navigated = navigated_after_refresh(ctx, &url_before, remaining, page_origin);
     }
     Ok(json!({
         "submitted": true,
@@ -371,10 +372,26 @@ fn press_enter_and_submit(
 /// reports that as `cancelled`. The forms that do reach this path have a load
 /// genuinely in flight, and `--timeout` is the budget the caller already
 /// stated for it.
-fn navigated_after_refresh(ctx: &mut ConnectedTab, url_before: &str, timeout_ms: u64) -> bool {
-    ctx.refresh_target();
+fn navigated_after_refresh(
+    ctx: &mut ConnectedTab,
+    url_before: &str,
+    timeout_ms: u64,
+    page_origin: &mut Option<super::page_view::NavigationOrigin>,
+) -> bool {
+    refresh_submission_target(ctx, page_origin);
     let console_actor = ctx.target.console_actor.clone();
     navigated_away(ctx, &console_actor, url_before, timeout_ms)
+}
+
+fn refresh_submission_target(
+    ctx: &mut ConnectedTab,
+    page_origin: &mut Option<super::page_view::NavigationOrigin>,
+) {
+    if let Some(origin) = page_origin {
+        origin.refresh_target(ctx);
+    } else {
+        ctx.refresh_target();
+    }
 }
 
 /// Poll for `window.location.href` moving away from `url_before`.
@@ -509,6 +526,14 @@ pub fn run_core(
         autowait_element(&mut ctx, &console_actor, selector, wait_timeout_ms, true)?;
     }
 
+    // Submission recovery can refresh the target both inside
+    // navigated_after_refresh and below. Preserve the action's origin before
+    // either replaces it with the committed destination (iteration253).
+    let mut page_origin = opts
+        .page
+        .with_page
+        .then(|| super::page_view::NavigationOrigin::capture(&ctx));
+
     let escaped_sel = escape_selector(selector);
     let escaped_text_json = serde_json::to_string(text)
         .map_err(|e| AppError::from(anyhow::anyhow!("failed to encode text argument: {e}")))?;
@@ -521,8 +546,13 @@ pub fn run_core(
     // iter-210 Theme C: --submit. Runs before --settle/--wait-for so those
     // observe the page the submission produced.
     if opts.submit {
-        let submit_json =
-            press_enter_and_submit(&mut ctx, &console_actor, &escaped_sel, wait_timeout_ms)?;
+        let submit_json = press_enter_and_submit(
+            &mut ctx,
+            &console_actor,
+            &escaped_sel,
+            wait_timeout_ms,
+            &mut page_origin,
+        )?;
         let navigated = submit_json
             .get("navigated")
             .and_then(serde_json::Value::as_bool)
@@ -540,7 +570,7 @@ pub fn run_core(
         // Refresh before either runs, same as `page_view::attach` does for
         // `--with-page`.
         if navigated {
-            ctx.refresh_target();
+            refresh_submission_target(&mut ctx, &mut page_origin);
             console_actor = ctx.target.console_actor.clone();
         }
     }
@@ -576,13 +606,14 @@ pub fn run_core(
 
     // iter-210 Theme A: `--with-page`, collected after `--submit` so a form
     // that navigated reports the page it landed on.
-    if opts.page.with_page {
-        super::page_view::attach(
+    if let Some(origin) = page_origin {
+        super::page_view::attach_from_origin(
             cli,
             &mut ctx,
             &mut result,
             Some(wait_timeout_ms),
             &opts.page,
+            origin,
         )?;
     }
 

@@ -13,27 +13,34 @@
 //! is the entire value: proving the bound fires in ordinary CI). It is therefore
 //! intentionally not `#[ignore]`-gated; see the `// allow-ungated-live:` note.
 //!
-//! Neither test mutates the process-wide `LAUNCH_TIMEOUT_ENV` var: `cargo
+//! These tests do not mutate the process-wide `LAUNCH_TIMEOUT_ENV` var: `cargo
 //! test-live` (unlike CI's `--test-threads=1` live job) runs test binaries with
 //! multiple threads by default, and these tests are intentionally ungated, so
 //! they can run concurrently with `#[ignore]`-gated live suites that spawn real
 //! Firefox and read [`common::launch_wait_timeout`] on another thread.
 //! `std::env::set_var` on that key would risk truncating an in-flight real
 //! launch's wait. [`common::wait_for_debugger_port_within`] takes the bound as
-//! a parameter instead, keeping both tests hermetic.
+//! a parameter instead, keeping these tests hermetic.
 
 use std::panic::AssertUnwindSafe;
 use std::time::{Duration, Instant};
 
 use crate::common::{ff_rdp_bin, wait_for_debugger_port_within};
 
-/// Bind an ephemeral port, then drop the listener so the port is (almost
-/// certainly) closed — nothing will accept a connection on it. Returns the port.
-fn dead_port() -> u16 {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind :0");
-    let port = l.local_addr().expect("local_addr").port();
-    drop(l);
-    port
+/// Keep the port bound but never listen. Releasing an ephemeral listener lets
+/// another socket claim that number while the timeout probe is still running.
+fn dead_port() -> socket2::Socket {
+    let socket = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None)
+        .expect("create reservation");
+    socket
+        .bind(
+            &"127.0.0.1:0"
+                .parse::<std::net::SocketAddr>()
+                .unwrap()
+                .into(),
+        )
+        .expect("bind reservation");
+    socket
 }
 
 /// AC: `launch_times_out_fast` — pointing the live launcher's port-wait at an
@@ -50,22 +57,32 @@ fn launch_times_out_fast() {
     // live suites that read the real env-backed timeout on other threads.
     let bound = Duration::from_secs(1);
 
-    let port = dead_port();
+    let reservation = dead_port();
+    let address = reservation.local_addr().unwrap().as_socket().unwrap();
+    let port = address.port();
+    assert!(
+        std::net::TcpListener::bind(address).is_err(),
+        "reservation must prevent reuse"
+    );
+    assert!(
+        std::net::TcpStream::connect_timeout(&address, Duration::from_millis(100)).is_err(),
+        "reservation must not accept connections"
+    );
     let bin = ff_rdp_bin();
 
-    // Silence the default panic hook for the *expected* panic below so it does
-    // not pollute test output; restore it immediately after.
-    let prev_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
+    // Catch only this thread's panic; do not replace the process-wide hook.
     let start = Instant::now();
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
         wait_for_debugger_port_within(&bin, port, bound);
     }));
     let elapsed = start.elapsed();
-    std::panic::set_hook(prev_hook);
 
     // 1. It must have failed (panicked), not succeeded on a dead port.
     let payload = result.expect_err("wait on a dead port must panic, not return");
+    assert!(
+        elapsed >= bound,
+        "timeout helper returned before its bound: {elapsed:?}"
+    );
 
     // 2. It must have failed *within the bound* — not hung indefinitely. Allow
     //    generous slack (5 s) for a loaded CI runner while still proving the wait
@@ -88,6 +105,19 @@ fn launch_times_out_fast() {
         "panic message must name the launcher binary {}; got: {msg}",
         bin.display(),
     );
+}
+
+// allow-ungated-live: exercises the launch helper on an owned TCP listener, no Firefox.
+#[test]
+fn launch_accepts_an_open_port() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let started = Instant::now();
+    wait_for_debugger_port_within(
+        &ff_rdp_bin(),
+        listener.local_addr().unwrap().port(),
+        Duration::from_secs(1),
+    );
+    assert!(started.elapsed() < Duration::from_secs(1));
 }
 
 /// AC: the [`common::LAUNCH_TIMEOUT_ENV`] override parsing rules are honored —
