@@ -347,6 +347,7 @@ fn run_follow_direct(
         level,
         regex,
         jq_filter,
+        true,
     );
 
     // Best-effort cleanup — ignore errors since we may be exiting anyway.
@@ -377,6 +378,7 @@ fn run_follow_daemon(
         level,
         regex,
         jq_filter,
+        false,
     );
 
     // Best-effort cleanup — ignore errors since we may be exiting anyway.
@@ -407,6 +409,7 @@ fn follow_loop(
     level: Option<&str>,
     regex: Option<&regex::Regex>,
     jq_filter: Option<&str>,
+    release_grips: bool,
 ) -> Result<(), AppError> {
     use std::io::Write;
 
@@ -465,6 +468,9 @@ fn follow_loop(
                     // Flush stdout so each message appears immediately in tail-like usage.
                     let _ = std::io::stdout().flush();
                 }
+                if release_grips {
+                    release_follow_grips(transport, &msg).map_err(AppError::from)?;
+                }
             }
             Err(ProtocolError::Timeout) => {
                 // Normal poll timeout — keep waiting for more events.
@@ -479,6 +485,63 @@ fn follow_loop(
             }
             Err(e) => return Err(AppError::from(e)),
         }
+    }
+}
+
+/// Only the direct connection owns these actors. Daemon stream readers receive
+/// copies of shared events and must leave their lifetime to the daemon.
+fn release_follow_grips(transport: &mut RdpTransport, event: &Value) -> Result<(), ProtocolError> {
+    if !matches!(
+        event["type"].as_str(),
+        Some("resources-available-array" | "consoleAPICall" | "pageError")
+    ) {
+        return Ok(());
+    }
+    let mut actors = std::collections::BTreeSet::new();
+    collect_follow_grips(event, &mut actors);
+    for actor in actors {
+        // All three specs accept release. Object/longString send an ACK;
+        // Firefox 155 SymbolActor.release destroys itself before protocol/Actor
+        // can send its declared reply. Do not wait for it. The ordinary follow
+        // receive loop consumes ACKs (which contain no console resources) and
+        // events in wire order, without a second receiver or a lossy queue.
+        if let Err(error) = transport.send(&json!({"to": actor, "type": "release"})) {
+            if matches!(&error, ProtocolError::SendFailed(io) if matches!(io.kind(),
+                std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::NotConnected))
+            {
+                // Disconnection frees the pool. Still emit any buffered
+                // catch-up records before the receive loop observes EOF.
+                return Ok(());
+            }
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+fn collect_follow_grips<'a>(value: &'a Value, actors: &mut std::collections::BTreeSet<&'a str>) {
+    match value {
+        Value::Object(fields) => {
+            if matches!(
+                value["type"].as_str(),
+                Some("object" | "longString" | "symbol")
+            ) && let Some(actor) = value["actor"].as_str()
+            {
+                actors.insert(actor);
+            }
+            // Previews contain further object/symbol grips; symbol names can
+            // themselves be longString grips. They have independent lifetimes.
+            for field in fields.values() {
+                collect_follow_grips(field, actors);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_follow_grips(item, actors);
+            }
+        }
+        _ => {}
     }
 }
 

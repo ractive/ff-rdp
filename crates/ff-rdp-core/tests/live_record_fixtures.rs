@@ -30,6 +30,28 @@ const HTTP_SERVER_ACCEPT_DEADLINE: Duration = Duration::from_secs(30);
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
 fn live_252_record_preformatted_console_deliveries() {
+    fn actors(value: &Value, found: &mut std::collections::BTreeMap<String, String>) {
+        match value {
+            Value::Object(fields) => {
+                if let (Some(kind @ ("object" | "longString" | "symbol")), Some(actor)) =
+                    (value["type"].as_str(), value["actor"].as_str())
+                {
+                    found
+                        .entry(kind.to_owned())
+                        .or_insert_with(|| actor.to_owned());
+                }
+                for field in fields.values() {
+                    actors(field, found);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    actors(item, found);
+                }
+            }
+            _ => {}
+        }
+    }
     if !should_run_live() {
         return;
     }
@@ -91,6 +113,35 @@ fn live_252_record_preformatted_console_deliveries() {
     let recording = Value::Array(events);
     save_cli_fixture("console_follow_preformatted_events.json", &recording);
     save_core_fixture("console_follow_preformatted_events.json", &recording);
+
+    // Record release replies rather than assuming that every declared reply
+    // exists: Firefox 155 SymbolActor destroys itself before sending its ACK.
+    let mut by_kind = std::collections::BTreeMap::new();
+    actors(&recording, &mut by_kind);
+    let mut replies = serde_json::Map::new();
+    for (kind, actor) in by_kind {
+        transport
+            .send(&json!({"to":actor,"type":"release"}))
+            .unwrap();
+        transport
+            .send(&json!({"to":actor,"type":"iter252LifetimeProbe"}))
+            .unwrap();
+        let mut packets = Vec::new();
+        loop {
+            let packet = recv_from_actor(transport, &actor);
+            let absent = packet["error"] == "noSuchActor";
+            packets.push(packet);
+            if absent {
+                break;
+            }
+        }
+        assert_eq!(packets.len(), if kind == "symbol" { 1 } else { 2 });
+        replies.insert(kind, Value::Array(packets));
+    }
+    save_cli_fixture(
+        "console_follow_release_replies.json",
+        &Value::Object(replies),
+    );
 }
 
 fn connect() -> RdpConnection {

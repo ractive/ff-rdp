@@ -339,3 +339,211 @@ fn live_252_console_follow_sees_content_process_messages_both_routes() {
     stop_daemon(port);
     assert!(violations.is_empty(), "{}", violations.join("\n"));
 }
+
+/// Observe the actual CLI connection, then probe each observed actor after the
+/// ticker has stopped. unrecognizedPacketType means follow left the actor alive;
+/// noSuchActor proves cleanup while the connection is still open. Release plus a
+/// second probe verifies destruction even for symbols, which send no release ACK.
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_252_direct_follow_releases_filtered_and_nested_grips() {
+    use ff_rdp_core::{ProtocolError, RdpTransport};
+    use serde_json::{Value, json};
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::io::Write;
+    use std::net::TcpListener;
+
+    fn grips(value: &Value, actors: &mut BTreeMap<String, String>) {
+        match value {
+            Value::Object(fields) => {
+                if let (Some(kind @ ("object" | "longString" | "symbol")), Some(actor)) =
+                    (value["type"].as_str(), value["actor"].as_str())
+                {
+                    actors.insert(actor.to_owned(), kind.to_owned());
+                }
+                for field in fields.values() {
+                    grips(field, actors);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    grips(item, actors);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    assert!(live_tests_enabled());
+    let mut routes = HashMap::new();
+    routes.insert(
+        "/grips".to_owned(),
+        FixtureRoute::html(
+            "<script>setTimeout(()=>{let n=0;const timer=setInterval(()=>{\
+         for(const [method,label] of [['log','level'],['warn','pattern'],['warn','keep']]){\
+         console[method]('iter252-lifetime:'+label+':'+n,\
+         {nested:Symbol('name:'+n+label+'x'.repeat(10000)),\
+         text:n+label+'y'.repeat(10000),child:{n}});}\
+         if(++n===60)clearInterval(timer);},50)},2000)</script>"
+                .to_owned(),
+        ),
+    );
+    let server = FixtureServer::start(routes).expect("fixture server");
+    let ff = LiveFirefox::headless_on_random_port();
+    let nav = Command::new(ff_rdp_bin())
+        .args(direct_args(ff.port()))
+        .args(["navigate", &format!("{}/grips", server.base_url())])
+        .output()
+        .unwrap();
+    assert!(nav.status.success(), "{nav:?}");
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let proxy_port = listener.local_addr().unwrap().port();
+    let firefox_port = ff.port();
+    let proxy = std::thread::spawn(move || {
+        let (mut client, _) = listener.accept().unwrap();
+        let transport =
+            RdpTransport::connect_raw("127.0.0.1", firefox_port, Duration::from_secs(10)).unwrap();
+        let (mut reader, writer) = transport.split();
+        reader
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let writer = Arc::new(Mutex::new(writer));
+        let requests = Arc::new(Mutex::new(BTreeSet::<String>::new()));
+        let client_reader = client.try_clone().unwrap();
+        let request_writer = Arc::clone(&writer);
+        let request_log = Arc::clone(&requests);
+        let requests_thread = std::thread::spawn(move || {
+            let mut reader = BufReader::new(client_reader);
+            while let Ok(packet) = ff_rdp_core::transport::recv_from(&mut reader) {
+                if packet["type"] == "release" {
+                    request_log
+                        .lock()
+                        .unwrap()
+                        .insert(packet["to"].as_str().unwrap().to_owned());
+                }
+                if request_writer.lock().unwrap().send(&packet).is_err() {
+                    break;
+                }
+            }
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut actors = BTreeMap::new();
+        let mut acknowledged = BTreeSet::new();
+        let mut peak = 0;
+        let mut peak_unsent = 0;
+        while Instant::now() < deadline {
+            match reader.recv() {
+                Ok(packet) => {
+                    if packet["type"] == "resources-available-array" {
+                        grips(&packet, &mut actors);
+                    }
+                    if packet.get("type").is_none()
+                        && packet.get("error").is_none()
+                        && let Some(actor) = packet["from"].as_str()
+                        && requests.lock().unwrap().contains(actor)
+                    {
+                        acknowledged.insert(actor.to_owned());
+                    }
+                    peak = peak.max(actors.len().saturating_sub(acknowledged.len()));
+                    peak_unsent = peak_unsent
+                        .max(actors.len().saturating_sub(requests.lock().unwrap().len()));
+                    let frame = ff_rdp_core::transport::encode_frame(&packet.to_string());
+                    client.write_all(frame.as_bytes()).unwrap();
+                }
+                Err(ProtocolError::Timeout) => {}
+                Err(error) => panic!("proxy read: {error}"),
+            }
+        }
+        let mut retained = BTreeMap::<String, usize>::new();
+        let mut absent = 0;
+        let mut release_acks = BTreeMap::<String, usize>::new();
+        for (actor, kind) in &actors {
+            for second in [false, true] {
+                if second {
+                    writer
+                        .lock()
+                        .unwrap()
+                        .send(&json!({"to":actor,"type":"release"}))
+                        .unwrap();
+                }
+                // An unsupported request distinguishes a live actor from an
+                // absent one without allocating more grips. It also provides
+                // a barrier after release: Firefox 155 symbols send no ACK.
+                writer
+                    .lock()
+                    .unwrap()
+                    .send(&json!({"to":actor,"type":"iter252LifetimeProbe"}))
+                    .unwrap();
+                let end = Instant::now() + Duration::from_secs(5);
+                loop {
+                    assert!(Instant::now() < end, "release probe timed out for {actor}");
+                    match reader.recv() {
+                        Ok(reply) if reply["from"] == *actor && reply.get("type").is_none() => {
+                            if reply.get("error").is_none() {
+                                *release_acks.entry(kind.clone()).or_default() += 1;
+                                continue;
+                            } else if reply["error"] == "unrecognizedPacketType" {
+                                assert!(!second, "actor survived release: {reply}");
+                                *retained.entry(kind.clone()).or_default() += 1;
+                            } else {
+                                assert_eq!(reply["error"], "noSuchActor", "{reply}");
+                                if !second {
+                                    absent += 1;
+                                }
+                            }
+                            break;
+                        }
+                        Ok(packet) => {
+                            let frame = ff_rdp_core::transport::encode_frame(&packet.to_string());
+                            client.write_all(frame.as_bytes()).unwrap();
+                        }
+                        Err(ProtocolError::Timeout) => {}
+                        Err(error) => panic!("release probe: {error}"),
+                    }
+                }
+            }
+        }
+        eprintln!(
+            "iter252 lifetime actors={} requested={} acknowledged={} peak_unacknowledged={peak} peak_unsent={peak_unsent} retained={retained:?} absent={absent} probe_release_acks={release_acks:?}",
+            actors.len(),
+            requests.lock().unwrap().len(),
+            acknowledged.len()
+        );
+        (actors.len(), retained, absent, requests_thread)
+    });
+    let mut child = Command::new(ff_rdp_bin())
+        .args(direct_args(proxy_port))
+        .args([
+            "console",
+            "--follow",
+            "--level",
+            "warn",
+            "--pattern",
+            "iter252-lifetime:keep:",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap();
+    let lines = collect_stdout_lines(&mut child);
+    let result = proxy.join();
+    let _ = child.kill();
+    child.wait().unwrap();
+    let (observed, retained, absent, requests_thread) = result.unwrap();
+    requests_thread.join().unwrap();
+    assert!(
+        observed >= 500,
+        "sustained logging must allocate all grip families: {observed}"
+    );
+    assert_eq!(
+        lines.lock().unwrap().len(),
+        60,
+        "only matching warning messages are emitted"
+    );
+    assert!(
+        retained.is_empty(),
+        "Firefox retained actors after follow processed them: {retained:?}"
+    );
+    assert_eq!(absent, observed);
+}

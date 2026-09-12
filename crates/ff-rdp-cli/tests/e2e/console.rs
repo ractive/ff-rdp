@@ -693,6 +693,139 @@ fn console_follow_streams_flat_console_message_resources() {
 }
 
 #[test]
+fn console_follow_releases_grips_with_interleaved_events_and_replies() {
+    use ff_rdp_core::transport::{encode_frame, recv_from};
+    use std::collections::BTreeSet;
+    use std::io::{BufReader, Write};
+    use std::net::TcpListener;
+
+    // Each filter must release all fourteen separately allocated handles from
+    // the recorded resource and legacy copies, including nested symbol names.
+    for filter in [
+        vec![],
+        vec!["--level", "warn"],
+        vec!["--pattern", "no-match"],
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(std::time::Duration::from_secs(4)))
+                .unwrap();
+            let mut reader = BufReader::new(socket.try_clone().unwrap());
+            let send = |socket: &mut std::net::TcpStream, packet: &serde_json::Value| {
+                socket
+                    .write_all(encode_frame(&packet.to_string()).as_bytes())
+                    .unwrap();
+            };
+            send(&mut socket, &load_fixture("handshake.json"));
+            let recording = load_fixture("console_follow_preformatted_events.json");
+            let events = recording.as_array().unwrap();
+            let release = load_fixture("console_follow_release_replies.json");
+            let mut released = BTreeSet::new();
+            let mut injected = false;
+            while let Ok(request) = recv_from(&mut reader) {
+                let fixture = match request["type"].as_str().unwrap() {
+                    "getRoot" => "get_root_screenshot_response.json",
+                    "listTabs" => "list_tabs_response.json",
+                    "getTarget" => "get_target_response.json",
+                    "getWatcher" => "get_watcher_response.json",
+                    "watchTargets" => "watch_targets_response.json",
+                    "watchResources" => {
+                        // An older catch-up record remains queued when the
+                        // first grip release is sent. It must precede the
+                        // further events interleaved with release replies.
+                        for event in &events[..5] {
+                            send(&mut socket, event);
+                        }
+                        "watch_resources_response.json"
+                    }
+                    "release" => {
+                        let actor = request["to"].as_str().unwrap();
+                        released.insert(actor.to_owned());
+                        if !injected {
+                            for event in &events[5..8] {
+                                send(&mut socket, event);
+                            }
+                        }
+                        // Firefox 155 symbols have no ACK. Object and string
+                        // replies are actual recorded packets, with only the
+                        // session actor ID substituted as in MockRdpServer.
+                        if !actor.contains("/symbol") {
+                            let kind = if actor.contains("/longstr") {
+                                "longString"
+                            } else {
+                                "object"
+                            };
+                            let mut reply = release[kind][0].clone();
+                            reply["from"] = request["to"].clone();
+                            send(&mut socket, &reply);
+                        }
+                        if !injected {
+                            for event in &events[8..] {
+                                send(&mut socket, event);
+                            }
+                            injected = true;
+                        }
+                        if released.len() == 14 {
+                            break;
+                        }
+                        continue;
+                    }
+                    method => panic!("unexpected request: {method}"),
+                };
+                let mut reply = load_fixture(fixture);
+                reply["from"] = request["to"].clone();
+                send(&mut socket, &reply);
+            }
+            released
+        });
+        let mut args = base_args(port);
+        args.extend(["console".to_owned(), "--follow".to_owned()]);
+        args.extend(filter.iter().map(|arg| (*arg).to_owned()));
+        let output = std::process::Command::new(ff_rdp_bin())
+            .args(args)
+            .output()
+            .unwrap();
+        let released = server.join().unwrap();
+        assert_eq!(
+            released.len(),
+            14,
+            "all grips, including filtered/duplicate/nested: {released:?}"
+        );
+        assert!(output.status.success(), "{}", support::output_note(&output));
+        let lines: Vec<serde_json::Value> = String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(lines.len(), if filter.is_empty() { 8 } else { 0 });
+        if filter.is_empty() {
+            let expected = [
+                "literal",
+                "substituted",
+                "long",
+                "symbol",
+                "nested",
+                "long-name",
+                "unnamed",
+                "bigint",
+            ];
+            for (entry, label) in lines.iter().zip(expected) {
+                assert!(
+                    entry["message"]
+                        .as_str()
+                        .unwrap()
+                        .contains(&format!("iter252-record:{label}")),
+                    "wire ordering: {lines:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn console_follow_level_filter_applies_to_stream() {
     // Only warn-level messages should be emitted when --level warn is given.
     let console_event = json!({
