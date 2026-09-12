@@ -355,8 +355,10 @@ ff-rdp navigate <URL> --with-page --query "Stable release" \
 # labels it explicitly. Read again with `a11y summary` after navigation settles.
 # An unchanged URL does not confirm a same-URL replacement, and a navigation
 # start received during target refresh or collection also makes the view unready.
-# Actor refreshes and reconnects preserve the action's original document identity:
-# an already-confirmed submission stays ready without another settle-budget wait.
+# Actor refreshes and reconnects preserve an unconfirmed navigation's origin:
+# a confirmed submission retires that transition before --settle/--wait-for,
+# so a further navigation uses the intermediate document as its own baseline.
+# An already-confirmed submission stays ready without another settle-budget wait.
 # Nothing navigated, nothing waited for.
 #
 # And since iter-224 a connection that dies mid-collection no longer costs you

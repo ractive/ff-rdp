@@ -77,6 +77,7 @@ sha2 = { workspace = true }
 # iter-144 Theme D: live_144_full_page_no_duplicate_header decodes captured
 # PNG pixel rows to detect a repeated header band — test-only, never shipped.
 png = "0.17"
+socket2 = "0.6"
 
 [target.'cfg(unix)'.dev-dependencies]
 libc = { workspace = true }

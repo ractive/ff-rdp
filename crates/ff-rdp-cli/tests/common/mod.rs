@@ -120,8 +120,15 @@ fn free_port() -> Option<u16> {
 /// Poll until `127.0.0.1:port` accepts a TCP connection or `timeout` elapses.
 fn wait_for_tcp(port: u16, timeout: Duration) -> bool {
     let deadline = std::time::Instant::now() + timeout;
+    let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     while std::time::Instant::now() < deadline {
-        if std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok() {
+        // A bound, non-listening socket refuses immediately on Linux, but
+        // macOS may silently drop its SYN. Keep each real connect probe inside
+        // the launch wait's budget instead of inheriting the OS retry timeout.
+        let probe_timeout = deadline
+            .saturating_duration_since(std::time::Instant::now())
+            .min(Duration::from_millis(100));
+        if std::net::TcpStream::connect_timeout(&address, probe_timeout).is_ok() {
             return true;
         }
         std::thread::sleep(Duration::from_millis(100));

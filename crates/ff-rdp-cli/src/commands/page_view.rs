@@ -867,6 +867,7 @@ pub(crate) fn attach(
 pub(crate) struct NavigationOrigin {
     inner_window_id: Option<u64>,
     url: Option<String>,
+    pending: Option<String>,
 }
 
 impl NavigationOrigin {
@@ -874,7 +875,32 @@ impl NavigationOrigin {
         Self {
             inner_window_id: ctx.target.inner_window_id,
             url: ctx.target.url.clone(),
+            pending: None,
         }
+    }
+
+    /// Refresh a caller's actors without carrying a confirmed transition into
+    /// subsequent predicate/settle polling. Take the announcement *before* the
+    /// refresh: an announcement received during it belongs to the next
+    /// observation and must not be retired using the older document's ID.
+    pub(crate) fn refresh_target(&mut self, ctx: &mut ConnectedTab) {
+        self.pending = ctx.take_navigation_started().or(self.pending.take());
+        ctx.refresh_target();
+        if self
+            .pending
+            .as_deref()
+            .is_some_and(|dest| self.confirms(ctx, dest))
+        {
+            *self = Self::capture(ctx);
+        }
+    }
+
+    fn confirms(&self, ctx: &ConnectedTab, destination: &str) -> bool {
+        matches!((self.inner_window_id, ctx.target.inner_window_id),
+            (Some(old), Some(new)) if old != new)
+            || (!destination.is_empty()
+                && self.url.as_deref().is_some_and(|url| url != destination)
+                && ctx.target.url.as_deref() == Some(destination))
     }
 }
 
@@ -1050,7 +1076,7 @@ fn collect_settled(
     opts: &CollectOptions,
     mut origin: NavigationOrigin,
 ) -> Result<SettledPage, AppError> {
-    let mut pending = ctx.take_navigation_started();
+    let mut pending = ctx.take_navigation_started().or(origin.pending.take());
     let mut last_err = None;
     let mut reconnects = 0_usize;
     let mut attempts = 0_usize;
@@ -1242,13 +1268,7 @@ fn settle_after_navigation(
     let deadline = Instant::now() + budget;
     loop {
         ctx.refresh_target();
-        let changed_document = matches!(
-            (before, ctx.target.inner_window_id),
-            (Some(old), Some(new)) if old != new
-        );
-        let at_destination =
-            url_can_prove_handover && ctx.target.url.as_deref() == Some(destination);
-        if changed_document || at_destination {
+        if origin.confirms(ctx, destination) {
             return true;
         }
         if Instant::now() >= deadline {
@@ -1510,6 +1530,80 @@ mod tests {
     use super::*;
     use crate::cli::args::QueryArgs;
     use clap::Parser as _;
+
+    #[test]
+    fn unit_253_refresh_retires_only_the_confirmed_transition() {
+        use ff_rdp_core::RdpTransport;
+        use ff_rdp_core::transport::{encode_frame, recv_from};
+        use std::io::{BufReader, Write as _};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let send = |stream: &mut std::net::TcpStream, value: &Value| {
+                stream
+                    .write_all(encode_frame(&value.to_string()).as_bytes())
+                    .unwrap();
+            };
+            let start = |url| json!({"from":"conn0/target1", "type":"tabNavigated", "state":"start", "url":url});
+            send(&mut stream, &start("https://b/"));
+            // First recovery refresh still sees A. The second sees B, with C
+            // announced inside that refresh. Settlement must poll B then C,
+            // not mistake B's difference from A for confirmation of C.
+            for (index, (id, url)) in [
+                (7, "https://a/"),
+                (8, "https://b/"),
+                (8, "https://b/"),
+                (9, "https://c/"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let request = recv_from(&mut reader).unwrap();
+                assert_eq!(request["type"], "getTarget");
+                if index == 1 {
+                    send(&mut stream, &start("https://c/"));
+                }
+                let mut reply: Value = serde_json::from_str(include_str!(
+                    "../../tests/fixtures/get_target_response.json"
+                ))
+                .unwrap();
+                reply["from"] = request["to"].clone();
+                reply["frame"]["innerWindowId"] = json!(id);
+                reply["frame"]["url"] = json!(url);
+                send(&mut stream, &reply);
+            }
+        });
+        let mut transport =
+            RdpTransport::connect_raw("127.0.0.1", port, Duration::from_secs(2)).unwrap();
+        transport.recv().unwrap();
+        let mut ctx = ConnectedTab::for_test(transport, ActorId::from("conn0/console1"));
+        ctx.target.inner_window_id = Some(7);
+        ctx.target.url = Some("https://a/".into());
+        let mut origin = NavigationOrigin::capture(&ctx);
+        origin.refresh_target(&mut ctx);
+        assert_eq!(origin.inner_window_id, Some(7));
+        assert_eq!(origin.pending.as_deref(), Some("https://b/"));
+        origin.refresh_target(&mut ctx);
+        assert_eq!(origin.inner_window_id, Some(8));
+        assert!(origin.pending.is_none());
+        let pending = ctx.take_navigation_started().unwrap();
+        assert_eq!(pending, "https://c/");
+        assert!(settle_after_navigation(
+            &mut ctx,
+            &pending,
+            &origin,
+            Duration::from_millis(500)
+        ));
+        assert_eq!(ctx.target.inner_window_id, Some(9));
+        server.join().unwrap();
+    }
 
     #[test]
     fn unit_253_late_navigation_cannot_leave_successful_collection_ready() {

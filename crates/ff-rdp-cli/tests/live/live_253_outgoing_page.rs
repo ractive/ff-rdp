@@ -371,3 +371,81 @@ fn live_253_committed_submission_direct() {
 fn live_253_committed_submission_daemon() {
     exercise_committed_submission(false);
 }
+
+fn exercise_chained_submission(direct: bool) {
+    assert!(live_tests_enabled());
+    let ff = LiveFirefox::headless_on_random_port();
+    if !direct {
+        assert!(ff.with_daemon().is_some());
+    }
+    let run = |args: &[&str]| {
+        let mut cmd = Command::new(ff_rdp_bin());
+        cmd.args([
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &ff.port().to_string(),
+            "--timeout",
+            "10000",
+        ]);
+        if direct {
+            cmd.arg("--no-daemon");
+        }
+        let out = cmd.args(args).output().unwrap();
+        assert!(out.status.success(), "{args:?}: {out:?}");
+        let value: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(
+            value["meta"]["route"],
+            if direct { "direct" } else { "daemon" }
+        );
+        value
+    };
+    let mut wrong = Vec::new();
+    for settle in [false, true] {
+        let server = FixtureServer::start(HashMap::from([
+            ("/".into(), FixtureRoute::html("<!doctype html><title>A</title><h1>Submission A</h1><form action='/b'><input name='q'><button>Submit</button></form>")),
+            ("/b".into(), FixtureRoute::html("<!doctype html><title>B</title><h1>Intermediate B</h1><article><p>The intermediate document remains fully readable while its next navigation loads.</p></article><div id='status'>waiting</div><script>setTimeout(()=>{location.href='/c';setTimeout(()=>{document.querySelector('#status').textContent='redirecting'},50)},150)</script>")),
+            ("/c".into(), FixtureRoute::html("<!doctype html><title>C</title><h1>Final C</h1><article><p>The final document committed inside the navigation settlement budget.</p></article>").with_delay(Duration::from_millis(1500))),
+        ])).unwrap();
+        run(&["navigate", &server.base_url()]);
+        let before = run(&["eval", "location.href"]);
+        let mut args = vec!["type", "input", "chain", "--submit", "--with-page"];
+        if settle {
+            args.push("--settle");
+        } else {
+            args.extend(["--wait-for", "text:redirecting"]);
+        }
+        let started = Instant::now();
+        let view = run(&args);
+        eprintln!(
+            "ITER253 CHAIN direct={direct} settle={settle} before={before} elapsed_ms={} view={view}",
+            started.elapsed().as_millis()
+        );
+        assert_eq!(view["results"]["submitted"], true);
+        assert_eq!(view["results"]["navigated"], true);
+        assert_eq!(view["meta"]["page_readability_injected"], true);
+        assert!(view["meta"]["page_parse_ms"].is_number());
+        assert!(view["results"]["page"]["interactive"].is_array());
+        if view["results"]["page"]["headings"][0]["text"] != "Final C"
+            || view["meta"]["page_ready"] != true
+        {
+            wrong.push((settle, view));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "chained submission collected outgoing B: {wrong:?}"
+    );
+}
+
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_253_chained_submission_direct() {
+    exercise_chained_submission(true);
+}
+
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_253_chained_submission_daemon() {
+    exercise_chained_submission(false);
+}
