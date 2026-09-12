@@ -259,7 +259,16 @@ fn codex_path(home: &Path) -> std::path::PathBuf {
 #[test]
 fn install_hook_codex_custom_home_controls_gate_and_all_mutations() {
     let home = codex_home();
-    let custom = TempDir::new().unwrap();
+    // Windows path separators are JSON-escaped. A literal backslash in the
+    // Unix directory name exercises the same encoding boundary on every OS.
+    let custom = tempfile::Builder::new()
+        .prefix(if cfg!(windows) {
+            "codex-home-"
+        } else {
+            "codex\\home-"
+        })
+        .tempdir()
+        .unwrap();
     let custom_path = custom.path().join("hooks.json");
     let default_path = codex_path(home.path());
     let unrelated = include_str!("../fixtures/codex-hooks-documented.json");
@@ -280,7 +289,13 @@ fn install_hook_codex_custom_home_controls_gate_and_all_mutations() {
     for args in [vec![], vec!["--dry-run"]] {
         let out = invoke(&args);
         assert_eq!(out.status.code(), Some(1), "{}", support::output_note(&out));
-        assert!(String::from_utf8_lossy(&out.stdout).contains(custom.path().to_str().unwrap()));
+        let error: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(error["error_type"], "User");
+        let message = error["error"].as_str().unwrap();
+        assert!(
+            message.contains(custom.path().join("config.toml").to_str().unwrap()),
+            "{message}"
+        );
         assert!(!custom_path.exists());
         assert!(!custom.path().join("config.toml").exists());
         assert_eq!(fs::read_to_string(&default_path).unwrap(), unrelated);
