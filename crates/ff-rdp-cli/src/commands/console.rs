@@ -478,6 +478,7 @@ fn follow_loop(
             Err(ProtocolError::RecvFailed(ref e))
                 if e.kind() == std::io::ErrorKind::UnexpectedEof
                     || e.kind() == std::io::ErrorKind::ConnectionReset
+                    || e.kind() == std::io::ErrorKind::ConnectionAborted
                     || e.kind() == std::io::ErrorKind::BrokenPipe =>
             {
                 // Connection closed cleanly (Firefox exited, daemon stopped, etc.).
