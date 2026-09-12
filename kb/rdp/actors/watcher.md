@@ -14,6 +14,13 @@ firefox_files:
   - devtools/server/actors/watcher/session-context.js
   - devtools/server/actors/resources/index.js
 title: WatcherActor
+iteration_252_review_repair: >-
+  Flat console-message resources carry arguments already formatted by Firefox
+  Console.cpp::ProcessArguments. The flat parser joins them verbatim; remaining
+  percent tokens are literal even when introduced by substitution. Firefox155.0.1
+  recorded fixtures and both-route live measurements cover literal %s and substituted %s
+  plus longString grips. See iteration252 review-repair-1 evidence.
+symbol_grip_audit: "2026-09-12 iteration252 independent-review repair: local Firefox 0088392ab4ccab730743ed188ddec62d04e578b7 devtools/server/actors/object/utils.js createValueGrip (116-183) allocates actor-bearing object, longString, and symbol grips only; BigInt (190-195), special numbers, null/undefined and record/tuple forms carry no actor. object.js form, string.js form, and object/symbol.js form corroborate those families; a symbol name can itself be a longString. The comparison copy now removes symbol actor handles recursively as well, preserving names, previews, user property descriptors and original emitted handles. Real Firefox155.0.1 before probe: direct36/36 and unprimed36/36; primed37 records for29 calls, with standalone/nested symbols duplicated on ticks17-20. Recording, after measurements and final validation are retained in .git/ralph-loop/20260912-validation-efficiency/pr247."
 ---
 
 # WatcherActor (typeName `"watcher"`)
@@ -482,11 +489,98 @@ The fix lives in `navigate.rs::get_navigation_watcher`, deliberately scoped to
 the two navigation waits rather than to `connect_and_get_target`: the flag also
 moves top-level target delivery onto the watcher, so callers that hold a target
 actor across a navigation must re-resolve it (`refresh_console_actor`), which
-those two already did. Suites that subscribe to other content-process
-resources on a direct connection (`console --follow`'s `console-message`, and
-whatever `click.rs` / `emulate.rs` subscribe to) were **not** audited by
-iter-174 — that audit is
-`kb/iterations/iteration-252-content-process-resources-on-the-direct-route.md`,
-which claims no defect, only an open question. Plain `console` (no `--follow`)
-is known-good on the direct route: it primes via `startListeners` on the legacy
-target actor, measured working during iter-174.
+those two already did.
+
+### The audit of every other direct-route subscriber (iter-252)
+
+iter-174 left the other direct-route `getWatcher` call sites unaudited.
+iter-252 did that audit against
+`devtools/server/actors/resources/index.js` at revision `0088392ab4cc`, and
+found **one** more instance. The classification, every row read out of that
+file rather than inferred:
+
+| call site | resource types watched | dictionary | starved without the flag? |
+|---|---|---|---|
+| `commands/console.rs` (`run_follow_direct`) | `console-message`, `error-message` | `FrameTargetResources` (`:64`, `:80`) | **yes — this was the second defect** |
+| `commands/navigate.rs` (`network` wait) | `network-event` | `ParentProcessResources` (`:213`) | no |
+| `commands/click.rs` | `network-event` | `ParentProcessResources` | no |
+| `commands/throttle.rs` | `network-event` | `ParentProcessResources` | no |
+| `commands/network_watch.rs` | `network-event` | `ParentProcessResources` | no |
+| `commands/nav_action.rs` | `network-event` | `ParentProcessResources` | no |
+| `commands/network.rs` (three sites) | `network-event` | `ParentProcessResources` | no |
+| `core/actors/storage.rs` (`list_cookies`) | `cookies` | `ParentProcessResources` (`:216`) | no |
+| `commands/emulate.rs` | *none* — it only resolves the target-configuration actor | n/a | no |
+
+`FrameTargetResources` also contains a `network-event` entry
+(`resources/network-events-content.js`), but by its own doc comment that half
+only carries CSP-blocked and cached requests; ordinary HTTP traffic is the
+parent process's, which is what `network-event` subscribers consume. See the
+`iter-159` note above.
+
+Scope of the `cookies` row, stated precisely rather than broadly: the flag is
+read in three places in `resources/utils/parent-process-storage.js`
+(`:241`, `:300`, `:452`), but all three govern how the `StorageActor` is
+**re-spawned across a navigation or a bfcache traversal**, not whether the
+initial `cookies` resource is delivered. `list_cookies` is a one-shot
+`watchResources` → `getStoreObjects` on a settled page and is unaffected;
+this audit did not measure cookie delivery *across* a navigation on the direct
+route, and nothing here should be read as a claim about that case.
+
+Two mechanisms have to be satisfied before *any* `FrameTargetResources` type
+arrives, and `console --follow`'s direct path satisfied neither:
+
+1. `getWatcher {isServerTargetSwitchingEnabled: true}` — otherwise
+   `shouldNotifyWindowGlobal` rejects the top-level browsing context outright
+   (`watcher/browsing-context-helpers.sys.mjs:174-182`), so the watcher never
+   instantiates a frame target for the page.
+2. `watchTargets("frame")` **before** `watchResources`. The content-process
+   half of `watchResources` fans the new resource types out over
+   `watcherDataObject.actors`
+   (`js-process-actor/DevToolsProcessChild.sys.mjs:409-414`) — the targets
+   `watchTargets` created. The top-level target obtained from the descriptor's
+   `getTarget` is deliberately *not* in that list; only `sessionContext.type ==
+   "webextension"` gets a `TargetActorRegistry` fallback there. With an empty
+   list the subscription reaches nobody, silently.
+
+### `console-message` resources are flat, not wrapped (iter-252)
+
+A second defect sat on top of the first and is why iter-174's attempt to
+measure `console --follow` produced empty stdout on *both* routes. There are
+two different console payload shapes on the wire and ff-rdp understood only
+one:
+
+| producer | shape |
+|---|---|
+| `webconsole.js:1453` — legacy `consoleAPICall` push | `{"type":"consoleAPICall","message":{…}}` — **nested** |
+| `resources/error-messages.js:180` — `error-message` resource | `{"pageError":{…}}` — **nested** |
+| `resources/console-messages.js:55` — `console-message` resource | `prepareConsoleMessageForRemote`'s result **verbatim** — flat |
+
+Recorded on Firefox 155.0.1:
+
+```json
+{"type":"resources-available-array",
+ "from":"server1.conn6.watcher2.process8//windowGlobalTarget2",
+ "array":[["console-message",[{"arguments":["tick"],"lineNumber":1,
+   "columnNumber":32,"filename":"debugger eval code","level":"log",
+   "timeStamp":1788783444398.958,"sourceId":null,
+   "innerWindowID":17179869186}]]]}
+```
+
+`parse_single_console_resource` keyed off `item.message` / `item.pageError`,
+so every such item parsed to `None`. The daemon route received all of these
+frames and printed nothing. `level` is now the flat shape's discriminator.
+
+Isolated measurement, 8 s window against a page logging at 1 Hz, FF 155.0.1:
+
+```text
+neither fix       daemon 0 lines   direct 0 lines
+parser fix only   daemon 7 lines   direct 0 lines   ← the watcher defect, alone
+both fixes        daemon 8 lines   direct 8 lines
+```
+
+Live coverage: `live_252_console_follow_sees_content_process_messages_both_routes`.
+
+Plain `console` (no `--follow`) was never affected on either route: it primes
+via `startListeners` on the legacy target actor and reads `getCachedMessages`,
+measured working during iter-174 and again during iter-252 (189 matched
+messages on both routes while `--follow` showed zero).

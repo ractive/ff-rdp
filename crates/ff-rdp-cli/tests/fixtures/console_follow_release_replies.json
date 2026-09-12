@@ -1,0 +1,29 @@
+{
+  "longString": [
+    {
+      "from": "server1.conn0.child0/longstractor19"
+    },
+    {
+      "from": "server1.conn0.child0/longstractor19",
+      "error": "noSuchActor",
+      "message": "No such actor for ID: server1.conn0.child0/longstractor19"
+    }
+  ],
+  "object": [
+    {
+      "from": "server1.conn0.child0/obj21"
+    },
+    {
+      "from": "server1.conn0.child0/obj21",
+      "error": "noSuchActor",
+      "message": "No such actor for ID: server1.conn0.child0/obj21"
+    }
+  ],
+  "symbol": [
+    {
+      "from": "server1.conn0.child0/symbol20",
+      "error": "noSuchActor",
+      "message": "No such actor for ID: server1.conn0.child0/symbol20"
+    }
+  ]
+}

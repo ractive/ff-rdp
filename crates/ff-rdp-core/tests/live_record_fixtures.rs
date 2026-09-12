@@ -24,6 +24,126 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 /// always terminates — even if Firefox never issues the request (iter-136).
 const HTTP_SERVER_ACCEPT_DEADLINE: Duration = Duration::from_secs(30);
 
+/// Record both deliveries of preformatted percent tokens and each actor-bearing
+/// value-grip family. Handles differ between channels, including preview symbols
+/// and a symbol's long-string name, although each timestamp matches.
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_252_record_preformatted_console_deliveries() {
+    fn actors(value: &Value, found: &mut std::collections::BTreeMap<String, String>) {
+        match value {
+            Value::Object(fields) => {
+                if let (Some(kind @ ("object" | "longString" | "symbol")), Some(actor)) =
+                    (value["type"].as_str(), value["actor"].as_str())
+                {
+                    found
+                        .entry(kind.to_owned())
+                        .or_insert_with(|| actor.to_owned());
+                }
+                for field in fields.values() {
+                    actors(field, found);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    actors(item, found);
+                }
+            }
+            _ => {}
+        }
+    }
+    if !should_run_live() {
+        return;
+    }
+    let mut conn = connect();
+    let transport = conn.transport_mut();
+    transport
+        .send(&json!({"to": "root", "type": "listTabs"}))
+        .unwrap();
+    let tabs = recv_from_actor(transport, "root");
+    let tab = tabs["tabs"][0]["actor"].as_str().unwrap();
+    transport
+        .send(&json!({"to": tab, "type": "getWatcher", "isServerTargetSwitchingEnabled": true}))
+        .unwrap();
+    let watcher_reply = recv_from_actor(transport, tab);
+    let watcher = watcher_reply["actor"].as_str().unwrap();
+    transport
+        .send(&json!({"to": watcher, "type": "watchTargets", "targetType": "frame"}))
+        .unwrap();
+    drain_messages(transport, Duration::from_secs(1));
+    transport
+        .send(
+            &json!({"to": watcher, "type": "watchResources", "resourceTypes": ["console-message"]}),
+        )
+        .unwrap();
+    drain_messages(transport, Duration::from_secs(1));
+    transport
+        .send(&json!({"to": tab, "type": "getTarget"}))
+        .unwrap();
+    let target = recv_from_actor(transport, tab);
+    let console = target["frame"]["consoleActor"].as_str().unwrap();
+    transport
+        .send(&json!({"to": console, "type": "startListeners", "listeners": ["ConsoleAPI"]}))
+        .unwrap();
+    recv_from_actor(transport, console);
+    transport.send(&json!({
+        "to": console,
+        "type": "evaluateJSAsync",
+        "text": "console.log('iter252-record:literal:%s'); console.log('%s', 'iter252-record:substituted:%s'); console.log('iter252-record:long:' + 'x'.repeat(10000)); console.log(Symbol('iter252-record:symbol')); console.log({nested: Symbol('iter252-record:nested'), type: 'symbol', actor: 'user-data'}); console.log(Symbol('iter252-record:long-name:' + 'x'.repeat(10000))); console.log('iter252-record:unnamed', Symbol()); console.log('iter252-record:bigint', 12345678901234567890n);"
+    })).unwrap();
+    let events: Vec<_> = drain_messages(transport, Duration::from_secs(2))
+        .into_iter()
+        .filter(|event| {
+            matches!(
+                event["type"].as_str(),
+                Some("consoleAPICall" | "resources-available-array")
+            ) && event.to_string().contains("iter252-record:")
+        })
+        .collect();
+    let legacy = events
+        .iter()
+        .filter(|event| event["type"] == "consoleAPICall")
+        .count();
+    let resources: usize = events
+        .iter()
+        .map(|event| ff_rdp_core::parse_console_resources(event).len())
+        .sum();
+    assert_eq!(legacy, 8, "legacy delivery: {events:?}");
+    assert_eq!(resources, 8, "resource delivery: {events:?}");
+    let recording = Value::Array(events);
+    save_cli_fixture("console_follow_preformatted_events.json", &recording);
+    save_core_fixture("console_follow_preformatted_events.json", &recording);
+
+    // Record release replies rather than assuming that every declared reply
+    // exists: Firefox 155 SymbolActor destroys itself before sending its ACK.
+    let mut by_kind = std::collections::BTreeMap::new();
+    actors(&recording, &mut by_kind);
+    let mut replies = serde_json::Map::new();
+    for (kind, actor) in by_kind {
+        transport
+            .send(&json!({"to":actor,"type":"release"}))
+            .unwrap();
+        transport
+            .send(&json!({"to":actor,"type":"iter252LifetimeProbe"}))
+            .unwrap();
+        let mut packets = Vec::new();
+        loop {
+            let packet = recv_from_actor(transport, &actor);
+            let absent = packet["error"] == "noSuchActor";
+            packets.push(packet);
+            if absent {
+                break;
+            }
+        }
+        assert_eq!(packets.len(), if kind == "symbol" { 1 } else { 2 });
+        replies.insert(kind, Value::Array(packets));
+    }
+    save_cli_fixture(
+        "console_follow_release_replies.json",
+        &Value::Object(replies),
+    );
+}
+
 fn connect() -> RdpConnection {
     RdpConnection::connect("127.0.0.1", firefox_port(), TIMEOUT).expect("connect to Firefox")
 }

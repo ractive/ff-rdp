@@ -294,17 +294,61 @@ fn run_follow_direct(
     jq_filter: Option<&str>,
 ) -> Result<(), AppError> {
     let tab_actor = ctx.target_tab_actor().clone();
+
+    // iter-252: `console-message` and `error-message` are both
+    // `FrameTargetResources` (`devtools/server/actors/resources/index.js`),
+    // i.e. emitted from the content process by a per-frame target actor —
+    // exactly the class iteration 174 found starving on the direct route.
+    //
+    // Two server-side preconditions have to hold before a single one arrives,
+    // and this call site used to satisfy neither:
+    //
+    //  * `isServerTargetSwitchingEnabled: true`. Without it
+    //    `shouldNotifyWindowGlobal` rejects the top-level browsing context
+    //    (`watcher/browsing-context-helpers.sys.mjs:174-182`), so the watcher
+    //    never instantiates a frame target for the page.
+    //  * `watchTargets("frame")` before `watchResources`. The content-process
+    //    half of `watchResources` fans the new resource types out over
+    //    `watcherDataObject.actors`
+    //    (`js-process-actor/DevToolsProcessChild.sys.mjs:409-414`) — the
+    //    targets `watchTargets` created. The top-level target obtained from
+    //    the descriptor's `getTarget` is deliberately *not* in that list
+    //    (only web extensions get a `TargetActorRegistry` fallback), so with
+    //    an empty list the subscription reaches nobody.
+    //
+    // The daemon route has always done both in `establish_watcher`, which is
+    // why it was unaffected. The `get_watcher_with_options` CAUTION about the
+    // flag moving top-level target delivery onto the watcher does not bite
+    // here: `follow_loop` never touches the target actor, it only reads
+    // events off the transport.
     let watcher_actor =
-        TabActor::get_watcher(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;
+        TabActor::get_watcher_with_options(ctx.transport_mut(), &tab_actor, Some(true))
+            .map_err(AppError::from)?;
 
-    WatcherActor::watch_resources(
+    // Both subscription requests can emit catch-up events before their ACK.
+    // recv_reply_from forwards those to the sink; retain them in wire order
+    // and drain them before reading newer events from the socket.
+    let (events_tx, events_rx) = std::sync::mpsc::channel();
+    let previous_sink = ctx.transport_mut().swap_event_sink(Some(events_tx));
+    let subscribed = (|| {
+        WatcherActor::watch_targets(ctx.transport_mut(), &watcher_actor, "frame")?;
+        WatcherActor::watch_resources(
+            ctx.transport_mut(),
+            &watcher_actor,
+            &["console-message", "error-message"],
+        )
+    })();
+    ctx.transport_mut().set_event_sink(previous_sink);
+    subscribed.map_err(AppError::from)?;
+
+    let result = follow_loop(
         ctx.transport_mut(),
-        &watcher_actor,
-        &["console-message", "error-message"],
-    )
-    .map_err(AppError::from)?;
-
-    let result = follow_loop(ctx.transport_mut(), level, regex, jq_filter);
+        events_rx.try_iter(),
+        level,
+        regex,
+        jq_filter,
+        true,
+    );
 
     // Best-effort cleanup — ignore errors since we may be exiting anyway.
     let _ = WatcherActor::unwatch_resources(
@@ -312,6 +356,7 @@ fn run_follow_direct(
         &watcher_actor,
         &["console-message", "error-message"],
     );
+    let _ = WatcherActor::unwatch_targets(ctx.transport_mut(), &watcher_actor, Some("frame"), None);
 
     result
 }
@@ -327,7 +372,14 @@ fn run_follow_daemon(
     start_daemon_stream(ctx.transport_mut(), "console-message").map_err(AppError::from)?;
     start_daemon_stream(ctx.transport_mut(), "error-message").map_err(AppError::from)?;
 
-    let result = follow_loop(ctx.transport_mut(), level, regex, jq_filter);
+    let result = follow_loop(
+        ctx.transport_mut(),
+        std::iter::empty(),
+        level,
+        regex,
+        jq_filter,
+        false,
+    );
 
     // Best-effort cleanup — ignore errors since we may be exiting anyway.
     let _ = stop_daemon_stream(ctx.transport_mut(), "console-message");
@@ -353,40 +405,32 @@ fn run_follow_daemon(
 /// emits them without an explicit `startListeners` call — see iter-71c.
 fn follow_loop(
     transport: &mut RdpTransport,
+    mut catch_up: impl Iterator<Item = Value>,
     level: Option<&str>,
     regex: Option<&regex::Regex>,
     jq_filter: Option<&str>,
+    release_grips: bool,
 ) -> Result<(), AppError> {
     use std::io::Write;
 
+    let mut deliveries = ConsoleDeliveries::default();
     loop {
-        match transport.recv() {
+        match catch_up.next().map_or_else(|| transport.recv(), Ok) {
             Ok(msg) => {
                 let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
 
                 // Collect resources from whichever channel delivered this message.
-                let resources: Vec<ConsoleResource> = if msg_type == "resources-available-array" {
-                    // Watcher stream: batch of console/error-message resources.
-                    parse_console_resources(&msg)
-                } else if let Some(notification) = parse_console_notification(&msg) {
-                    // Direct push from the console actor (consoleAPICall / pageError).
-                    // Convert ConsoleMessage → ConsoleResource so both paths share
-                    // the same filtering and emission logic below.
-                    vec![ConsoleResource {
-                        level: notification.level,
-                        message: notification.message,
-                        source: notification.source,
-                        line: notification.line,
-                        column: notification.column,
-                        timestamp: notification.timestamp,
-                        resource_id: None,
-                    }]
-                } else {
-                    // Unrecognised message type — skip silently.
-                    continue;
-                };
-
-                for res in resources {
+                let resources = parse_follow_messages(&msg);
+                // Identity is derived from protocol values, never by parsing
+                // rendered text (which may itself be a literal JSON string).
+                // Keep the original grips in the emitted output.
+                let mut identity_event = msg.clone();
+                remove_grip_actor_ids(&mut identity_event);
+                let identities = parse_follow_messages(&identity_event);
+                for (res, identity) in resources.into_iter().zip(identities) {
+                    if deliveries.is_duplicate(&identity, msg_type == "resources-available-array") {
+                        continue;
+                    }
                     if let Some(l) = level
                         && !res.level.eq_ignore_ascii_case(l)
                     {
@@ -424,6 +468,9 @@ fn follow_loop(
                     // Flush stdout so each message appears immediately in tail-like usage.
                     let _ = std::io::stdout().flush();
                 }
+                if release_grips {
+                    release_follow_grips(transport, &msg).map_err(AppError::from)?;
+                }
             }
             Err(ProtocolError::Timeout) => {
                 // Normal poll timeout — keep waiting for more events.
@@ -431,6 +478,7 @@ fn follow_loop(
             Err(ProtocolError::RecvFailed(ref e))
                 if e.kind() == std::io::ErrorKind::UnexpectedEof
                     || e.kind() == std::io::ErrorKind::ConnectionReset
+                    || e.kind() == std::io::ErrorKind::ConnectionAborted
                     || e.kind() == std::io::ErrorKind::BrokenPipe =>
             {
                 // Connection closed cleanly (Firefox exited, daemon stopped, etc.).
@@ -441,8 +489,243 @@ fn follow_loop(
     }
 }
 
+/// Only the direct connection owns these actors. Daemon stream readers receive
+/// copies of shared events and must leave their lifetime to the daemon.
+fn release_follow_grips(transport: &mut RdpTransport, event: &Value) -> Result<(), ProtocolError> {
+    if !matches!(
+        event["type"].as_str(),
+        Some("resources-available-array" | "consoleAPICall" | "pageError")
+    ) {
+        return Ok(());
+    }
+    let mut actors = std::collections::BTreeSet::new();
+    collect_follow_grips(event, &mut actors);
+    for actor in actors {
+        // All three specs accept release. Object/longString send an ACK;
+        // Firefox 155 SymbolActor.release destroys itself before protocol/Actor
+        // can send its declared reply. Do not wait for it. The ordinary follow
+        // receive loop consumes ACKs (which contain no console resources) and
+        // events in wire order, without a second receiver or a lossy queue.
+        if let Err(error) = transport.send(&json!({"to": actor, "type": "release"})) {
+            if matches!(&error, ProtocolError::SendFailed(io) if matches!(io.kind(),
+                std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::ConnectionAborted | std::io::ErrorKind::NotConnected))
+            {
+                // Disconnection frees the pool. Still emit any buffered
+                // catch-up records before the receive loop observes EOF.
+                return Ok(());
+            }
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+fn collect_follow_grips<'a>(value: &'a Value, actors: &mut std::collections::BTreeSet<&'a str>) {
+    match value {
+        Value::Object(fields) => {
+            if matches!(
+                value["type"].as_str(),
+                Some("object" | "longString" | "symbol")
+            ) && let Some(actor) = value["actor"].as_str()
+            {
+                actors.insert(actor);
+            }
+            // Previews contain further object/symbol grips; symbol names can
+            // themselves be longString grips. They have independent lifetimes.
+            for field in fields.values() {
+                collect_follow_grips(field, actors);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_follow_grips(item, actors);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn parse_follow_messages(event: &Value) -> Vec<ConsoleResource> {
+    if event["type"] == "resources-available-array" {
+        parse_console_resources(event)
+    } else if let Some(notification) = parse_console_notification(event) {
+        vec![ConsoleResource {
+            level: notification.level,
+            message: notification.message,
+            source: notification.source,
+            line: notification.line,
+            column: notification.column,
+            timestamp: notification.timestamp,
+            resource_id: None,
+        }]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Firefox allocates grips separately for legacy and resource delivery. Their
+/// actor IDs identify those handles, not the console call. Retain every other
+/// value (including string length/initial text and object previews), and never
+/// alter strings that merely look like JSON or contain an actor's name.
+/// `object/utils.js::createValueGrip` allocates actors only for objects, long
+/// strings, and symbols. Symbol names can themselves be long-string grips.
+fn remove_grip_actor_ids(value: &mut Value) {
+    match value {
+        Value::Object(fields) => {
+            if matches!(
+                fields.get("type").and_then(Value::as_str),
+                Some("longString" | "object" | "symbol")
+            ) {
+                fields.remove("actor");
+            }
+            for field in fields.values_mut() {
+                remove_grip_actor_ids(field);
+            }
+        }
+        Value::Array(values) => {
+            for item in values {
+                remove_grip_actor_ids(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Pair the resource and legacy copies of one console call without collapsing
+/// repeated calls on the same channel. Keep a bounded recent window for a
+/// long-lived follow; timestamp-less messages cannot be identified safely.
+#[derive(Default)]
+struct ConsoleDeliveries {
+    unmatched: std::collections::VecDeque<(ConsoleResource, bool)>,
+}
+
+impl ConsoleDeliveries {
+    fn is_duplicate(&mut self, message: &ConsoleResource, resource_channel: bool) -> bool {
+        if !message.timestamp.is_finite() || message.timestamp <= 0.0 {
+            return false;
+        }
+        if let Some(index) = self.unmatched.iter().position(|(seen, channel)| {
+            *channel != resource_channel
+                && seen.timestamp.to_bits() == message.timestamp.to_bits()
+                && seen.level == message.level
+                && seen.message == message.message
+                && seen.source == message.source
+                && seen.line == message.line
+                && seen.column == message.column
+        }) {
+            self.unmatched.remove(index);
+            return true;
+        }
+        if self.unmatched.len() == 1024 {
+            self.unmatched.pop_front();
+        }
+        self.unmatched
+            .push_back((message.clone(), resource_channel));
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn console_identity_excludes_only_grip_handles() {
+        let events: Vec<Value> = serde_json::from_str(include_str!(
+            "../../tests/fixtures/console_follow_preformatted_events.json"
+        ))
+        .unwrap();
+        let mut deliveries = ConsoleDeliveries::default();
+        let mut emitted = Vec::new();
+        for mut event in events {
+            let channel = event["type"] == "resources-available-array";
+            remove_grip_actor_ids(&mut event);
+            for message in parse_follow_messages(&event) {
+                if !deliveries.is_duplicate(&message, channel) {
+                    emitted.push(message);
+                }
+            }
+        }
+        assert_eq!(emitted.len(), 8);
+        let long = &emitted[2];
+        assert!(long.message.contains("iter252-record:long:"));
+        let mut distinct = long.clone();
+        distinct.message = distinct.message.replace("10020", "10021");
+        assert!(!deliveries.is_duplicate(long, true));
+        assert!(
+            !deliveries.is_duplicate(&distinct, false),
+            "length remains significant"
+        );
+        distinct = long.clone();
+        distinct.message = distinct.message.replace("long:", "other:");
+        assert!(
+            !deliveries.is_duplicate(&distinct, false),
+            "initial text remains significant"
+        );
+        distinct = long.clone();
+        distinct.timestamp += 1.0;
+        assert!(
+            !deliveries.is_duplicate(&distinct, false),
+            "separate calls remain significant"
+        );
+        assert!(deliveries.is_duplicate(long, false));
+
+        let symbol = &emitted[3];
+        assert!(symbol.message.contains("iter252-record:symbol"));
+        assert!(!deliveries.is_duplicate(symbol, true));
+        let mut renamed = symbol.clone();
+        renamed.message = renamed.message.replace("record:symbol", "record:other");
+        assert!(
+            !deliveries.is_duplicate(&renamed, false),
+            "symbol names remain significant"
+        );
+        assert!(deliveries.is_duplicate(symbol, false));
+
+        let object: Value = serde_json::from_str(&emitted[4].message).unwrap();
+        let properties = &object["preview"]["ownProperties"];
+        assert_eq!(properties["type"]["value"], "symbol");
+        assert_eq!(properties["actor"]["value"], "user-data");
+        assert_eq!(
+            properties["nested"]["value"]["name"],
+            "iter252-record:nested"
+        );
+        assert!(properties["nested"]["value"].get("actor").is_none());
+        let named: Value = serde_json::from_str(&emitted[5].message).unwrap();
+        assert_eq!(named["name"]["type"], "longString");
+        assert!(named["name"].get("actor").is_none());
+
+        // An ordinary logged string may contain literal JSON, including keys
+        // named type/actor. It must not be parsed and normalized as a grip.
+        let mut literal = Value::String(r#"{"type":"longString","actor":"literal"}"#.into());
+        let original = literal.clone();
+        remove_grip_actor_ids(&mut literal);
+        assert_eq!(literal, original);
+    }
+
+    #[test]
+    fn console_deliveries_pair_channels_and_preserve_repeated_calls() {
+        let mut deliveries = ConsoleDeliveries::default();
+        let mut message = ConsoleResource {
+            level: "log".into(),
+            message: "same".into(),
+            source: "page.js".into(),
+            line: 1,
+            column: 1,
+            timestamp: 1000.0,
+            resource_id: None,
+        };
+        assert!(!deliveries.is_duplicate(&message, true));
+        assert!(!deliveries.is_duplicate(&message, true));
+        assert!(deliveries.is_duplicate(&message, false));
+        assert!(deliveries.is_duplicate(&message, false));
+        message.timestamp += 1.0;
+        assert!(!deliveries.is_duplicate(&message, false));
+        assert!(deliveries.is_duplicate(&message, true));
+        message.timestamp = 0.0;
+        assert!(!deliveries.is_duplicate(&message, false));
+        assert!(!deliveries.is_duplicate(&message, true));
+    }
     /// Verify that a normal pattern compiles successfully under the size limit.
     #[test]
     fn accepts_reasonable_regex() {

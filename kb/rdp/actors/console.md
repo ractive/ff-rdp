@@ -13,6 +13,17 @@ firefox_files:
   - devtools/server/actors/webconsole/eval-with-debugger.js
   - devtools/shared/specs/webconsole.js
 title: WebConsoleActor
+iteration_252_review: >-
+  Priming plain console on the shared daemon connection arms legacy pushes.
+  Follow receives both the legacy push and the watcher resource. The daemon sends a
+  legacy push only once to a socket that is both RPC owner and stream subscriber;
+  console follow pairs exact timestamp/source/message matches across channels using a
+  bounded recent window. Same-channel repetitions and timestamp-less messages are
+  preserved. Direct watchTargets/watchResources catch-up events are buffered until the
+  subscription ACK and emitted before newer socket events.
+iteration_252_review_repair: "Follow comparison strips delivery-specific actor IDs from protocol grip objects on a private comparison copy while output retains every original grip. Timestamp/source/line/column/level and canonical message content identify opposite-channel pairs; same-channel repeats and timestamp-less events remain preserved. Recorded and live primed-daemon regressions cover percent-token fidelity and longString duplicate delivery. Evidence: .git/ralph-loop/20260909-takeover/iter252/review-repair-1."
+symbol_grip_audit: "2026-09-12 iteration252 independent-review repair: local Firefox 0088392ab4ccab730743ed188ddec62d04e578b7 devtools/server/actors/object/utils.js createValueGrip (116-183) allocates actor-bearing object, longString, and symbol grips only; BigInt (190-195), special numbers, null/undefined and record/tuple forms carry no actor. object.js form, string.js form, and object/symbol.js form corroborate those families; a symbol name can itself be a longString. The comparison copy now removes symbol actor handles recursively as well, preserving names, previews, user property descriptors and original emitted handles. Real Firefox155.0.1 before probe: direct36/36 and unprimed36/36; primed37 records for29 calls, with standalone/nested symbols duplicated on ticks17-20. Recording, after measurements and final validation are retained in .git/ralph-loop/20260912-validation-efficiency/pr247."
+iteration_252_direct_grip_lifetime: "Direct --no-daemon console --follow releases object, longString and symbol actors after processing each event, including filtered messages and duplicate deliveries. Nested previews and symbol long-string names have independent actors and are released recursively. Printed JSON retains the original serialized values and actor IDs; those IDs are snapshot annotations, not a promise of subsequent actor usability. Firefox 155.0.1 object and longString release send ACKs; SymbolActor.release destroys itself before protocol/Actor can send its declared ACK. Follow sends releases and lets its ordinary receive loop consume replies and events in wire order; it must not wait for a symbol ACK. Verified by recorded console_follow_release_replies.json and the 900-actor live before/after probe. The daemon owns its shared connection's actors: stream clients do not release them. Its pre-existing incomplete ResourceGripGuard/extract_grips and dispatch coverage are tracked separately in [[iteration-266-daemon-console-resource-grip-lifetime]]."
 ---
 
 # WebConsoleActor (typeName `"console"`)
@@ -80,6 +91,28 @@ Returns cached page errors, console-api calls etc. recorded **since the listener
 > printf-formatted `console.log` through a fresh `console` read) and
 > `live_console_no_double_delivery` (the combined legacy + watcher path stays
 > single-delivery).
+
+> **iter-252 — the watcher subscription `console --follow` uses is not the same
+> shape as the legacy push, and needs two more things.** Two corrections to
+> what the note above implies:
+>
+> 1. A `console-message` **resource** is flat.
+>    `resources/console-messages.js:55` hands
+>    `prepareConsoleMessageForRemote`'s result straight to `onAvailable`, with
+>    no `message` wrapper — unlike the `consoleAPICall` push
+>    (`webconsole.js:1453`) and unlike `error-message`, which does wrap in
+>    `pageError`. ff-rdp understood only the wrapped shapes until iter-252, so
+>    `console --follow` printed nothing on *either* route even when every frame
+>    arrived.
+> 2. `console-message` and `error-message` are `FrameTargetResources`, so the
+>    direct route additionally needs `getWatcher {isServerTargetSwitchingEnabled:
+>    true}` **and** a `watchTargets("frame")` before `watchResources` —
+>    otherwise no content-process target exists to emit them and the
+>    subscription is acked into silence. That is iter-174's defect in a second
+>    place; the mechanism is written up in `kb/rdp/actors/watcher.md`.
+>
+> Live coverage:
+> `live_252_console_follow_sees_content_process_messages_both_routes`.
 
 ### `startListeners(listeners: string[]) → { startedListeners }`
 

@@ -144,6 +144,17 @@ fn live_console_no_double_delivery() {
     // `resources-available-array` stream.  This means no double-delivery is
     // possible via this path, and the legacy `startListeners` can be left in
     // place without risk of duplicating events on the watcher bus.
+    //
+    // iter-252 CORRECTION: the second sentence above is not a property of
+    // Firefox — console API calls *are* routed through the watcher's
+    // `console-message` resource stream.  Two things hid that: this test's
+    // watcher is obtained with a plain `getWatcher` (no
+    // `isServerTargetSwitchingEnabled`), so no content-process frame target
+    // exists to emit the resource, and until iter-252 the parser dropped the
+    // flat resource payload anyway.  The `<= 1` bound below is still the right
+    // assertion and still holds — only the explanation for a 0 was wrong.  See
+    // `kb/rdp/actors/watcher.md` (iter-252) and
+    // `live_252_console_follow_sees_content_process_messages_both_routes`.
     assert!(
         matching.len() <= 1,
         "double-delivery detected on the watcher bus: got {} deliveries of the \

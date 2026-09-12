@@ -1,0 +1,390 @@
+[
+  {
+    "type": "resources-available-array",
+    "array": [
+      [
+        "console-message",
+        [
+          {
+            "arguments": [
+              "iter252-record:literal:%s"
+            ],
+            "lineNumber": 1,
+            "columnNumber": 9,
+            "filename": "debugger eval code",
+            "level": "log",
+            "timeStamp": 1789208681747.288,
+            "sourceId": null,
+            "innerWindowID": 8589934593
+          }
+        ]
+      ]
+    ],
+    "from": "server1.conn0.watcher2.process4//windowGlobalTarget2"
+  },
+  {
+    "type": "consoleAPICall",
+    "message": {
+      "arguments": [
+        "iter252-record:literal:%s"
+      ],
+      "chromeContext": false,
+      "columnNumber": 9,
+      "filename": "debugger eval code",
+      "level": "log",
+      "lineNumber": 1,
+      "timeStamp": 1789208681747.288,
+      "sourceId": null,
+      "category": "webdev",
+      "innerWindowID": 8589934593
+    },
+    "from": "server1.conn0.child0/consoleActor3"
+  },
+  {
+    "type": "consoleAPICall",
+    "message": {
+      "arguments": [
+        "iter252-record:substituted:%s"
+      ],
+      "chromeContext": false,
+      "columnNumber": 51,
+      "filename": "debugger eval code",
+      "level": "log",
+      "lineNumber": 1,
+      "timeStamp": 1789208681748.286,
+      "sourceId": null,
+      "category": "webdev",
+      "innerWindowID": 8589934593
+    },
+    "from": "server1.conn0.child0/consoleActor3"
+  },
+  {
+    "type": "consoleAPICall",
+    "message": {
+      "arguments": [
+        {
+          "type": "longString",
+          "actor": "server1.conn0.child0/longstractor19",
+          "length": 10020,
+          "initial": "iter252-record:long:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        }
+      ],
+      "chromeContext": false,
+      "columnNumber": 103,
+      "filename": "debugger eval code",
+      "level": "log",
+      "lineNumber": 1,
+      "timeStamp": 1789208681748.468,
+      "sourceId": null,
+      "category": "webdev",
+      "innerWindowID": 8589934593
+    },
+    "from": "server1.conn0.child0/consoleActor3"
+  },
+  {
+    "type": "consoleAPICall",
+    "message": {
+      "arguments": [
+        {
+          "type": "symbol",
+          "actor": "server1.conn0.child0/symbol20",
+          "name": "iter252-record:symbol"
+        }
+      ],
+      "chromeContext": false,
+      "columnNumber": 160,
+      "filename": "debugger eval code",
+      "level": "log",
+      "lineNumber": 1,
+      "timeStamp": 1789208681748.6,
+      "sourceId": null,
+      "category": "webdev",
+      "innerWindowID": 8589934593
+    },
+    "from": "server1.conn0.child0/consoleActor3"
+  },
+  {
+    "type": "consoleAPICall",
+    "message": {
+      "arguments": [
+        {
+          "type": "object",
+          "actor": "server1.conn0.child0/obj21",
+          "class": "Object",
+          "ownPropertyLength": 3,
+          "extensible": true,
+          "frozen": false,
+          "sealed": false,
+          "isError": false,
+          "preview": {
+            "kind": "Object",
+            "ownProperties": {
+              "nested": {
+                "configurable": true,
+                "enumerable": true,
+                "writable": true,
+                "value": {
+                  "type": "symbol",
+                  "actor": "server1.conn0.child0/symbol22",
+                  "name": "iter252-record:nested"
+                }
+              },
+              "type": {
+                "configurable": true,
+                "enumerable": true,
+                "writable": true,
+                "value": "symbol"
+              },
+              "actor": {
+                "configurable": true,
+                "enumerable": true,
+                "writable": true,
+                "value": "user-data"
+              }
+            },
+            "ownPropertiesLength": 3
+          }
+        }
+      ],
+      "chromeContext": false,
+      "columnNumber": 206,
+      "filename": "debugger eval code",
+      "level": "log",
+      "lineNumber": 1,
+      "timeStamp": 1789208681748.886,
+      "sourceId": null,
+      "category": "webdev",
+      "innerWindowID": 8589934593
+    },
+    "from": "server1.conn0.child0/consoleActor3"
+  },
+  {
+    "type": "consoleAPICall",
+    "message": {
+      "arguments": [
+        {
+          "type": "symbol",
+          "actor": "server1.conn0.child0/symbol23",
+          "name": {
+            "type": "longString",
+            "actor": "server1.conn0.child0/longstractor24",
+            "length": 10025,
+            "initial": "iter252-record:long-name:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          }
+        }
+      ],
+      "chromeContext": false,
+      "columnNumber": 298,
+      "filename": "debugger eval code",
+      "level": "log",
+      "lineNumber": 1,
+      "timeStamp": 1789208681751.895,
+      "sourceId": null,
+      "category": "webdev",
+      "innerWindowID": 8589934593
+    },
+    "from": "server1.conn0.child0/consoleActor3"
+  },
+  {
+    "type": "consoleAPICall",
+    "message": {
+      "arguments": [
+        "iter252-record:unnamed",
+        {
+          "type": "symbol",
+          "actor": "server1.conn0.child0/symbol25"
+        }
+      ],
+      "chromeContext": false,
+      "columnNumber": 368,
+      "filename": "debugger eval code",
+      "level": "log",
+      "lineNumber": 1,
+      "timeStamp": 1789208681752.02,
+      "sourceId": null,
+      "category": "webdev",
+      "innerWindowID": 8589934593
+    },
+    "from": "server1.conn0.child0/consoleActor3"
+  },
+  {
+    "type": "consoleAPICall",
+    "message": {
+      "arguments": [
+        "iter252-record:bigint",
+        {
+          "type": "BigInt",
+          "text": "12345678901234567890"
+        }
+      ],
+      "chromeContext": false,
+      "columnNumber": 417,
+      "filename": "debugger eval code",
+      "level": "log",
+      "lineNumber": 1,
+      "timeStamp": 1789208681752.092,
+      "sourceId": null,
+      "category": "webdev",
+      "innerWindowID": 8589934593
+    },
+    "from": "server1.conn0.child0/consoleActor3"
+  },
+  {
+    "type": "resources-available-array",
+    "array": [
+      [
+        "console-message",
+        [
+          {
+            "arguments": [
+              "iter252-record:substituted:%s"
+            ],
+            "lineNumber": 1,
+            "columnNumber": 51,
+            "filename": "debugger eval code",
+            "level": "log",
+            "timeStamp": 1789208681748.286,
+            "sourceId": null,
+            "innerWindowID": 8589934593
+          },
+          {
+            "arguments": [
+              {
+                "type": "longString",
+                "actor": "server1.conn0.watcher2.process4//longstractor19",
+                "length": 10020,
+                "initial": "iter252-record:long:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+              }
+            ],
+            "lineNumber": 1,
+            "columnNumber": 103,
+            "filename": "debugger eval code",
+            "level": "log",
+            "timeStamp": 1789208681748.468,
+            "sourceId": null,
+            "innerWindowID": 8589934593
+          },
+          {
+            "arguments": [
+              {
+                "type": "symbol",
+                "actor": "server1.conn0.watcher2.process4//symbol20",
+                "name": "iter252-record:symbol"
+              }
+            ],
+            "lineNumber": 1,
+            "columnNumber": 160,
+            "filename": "debugger eval code",
+            "level": "log",
+            "timeStamp": 1789208681748.6,
+            "sourceId": null,
+            "innerWindowID": 8589934593
+          },
+          {
+            "arguments": [
+              {
+                "type": "object",
+                "actor": "server1.conn0.watcher2.process4//obj21",
+                "class": "Object",
+                "ownPropertyLength": 3,
+                "extensible": true,
+                "frozen": false,
+                "sealed": false,
+                "isError": false,
+                "preview": {
+                  "kind": "Object",
+                  "ownProperties": {
+                    "nested": {
+                      "configurable": true,
+                      "enumerable": true,
+                      "writable": true,
+                      "value": {
+                        "type": "symbol",
+                        "actor": "server1.conn0.watcher2.process4//symbol22",
+                        "name": "iter252-record:nested"
+                      }
+                    },
+                    "type": {
+                      "configurable": true,
+                      "enumerable": true,
+                      "writable": true,
+                      "value": "symbol"
+                    },
+                    "actor": {
+                      "configurable": true,
+                      "enumerable": true,
+                      "writable": true,
+                      "value": "user-data"
+                    }
+                  },
+                  "ownPropertiesLength": 3
+                }
+              }
+            ],
+            "lineNumber": 1,
+            "columnNumber": 206,
+            "filename": "debugger eval code",
+            "level": "log",
+            "timeStamp": 1789208681748.886,
+            "sourceId": null,
+            "innerWindowID": 8589934593
+          },
+          {
+            "arguments": [
+              {
+                "type": "symbol",
+                "actor": "server1.conn0.watcher2.process4//symbol23",
+                "name": {
+                  "type": "longString",
+                  "actor": "server1.conn0.watcher2.process4//longstractor24",
+                  "length": 10025,
+                  "initial": "iter252-record:long-name:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                }
+              }
+            ],
+            "lineNumber": 1,
+            "columnNumber": 298,
+            "filename": "debugger eval code",
+            "level": "log",
+            "timeStamp": 1789208681751.895,
+            "sourceId": null,
+            "innerWindowID": 8589934593
+          },
+          {
+            "arguments": [
+              "iter252-record:unnamed",
+              {
+                "type": "symbol",
+                "actor": "server1.conn0.watcher2.process4//symbol25"
+              }
+            ],
+            "lineNumber": 1,
+            "columnNumber": 368,
+            "filename": "debugger eval code",
+            "level": "log",
+            "timeStamp": 1789208681752.02,
+            "sourceId": null,
+            "innerWindowID": 8589934593
+          },
+          {
+            "arguments": [
+              "iter252-record:bigint",
+              {
+                "type": "BigInt",
+                "text": "12345678901234567890"
+              }
+            ],
+            "lineNumber": 1,
+            "columnNumber": 417,
+            "filename": "debugger eval code",
+            "level": "log",
+            "timeStamp": 1789208681752.092,
+            "sourceId": null,
+            "innerWindowID": 8589934593
+          }
+        ]
+      ]
+    ],
+    "from": "server1.conn0.watcher2.process4//windowGlobalTarget2"
+  }
+]

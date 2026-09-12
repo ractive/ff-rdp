@@ -459,13 +459,13 @@ fn follow_server_with_events(console_event: serde_json::Value) -> MockRdpServer 
     MockRdpServer::new()
         .on("listTabs", load_fixture("list_tabs_response.json"))
         .on("getTarget", load_fixture("get_target_response.json"))
-        // run_follow_direct calls startListeners before subscribing via the
-        // Watcher to ensure console events flow through the watcher subscription.
-        .on(
-            "startListeners",
-            load_fixture("start_listeners_response.json"),
-        )
         .on("getWatcher", load_fixture("get_watcher_response.json"))
+        // iter-252: `run_follow_direct` now issues `watchTargets("frame")`
+        // before `watchResources`, because the content-process half of
+        // `watchResources` only reaches targets the watcher itself created.
+        // Without a handler here the mock answers `unknownMethod` and the
+        // command exits 3 before any followup is delivered.
+        .on("watchTargets", load_fixture("watch_targets_response.json"))
         .on_with_followups(
             "watchResources",
             load_fixture("watch_resources_response.json"),
@@ -476,6 +476,24 @@ fn follow_server_with_events(console_event: serde_json::Value) -> MockRdpServer 
             load_fixture("unwatch_resources_response.json"),
         )
         .close_after_followups()
+}
+
+fn assert_follow_subscription_requests(requests: &[serde_json::Value]) {
+    let watcher = requests.iter().find(|r| r["type"] == "getWatcher").unwrap();
+    assert_eq!(
+        watcher["isServerTargetSwitchingEnabled"], true,
+        "direct follow needs server target switching: {watcher}"
+    );
+    let targets = requests.iter().position(|r| r["type"] == "watchTargets");
+    let resources = requests
+        .iter()
+        .position(|r| r["type"] == "watchResources")
+        .unwrap();
+    assert!(
+        targets.is_some_and(|targets| targets < resources),
+        "watchTargets must precede watchResources: {requests:?}"
+    );
+    assert_eq!(requests[targets.unwrap()]["targetType"], "frame");
 }
 
 #[test]
@@ -546,6 +564,265 @@ fn console_follow_streams_messages_as_ndjson() {
         serde_json::from_str(lines[1]).expect("line 2 must be valid JSON");
     assert_eq!(msg2["level"], "warn");
     assert_eq!(msg2["message"], "live message 2");
+}
+
+/// iter-252: the payload Firefox actually sends for a `console-message`
+/// **resource** is flat — `resources/console-messages.js:55` hands
+/// `prepareConsoleMessageForRemote`'s result straight to `onAvailable`, with no
+/// `message` wrapper (the wrapper belongs to the legacy `consoleAPICall` push,
+/// `webconsole.js:1453`). The event below is recorded verbatim off the wire on
+/// Firefox 155.0.1.
+///
+/// Until iter-252 every such item parsed to `None`, so `console --follow`
+/// printed nothing at all even on the daemon route, which received every frame.
+/// That is why iteration 174's attempt to measure `console --follow` saw empty
+/// stdout on both routes and could conclude nothing. The sibling tests above
+/// all use the wrapped shape and therefore could not catch it.
+#[test]
+fn console_follow_streams_flat_console_message_resources() {
+    // Recorded by live_252_record_preformatted_console_deliveries. Replay
+    // both channels, including their distinct object/longString/symbol handles.
+    let recording = load_fixture("console_follow_preformatted_events.json");
+    let mut events = recording.as_array().unwrap().clone().into_iter();
+    let console_event = events.next().unwrap();
+    let mut followups: Vec<_> = events.collect();
+    followups.push(load_fixture("watch_resources_response.json"));
+
+    // A content-process resource can precede the watchResources ACK. Replay
+    // this recorded shape before the ACK and ensure setup retains it.
+    let server = MockRdpServer::new()
+        .on("listTabs", load_fixture("list_tabs_response.json"))
+        .on("getTarget", load_fixture("get_target_response.json"))
+        .on("getWatcher", load_fixture("get_watcher_response.json"))
+        .on("watchTargets", load_fixture("watch_targets_response.json"))
+        .on_with_followups("watchResources", console_event, followups)
+        .close_after_followups();
+    let port = server.port();
+    let requests = server.request_log();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["console".to_owned(), "--follow".to_owned()]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().expect("server thread panicked");
+    assert_follow_subscription_requests(&requests.lock().unwrap());
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        support::output_note(&output)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.trim().lines().collect();
+    assert_eq!(
+        lines.len(),
+        8,
+        "flat console-message resources must stream like wrapped ones, got: {stdout}"
+    );
+
+    let msg1: serde_json::Value =
+        serde_json::from_str(lines[0]).expect("line 1 must be valid JSON");
+    assert_eq!(msg1["level"], "log");
+    assert_eq!(msg1["message"], "iter252-record:literal:%s");
+    assert_eq!(msg1["source"], "debugger eval code");
+    assert_eq!(msg1["line"], 1);
+
+    // Formatting already ran in Firefox; percent tokens must remain literal.
+    let msg2: serde_json::Value =
+        serde_json::from_str(lines[1]).expect("line 2 must be valid JSON");
+    assert_eq!(msg2["level"], "log");
+    assert_eq!(msg2["message"], "iter252-record:substituted:%s");
+    let msg3: serde_json::Value = serde_json::from_str(lines[2]).unwrap();
+    let grip: serde_json::Value = serde_json::from_str(msg3["message"].as_str().unwrap()).unwrap();
+    assert_eq!(grip["type"], "longString");
+    assert_eq!(grip["length"], 10020);
+    assert!(
+        grip["actor"].as_str().is_some(),
+        "output must retain grip handles"
+    );
+    let emitted: Vec<serde_json::Value> = lines
+        .iter()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let symbol: serde_json::Value =
+        serde_json::from_str(emitted[3]["message"].as_str().unwrap()).unwrap();
+    assert_eq!(symbol["type"], "symbol");
+    assert_eq!(symbol["name"], "iter252-record:symbol");
+    assert!(symbol["actor"].as_str().is_some());
+    let object: serde_json::Value =
+        serde_json::from_str(emitted[4]["message"].as_str().unwrap()).unwrap();
+    assert!(object["actor"].as_str().is_some());
+    let properties = &object["preview"]["ownProperties"];
+    assert_eq!(properties["type"]["value"], "symbol");
+    assert_eq!(properties["actor"]["value"], "user-data");
+    assert_eq!(
+        properties["nested"]["value"]["name"],
+        "iter252-record:nested"
+    );
+    assert!(properties["nested"]["value"]["actor"].as_str().is_some());
+    let named: serde_json::Value =
+        serde_json::from_str(emitted[5]["message"].as_str().unwrap()).unwrap();
+    assert_eq!(named["type"], "symbol");
+    assert!(named["actor"].as_str().is_some());
+    assert_eq!(named["name"]["type"], "longString");
+    assert!(named["name"]["actor"].as_str().is_some());
+    assert!(
+        named["name"]["initial"]
+            .as_str()
+            .unwrap()
+            .starts_with("iter252-record:long-name:")
+    );
+    assert!(
+        emitted[6]["message"]
+            .as_str()
+            .unwrap()
+            .contains("iter252-record:unnamed")
+    );
+    assert!(
+        emitted[7]["message"]
+            .as_str()
+            .unwrap()
+            .contains("12345678901234567890")
+    );
+}
+
+#[test]
+fn console_follow_releases_grips_with_interleaved_events_and_replies() {
+    use ff_rdp_core::transport::{encode_frame, recv_from};
+    use std::collections::BTreeSet;
+    use std::io::{BufReader, Write};
+    use std::net::TcpListener;
+
+    // Each filter must release all fourteen separately allocated handles from
+    // the recorded resource and legacy copies, including nested symbol names.
+    for filter in [
+        vec![],
+        vec!["--level", "warn"],
+        vec!["--pattern", "no-match"],
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(std::time::Duration::from_secs(4)))
+                .unwrap();
+            let mut reader = BufReader::new(socket.try_clone().unwrap());
+            let send = |socket: &mut std::net::TcpStream, packet: &serde_json::Value| {
+                socket
+                    .write_all(encode_frame(&packet.to_string()).as_bytes())
+                    .unwrap();
+            };
+            send(&mut socket, &load_fixture("handshake.json"));
+            let recording = load_fixture("console_follow_preformatted_events.json");
+            let events = recording.as_array().unwrap();
+            let release = load_fixture("console_follow_release_replies.json");
+            let mut released = BTreeSet::new();
+            let mut injected = false;
+            while let Ok(request) = recv_from(&mut reader) {
+                let fixture = match request["type"].as_str().unwrap() {
+                    "getRoot" => "get_root_screenshot_response.json",
+                    "listTabs" => "list_tabs_response.json",
+                    "getTarget" => "get_target_response.json",
+                    "getWatcher" => "get_watcher_response.json",
+                    "watchTargets" => "watch_targets_response.json",
+                    "watchResources" => {
+                        // An older catch-up record remains queued when the
+                        // first grip release is sent. It must precede the
+                        // further events interleaved with release replies.
+                        for event in &events[..5] {
+                            send(&mut socket, event);
+                        }
+                        "watch_resources_response.json"
+                    }
+                    "release" => {
+                        let actor = request["to"].as_str().unwrap();
+                        released.insert(actor.to_owned());
+                        if !injected {
+                            for event in &events[5..8] {
+                                send(&mut socket, event);
+                            }
+                        }
+                        // Firefox 155 symbols have no ACK. Object and string
+                        // replies are actual recorded packets, with only the
+                        // session actor ID substituted as in MockRdpServer.
+                        if !actor.contains("/symbol") {
+                            let kind = if actor.contains("/longstr") {
+                                "longString"
+                            } else {
+                                "object"
+                            };
+                            let mut reply = release[kind][0].clone();
+                            reply["from"] = request["to"].clone();
+                            send(&mut socket, &reply);
+                        }
+                        if !injected {
+                            for event in &events[8..] {
+                                send(&mut socket, event);
+                            }
+                            injected = true;
+                        }
+                        if released.len() == 14 {
+                            break;
+                        }
+                        continue;
+                    }
+                    method => panic!("unexpected request: {method}"),
+                };
+                let mut reply = load_fixture(fixture);
+                reply["from"] = request["to"].clone();
+                send(&mut socket, &reply);
+            }
+            released
+        });
+        let mut args = base_args(port);
+        args.extend(["console".to_owned(), "--follow".to_owned()]);
+        args.extend(filter.iter().map(|arg| (*arg).to_owned()));
+        let output = std::process::Command::new(ff_rdp_bin())
+            .args(args)
+            .output()
+            .unwrap();
+        let released = server.join().unwrap();
+        assert_eq!(
+            released.len(),
+            14,
+            "all grips, including filtered/duplicate/nested: {released:?}"
+        );
+        assert!(output.status.success(), "{}", support::output_note(&output));
+        let lines: Vec<serde_json::Value> = String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(lines.len(), if filter.is_empty() { 8 } else { 0 });
+        if filter.is_empty() {
+            let expected = [
+                "literal",
+                "substituted",
+                "long",
+                "symbol",
+                "nested",
+                "long-name",
+                "unnamed",
+                "bigint",
+            ];
+            for (entry, label) in lines.iter().zip(expected) {
+                assert!(
+                    entry["message"]
+                        .as_str()
+                        .unwrap()
+                        .contains(&format!("iter252-record:{label}")),
+                    "wire ordering: {lines:?}"
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -634,6 +911,8 @@ fn follow_server_with_direct_notification(notification: serde_json::Value) -> Mo
             load_fixture("start_listeners_response.json"),
         )
         .on("getWatcher", load_fixture("get_watcher_response.json"))
+        // iter-252: see the note in `follow_server_with_events`.
+        .on("watchTargets", load_fixture("watch_targets_response.json"))
         .on_with_followups(
             "watchResources",
             load_fixture("watch_resources_response.json"),
@@ -665,6 +944,7 @@ fn console_follow_handles_direct_consoleapicall_notification() {
 
     let server = follow_server_with_direct_notification(notification);
     let port = server.port();
+    let requests = server.request_log();
     let handle = std::thread::spawn(move || server.serve_one());
 
     let mut args = base_args(port);
@@ -676,6 +956,7 @@ fn console_follow_handles_direct_consoleapicall_notification() {
         .expect("failed to spawn ff-rdp");
 
     handle.join().expect("server thread panicked");
+    assert_follow_subscription_requests(&requests.lock().unwrap());
 
     assert!(
         output.status.success(),
