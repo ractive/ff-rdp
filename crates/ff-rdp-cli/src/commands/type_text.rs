@@ -509,6 +509,14 @@ pub fn run_core(
         autowait_element(&mut ctx, &console_actor, selector, wait_timeout_ms, true)?;
     }
 
+    // Submission recovery can refresh the target both inside
+    // navigated_after_refresh and below. Preserve the action's origin before
+    // either replaces it with the committed destination (iteration253).
+    let page_origin = opts
+        .page
+        .with_page
+        .then(|| super::page_view::NavigationOrigin::capture(&ctx));
+
     let escaped_sel = escape_selector(selector);
     let escaped_text_json = serde_json::to_string(text)
         .map_err(|e| AppError::from(anyhow::anyhow!("failed to encode text argument: {e}")))?;
@@ -576,13 +584,14 @@ pub fn run_core(
 
     // iter-210 Theme A: `--with-page`, collected after `--submit` so a form
     // that navigated reports the page it landed on.
-    if opts.page.with_page {
-        super::page_view::attach(
+    if let Some(origin) = page_origin {
+        super::page_view::attach_from_origin(
             cli,
             &mut ctx,
             &mut result,
             Some(wait_timeout_ms),
             &opts.page,
+            origin,
         )?;
     }
 

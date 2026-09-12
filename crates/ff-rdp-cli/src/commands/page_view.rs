@@ -857,6 +857,37 @@ pub(crate) fn attach(
     wait_complete_ms: Option<u64>,
     args: &crate::cli::args::PageViewArgs,
 ) -> Result<(), AppError> {
+    let origin = NavigationOrigin::capture(ctx);
+    attach_from_origin(cli, ctx, results, wait_complete_ms, args, origin)
+}
+
+/// Identity of the document an action ran against. Keep this command-scoped
+/// snapshot across actor refreshes; a freshly resolved destination cannot also
+/// serve as the baseline that proves the action reached it.
+pub(crate) struct NavigationOrigin {
+    inner_window_id: Option<u64>,
+    url: Option<String>,
+}
+
+impl NavigationOrigin {
+    pub(crate) fn capture(ctx: &ConnectedTab) -> Self {
+        Self {
+            inner_window_id: ctx.target.inner_window_id,
+            url: ctx.target.url.clone(),
+        }
+    }
+}
+
+/// Like [`attach`], for an action such as `type --submit` that may refresh its
+/// target before collecting. The caller captures `origin` before the action.
+pub(crate) fn attach_from_origin(
+    cli: &Cli,
+    ctx: &mut ConnectedTab,
+    results: &mut Value,
+    wait_complete_ms: Option<u64>,
+    args: &crate::cli::args::PageViewArgs,
+    origin: NavigationOrigin,
+) -> Result<(), AppError> {
     let mut opts = CollectOptions::with_page(
         args.page_chars,
         QueryFilter::from_query_args(&args.query),
@@ -870,7 +901,7 @@ pub(crate) fn attach(
     if args.query.query.is_some() || args.query.query_regex.is_some() {
         opts.interactive_limit = None;
     }
-    let mut settled = collect_settled(cli, ctx, &opts)?;
+    let mut settled = collect_settled(cli, ctx, &opts, origin)?;
     if opts.interactive_limit.is_none() {
         apply_interactive_limit(&mut settled.page.view, limit);
     }
@@ -1017,6 +1048,7 @@ fn collect_settled(
     cli: &Cli,
     ctx: &mut ConnectedTab,
     opts: &CollectOptions,
+    mut origin: NavigationOrigin,
 ) -> Result<SettledPage, AppError> {
     let mut pending = ctx.take_navigation_started();
     let mut last_err = None;
@@ -1040,20 +1072,27 @@ fn collect_settled(
         }
         attempts += 1;
 
-        // The document the action ran against. When a navigation is under way
-        // this is precisely the docshell that must NOT be collected from.
-        let before = ctx.target.inner_window_id;
+        // The action's origin survives caller refreshes and reconnects. Taking
+        // a new baseline here would compare an already-committed destination
+        // to itself and falsely wait out another settlement budget.
         let navigation_settled = if let Some(dest) = pending.as_deref() {
             let settle_budget =
                 overall_deadline.map_or(Duration::from_millis(NAV_SETTLE_BUDGET_MS), |deadline| {
                     Duration::from_millis(NAV_SETTLE_BUDGET_MS)
                         .min(deadline.saturating_duration_since(Instant::now()))
                 });
-            settle_after_navigation(ctx, dest, before, settle_budget)
+            settle_after_navigation(ctx, dest, &origin, settle_budget)
         } else {
             ctx.refresh_target();
             true
         };
+
+        if navigation_settled {
+            // Positive handover evidence retires this pending navigation. If
+            // collection loses the socket, reconnect need not prove it again.
+            pending = None;
+        }
+        let collection_origin = NavigationOrigin::capture(ctx);
 
         let console_actor = ctx.target.console_actor.clone();
         // Arm the guard for the collection only — the returned scope disarms
@@ -1089,6 +1128,9 @@ fn collect_settled(
             Err(e @ AppError::RdpActorDestroyed { .. }) => {
                 // Another navigation landed while we were collecting. Take its
                 // destination (`recv` latched it) and go round again.
+                if latched.is_some() {
+                    origin = collection_origin;
+                }
                 pending = latched.or(pending);
                 last_err = Some(e);
             }
@@ -1101,6 +1143,9 @@ fn collect_settled(
             // the caller already granted. Retrying on the *same* connection is
             // not an option: every subsequent send would fail the same way.
             Err(e) if is_connection_lost(&e) => {
+                if latched.is_some() {
+                    origin = collection_origin;
+                }
                 pending = latched.or(pending);
                 if reconnects >= NAV_RECONNECT_ATTEMPTS
                     || overall_deadline.is_some_and(|deadline| Instant::now() >= deadline)
@@ -1179,15 +1224,12 @@ fn collect_settled(
 fn settle_after_navigation(
     ctx: &mut ConnectedTab,
     destination: &str,
-    before: Option<u64>,
+    origin: &NavigationOrigin,
     budget: Duration,
 ) -> bool {
-    let url_can_prove_handover = !destination.is_empty()
-        && ctx
-            .target
-            .url
-            .as_deref()
-            .is_some_and(|url| url != destination);
+    let before = origin.inner_window_id;
+    let url_can_prove_handover =
+        !destination.is_empty() && origin.url.as_deref().is_some_and(|url| url != destination);
     if before.is_none() && !url_can_prove_handover {
         tracing::debug!(
             target: "ff_rdp_cli::page_view",
@@ -1548,10 +1590,12 @@ mod tests {
             let mut ctx = ConnectedTab::for_test(transport, ActorId::from("conn0/console1"));
             ctx.target.inner_window_id = during_refresh.then_some(7);
             ctx.target.url = Some("https://previous/".to_owned());
+            let origin = NavigationOrigin::capture(&ctx);
             let page = collect_settled(
                 &test_cli(&["ff-rdp", "tabs"]),
                 &mut ctx,
                 &CollectOptions::with_page(DEFAULT_PAGE_CHARS, no_query(), 2),
+                origin,
             )
             .unwrap();
             server.join().unwrap();
@@ -1622,14 +1666,188 @@ mod tests {
                 } else {
                     Duration::ZERO
                 };
+            let origin = NavigationOrigin::capture(&ctx);
             assert_eq!(
-                settle_after_navigation(&mut ctx, destination, before, budget),
+                settle_after_navigation(&mut ctx, destination, &origin, budget),
                 expected,
                 "before={before:?}, after={after:?}, destination={destination}"
             );
             drop(ctx);
             server.join().unwrap();
         }
+    }
+
+    #[test]
+    fn unit_253_caller_refresh_and_reconnect_keep_origin() {
+        use ff_rdp_core::RdpTransport;
+        use ff_rdp_core::transport::{encode_frame, recv_from};
+        use std::io::{BufReader, Write as _};
+        use std::net::TcpListener;
+
+        // 0: the caller already refreshed to the destination (type --submit).
+        // 1: handover was confirmed, then collection lost its connection.
+        // 2: handover was still unconfirmed when the connection died; reconnect
+        //    finds the committed destination. Its identity must be compared to
+        //    the original document, not to the fresh connection's own target.
+        let mut incorrect = Vec::new();
+        for mode in 0..3 {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = std::thread::spawn(move || {
+                let send = |stream: &mut std::net::TcpStream, value: &Value| {
+                    stream
+                        .write_all(encode_frame(&value.to_string()).as_bytes())
+                        .unwrap();
+                };
+                let target = |request: &Value, committed: bool| {
+                    let mut reply: Value = serde_json::from_str(include_str!(
+                        "../../tests/fixtures/get_target_response.json"
+                    ))
+                    .unwrap();
+                    reply["from"] = request["to"].clone();
+                    reply["frame"]["innerWindowId"] = json!(if committed { 8 } else { 7 });
+                    reply["frame"]["url"] = json!(if committed {
+                        "https://b/"
+                    } else {
+                        "https://a/"
+                    });
+                    reply
+                };
+                let start = json!({"from":"conn0/target1","type":"tabNavigated","state":"start","url":"https://b/"});
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                send(&mut stream, &start);
+                if mode == 0 {
+                    let request = recv_from(&mut reader).unwrap();
+                    assert_eq!(request["type"], "getTarget");
+                    send(&mut stream, &target(&request, true));
+                } else {
+                    loop {
+                        let request = recv_from(&mut reader).unwrap();
+                        if request["type"] == "evaluateJSAsync" {
+                            // EOF after accepting the collection: exercise the
+                            // real reconnect path, not a mocked replacement.
+                            break;
+                        }
+                        assert_eq!(request["type"], "getTarget");
+                        send(&mut stream, &target(&request, mode == 1));
+                    }
+                    drop(reader);
+                    drop(stream);
+                    (stream, _) = listener.accept().unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    reader = BufReader::new(stream.try_clone().unwrap());
+                    send(
+                        &mut stream,
+                        &json!({"from":"root","applicationType":"browser","traits":{},"ua":"Firefox/155.0"}),
+                    );
+                    let request = recv_from(&mut reader).unwrap();
+                    assert_eq!(request["type"], "listTabs");
+                    send(
+                        &mut stream,
+                        &serde_json::from_str(include_str!(
+                            "../../tests/fixtures/list_tabs_response.json"
+                        ))
+                        .unwrap(),
+                    );
+                    let request = recv_from(&mut reader).unwrap();
+                    assert_eq!(request["type"], "getTarget");
+                    send(&mut stream, &target(&request, true));
+                }
+                let request = recv_from(&mut reader).unwrap();
+                assert_eq!(request["type"], "getTarget");
+                send(&mut stream, &target(&request, true));
+                // Exactly one post-refresh/reconnect target probe is enough.
+                // Re-baselining on the destination asks for another getTarget
+                // here and fails immediately, without a fragile timing bound.
+                for eval_number in 0..3 {
+                    let request = recv_from(&mut reader).unwrap();
+                    assert_eq!(
+                        request["type"], "evaluateJSAsync",
+                        "mode={mode}: committed destination was polled again"
+                    );
+                    if eval_number == 0 {
+                        assert_eq!(request["text"], "document.readyState === 'complete'");
+                    } else if eval_number == 2 {
+                        assert!(request["text"].as_str().unwrap().len() > 36_819);
+                    }
+                    send(&mut stream, &json!({"from":request["to"],"resultID":"r"}));
+                    let mut reply: Value = serde_json::from_str(include_str!(
+                        "../../tests/fixtures/eval_result_a11y_summary.json"
+                    ))
+                    .unwrap();
+                    reply["from"] = request["to"].clone();
+                    reply["resultID"] = json!("r");
+                    if eval_number == 0 {
+                        reply["result"] = json!(true);
+                    } else if eval_number == 1 {
+                        reply["result"] = json!("__FF_RDP_JSON__{\"reader_missing\":true}");
+                    }
+                    send(&mut stream, &reply);
+                }
+                // This next start must be received with collection's scoped
+                // target guard disarmed, even after a reconnect.
+                send(&mut stream, &start);
+            });
+            let mut transport =
+                RdpTransport::connect_raw("127.0.0.1", port, Duration::from_secs(5)).unwrap();
+            transport.recv().unwrap();
+            let mut ctx = ConnectedTab::for_test(transport, ActorId::from("conn0/console1"));
+            ctx.target.inner_window_id = Some(7);
+            ctx.target.url = Some("https://a/".into());
+            let origin = NavigationOrigin::capture(&ctx);
+            if mode == 0 {
+                ctx.refresh_target();
+            }
+            let cli = test_cli(&[
+                "ff-rdp",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                &port.to_string(),
+                "--no-daemon",
+                "tabs",
+            ]);
+            let mut opts = CollectOptions::with_page(DEFAULT_PAGE_CHARS, no_query(), 2);
+            // Mode 2 spends the original three-second settle allowance before
+            // reconnecting. The remaining overall budget is only 500ms, not
+            // another full allowance on the recovered connection.
+            opts.wait_complete_ms = Some(3_500);
+            let started = Instant::now();
+            let result = collect_settled(&cli, &mut ctx, &opts, origin);
+            eprintln!(
+                "ITER253 ORIGIN mode={mode} elapsed_ms={} result={:?}",
+                started.elapsed().as_millis(),
+                result
+                    .as_ref()
+                    .map(|page| (page.page.ready, page.attempts, page.reconnects))
+            );
+            match result {
+                Ok(page) => {
+                    assert!(page.page.readability_injected);
+                    assert_eq!(page.attempts, if mode == 0 { 1 } else { 2 });
+                    assert_eq!(page.reconnects, usize::from(mode != 0));
+                    assert!(
+                        ctx.transport_mut().recv().is_ok(),
+                        "target guard remained armed"
+                    );
+                    if !page.page.ready {
+                        incorrect.push(mode);
+                    }
+                }
+                Err(_) => incorrect.push(mode),
+            }
+            let _ = server.join();
+        }
+        assert!(
+            incorrect.is_empty(),
+            "lost navigation origins in modes {incorrect:?}"
+        );
     }
 
     /// Parse a `Cli` from argv for the flag-reading helpers under test.

@@ -287,3 +287,87 @@ fn live_253_same_url_replacement_direct() {
 fn live_253_same_url_replacement_daemon() {
     exercise_same_url(false);
 }
+
+fn exercise_committed_submission(direct: bool) {
+    assert!(live_tests_enabled());
+    let ff = LiveFirefox::headless_on_random_port();
+    if !direct {
+        assert!(ff.with_daemon().is_some());
+    }
+    let server = FixtureServer::start(HashMap::from([
+        (
+            "/".into(),
+            FixtureRoute::html(
+                "<!doctype html><h1>Submission origin</h1><form action='/done'>\
+             <input name='q'><button>Submit</button></form>",
+            ),
+        ),
+        (
+            "/done".into(),
+            FixtureRoute::html(
+                "<!doctype html><h1>Committed submission</h1><article>\
+             <p>This is the document produced by the completed submission.</p></article>",
+            ),
+        ),
+    ]))
+    .unwrap();
+    let run = |args: &[&str]| {
+        let mut cmd = Command::new(ff_rdp_bin());
+        cmd.args([
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &ff.port().to_string(),
+            "--timeout",
+            "10000",
+        ]);
+        if direct {
+            cmd.arg("--no-daemon");
+        }
+        let out = cmd.args(args).output().unwrap();
+        assert!(out.status.success(), "{args:?}: {out:?}");
+        let value: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(
+            value["meta"]["route"],
+            if direct { "direct" } else { "daemon" }
+        );
+        value
+    };
+    run(&["navigate", &server.base_url()]);
+    let before = run(&["eval", "location.href"]);
+    let started = Instant::now();
+    let view = run(&["type", "input", "origin", "--submit", "--with-page"]);
+    let elapsed = started.elapsed();
+    let after = run(&["eval", "location.href"]);
+    eprintln!(
+        "ITER253 SUBMIT direct={direct} before={before} after={after} elapsed_ms={} view={view}",
+        elapsed.as_millis()
+    );
+    assert_eq!(view["results"]["submitted"], true);
+    assert_eq!(view["results"]["navigated"], true);
+    assert_eq!(
+        view["results"]["page"]["headings"][0]["text"],
+        "Committed submission"
+    );
+    assert_eq!(view["meta"]["page_readability_injected"], true);
+    assert_eq!(
+        view["meta"]["page_ready"], true,
+        "committed submission mislabeled: {view}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "committed submission burned settle budget: {elapsed:?}"
+    );
+}
+
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_253_committed_submission_direct() {
+    exercise_committed_submission(true);
+}
+
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_253_committed_submission_daemon() {
+    exercise_committed_submission(false);
+}
