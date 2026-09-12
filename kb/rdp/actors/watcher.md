@@ -20,6 +20,7 @@ iteration_252_review_repair: >-
   percent tokens are literal even when introduced by substitution. Firefox155.0.1
   recorded fixtures and both-route live measurements cover literal %s and substituted %s
   plus longString grips. See iteration252 review-repair-1 evidence.
+symbol_grip_audit: "2026-09-12 iteration252 independent-review repair: local Firefox 0088392ab4ccab730743ed188ddec62d04e578b7 devtools/server/actors/object/utils.js createValueGrip (116-183) allocates actor-bearing object, longString, and symbol grips only; BigInt (190-195), special numbers, null/undefined and record/tuple forms carry no actor. object.js form, string.js form, and object/symbol.js form corroborate those families; a symbol name can itself be a longString. The comparison copy now removes symbol actor handles recursively as well, preserving names, previews, user property descriptors and original emitted handles. Real Firefox155.0.1 before probe: direct36/36 and unprimed36/36; primed37 records for29 calls, with standalone/nested symbols duplicated on ticks17-20. Recording, after measurements and final validation are retained in .git/ralph-loop/20260912-validation-efficiency/pr247."
 ---
 
 # WatcherActor (typeName `"watcher"`)

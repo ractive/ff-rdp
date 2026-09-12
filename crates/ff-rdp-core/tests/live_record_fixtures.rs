@@ -24,8 +24,9 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 /// always terminates — even if Firefox never issues the request (iter-136).
 const HTTP_SERVER_ACCEPT_DEADLINE: Duration = Duration::from_secs(30);
 
-/// Record both deliveries of preformatted percent tokens and a long-string
-/// grip. The actor IDs differ between channels although each timestamp matches.
+/// Record both deliveries of preformatted percent tokens and each actor-bearing
+/// value-grip family. Handles differ between channels, including preview symbols
+/// and a symbol's long-string name, although each timestamp matches.
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
 fn live_252_record_preformatted_console_deliveries() {
@@ -66,7 +67,7 @@ fn live_252_record_preformatted_console_deliveries() {
     transport.send(&json!({
         "to": console,
         "type": "evaluateJSAsync",
-        "text": "console.log('iter252-record:literal:%s'); console.log('%s', 'iter252-record:substituted:%s'); console.log('iter252-record:long:' + 'x'.repeat(10000));"
+        "text": "console.log('iter252-record:literal:%s'); console.log('%s', 'iter252-record:substituted:%s'); console.log('iter252-record:long:' + 'x'.repeat(10000)); console.log(Symbol('iter252-record:symbol')); console.log({nested: Symbol('iter252-record:nested'), type: 'symbol', actor: 'user-data'}); console.log(Symbol('iter252-record:long-name:' + 'x'.repeat(10000))); console.log('iter252-record:unnamed', Symbol()); console.log('iter252-record:bigint', 12345678901234567890n);"
     })).unwrap();
     let events: Vec<_> = drain_messages(transport, Duration::from_secs(2))
         .into_iter()
@@ -85,8 +86,8 @@ fn live_252_record_preformatted_console_deliveries() {
         .iter()
         .map(|event| ff_rdp_core::parse_console_resources(event).len())
         .sum();
-    assert_eq!(legacy, 3, "legacy delivery: {events:?}");
-    assert_eq!(resources, 3, "resource delivery: {events:?}");
+    assert_eq!(legacy, 8, "legacy delivery: {events:?}");
+    assert_eq!(resources, 8, "resource delivery: {events:?}");
     let recording = Value::Array(events);
     save_cli_fixture("console_follow_preformatted_events.json", &recording);
     save_core_fixture("console_follow_preformatted_events.json", &recording);

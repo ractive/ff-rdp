@@ -1925,7 +1925,7 @@ mod tests {
         ))
         .unwrap();
         let resources: Vec<_> = events.iter().flat_map(parse_console_resources).collect();
-        assert_eq!(resources.len(), 3);
+        assert_eq!(resources.len(), 8);
         assert_eq!(resources[0].message, "iter252-record:literal:%s");
         assert_eq!(resources[1].message, "iter252-record:substituted:%s");
     }

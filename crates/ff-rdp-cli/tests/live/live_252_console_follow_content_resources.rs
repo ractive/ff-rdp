@@ -83,6 +83,8 @@ fn fixture_routes() -> HashMap<String, FixtureRoute> {
              console.log('{PROBE}:literal:'+tick+':%s');\
              console.log('%s','{PROBE}:substituted:'+tick+':%s');\
              console.log('{PROBE}:long:'+tick+':'+ 'x'.repeat(10000));\
+             console.log(Symbol('{PROBE}:symbol:'+tick));\
+             console.log({{nested:Symbol('{PROBE}:nested:'+tick)}});\
              }}, 250);</script>"
         )),
     );
@@ -164,7 +166,7 @@ fn follow_console(global: &[String], label: &str) -> Vec<String> {
                 .cloned()
                 .collect();
         }
-        if matched.len() >= 24 {
+        if matched.len() >= 36 {
             break;
         }
         std::thread::sleep(Duration::from_millis(200));
@@ -214,16 +216,27 @@ fn assert_route_sees_console(global: &[String], route: &str) -> Vec<String> {
         let message = entry["message"].as_str().unwrap();
         let text = if message.starts_with('{') {
             let grip: serde_json::Value = serde_json::from_str(message).unwrap();
-            assert_eq!(grip["type"], "longString", "{route}: {grip}");
-            assert!(grip["length"].as_u64().unwrap() > 10000);
             assert!(
                 grip["actor"].as_str().is_some(),
                 "output must retain grip actor"
             );
-            let initial = grip["initial"].as_str().unwrap();
+            let initial = match grip["type"].as_str().unwrap() {
+                "longString" => {
+                    assert!(grip["length"].as_u64().unwrap() > 10000);
+                    grip["initial"].as_str().unwrap()
+                }
+                "symbol" => grip["name"].as_str().unwrap(),
+                "object" => {
+                    let nested = &grip["preview"]["ownProperties"]["nested"]["value"];
+                    assert_eq!(nested["type"], "symbol");
+                    assert!(nested["actor"].as_str().is_some());
+                    nested["name"].as_str().unwrap()
+                }
+                _ => panic!("{route}: unexpected grip: {grip}"),
+            };
             let prefix = initial.split(':').take(3).collect::<Vec<_>>().join(":");
             eprintln!(
-                "iter252 long grip route={route} prefix={prefix} actor={} length={}",
+                "iter252 grip route={route} prefix={prefix} actor={} length={}",
                 grip["actor"], grip["length"]
             );
             prefix
@@ -248,7 +261,7 @@ fn assert_route_sees_console(global: &[String], route: &str) -> Vec<String> {
     );
     assert_eq!(
         kinds.len(),
-        4,
+        6,
         "{route}: every probe kind must arrive: {kinds:?}"
     );
     if !counts.values().all(|count| *count == 1) {

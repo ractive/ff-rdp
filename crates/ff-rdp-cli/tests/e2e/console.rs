@@ -581,7 +581,7 @@ fn console_follow_streams_messages_as_ndjson() {
 #[test]
 fn console_follow_streams_flat_console_message_resources() {
     // Recorded by live_252_record_preformatted_console_deliveries. Replay
-    // both channels, including their distinct longString actor IDs.
+    // both channels, including their distinct object/longString/symbol handles.
     let recording = load_fixture("console_follow_preformatted_events.json");
     let mut events = recording.as_array().unwrap().clone().into_iter();
     let console_event = events.next().unwrap();
@@ -622,7 +622,7 @@ fn console_follow_streams_flat_console_message_resources() {
     let lines: Vec<&str> = stdout.trim().lines().collect();
     assert_eq!(
         lines.len(),
-        3,
+        8,
         "flat console-message resources must stream like wrapped ones, got: {stdout}"
     );
 
@@ -645,6 +645,50 @@ fn console_follow_streams_flat_console_message_resources() {
     assert!(
         grip["actor"].as_str().is_some(),
         "output must retain grip handles"
+    );
+    let emitted: Vec<serde_json::Value> = lines
+        .iter()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let symbol: serde_json::Value =
+        serde_json::from_str(emitted[3]["message"].as_str().unwrap()).unwrap();
+    assert_eq!(symbol["type"], "symbol");
+    assert_eq!(symbol["name"], "iter252-record:symbol");
+    assert!(symbol["actor"].as_str().is_some());
+    let object: serde_json::Value =
+        serde_json::from_str(emitted[4]["message"].as_str().unwrap()).unwrap();
+    assert!(object["actor"].as_str().is_some());
+    let properties = &object["preview"]["ownProperties"];
+    assert_eq!(properties["type"]["value"], "symbol");
+    assert_eq!(properties["actor"]["value"], "user-data");
+    assert_eq!(
+        properties["nested"]["value"]["name"],
+        "iter252-record:nested"
+    );
+    assert!(properties["nested"]["value"]["actor"].as_str().is_some());
+    let named: serde_json::Value =
+        serde_json::from_str(emitted[5]["message"].as_str().unwrap()).unwrap();
+    assert_eq!(named["type"], "symbol");
+    assert!(named["actor"].as_str().is_some());
+    assert_eq!(named["name"]["type"], "longString");
+    assert!(named["name"]["actor"].as_str().is_some());
+    assert!(
+        named["name"]["initial"]
+            .as_str()
+            .unwrap()
+            .starts_with("iter252-record:long-name:")
+    );
+    assert!(
+        emitted[6]["message"]
+            .as_str()
+            .unwrap()
+            .contains("iter252-record:unnamed")
+    );
+    assert!(
+        emitted[7]["message"]
+            .as_str()
+            .unwrap()
+            .contains("12345678901234567890")
     );
 }
 

@@ -504,12 +504,14 @@ fn parse_follow_messages(event: &Value) -> Vec<ConsoleResource> {
 /// actor IDs identify those handles, not the console call. Retain every other
 /// value (including string length/initial text and object previews), and never
 /// alter strings that merely look like JSON or contain an actor's name.
+/// `object/utils.js::createValueGrip` allocates actors only for objects, long
+/// strings, and symbols. Symbol names can themselves be long-string grips.
 fn remove_grip_actor_ids(value: &mut Value) {
     match value {
         Value::Object(fields) => {
             if matches!(
                 fields.get("type").and_then(Value::as_str),
-                Some("longString" | "object")
+                Some("longString" | "object" | "symbol")
             ) {
                 fields.remove("actor");
             }
@@ -581,7 +583,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(emitted.len(), 3);
+        assert_eq!(emitted.len(), 8);
         let long = &emitted[2];
         assert!(long.message.contains("iter252-record:long:"));
         let mut distinct = long.clone();
@@ -604,6 +606,30 @@ mod tests {
             "separate calls remain significant"
         );
         assert!(deliveries.is_duplicate(long, false));
+
+        let symbol = &emitted[3];
+        assert!(symbol.message.contains("iter252-record:symbol"));
+        assert!(!deliveries.is_duplicate(symbol, true));
+        let mut renamed = symbol.clone();
+        renamed.message = renamed.message.replace("record:symbol", "record:other");
+        assert!(
+            !deliveries.is_duplicate(&renamed, false),
+            "symbol names remain significant"
+        );
+        assert!(deliveries.is_duplicate(symbol, false));
+
+        let object: Value = serde_json::from_str(&emitted[4].message).unwrap();
+        let properties = &object["preview"]["ownProperties"];
+        assert_eq!(properties["type"]["value"], "symbol");
+        assert_eq!(properties["actor"]["value"], "user-data");
+        assert_eq!(
+            properties["nested"]["value"]["name"],
+            "iter252-record:nested"
+        );
+        assert!(properties["nested"]["value"].get("actor").is_none());
+        let named: Value = serde_json::from_str(&emitted[5].message).unwrap();
+        assert_eq!(named["name"]["type"], "longString");
+        assert!(named["name"].get("actor").is_none());
 
         // An ordinary logged string may contain literal JSON, including keys
         // named type/actor. It must not be parsed and normalized as a grip.
