@@ -1777,6 +1777,68 @@ mod tests {
     // iter-67: sandboxing — run depth + sub-script path containment
     // -----------------------------------------------------------------------
 
+    /// Private IPv4 endpoint for filesystem-only runner tests. The real watcher
+    /// setup still runs, but gets EOF immediately instead of discovering a
+    /// daemon or connecting to somebody's browser on the default port.
+    struct RejectingEndpoint {
+        port: u16,
+        stop: std::sync::mpsc::Sender<()>,
+        worker: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl RejectingEndpoint {
+        fn new() -> Self {
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            listener.set_nonblocking(true).unwrap();
+            let (stop, stopped) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => drop(stream),
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                        Err(_) => break,
+                    }
+                    // Both accept and shutdown are bounded, including on panic
+                    // in the owning test. No connect-to-wake or blocking read.
+                    match stopped.recv_timeout(std::time::Duration::from_millis(1)) {
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                        _ => break,
+                    }
+                }
+            });
+            Self {
+                port,
+                stop,
+                worker: Some(worker),
+            }
+        }
+
+        fn cli(&self) -> Cli {
+            <Cli as clap::Parser>::parse_from([
+                "ff-rdp",
+                "--no-daemon",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                &self.port.to_string(),
+                "--timeout",
+                "100",
+                "doctor",
+            ])
+        }
+    }
+
+    impl Drop for RejectingEndpoint {
+        fn drop(&mut self) {
+            let _ = self.stop.send(());
+            if let Some(worker) = self.worker.take() {
+                // Never panic while unwinding a failed assertion.
+                let _ = worker.join();
+            }
+        }
+    }
+
     /// Build a chain of `depth` script files where each runs the next, and
     /// the final one is a no-op. Returns the path to file 1.
     fn build_run_chain(dir: &Path, depth: usize) -> PathBuf {
@@ -1824,12 +1886,13 @@ mod tests {
         // confirming the depth cap is wired through `execute_run`.
         let tmp = tempfile::tempdir().unwrap();
         let top = build_run_chain(tmp.path(), 20);
-        let cli = <Cli as clap::Parser>::parse_from(["ff-rdp", "doctor"]);
+        let endpoint = RejectingEndpoint::new();
+        let cli = endpoint.cli();
         let mut opts = RunOptions::default();
         let call_stack: Vec<PathBuf> = Vec::new();
         let err = run_script_file(&top, &cli, &mut opts, &call_stack).unwrap_err();
         assert!(
-            matches!(err, AppError::Exit(_)),
+            matches!(err, AppError::Exit(1)),
             "expected non-zero exit from run-depth cap, got {err:?}"
         );
     }
@@ -1838,41 +1901,44 @@ mod tests {
     fn run_path_containment_rejects_absolute() {
         let tmp = tempfile::tempdir().unwrap();
         let top_dir = tmp.path();
+        // A real, valid script makes the unsafe opt-in observable: bypassing
+        // containment must succeed, rather than failing later on /etc/passwd.
+        let sub_path = top_dir.join("sub.json");
+        std::fs::write(&sub_path, r#"{"version":1,"steps":[]}"#).unwrap();
+        let sub_path = sub_path.canonicalize().unwrap();
+        let raw_path = sub_path.to_str().unwrap();
+        let top = top_dir.join("top.json");
         std::fs::write(
-            top_dir.join("top.json"),
-            r#"{"version":1,"steps":[{"run":{"path":"/etc/passwd"}}]}"#,
+            &top,
+            serde_json::json!({"version": 1, "steps": [{"run": {"path": raw_path}}]}).to_string(),
         )
         .unwrap();
-        let top = top_dir.join("top.json");
 
-        let cli = <Cli as clap::Parser>::parse_from(["ff-rdp", "doctor"]);
+        let endpoint = RejectingEndpoint::new();
+        let cli = endpoint.cli();
         let mut opts = RunOptions::default();
-        let call_stack: Vec<PathBuf> = Vec::new();
-        // `bail_on_failure: true` is the default — the failed run step propagates as `Ok(())`
-        // from `run_script_file`, with the per-step JSON containing the error. We just verify
-        // that the step-execution path refuses the absolute path before any FS access.
-        // The simplest assertion: invoke the containment check directly.
-        let sub_path = PathBuf::from("/etc/passwd");
-        let err = check_sub_script_containment("/etc/passwd", &sub_path, top_dir).unwrap_err();
-        match err {
-            AppError::User(m) => assert!(
-                m.contains("absolute path") && m.contains("--allow-unsafe-script-paths"),
-                "{m}"
-            ),
-            other => panic!("expected User, got {other:?}"),
+        // Preserve the Unix-root spelling on Windows too: /etc/passwd is
+        // forbidden lexically even where Path::is_absolute returns false.
+        for absolute in ["/etc/passwd", raw_path] {
+            let err =
+                check_sub_script_containment(absolute, Path::new(absolute), top_dir).unwrap_err();
+            match err {
+                AppError::User(m) => assert!(
+                    m.contains("absolute path") && m.contains("--allow-unsafe-script-paths"),
+                    "{m}"
+                ),
+                other => panic!("expected User, got {other:?}"),
+            }
         }
+        let err = run_script_file(&top, &cli, &mut opts, &[]).unwrap_err();
+        assert!(
+            matches!(err, AppError::Exit(1)),
+            "expected containment failure, got {err:?}"
+        );
 
-        // And: when allow_unsafe_script_paths is set, the check is bypassed —
-        // verified by not invoking the check at the call site. Smoke-test this
-        // by setting the flag and running the full pipeline; the run step is
-        // expected to fail later (file does not parse as a script) but NOT
-        // with the containment error.
         opts.allow_unsafe_script_paths = true;
-        let result = run_script_file(&top, &cli, &mut opts, &call_stack);
-        // Outer run returns Ok(()) because bail_on_failure makes the failing
-        // step end the run but does not surface the error to the caller.
-        // Drop the result — we only care that this code path runs.
-        let _ = result;
+        run_script_file(&top, &cli, &mut opts, &[])
+            .expect("the explicit unsafe-path opt-in must allow the valid absolute sub-script");
     }
 
     #[test]

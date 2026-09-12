@@ -1,5 +1,11 @@
 mod support;
 
+mod cli_cookies_help;
+mod cli_help_groups;
+mod cli_help_idioms;
+mod cli_version;
+mod dom_help_mentions_styles;
+
 mod a11y;
 mod click;
 mod completions;

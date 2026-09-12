@@ -27,8 +27,9 @@ fn help() -> String {
         .expect("failed to spawn ff-rdp --help");
     assert!(
         output.status.success(),
-        "ff-rdp --help must exit 0; status={:?} stderr={}",
+        "ff-rdp --help must exit 0; status={:?} stdout={} stderr={}",
         output.status,
+        String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8_lossy(&output.stdout).into_owned()

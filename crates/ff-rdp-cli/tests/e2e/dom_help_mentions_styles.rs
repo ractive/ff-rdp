@@ -16,8 +16,9 @@ fn dom_help_mentions_styles_and_computed() {
         .expect("failed to run ff-rdp dom --help");
     assert!(
         output.status.success(),
-        "ff-rdp dom --help exited non-zero: status={:?}\nstderr={}",
+        "ff-rdp dom --help exited non-zero: status={:?}\nstdout={}\nstderr={}",
         output.status,
+        String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
     let stdout = String::from_utf8_lossy(&output.stdout).to_lowercase();
