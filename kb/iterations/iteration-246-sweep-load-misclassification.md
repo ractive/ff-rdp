@@ -540,7 +540,16 @@ same machine and the same commit** — which is itself the evidence this plan wa
 | `live_237_act_and_see_timing::live_237_late_selector_behind_a_request_still_clicks` | FAILED | passed | `#late` not found after 2062 ms on an idle page |
 | `live_navigate_default_fast::live_navigate_elapsed_matches_wall` | FAILED | FAILED | `elapsed_ms 322` vs measured wall `1250`, delta 928 ms |
 
-Two rows deserve to be read as more than load noise when this plan is worked:
+The elapsed-time row belongs to the load-shaped set above. The wall-clock measurement spans
+work outside ff-rdp's internally timed region, so contention can enlarge the wall-clock number
+and widen the gap without making the internal measurement dishonest. The earlier conclusion
+was inverted and is corrected here (2026-09-14, handoff section 7): the test passed in three
+isolated runs (test durations 14.48 s, 8.10 s and 8.95 s) and in iteration 246's own sweep.
+Those four passes against two loaded failures support the load-shaped classification; they do
+not establish that the existing assertion reliably distinguishes load from a timing regression.
+That separate validation requirement remains open in [[iteration-264-sweep-load-timing-bounds]].
+
+The navigation-status family still deserves to be read as more than load noise:
 
 - **`live_169` / `live_174` flipping route between runs.** A `status: null, status_reason:
   "not_observed"` with `elapsed_ms: 21030` is not a slow machine returning a correct answer late —
@@ -548,11 +557,6 @@ Two rows deserve to be read as more than load noise when this plan is worked:
   the same "the event arrived, nobody was listening yet" shape as
   [[iteration-179-live-62-runner-sees-no-network-events]], which turned out to be a real arming
   race rather than load.
-- **`live_navigate_elapsed_matches_wall` failing in both runs, in the same direction.** The
-  reported `elapsed_ms` is *smaller* than the wall clock by ~900 ms, i.e. the command is
-  under-reporting its own cost. Load makes the wall clock longer; it does not make ff-rdp's own
-  measurement shorter. This one may be a real honesty regression (iter-122 Theme B) and should be
-  re-run in isolation before being written off.
 
 Sweep 2 additionally ran while the host desktop was at load average 400+ on a 10-core machine
 (Finder, Chrome, Teams and ~90 WebKit content processes belonging to the operator, not the sweep),
