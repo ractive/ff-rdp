@@ -1489,9 +1489,10 @@ file at all. A moved binary is repaired in place rather than duplicated.
 The command written is the bare name `ff-rdp` when the first `ff-rdp` on PATH is
 this executable, and the absolute path of this executable otherwise.
 
-Targets: --claude is supported today. --codex and --opencode exit 1 with the
-file location and the reason, rather than writing an entry whose shape this
-build cannot verify would ever fire (an inert hook looks installed forever).
+Targets: --claude writes settings.json. --codex writes hooks.json in CODEX_HOME
+(default ~/.codex when unset or empty) and requires explicit features.hooks = true
+in that directory's config.toml. Review and trust new/changed commands in Codex
+/hooks. --opencode refuses because its plugin contract requires JavaScript.
 
 Examples:
   ff-rdp install-hook --claude --dry-run    # print the entry, touch nothing
@@ -3322,7 +3323,8 @@ pub struct InstallHookArgs {
     #[arg(long)]
     pub claude: bool,
 
-    /// Target Codex — not supported yet; exits 1 naming the file location
+    /// Target Codex (CODEX_HOME/hooks.json; default ~/.codex); requires explicit features.hooks = true;
+    /// review and trust new/changed hooks in Codex /hooks after installation
     #[arg(long)]
     pub codex: bool,
 

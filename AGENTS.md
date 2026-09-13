@@ -55,8 +55,10 @@ Before touching the iteration work, read these in this order:
 4. `CONTRIBUTING.md`.
 5. `kb/discipline-rationale.md`, using `hyalo read discipline-rationale.md --format text`.
 
-Follow the project rules in those files. Use `hyalo` for markdown operations in
-`kb/`, without changing directory into it.
+Follow the project rules in those files. Use `hyalo` for all supported operations in
+`kb/`, without changing directory into it. The owner clarified on 2026-09-13 that
+direct Markdown edits are allowed for operations Hyalo does not support, such as
+editing body prose and heading counts. No separate editing exception is needed.
 
 ## Historical context to verify
 

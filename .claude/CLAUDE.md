@@ -9,7 +9,8 @@ Keep all documentation in `./kb` as `*.md` markdown files with YAML frontmatter 
 Organize in subfolders. Use `[[wikilinks]]` for cross-references. Keep Obsidian-compatible.
 
 <!-- hyalo:start -->
-Use `hyalo` CLI (not Read/Grep/Glob) for all markdown knowledgebase operations.
+Use `hyalo` CLI for all supported markdown knowledgebase operations.
+For operations Hyalo does not support, such as editing body prose or heading counts, edit the Markdown files directly.
 Examples: `hyalo find --property status=planned --format text`, `hyalo find "search text"`, `hyalo find --property 'title~=pattern'`.
 Run `hyalo --help` for usage. Use `--format text` for compact LLM-friendly output.
 <!-- hyalo:end -->

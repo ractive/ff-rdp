@@ -29,6 +29,7 @@ fs2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_norway = { workspace = true }
+toml = { version = "0.9", default-features = false, features = ["parse", "serde", "std"] }
 getrandom = { workspace = true }
 tempfile = { workspace = true }
 url = { workspace = true }
@@ -44,7 +45,7 @@ thiserror = { workspace = true }
 libc = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true }
+windows-sys = { workspace = true, features = ["Win32_System_SystemInformation"] }
 
 [[test]]
 name = "e2e"
