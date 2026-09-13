@@ -1,0 +1,88 @@
+diff --git a/bench-browser/config/conditions.yaml b/bench-browser/config/conditions.yaml
+index 1dffeb6..66fd9a1 100644
+--- a/bench-browser/config/conditions.yaml
++++ b/bench-browser/config/conditions.yaml
+@@ -160,3 +160,25 @@ conditions:
+         - "agent-browser"
+         - "chrome-devtools-axi"
+         - "chrome-devtools"
++
++  ff-rdp:
++    name: "ff-rdp (Firefox RDP CLI)"
++    tool: ff-rdp
++    agents_md: |
++      # Tools
++
++      You have the `ff-rdp` CLI installed for browser automation.
++      Use it for all browsing tasks. Do NOT use curl, wget, or WebFetch.
++
++      Run `ff-rdp --help` for available commands and usage.
++    daemon: explicit
++    require_healthy_start: true
++    daemon_start: "ffrdp-bench.sh start"
++    daemon_stop: "ffrdp-bench.sh stop"
++    command_policy:
++      require_any_prefix: ["ff-rdp"]
++      forbid_any_prefix:
++        - "agent-browser"
++        - "chrome-devtools-axi"
++        - "chrome-devtools"
++        - "dev-browser"
+diff --git a/bench-browser/src/lifecycle.ts b/bench-browser/src/lifecycle.ts
+index d40215d..862a9e9 100644
+--- a/bench-browser/src/lifecycle.ts
++++ b/bench-browser/src/lifecycle.ts
+@@ -73,11 +73,12 @@ export function startDaemon(condition: ConditionDef): void {
+         try {
+           execSync(condition.daemon_start, {
+             encoding: "utf-8",
+-            timeout: 15_000,
++            timeout: condition.id === "ff-rdp" ? 60_000 : 15_000,
+             stdio: "pipe",
+           });
+         } catch (err: unknown) {
+           const execErr = err as { stderr?: string };
++          if (condition.id === "ff-rdp") throw err;
+           // Daemon may already be running
+           console.log(`  [lifecycle] Daemon start note: ${execErr.stderr ?? "already running?"}`);
+         }
+@@ -112,7 +113,8 @@ export function stopDaemon(condition: ConditionDef): void {
+             timeout: 10_000,
+             stdio: "pipe",
+           });
+-        } catch {
++        } catch (err) {
++          if (condition.id === "ff-rdp") throw err;
+           console.log(`  [lifecycle] Daemon stop failed (may already be stopped)`);
+         }
+       }
+@@ -139,7 +141,7 @@ export function stopDaemon(condition: ConditionDef): void {
+   }
+ 
+   // Always try to kill orphaned Chrome/Chromium processes
+-  killOrphanedBrowsers();
++  if (condition.id !== "ff-rdp") killOrphanedBrowsers();
+ }
+ 
+ /**
+@@ -206,6 +208,8 @@ function getHealthCommand(condition: ConditionDef): string | null {
+       return "curl -sf http://127.0.0.1:9224/health";
+     case "dev-browser":
+       return "dev-browser status";
++    case "ff-rdp":
++      return "ff-rdp tabs";
+     default:
+       return null;
+   }
+diff --git a/bench-browser/src/types.ts b/bench-browser/src/types.ts
+index 4c46e50..16268b4 100644
+--- a/bench-browser/src/types.ts
++++ b/bench-browser/src/types.ts
+@@ -1,6 +1,6 @@
+ /** Shared interfaces for the browser benchmark harness. */
+ 
+-export type ConditionId = "agent-browser" | "chrome-devtools-axi" | "chrome-devtools-mcp" | "chrome-devtools-mcp-search" | "chrome-devtools-mcp-code" | "chrome-devtools-mcp-compressed-cli" | "dev-browser";
++export type ConditionId = "agent-browser" | "chrome-devtools-axi" | "chrome-devtools-mcp" | "chrome-devtools-mcp-search" | "chrome-devtools-mcp-code" | "chrome-devtools-mcp-compressed-cli" | "dev-browser" | "ff-rdp";
+ export type TaskCategory = "single_step" | "multi_step" | "investigation" | "error_recovery";
+ 
+ export interface GradingSpec {

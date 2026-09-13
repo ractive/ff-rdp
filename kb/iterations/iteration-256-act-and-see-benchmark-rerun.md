@@ -2,7 +2,7 @@
 title: "Iteration 256: re-measure the axi benchmark after act-and-see"
 type: iteration
 date: 2026-08-29
-status: planned
+status: in-progress
 branch: iter-256/act-and-see-benchmark-rerun
 depends_on: [iteration-210-act-and-see, iteration-211-find-not-guess, iteration-212-ambient-context]
 dogfood_path: |
@@ -23,6 +23,7 @@ takeover_sequencing_2026_09_09: >-
   historical model/prompt, and final measurement coverage are preserved.
 takeover_reconciliation_252: "2026-09-09, reconciliation after252: historical runner and task sources recovered from original Claude transcripts; runner SHA25611659d64e71fa116744f6b837d0b8b246c8623eb0f3cf796a2342a7567a24a8b matches pinned upstream d28c5e79aa7ee7a59a386fc34125f8cd1470fbeb. Use agent AND judge claude-sonnet-4-6. Actual same-model probes twice failed HTTP401 invalid API key before tokens, unlike the historical organization error. ThemeA implementation/export can proceed; real clean-checkout comparison and remaining measurement ACs cannot be claimed satisfied without successful account capability. Keep baseline prompt unchanged and label the separate ambient payload/hook treatment precisely; preserve all historical completed measurements and unmet targets."
 benchmark_auth_resolution_252: "2026-09-09: the two earlier HTTP401 probes are retained as history. A third exact same-model probe succeeded with CAPABILITY_OK, exit0, claude-sonnet-4-6 modelUsage and 900ms duration, using the already cached claude.ai Team session with only the stale ANTHROPIC_API_KEY omitted per process. No login, global configuration or model/prompt change. Use that scoped environment for actual harness runs. This resolves account capability only; actual benchmark acceptance criteria remain unticked until measured. Evidence: .git/ralph-loop/20260909-takeover/harness-prep/auth-resolution.md and capability-cached-session.stdout."
+theme_a_preparation_2026_09_13: "Theme A is prepared on the dedicated 256 branch at base f18a876866fd5fa047d4ca7e3a71dd88018b8824. Preserve the existing prepare/verify/export then 255 then final 256 sequence. Historical task wording remains unchanged: actual inventory is 14 task definitions x 3 repetitions = 42 runs, not 126. Final clean-checkout comparison and ambient-delivery ACs remain pending; no acceptance is inferred from harness smoke. Actual agent and judge modelUsage, list cost, Claude CLI 2.1.259 versus historical 2.1.241, both source revisions and binary hash are required provenance."
 ---
 
 # Iteration 256: re-measure the axi benchmark after act-and-see
@@ -76,7 +77,7 @@ would measure the same 8 turns and would be the correct answer, not a broken run
 
 ## Tasks
 
-### A. Reproduce the harness [0/2]
+### A. Reproduce the harness [1/2]
 - [ ] Land the ff-rdp side of the harness under `tools/axi-bench/` **without checking in the
       upstream TypeScript** (CLAUDE.md: no polyglot tooling): a `README.md` pinning the upstream
       `kunchenguid/axi` commit, `ff-rdp-condition.patch` (the `conditions.yaml` / `types.ts` /
@@ -88,7 +89,7 @@ would measure the same 8 turns and would be the correct answer, not a broken run
       `/private/tmp/claude-501/-Users-james-devel-ff-rdp/6e29cb88-95d5-48ad-b750-bad99c3e3d49/scratchpad/`
       (`axi/`, `bin/ffrdp-bench.sh`); the 2026-08-30 wrappers are in the launching session's
       scratchpad (`run-axi-bench.sh`, `run-mcp-bench.sh`)
-- [ ] Record the exact system prompt used for both tools, verbatim, in
+- [x] Record the exact system prompt used for both tools, verbatim, in
       [[axi-benchmark-comparison]] — a turn count is not comparable without it
 
 ### B. Re-measure [3/3]
@@ -184,6 +185,29 @@ full tables and trajectory analysis in [[axi-benchmark-comparison]] § "Re-measu
   `lifecycle.ts` diff, all still only in a session scratchpad.
 
 ## Design notes
+
+### Theme A preparation, 2026-09-13
+
+The dedicated 256 branch prepares the pinned `tools/axi-bench/` harness for a
+supervisor-owned checkpoint/export before 255's six measurements. The exported
+harness accepts an explicit clean product source root and full revision; its
+private build, binary hash, harness revision, prompts, CLI/runtime versions and
+actual agent/judge usage are recorded. This is the equivalent sequencing already
+recorded in frontmatter, not a second 256 PR or a transfer of harness ownership.
+
+The original "42 tasks" wording above remains historical: the pinned inventory
+has 14 task definitions, and three repeats mean 42 runs. No final matrix or
+ambient treatment ran during preparation. Two bounded paid `read_static_page`
+smokes exercised the historical prompt/model and both passed their task but
+failed harness cleanup identity checks; their total list cost was $0.4337284,
+including auxiliary Haiku usage. They are harness diagnostics, not benchmark
+acceptance or replacement data for any historical table. Subsequent ownership,
+process-status, provenance and zero-cost fixture checks diagnose the harness
+repairs separately. Full raw phase evidence is retained under
+`.git/ralph-loop/20260912-validation-efficiency/iter256-theme-a/` by the supervisor.
+
+Theme A's landing box, clean-checkout comparison AC, final 42-run coverage and
+ambient delivery AC remain unticked/pending until their actual later completion.
 
 - **Do not re-run chrome-devtools-axi.** Its behaviour did not change; re-running it costs the
   same money and adds variance to the reference side of the comparison.

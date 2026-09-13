@@ -17,6 +17,42 @@ except for an added `ff-rdp` condition. Agent and judge: `claude-sonnet-4-6`. 14
 ff-rdp 0.3.0 (0a87d1d, `main`); chrome-devtools-axi 0.1.32. Same one-paragraph system prompt
 for both ("you have the `X` CLI, run `X --help`").
 
+## Exact historical condition paragraphs (recovered 2026-09-13)
+
+Pinned upstream: `kunchenguid/axi@d28c5e79aa7ee7a59a386fc34125f8cd1470fbeb`.
+The unchanged runner SHA-256 is
+`11659d64e71fa116744f6b837d0b8b246c8623eb0f3cf796a2342a7567a24a8b`.
+These are append paragraphs, not replacements for Claude Code's default system
+prompt. Both agent and judge request `claude-sonnet-4-6`.
+
+```text
+# Tools
+
+You have the `ff-rdp` CLI installed for browser automation.
+Use it for all browsing tasks. Do NOT use curl, wget, or WebFetch.
+
+Run `ff-rdp --help` for available commands and usage.
+```
+
+```text
+# Tools
+
+You have the `chrome-devtools-axi` CLI installed for browser automation.
+Use it for all browsing tasks. Do NOT use curl, wget, or WebFetch.
+
+Run `chrome-devtools-axi --help` for available commands and usage.
+```
+
+Including each trailing newline, their SHA-256 hashes are respectively
+`758dfb37452f8099cfb46460ee417ccc73839cf0ee3553f7da0558229be49c8b` and
+`576f9835b62ad24111d2d6cbc78bd1b58ac2d1e6546570e90a7c0a0f0578e12a`.
+The historical CLI was 2.1.241; the current CLI is 2.1.259, so the default
+system prompt may differ. Baseline settings/hooks are disabled with
+`--setting-sources ""`; a later ambient payload or installed-hook treatment must
+be identified separately. Actual model usage can include auxiliary Haiku and
+must accompany costs; neither subscription billing nor exclusive Sonnet usage
+can be inferred from the requested model alone.
+
 ## Summary (n = 42 runs per condition)
 
 | Condition | Success | Avg turns | Median turns | Avg cost | Avg input tokens | Cache% | Avg duration |
