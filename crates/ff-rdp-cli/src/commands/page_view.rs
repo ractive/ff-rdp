@@ -698,14 +698,35 @@ pub(crate) fn filter_page_view(view: &mut Value, query: &QueryFilter) -> usize {
         return 0;
     };
     let mut kept = 0usize;
+    if query.is_active() {
+        let keys: Vec<&str> = obj
+            .get("facts")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|fact| fact.get("key").and_then(Value::as_str))
+            .collect();
+        let keys = json!(keys);
+        let truncated = obj
+            .get("facts_truncated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        obj.insert("query_fact_keys".to_owned(), keys);
+        obj.insert("query_facts_truncated".to_owned(), json!(truncated));
+    }
     for section in ["landmarks", "headings", "interactive", "facts"] {
         let Some(Value::Array(entries)) = obj.get_mut(section) else {
             continue;
         };
         entries.retain(|entry| {
-            MATCH_FIELDS.iter().any(
-                |field| matches!(entry.get(*field), Some(Value::String(s)) if query.matches(s)),
-            )
+            (section == "facts"
+                && entry
+                    .get("key")
+                    .and_then(Value::as_str)
+                    .is_some_and(|key| query.matches_fact_key(key)))
+                || MATCH_FIELDS.iter().any(
+                    |field| matches!(entry.get(*field), Some(Value::String(s)) if query.matches(s)),
+                )
         });
         kept += entries.len();
     }
@@ -760,8 +781,8 @@ pub(crate) fn apply_interactive_limit(view: &mut Value, limit: Option<usize>) {
     }
 }
 
-/// Allocate and register a `ref` for every interactive entry that carries a
-/// `__resolver`, returning whether the registration succeeded.
+/// Allocate and register a `ref` for every interactive entry and fact link
+/// carrying a `__resolver`, returning whether registration succeeded.
 ///
 /// On any failure (no daemon, allocation refused, the page navigated between
 /// alloc and register) no `ref` field is added at all — the same fail-closed
@@ -770,7 +791,7 @@ fn register_interactive_refs(ctx: &mut ConnectedTab, view: &mut Value) -> bool {
     if !ctx.via_daemon {
         return false;
     }
-    let count = interactive_entries(view)
+    let count = ref_entries(view)
         .filter(|e| e.get("__resolver").and_then(Value::as_str).is_some())
         .count();
     if count == 0 {
@@ -784,23 +805,21 @@ fn register_interactive_refs(ctx: &mut ConnectedTab, view: &mut Value) -> bool {
 
     let mut entries: Vec<crate::daemon::client::RefEntry> = Vec::with_capacity(count);
     let mut next = start;
-    if let Some(Value::Array(arr)) = view.get_mut("interactive") {
-        for node in arr.iter_mut() {
-            let Some(map) = node.as_object_mut() else {
-                continue;
-            };
-            let Some(resolver) = map.get("__resolver").and_then(Value::as_str) else {
-                continue;
-            };
-            let id = format!("e{next}");
-            next += 1;
-            entries.push(crate::daemon::client::RefEntry {
-                id: id.clone(),
-                resolver: resolver.to_owned(),
-            });
-            map.insert("ref".to_owned(), json!(id));
-        }
-    }
+    for_each_ref_entry_mut(view, |node| {
+        let Some(map) = node.as_object_mut() else {
+            return;
+        };
+        let Some(resolver) = map.get("__resolver").and_then(Value::as_str) else {
+            return;
+        };
+        let id = format!("e{next}");
+        next += 1;
+        entries.push(crate::daemon::client::RefEntry {
+            id: id.clone(),
+            resolver: resolver.to_owned(),
+        });
+        map.insert("ref".to_owned(), json!(id));
+    });
 
     if crate::daemon::client::register_refs(ctx.transport_mut(), nav_gen, &entries).is_ok() {
         true
@@ -817,24 +836,52 @@ fn interactive_entries(view: &Value) -> impl Iterator<Item = &Value> {
         .map_or_else(|| [].iter(), |a| a.iter())
 }
 
-fn strip_resolvers(view: &mut Value) {
-    if let Some(Value::Array(arr)) = view.get_mut("interactive") {
-        for node in arr.iter_mut() {
-            if let Some(map) = node.as_object_mut() {
-                map.remove("__resolver");
+fn ref_entries(view: &Value) -> impl Iterator<Item = &Value> {
+    interactive_entries(view).chain(
+        view.get("facts")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .flat_map(|fact| {
+                fact.get("links")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+            }),
+    )
+}
+
+fn for_each_ref_entry_mut(view: &mut Value, mut visit: impl FnMut(&mut Value)) {
+    if let Some(arr) = view.get_mut("interactive").and_then(Value::as_array_mut) {
+        for node in arr {
+            visit(node);
+        }
+    }
+    if let Some(facts) = view.get_mut("facts").and_then(Value::as_array_mut) {
+        for fact in facts {
+            if let Some(links) = fact.get_mut("links").and_then(Value::as_array_mut) {
+                for link in links {
+                    visit(link);
+                }
             }
         }
     }
 }
 
-fn strip_ref_fields(view: &mut Value) {
-    if let Some(Value::Array(arr)) = view.get_mut("interactive") {
-        for node in arr.iter_mut() {
-            if let Some(map) = node.as_object_mut() {
-                map.remove("ref");
-            }
+fn strip_resolvers(view: &mut Value) {
+    for_each_ref_entry_mut(view, |node| {
+        if let Some(map) = node.as_object_mut() {
+            map.remove("__resolver");
         }
-    }
+    });
+}
+
+fn strip_ref_fields(view: &mut Value) {
+    for_each_ref_entry_mut(view, |node| {
+        if let Some(map) = node.as_object_mut() {
+            map.remove("ref");
+        }
+    });
 }
 
 /// Collect a page view and attach it to a command's `results` (iter-210
@@ -1451,12 +1498,39 @@ pub(crate) fn render_text(results: &Value) {
             let key = fact.get("key").and_then(Value::as_str).unwrap_or("");
             let value = fact.get("value").and_then(Value::as_str).unwrap_or("");
             println!("  {key}: {value}");
+            if let Some(links) = fact.get("links").and_then(Value::as_array) {
+                for link in links {
+                    let name = link.get("name").and_then(Value::as_str).unwrap_or("");
+                    let href = link.get("href").and_then(Value::as_str).unwrap_or("");
+                    if let Some(id) = link.get("ref").and_then(Value::as_str) {
+                        println!("    [{id}] {name} → {href}");
+                    } else {
+                        println!("    {name} → {href}");
+                    }
+                }
+            }
+            if fact.get("links_truncated").and_then(Value::as_bool) == Some(true) {
+                println!("    Some fact links omitted (collection limits).");
+            }
         }
         println!();
     }
 
     // The `--query`-found-nothing hint, printed where a reader looking for the
     // answer will be looking (iter-225 Theme B).
+    if results.get("matches").and_then(Value::as_u64) == Some(0)
+        && let Some(keys) = results.get("query_fact_keys").and_then(Value::as_array)
+    {
+        let keys: Vec<&str> = keys.iter().filter_map(Value::as_str).collect();
+        let truncated = results
+            .get("query_facts_truncated")
+            .and_then(Value::as_bool)
+            == Some(true);
+        println!(
+            "Collected fact keys considered (collection truncated: {truncated}): {}",
+            keys.join(", ")
+        );
+    }
     if let Some(hint) = results.get("hint").and_then(Value::as_str) {
         println!("{hint}");
         println!();
@@ -2279,6 +2353,128 @@ mod tests {
         assert!(view["interactive"][0].get("__resolver").is_none());
         strip_ref_fields(&mut view);
         assert!(view["interactive"][0].get("ref").is_none());
+    }
+
+    #[test]
+    fn unit_255_fact_refs_register_independently_and_fail_closed() {
+        use ff_rdp_core::RdpTransport;
+        use ff_rdp_core::transport::{encode_frame, recv_from};
+        use std::io::{BufReader, Write as _};
+        use std::net::TcpListener;
+
+        for scenario in [
+            "success",
+            "direct",
+            "alloc-failure",
+            "generation-mismatch",
+            "register-failure",
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let send = |stream: &mut std::net::TcpStream, value: Value| {
+                    stream
+                        .write_all(encode_frame(&value.to_string()).as_bytes())
+                        .unwrap();
+                };
+                if scenario == "direct" {
+                    return;
+                }
+                let alloc = recv_from(&mut reader).unwrap();
+                assert_eq!(alloc["type"], "alloc-refs");
+                assert_eq!(alloc["count"], 2);
+                if scenario == "alloc-failure" {
+                    send(
+                        &mut stream,
+                        json!({"from":"daemon", "error":"allocation refused"}),
+                    );
+                    return;
+                }
+                send(
+                    &mut stream,
+                    json!({"from":"daemon", "start":71, "nav_generation":19}),
+                );
+                let registration = recv_from(&mut reader).unwrap();
+                assert_eq!(registration["type"], "register-refs");
+                assert_eq!(registration["nav_generation"], 19);
+                assert_eq!(
+                    registration["refs"],
+                    json!([
+                        {"id":"e71", "resolver":"#first"}, {"id":"e72", "resolver":"#second"}
+                    ])
+                );
+                send(
+                    &mut stream,
+                    match scenario {
+                        "success" => json!({"from":"daemon"}),
+                        "generation-mismatch" => {
+                            json!({"from":"daemon", "error":"stale", "stale":true})
+                        }
+                        _ => json!({"from":"daemon", "error":"registration refused"}),
+                    },
+                );
+            });
+            let transport =
+                RdpTransport::connect_raw("127.0.0.1", port, Duration::from_secs(2)).unwrap();
+            let mut ctx = ConnectedTab::for_test(transport, ActorId::from("conn0/console1"));
+            ctx.via_daemon = scenario != "direct";
+            let mut view = json!({"interactive":[{"name":"capped", "__resolver":"#capped"}],
+            "facts":[{"key":"Developer", "value":"First Second", "links_truncated":true, "links":[
+                {"name":"First", "href":"/first", "__resolver":"#first"},
+                {"name":"Second", "href":"/second", "__resolver":"#second"}
+            ]}, {"key":"Developer omitted", "value":"Short", "links_truncated":true}]});
+            filter_page_view(&mut view, &query("Developer"));
+            apply_interactive_limit(&mut view, Some(0));
+            assert_eq!(
+                register_interactive_refs(&mut ctx, &mut view),
+                scenario == "success"
+            );
+            strip_resolvers(&mut view);
+            for (index, link) in view["facts"][0]["links"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .enumerate()
+            {
+                assert!(link.get("__resolver").is_none(), "{scenario}: {view}");
+                if scenario == "success" {
+                    assert_eq!(link["ref"], format!("e{}", 71 + index));
+                } else {
+                    assert!(link.get("ref").is_none(), "{scenario}: {view}");
+                }
+            }
+            assert_eq!(view["facts"][0]["value"], "First Second");
+            assert_eq!(view["facts"][0]["links_truncated"], true);
+            assert_eq!(view["facts"][1]["links_truncated"], true);
+            assert!(view["facts"][1].get("links").is_none());
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn unit_255_zero_match_reports_only_collected_candidate_keys() {
+        for page_chars in [0, DEFAULT_PAGE_CHARS] {
+            let mut view = json!({"facts":[{"key":"Developer", "value":"PSF"},
+                {"key":"Stable release", "value":"3"}], "facts_total":45,
+                "facts_truncated":true, "text":"An unrelated paragraph."});
+            let opts = reader(page_chars, query("founded formed"));
+            finish_reader_view(&mut view, &opts);
+            if page_chars > 0 {
+                apply_innertext_fallback(&mut view, &opts, "unrelated");
+            }
+            assert_eq!(view["matches"], 0);
+            assert_eq!(
+                view["query_fact_keys"],
+                json!(["Developer", "Stable release"])
+            );
+            assert_eq!(view["query_facts_truncated"], true);
+            assert_eq!(view["facts"], json!([]));
+        }
     }
 
     #[test]

@@ -505,8 +505,12 @@ const FACTS_BLOCK_JS: &str = r#"
   result.facts = [];
   var __ffrdpFactSeen = {};
   var __ffrdpFactTotal = 0;
+  // Independent of fact text: image anchors and microdata content overrides
+  // can otherwise produce unbounded link output and daemon registrations.
+  var __ffrdpFactLinkCount = 0;
+  var __ffrdpFactLinkChars = 0;
 
-  function __ffrdpAddFact(rawKey, rawValue) {
+  function __ffrdpAddFact(rawKey, rawValue, sources) {
     var key = __ffrdpNorm(rawKey);
     var val = __ffrdpNorm(rawValue);
     if (!key || !val) { return; }
@@ -522,7 +526,40 @@ const FACTS_BLOCK_JS: &str = r#"
     __ffrdpFactSeen[seenKey] = true;
     __ffrdpFactTotal++;
     if (result.facts.length < __FACT_CAP__) {
-      result.facts[result.facts.length] = {key: key, value: val};
+      var fact = {key: key, value: val};
+      var links = [];
+      for (var si = 0; si < sources.length; si++) {
+        var source = sources[si];
+        var anchors = source.querySelectorAll('a[href]');
+        // Include a microdata value whose source is itself the anchor.
+        var selfAnchor = source.tagName && source.tagName.toUpperCase() === 'A' && source.hasAttribute('href');
+        for (var ai = selfAnchor ? -1 : 0; ai < anchors.length; ai++) {
+          var anchor = ai < 0 ? source : anchors[ai];
+          if (links.length >= 8 || __ffrdpFactLinkCount >= 32) {
+            fact.links_truncated = true;
+            break;
+          }
+          var name = __ffrdpNorm(anchor.textContent);
+          var href = anchor.getAttribute('href');
+          // Never shorten a destination or selector into a different target.
+          // Omit the whole link, visibly, and allow later smaller links to fit.
+          if (name.length > 256 || href.length > 2048) {
+            fact.links_truncated = true;
+            continue;
+          }
+          var resolver = __ffrdpUniqueSelector(anchor);
+          var chars = name.length + href.length + resolver.length;
+          if (resolver.length > 2048 || __ffrdpFactLinkChars + chars > 8192) {
+            fact.links_truncated = true;
+            continue;
+          }
+          links[links.length] = {name: name, href: href, __resolver: resolver};
+          __ffrdpFactLinkCount++;
+          __ffrdpFactLinkChars += chars;
+        }
+      }
+      if (links.length) { fact.links = links; }
+      result.facts[result.facts.length] = fact;
     }
   }
 
@@ -536,20 +573,21 @@ const FACTS_BLOCK_JS: &str = r#"
       if (ftag === 'TR') {
         var fth = fnode.querySelector('th');
         var ftd = fnode.querySelector('td');
-        if (fth && ftd) { __ffrdpAddFact(fth.textContent, ftd.textContent); }
+        if (fth && ftd) { __ffrdpAddFact(fth.textContent, ftd.textContent, [ftd]); }
       } else if (ftag === 'DT') {
         var fvals = '';
+        var fsources = [];
         var fsib = fnode.nextElementSibling;
         while (fsib && fsib.tagName && fsib.tagName.toUpperCase() === 'DD') {
           var fpart = __ffrdpNorm(fsib.textContent);
-          if (fpart) { fvals += (fvals ? '; ' : '') + fpart; }
+          if (fpart) { fvals += (fvals ? '; ' : '') + fpart; fsources[fsources.length] = fsib; }
           fsib = fsib.nextElementSibling;
         }
-        __ffrdpAddFact(fnode.textContent, fvals);
+        __ffrdpAddFact(fnode.textContent, fvals, fsources);
       } else {
         var fprop = fnode.getAttribute('itemprop');
         var fcontent = fnode.getAttribute('content');
-        __ffrdpAddFact(fprop, fcontent || fnode.textContent);
+        __ffrdpAddFact(fprop, fcontent || fnode.textContent, [fnode]);
       }
     }
   } catch (e) {
