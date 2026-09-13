@@ -134,10 +134,10 @@ written and committed; they need a sweep.
 - A dual-gate `cargo run -p xtask -- live-sweep`, which is the only evidence that closes
   iteration 242's Part B and Part C acceptance criteria.
 
-### Acceptance Criteria [0/2]
+### Acceptance Criteria [2/2]
 
-- [ ] Both named live tests pass against a real Firefox
-- [ ] A dual-gate sweep runs, and iteration 242's live-dependent ACs are ticked or their failures
+- [x] Both named live tests pass against a real Firefox
+- [x] A dual-gate sweep runs, and iteration 242's live-dependent ACs are ticked or their failures
       filed — **whichever the sweep actually shows.** Iteration 242 left six ACs unticked rather
       than tick them on reasoning; do not undo that by ticking them on a sweep that did not
       exercise them.
@@ -169,7 +169,7 @@ since 176 closed.
 
 ## Out of scope
 
-- `live_137_consent_accept_via_daemon`'s `live_target_count: 0` — [[iteration-251]] owns it.
+- `live_137_consent_accept_via_daemon`'s `live_target_count: 0` — [[iteration-262-daemon-live-target-never-promoted]] owns it (251 was absorbed).
 - The chunk-A/chunk-B `--test-threads=1` methodology from the old iteration 243. It predates
   `xtask live-sweep` and iteration 242 already recorded the premise as superseded.
 
@@ -178,3 +178,19 @@ since 176 closed.
 - [[iteration-242-profile-liveness-flake-in-prune-all]] — the measurement, and DEC-054
 - [[iteration-224-with-page-daemon-connection-reset]] — where the `daemon stop` observation came
   from
+
+
+## Owed242 verification reconciliation, 2026-09-14
+
+The separately requested242 sweep at `19f4e236a70399c2984e6d46eb15bdac37a55181` executed343 exact names
+across five tiers:331pass/12fail, zero skips/reclassifications/profile leaks.
+Both named PartB live tests passed and every failed/unmet242 requirement has an
+explicit disposition in242's new evidence section, so the two PartB ACs are now
+satisfied. This does **not** close this plan: PartA's twenty-cycle mechanism and
+behaviour proof and PartC's attributable orphan investigation were not executed.
+HN's passing verdict also does not diagnose the historical empty-title failure;
+retain242's unticked readiness-versus-site mechanism requirement here. On its next
+failure, retain the READINESS/SITE diagnostic and actual document state before
+naming a mechanism. The obsolete chunk split remains unrun, not silently replaced
+by profile-zero counts. Evidence: `.git/ralph-loop/20260912-validation-efficiency/iter242-owed-sweep/sweep.log` and
+`sweep-reconciliation.json`. No260 product implementation is claimed.

@@ -1,6 +1,3 @@
-// allow-actor-kb-skip: iter-92 adds a `full_page_rect` parameter to the
-// existing `screenshot_via_process_drawsnapshot` workaround (no spec change);
-// the actor-level protocol is unchanged from kb/rdp/actors/screenshot.md.
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -13,6 +10,27 @@ use crate::actors::tab::TabActor;
 use crate::error::ProtocolError;
 use crate::transport::RdpTransport;
 use crate::types::{ActorId, Grip};
+
+/// Try the legacy boolean first: old WebIDL silently converts a dictionary to
+/// true, so dictionary-first is not capability detection. Only Firefox's exact
+/// argument-conversion error permits retrying; no rendering has started then.
+fn with_drawsnapshot_argument<T>(
+    reset_scroll: bool,
+    mut capture: impl FnMut(&str) -> Result<T, ProtocolError>,
+) -> Result<T, ProtocolError> {
+    let legacy = if reset_scroll { "true" } else { "false" };
+    match capture(legacy) {
+        Err(ProtocolError::InvalidPacket(ref message))
+            if message
+                == "screenshot_via_process_drawsnapshot: JS returned error: TypeError: WindowGlobalParent.drawSnapshot: Argument 4 can't be converted to a dictionary." =>
+        {
+            capture(&format!(
+                "{{resetScrollPosition: {legacy}, drawView: false}}"
+            ))
+        }
+        result => result,
+    }
+}
 
 /// Wire-format arguments for the root `screenshotActor.capture` request.
 ///
@@ -321,8 +339,8 @@ impl ScreenshotActor {
     /// with "Unable to load actor module 'devtools/server/actors/screenshot'" because
     /// `capture-screenshot.js` calls `ChromeUtils.importESModule("moz-src:///...")` without
     /// the `{ global: "current" }` option required in the DevTools distinct global.
-    /// This is a Firefox regression (tracked upstream — see `// allow-spec-drift` annotation
-    /// below) that makes the standard `screenshotActor.capture` path unusable via RDP.
+    /// This historical Firefox regression makes the standard capture path unusable
+    /// via RDP on affected builds; it is separate from bug 2058388's API change.
     ///
     /// ## Protocol
     ///
@@ -342,19 +360,12 @@ impl ScreenshotActor {
     /// Requires Firefox 87+ (`getProcess` and `IOUtils` were added in FF 87).
     /// `drawSnapshot` on `WindowGlobalParent` is available in Firefox 73+.
     ///
-    // allow-spec-drift: bug TBD (SD-2: BrowsingContext.drawSnapshot used via
-    // parent-process eval as a workaround for the Firefox 151 regression where
-    // screenshotActor.capture fails to load capture-screenshot.js in the
-    // DevTools distinct global.  iter-117 REASSESSED the regression against
-    // Firefox 152.0.5: it STILL reproduces — a live `screenshot` probe logs
-    // "screenshotActor module load failure; retrying via
-    // screenshot_via_process_drawsnapshot".  The workaround therefore stays;
-    // removing it or gating it behind a version check on FF152 would break
-    // screenshots.  Remove or version-gate it only once Mozilla fixes the
-    // module-load path.  iter-117 found no existing Bugzilla bug — novel gap
-    // awaiting James's filing; see
-    // kb/rdp/from-our-codebase/open-gaps.md#spec-drift-bugs-awaiting-filing and
-    // iter-117 Results.  `TBD` blocks publishing the v0.3.0 draft.)
+    // allow-spec-drift: bug 2058388 — Firefox 155 WindowGlobalParent.drawSnapshot
+    // takes DrawSnapshotOptions { resetScrollPosition = false, drawView = false };
+    // Firefox 120–154 takes boolean resetScrollPosition. Source: release-tagged
+    // dom/chrome-webidl/WindowGlobalActors.webidl (see take-screenshot.md).
+    // This bug tracks the signature change, NOT the historical Firefox 151
+    // screenshotActor module-load gap that originally required parent-process eval.
     /// Returns raw PNG bytes (not a data URL).
     ///
     /// The caller (CLI screenshot command) is responsible for encoding the bytes
@@ -402,9 +413,8 @@ impl ScreenshotActor {
         //   (c) Renders it onto an OffscreenCanvas and serialises to PNG.
         //   (d) Writes the PNG bytes to a temp file via IOUtils.
         //
-        // The 4th arg to `drawSnapshot(rect, scale, color, resetScrollPosition)`
-        // is `resetScrollPosition` (see
-        // dom/webidl/WindowGlobalActors.webidl), NOT a fullpage flag.  To
+        // Argument 4 controls resetScrollPosition (a boolean before Firefox 155,
+        // a DrawSnapshotOptions member since 155), NOT the capture extent. To
         // capture the full scrollable area, pass an explicit oversized `rect`
         // (first arg).  The caller supplies `full_page_rect = Some((w, h))`
         // when `--full-page` is requested; the JS then constructs a `DOMRect`
@@ -414,17 +424,17 @@ impl ScreenshotActor {
             (true, Some((w, h))) => format!("new DOMRect(0, 0, {w}, {h})"),
             _ => "null".to_owned(),
         };
-        let reset_scroll = if full_page { "true" } else { "false" };
         let bc_id = browsing_context_id;
-        let js = format!(
-            r#"(async function() {{
+        with_drawsnapshot_argument(full_page, |argument| {
+            let js = format!(
+                r#"(async function() {{
   try {{
     const bc = BrowsingContext.get({bc_id});
     if (!bc) return "error:no-bc:{bc_id}";
     const wg = bc.currentWindowGlobal;
     if (!wg) return "error:no-wg:{bc_id}";
     const rect = {rect_js};
-    const snapshot = await wg.drawSnapshot(rect, 1, "rgb(255,255,255)", {reset_scroll});
+    const snapshot = await wg.drawSnapshot(rect, 1, "rgb(255,255,255)", {argument});
     const canvas = new OffscreenCanvas(snapshot.width, snapshot.height);
     const ctx = canvas.getContext("2d");
     ctx.drawImage(snapshot, 0, 0);
@@ -436,36 +446,38 @@ impl ScreenshotActor {
     return "error:" + e.toString();
   }}
 }})()"#
-        );
+            );
 
-        let eval_result = WebConsoleActor::evaluate_js_async(transport, &console_actor, &js)?;
+            let eval_result = WebConsoleActor::evaluate_js_async(transport, &console_actor, &js)?;
 
-        // Surface JS-level exceptions (syntax error, missing IOUtils, etc.)
-        // before falling through to the grip-shape check.
-        if let Some(exc) = &eval_result.exception {
-            let msg = exc.message.as_deref().unwrap_or("<no message>");
-            return Err(ProtocolError::InvalidPacket(format!(
-                "screenshot_via_process_drawsnapshot: JS evaluation threw: {msg}"
-            )));
-        }
-
-        // Check the result for errors.
-        let result_str = match &eval_result.result {
-            Grip::Value(Value::String(s)) => s.clone(),
-            other => {
+            // Surface JS-level exceptions (syntax error, missing IOUtils, etc.)
+            // before falling through to the grip-shape check.
+            if let Some(exc) = &eval_result.exception {
+                let msg = exc.message.as_deref().unwrap_or("<no message>");
                 return Err(ProtocolError::InvalidPacket(format!(
-                    "screenshot_via_process_drawsnapshot: unexpected eval result grip: {other:?}"
+                    "screenshot_via_process_drawsnapshot: JS evaluation threw: {msg}"
                 )));
             }
-        };
 
-        if let Some(msg) = result_str.strip_prefix("error:") {
-            // Best-effort cleanup of any partial file the JS may have written.
-            let _ = std::fs::remove_file(&tmp_path);
-            return Err(ProtocolError::InvalidPacket(format!(
-                "screenshot_via_process_drawsnapshot: JS returned error: {msg}"
-            )));
-        }
+            // Check the result for errors.
+            let result_str = match &eval_result.result {
+                Grip::Value(Value::String(s)) => s.clone(),
+                other => {
+                    return Err(ProtocolError::InvalidPacket(format!(
+                        "screenshot_via_process_drawsnapshot: unexpected eval result grip: {other:?}"
+                    )));
+                }
+            };
+
+            if let Some(msg) = result_str.strip_prefix("error:") {
+                // Best-effort cleanup of any partial file the JS may have written.
+                let _ = std::fs::remove_file(&tmp_path);
+                return Err(ProtocolError::InvalidPacket(format!(
+                    "screenshot_via_process_drawsnapshot: JS returned error: {msg}"
+                )));
+            }
+            Ok(())
+        })?;
 
         // Step 5: read the PNG file written by Firefox.
         let png_bytes = std::fs::read(&tmp_path).map_err(|e| {
@@ -563,6 +575,75 @@ impl ScreenshotActor {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn drawsnapshot_legacy_success_preserves_both_boolean_values_without_retry() {
+        for reset in [false, true] {
+            let mut calls = Vec::new();
+            let result = super::with_drawsnapshot_argument(reset, |argument| {
+                calls.push(argument.to_owned());
+                Ok(vec![137, 80, 78, 71])
+            });
+            assert_eq!(result.unwrap(), [137, 80, 78, 71]);
+            assert_eq!(calls, [reset.to_string()]);
+        }
+    }
+
+    #[test]
+    fn drawsnapshot_dictionary_retry_preserves_reset_and_document_coordinates() {
+        for reset in [false, true] {
+            let mut calls = Vec::new();
+            let result = super::with_drawsnapshot_argument(reset, |argument| {
+                calls.push(argument.to_owned());
+                if calls.len() == 1 {
+                    Err(ProtocolError::InvalidPacket("screenshot_via_process_drawsnapshot: JS returned error: TypeError: WindowGlobalParent.drawSnapshot: Argument 4 can't be converted to a dictionary.".to_owned()))
+                } else {
+                    Ok("rendered")
+                }
+            });
+            assert_eq!(result.unwrap(), "rendered");
+            assert_eq!(
+                calls,
+                [
+                    reset.to_string(),
+                    format!("{{resetScrollPosition: {reset}, drawView: false}}")
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn drawsnapshot_unrelated_errors_are_not_retried_or_rewritten() {
+        for message in [
+            "TypeError: OffscreenCanvas.convertToBlob: Argument 4 can't be converted to a dictionary.",
+            "TypeError: WindowGlobalParent.drawSnapshot: Argument 1 can't be converted to a dictionary.",
+            "NS_ERROR_FAILURE",
+            "out of memory",
+        ] {
+            let mut calls = 0;
+            let result = super::with_drawsnapshot_argument(true, |_| {
+                calls += 1;
+                Err::<(), _>(ProtocolError::InvalidPacket(message.to_owned()))
+            });
+            assert_eq!(calls, 1);
+            assert!(matches!(result, Err(ProtocolError::InvalidPacket(s)) if s == message));
+        }
+    }
+
+    #[test]
+    fn drawsnapshot_retry_failure_surfaces_without_a_third_attempt() {
+        let mut calls = 0;
+        let result = super::with_drawsnapshot_argument(true, |_| {
+            calls += 1;
+            if calls == 1 {
+                Err::<(), _>(ProtocolError::InvalidPacket("screenshot_via_process_drawsnapshot: JS returned error: TypeError: WindowGlobalParent.drawSnapshot: Argument 4 can't be converted to a dictionary.".to_owned()))
+            } else {
+                Err(ProtocolError::Timeout)
+            }
+        });
+        assert_eq!(calls, 2);
+        assert!(matches!(result, Err(ProtocolError::Timeout)));
+    }
+
     use std::io::BufReader;
     use std::net::{TcpListener, TcpStream};
     use std::sync::Mutex;

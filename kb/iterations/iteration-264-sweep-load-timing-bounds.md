@@ -86,3 +86,14 @@ of the thing being asserted. What these tests need is a way to say *why* they we
   What is missing is a measurement, not another observation.
 - `live_237` and `live_navigate_elapsed_matches_wall` failed **all three** sweeps of the
   2026-09-07 run, so neither is a one-off.
+
+
+## Owed242 controls, 2026-09-14
+
+All three named timing tests passed the343-name dual-gate sweep at
+`19f4e236a70399c2984e6d46eb15bdac37a55181`. No ten-run isolated/loaded distribution or mutation proof
+was performed and no assertion or bound was changed. These are additional
+positive controls, not satisfaction of this plan's original ACs. The distinct
+169 daemon reload status-null observation is a new watch in203; its21028ms
+readystate-fallback-shaped envelope is not folded into these three timing bounds.
+Evidence: `.git/ralph-loop/20260912-validation-efficiency/iter242-owed-sweep/sweep.log`.

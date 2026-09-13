@@ -404,7 +404,7 @@ from") is wrong: both files are modules of the *same* `tests/live` binary, and
 - The `SPAWNING_TEST_ENV` duplication between `src/` and `tests/` is genuinely unavoidable
   (the product-side constant is private); leave that one and keep its explanatory comment.
 
-### Acceptance Criteria [2/5]
+### Acceptance Criteria [3/5]
 
 - [x] live_152_no_unowned_launch_sites: a test (or xtask check) enumerates every `"launch"`
       invocation under `crates/ff-rdp-cli/tests/live/` and asserts each one's PID is bound to
@@ -422,10 +422,11 @@ from") is wrong: both files are modules of the *same* `tests/live` binary, and
       spawns and reaps a trivial child). `FirefoxGuard::drop` now returns early for a dead PID,
       and `FirefoxGuard::disarm()` exists for the paths that have already asserted the process
       is gone (`live_90`'s post-`daemon stop` guard uses it).
-- [ ] live_152_marker_names_test_from_raw_launch: a profile leaked by a raw-`Command` launch
+- [x] live_152_marker_names_test_from_raw_launch: a profile leaked by a raw-`Command` launch
       site (not `common::LiveFirefox`) still names its spawning test in `.ff-rdp-owner-test` —
-      **written but not run.** `live_242_launch_ownership::live_242_marker_names_test_from_direct_launch`
-      is the test; it needs a live Firefox, and no live sweep was available to this iteration.
+      **Not run at the original merge; passed in the owed sweep recorded below.**
+      `live_242_launch_ownership::live_242_marker_names_test_from_direct_launch`
+      exercised the real direct-launch marker on Firefox155.0.1.
       The gap it targets was also found and closed statically: `live_210_act_and_see`'s `run()`
       was the last `"launch"` site still built from a bare `Command::new(ff_rdp_bin())`, and
       the scan above now forbids that shape.
@@ -610,14 +611,13 @@ exactly what `ff-rdp launch` creates and what the documented raw command does no
       named diagnosis); the class re-scoped into the census above; `live_137` handed to
       iteration 246 Part D.
 
-### Acceptance Criteria [0/2]
+### Acceptance Criteria [1/2]
 
-- [ ] Theme A has a landed decision, and a sweep run with a port-6000 browser present no longer
+- [x] Theme A has a landed decision, and a sweep run with a port-6000 browser present no longer
       fails `live_96` — demonstrated by an actual sweep, not by reasoning
-      **Half done 2026-08-23, deliberately left unticked.** The decision landed (documentation:
-      the raw-browser command is now a setup step in `iteration-close`), but **no sweep was run**
-      to demonstrate it, and this AC explicitly forbids closing on reasoning. Tick it when the
-      next dual-gate sweep starts its port-6000 browser the documented way and `live_96` passes
+      **Demonstrated by the owed sweep recorded below.** The documentation decision landed
+      earlier; both current `live_96` tests now passed with a raw unmanaged Firefox on6000.
+      The historical deleted-test premise is preserved above, not counted as an executed test.
 - [ ] Theme B's mechanism is named from evidence (readiness vs. site), not guessed —
       **left unticked on purpose.** No new sweep produced the failure, so there is no evidence
       to name it from, and this AC forbids closing on reasoning. The test now *collects* that
@@ -657,6 +657,97 @@ verifications this iteration wrote but could not run.
 ## Closing acceptance criterion (covers all parts) [0/1]
 
 - [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q`
-      clean, plus a dual-gate live sweep (covers all parts) — the three local gates are green;
-      **no live sweep was run**, so this stays unticked. Every AC above that depends on a live
-      Firefox is unticked for the same reason and says so.
+      clean, plus a dual-gate live sweep (covers all parts) — the original three local gates
+      were green; the owed dual-gate sweep recorded below ran and failed. This stays unticked;
+      measured failures have individual fix-forward dispositions below.
+
+
+## Owed iteration 242 sweep, 2026-09-14 local / 2026-09-13 UTC
+
+The separately requested sweep was executed on merged `main` at `19f4e236a70399c2984e6d46eb15bdac37a55181`,
+from `2026-09-13T21:55:06Z` through `2026-09-13T22:01:10Z`.
+It discharges the execution debt recorded in the handoff; it is a **failed sweep**,
+not a clean closing result and not iteration257's own future closing sweep.
+No product source was changed during this run.
+
+```sh
+FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo run -p xtask -- live-sweep
+```
+
+```text
+LIVE_SWEEP_SUMMARY executed=343 skipped=0 preexisting=0 vanished=0 launch_timeout=0 timed_out=0 total=343
+LIVE_SWEEP_PROFILES leaked=0 unattributed=0 root=/Users/james/Library/Application Support/ff-rdp/profiles
+```
+
+Exit1. Actual test verdicts: **331 passed + 12 failed = 343 executed**.
+Independent compiled-binary ignored-name listings reconcile every name, with no
+missing, duplicate or extra verdict: CLI334 = 322pass + 12fail; core
+`live_129_frame_targets`1/1, `live_61p_registry`3/3, `live_61u`3/3 and
+`live_firefox_test`2/2. Conservation is343+0+0+0+0+0=343.
+All five tier profile scans and the final summary report no leak or unattributed
+profile; their complete emitted text is retained in `profile-accounting.txt`.
+These profile counts do not replace test or obsolete chunk acceptance evidence.
+
+Raw Firefox155.0.1 was `/Applications/Firefox.app/Contents/MacOS/firefox`,
+PID51051, profile `/tmp/ff-rdp-iter242-raw.G6yo2gc9`, launched unmanaged on the
+initially free port6000 with all three documented debugger preferences. The
+six-worker CLI tier and default300s/900s watchdog bounds were unchanged.
+The raw child survived through the core tiers and all isolations, then its exact
+identity was checked, it was stopped and waited for at22:03:46Z. Port6000 was
+free afterward; pre-existing desktopFirefox37270 was preserved. The raw profile
+is retained. Partial ten-second PID/listen/load samples begin after startup;
+no whole-run sampling or causal load diagnosis is claimed.
+
+All raw evidence and the proposed publication patch are retained in
+`.git/ralph-loop/20260912-validation-efficiency/iter242-owed-sweep/`. The twelve exact serial isolations used both live gates,
+`--include-ignored --exact --nocapture --test-threads=1`; four passed and eight
+failed. Their original failures remain part of this record. Ordinary ordered
+fmt/clippy/workspace gates were not repeated for this sweep-only, source-unchanged
+operation; the original green gate record is not represented as a fresh run.
+
+### Carry-over from this execution
+
+| Exact test | Sweep | Exact isolation | Disposition |
+|---|---|---|---|
+| `live_135_screenshot_ff153::live_135_screenshot_full_page_taller` | FAIL; `sweep.log:350` | FAIL (2.83s libtest; 68.18s command wall); `isolated-live_135_screenshot_ff153__live_135_screenshot_full_page_taller.log` | Fold into [[iteration-257-firefox-155-drawsnapshot-dictionary-arg]]. Firefox155.0.1 rejected drawSnapshot argument4 as a dictionary TypeError; the misleading tall-page hint also recurred. Exact isolation reproduced the same signature. |
+| `live_140_element_targeting::live_140_frame_filter_count_accurate` | FAIL; `sweep.log:356` | PASS (5.57s libtest; 6.01s command wall); `isolated-live_140_element_targeting__live_140_frame_filter_count_accurate.log` | Fold into [[iteration-262-daemon-live-target-never-promoted]]. Zero available frames for leaf1; expected five filtered candidates. Proxy54633, Firefox56876/debug54498. No failing-occurrence target counters were captured; a common cause with promotion is unproved. |
+| `live_144_session_hygiene_followup::live_144_full_page_no_duplicate_header` | FAIL; `sweep.log:363` | FAIL (2.72s libtest; 3.09s command wall); `isolated-live_144_session_hygiene_followup__live_144_full_page_no_duplicate_header.log` | Fold into [[iteration-257-firefox-155-drawsnapshot-dictionary-arg]]. Firefox155.0.1 rejected drawSnapshot argument4 as a dictionary TypeError; the misleading tall-page hint also recurred. Exact isolation reproduced the same signature. |
+| `live_144_session_hygiene_followup::live_144_bbc_cmp_dismissed` | FAIL; `sweep.log:368` | FAIL (5.37s libtest; 5.59s command wall); `isolated-live_144_session_hygiene_followup__live_144_bbc_cmp_dismissed.log` | File in [[iteration-271-bbc-consent-no-cmp-recurrence]]. consent accept returned consent_no_cmp, cmp/action null and no_cmp_detected after navigation succeeded. Exact isolation reproduced the same error. No failing-occurrence URL/document/CMP DOM was retained; neither a changed site nor readiness nor adapter failure is established. |
+| `live_145_error_envelope_completeness::live_145_click_element_not_found_unchanged` | FAIL; `sweep.log:373` | PASS (5.46s libtest; 5.64s command wall); `isolated-live_145_error_envelope_completeness__live_145_click_element_not_found_unchanged.log` | Fold into [[iteration-262-daemon-live-target-never-promoted]]. Promotion failed15008ms/48polls: Firefox58291/debug55380; daemon58392/proxy55550, uptime17s, target1/live0, network12, healthy56started/56finished dispatcher, in_flight0, noRPCowner, clients_dropped_on_write1. That counter is preserved without attributing the promotion cause to it. |
+| `live_164_block_and_daemon_autostart::live_164_block_url_pattern_rejects` | FAIL; `sweep.log:408` | PASS (8.06s libtest; 8.27s command wall); `isolated-live_164_block_and_daemon_autostart__live_164_block_url_pattern_rejects.log` | Fold into [[iteration-267-daemon-post-auth-timeout-recurrence]]. navigate https://example.com returned explicit post-auth Timeout. Firefox61711/debug57584, proxy57820. The log does not identify which repeated navigate call failed and has no attributable auth/request/dispatcher timing. It does not establish broken block-list enforcement or a common cause. |
+| `live_169_nav_verb_status_parity::live_169_nav_verbs_report_status_daemon` | FAIL; `sweep.log:415` | PASS (8.63s libtest; 8.86s command wall); `isolated-live_169_nav_verb_status_parity__live_169_nav_verbs_report_status_daemon.log` | Fold into [[iteration-203-live-sweep-watch-conditions-third-holder]]. reload returned status null/not_observed, ready_state complete and elapsed_ms21028 for local /b; expected200. Firefox63163/debug58577, proxy58738, fixture58749. Consistent with the documented events-budget/readystate-fallback path, but no failed-occurrence event/route trace establishes why it was reached. This is distinct from historical direct-route174 and from authenticated Timeout267. |
+| `live_61l::live_screenshot_full_page` | FAIL; `sweep.log:423` | FAIL (2.74s libtest; 2.96s command wall); `isolated-live_61l__live_screenshot_full_page.log` | Fold into [[iteration-257-firefox-155-drawsnapshot-dictionary-arg]]. Firefox155.0.1 rejected drawSnapshot argument4 as a dictionary TypeError; the misleading tall-page hint also recurred. Exact isolation reproduced the same signature. |
+| `live_61r_screenshot::live_screenshot_full_page` | FAIL; `sweep.log:428` | FAIL (2.80s libtest; 2.98s command wall); `isolated-live_61r_screenshot__live_screenshot_full_page.log` | Fold into [[iteration-257-firefox-155-drawsnapshot-dictionary-arg]]. Firefox155.0.1 rejected drawSnapshot argument4 as a dictionary TypeError; the misleading tall-page hint also recurred. Exact isolation reproduced the same signature. |
+| `live_92_screenshot_full_page::live_screenshot_full_page_md5_differs_from_viewport` | FAIL; `sweep.log:433` | FAIL (2.73s libtest; 2.93s command wall); `isolated-live_92_screenshot_full_page__live_screenshot_full_page_md5_differs_from_viewport.log` | Fold into [[iteration-257-firefox-155-drawsnapshot-dictionary-arg]]. Firefox155.0.1 rejected drawSnapshot argument4 as a dictionary TypeError; the misleading tall-page hint also recurred. Exact isolation reproduced the same signature. |
+| `live_92_screenshot_full_page::pre_fix_repro_screenshot_full_page_taller_than_viewport` | FAIL; `sweep.log:438` | FAIL (2.72s libtest; 2.93s command wall); `isolated-live_92_screenshot_full_page__pre_fix_repro_screenshot_full_page_taller_than_viewport.log` | Fold into [[iteration-257-firefox-155-drawsnapshot-dictionary-arg]]. Firefox155.0.1 rejected drawSnapshot argument4 as a dictionary TypeError; the misleading tall-page hint also recurred. Exact isolation reproduced the same signature. |
+| `live_screenshot_shim::live_screenshot_unchanged_after_shim` | FAIL; `sweep.log:443` | FAIL (2.81s libtest; 2.97s command wall); `isolated-live_screenshot_shim__live_screenshot_unchanged_after_shim.log` | Fold into [[iteration-257-firefox-155-drawsnapshot-dictionary-arg]]. Firefox155.0.1 rejected drawSnapshot argument4 as a dictionary TypeError; the misleading tall-page hint also recurred. Exact isolation reproduced the same signature. |
+
+### Acceptance evidence and remaining requirements
+
+- PartB's direct-launch marker test passed in this actual sweep; its original
+  marker criterion is now ticked. This proves the named raw-Command launch marker,
+  separately from generic profile-zero accounting.
+- PartC ThemeA now has actual raw-port6000 sweep evidence: both current
+  `live_96_profile_cleanup` tests passed. The deleted
+  `live_profiles_prune_removes_all_when_no_firefox_running` test was not resurrected
+  or claimed executed; the historical premise note remains visible.
+- Both chunk-A/chunk-B ACs remain unticked: their obsolete split was not run and
+  the deleted precondition has no current subject. **No plan**, with the recorded
+  superseded-premise reason; revisit only if a current chunk contract is introduced.
+- HN `live_61r_eval::live_eval_on_hn` passed, but no failing occurrence supplied a
+  READINESS/SITE diagnosis. ThemeB's mechanism AC and diagnosis task remain
+  unticked. **Fold** its next-failure diagnosis into [[iteration-260-live-owner-removal-race-in-daemon-stop]]
+  PartB, preserving the difference between a passing test and a named mechanism.
+- The `live_137` diagnosis task remains unticked in this historical plan; its
+  current **Fold** owner is [[iteration-262-daemon-live-target-never-promoted]],
+  which retains promotion, ready-target Sourcepoint action and zero-frame outcomes
+  separately. This sweep's passing137 test does not satisfy three consecutive sweeps.
+- The historical selector-diagnostics orphan question and twenty-cycle
+  `profile_skip_reason`/cleanup proof remain **Fold** items in260 PartsA/C;
+  current positive verdicts and zero live-owned profiles do not resolve them.
+- The all-parts clean-sweep AC remains unticked because this run failed.
+  **Fold** each measured failure as individually listed above;257's required own
+  closing sweep cannot retroactively turn this242 sweep green.
+
+No original acceptance requirement was reworded. The four remaining unticked
+242 ACs are the two chunks, the HN mechanism and the all-parts clean closing gate.

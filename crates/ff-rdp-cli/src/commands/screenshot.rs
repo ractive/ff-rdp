@@ -112,15 +112,25 @@ fn version_mismatch_message() -> String {
 /// headless mode, which is false whenever the session already is headless (the
 /// normal case).  Both claims sent users chasing the wrong problem, so this
 /// message states only what is known.
-fn capture_failure_message() -> String {
+fn capture_failure_message(reason: &str) -> String {
     let observed = match crate::connection_meta::remembered_version() {
         Some(v) => format!("{v}"),
         None => "unknown".to_owned(),
     };
+    // A TypeError (including argument conversion) says nothing about page size.
+    // Restrict the suggestion to explicit dimension-limit diagnostics; generic
+    // failures such as out-of-memory or NS_ERROR_FAILURE are not size evidence.
+    let size_hint = if !reason.contains("TypeError")
+        && (reason.contains("exceeds the maximum supported size")
+            || reason.contains("exceeds the maximum canvas size"))
+    {
+        "Very tall pages can exceed the renderer's limits — retry without `--full-page`. "
+    } else {
+        ""
+    };
     format!(
         "Firefox {observed} rendered no image for this capture. \
-         Very tall pages can exceed the renderer's limits — retry without \
-         `--full-page`, or run `ff-rdp doctor` for the full compatibility \
+         {size_hint}Run `ff-rdp doctor` for the full compatibility \
          report (minimum supported: {COMPATIBLE_FIREFOX_MIN})."
     )
 }
@@ -602,8 +612,9 @@ fn try_two_step_screenshot(
     // iter-92 Theme A: on FF 151 the root-form `screenshotActor.capture` silently
     // returns a viewport-sized PNG even when `fullpage:true` and an oversized
     // `rect` are sent (the regression reported in dogfooding-session-59).  The
-    // `BrowsingContext.drawSnapshot` fallback honours the `fullViewport` flag
-    // reliably, so route `--full-page` through it unconditionally.
+    // `WindowGlobalParent.drawSnapshot` fallback honours an explicit document
+    // rect, so route `--full-page` through it unconditionally. This bypass is
+    // not evidence that the primary actor failed on Firefox 155.
     if full_page {
         tracing::debug!(
             target: "ff_rdp_cli::screenshot",
@@ -748,9 +759,9 @@ fn unfreeze_fixed_and_sticky_js() -> String {
 /// path is unavailable (Firefox 151 regression) or when `screenshotActor` is absent
 /// from `getRoot`.
 ///
-/// `full_page` is forwarded to `drawSnapshot` which interprets it as "capture the
-/// full scrollable area" — the core implementation already passes the flag through
-/// to the JS call.  The previous hard-rejection of `full_page=true` was the
+/// `full_page` selects an explicit document rectangle and resets fixed-element
+/// scroll positioning; argument 4 does not select the capture extent.
+/// The previous hard-rejection of `full_page=true` was the
 /// root cause of the iter-92 Theme A regression where `--full-page` silently
 /// produced a viewport-sized PNG instead of an error.
 ///
@@ -864,7 +875,7 @@ fn screenshot_via_process_drawsnapshot_fallback(
         // was found and used.
         AppError::User(format!(
             "screenshot: process-drawsnapshot fallback failed ({e}) — {}",
-            capture_failure_message()
+            capture_failure_message(&e.to_string())
         ))
     })?;
 
@@ -935,7 +946,7 @@ mod tests {
     /// a path only reached after an actor was found and called.
     #[test]
     fn capture_failure_message_states_the_real_problem() {
-        let msg = capture_failure_message();
+        let msg = capture_failure_message("rendering failed");
         assert!(
             msg.contains("rendered no image for this capture"),
             "must name the actual failure: {msg}"
@@ -952,6 +963,31 @@ mod tests {
             msg.contains("ff-rdp doctor"),
             "must keep pointing at the diagnostic command: {msg}"
         );
+    }
+
+    #[test]
+    fn capture_size_hint_requires_explicit_size_evidence_and_excludes_typeerrors() {
+        for reason in [
+            "TypeError: WindowGlobalParent.drawSnapshot: Argument 4 can't be converted to a dictionary.",
+            "TypeError: exceeds the maximum canvas size",
+            "NS_ERROR_FAILURE",
+            "out of memory",
+            "rendering failed",
+        ] {
+            assert!(
+                !capture_failure_message(reason).contains("Very tall pages"),
+                "{reason}"
+            );
+        }
+        for reason in [
+            "Error: snapshot exceeds the maximum supported size",
+            "Error: image exceeds the maximum canvas size",
+        ] {
+            assert!(
+                capture_failure_message(reason).contains("Very tall pages"),
+                "{reason}"
+            );
+        }
     }
 
     /// The CLI's fallback trigger must fire on the error

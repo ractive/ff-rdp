@@ -106,7 +106,7 @@ for exactly this reason.
   the two-step FF149+ capture protocol to work. The spec dict should declare
   these fields so out-of-tree clients can send them without spec-drift.
 
-### SD-2 — screenshotActor.capture fails to load capture-screenshot.js (FF151, still repros on FF152)
+### SD-2 — historical screenshotActor module-load failure (FF151–152; fixed in FF153)
 
 - **Site**: `screenshot.rs:255` (`screenshot_via_process_drawsnapshot`).
 - **Component**: DevTools :: Framework / Server.
@@ -120,8 +120,12 @@ for exactly this reason.
   screenshot_via_process_drawsnapshot`. The workaround (parent-process
   `BrowsingContext.drawSnapshot` eval) is therefore still required; a
   version-gate removing it on FF152 would break screenshots. The workaround
-  must stay until Mozilla fixes the module-load path, at which point it is
-  gated behind a version check or removed.
+  remains relevant to those older builds. Iteration 135 established that
+  [bug 2043900](https://bugzilla.mozilla.org/show_bug.cgi?id=2043900) fixed
+  the module-load path in Firefox 153. Iteration 257 retains the separate
+  full-page bypass for the historical viewport clamp and corrects argument 4
+  for Firefox 155's [bug 2058388](https://bugzilla.mozilla.org/show_bug.cgi?id=2058388).
+  Bug 2058388 does not track the earlier module-loading failure.
 
 ### SD-3 — WindowGlobalTarget.screenshot implemented server-side but undeclared in spec
 
@@ -157,7 +161,7 @@ closed-in: iter-61v
 
 iter-61r reworked `screenshot --full-page` to call the root-scoped `screenshot`
 actor with `fullpage:true, rect, snapshotScale, browsingContextID` (the
-4th-positional `fullpage` to `drawSnapshot` is the actual switch).  iter-61v
+explicit rectangle selects capture extent; argument 4 controls scroll positioning). iter-61v
 added the live regression `live_screenshot_full_page_dpr2` asserting
 PNG height ≥ `scrollHeight × DPR` on a ≥5000 px synthetic page.
 

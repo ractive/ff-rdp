@@ -20,10 +20,9 @@ title: "Flow: Take a screenshot"
 
 # Flow: Take a (full-page) screenshot
 
-**Critical lookup for ff-rdp `--full-page` bug.** This file documents the
-DevTools two-actor screenshot path *exactly* as Firefox itself implements it.
-If your screenshot is just-the-viewport when you asked for fullpage, you
-likely skipped step 3.
+This file documents the DevTools two-actor screenshot path and ff-rdp's
+parent-process fallback. The release-qualified signature below supersedes
+the older boolean-only description (iteration 257, 2026-09-14).
 
 ## Two screenshot subsystems in Firefox
 
@@ -63,7 +62,7 @@ For `fullpage: true`, lines 85-103 compute the actual rect using
 `window.innerWidth + window.scrollMaxX - window.scrollMinX - scrollbarWidth`
 (and the symmetric Y form). It also returns `windowDpr` and `windowZoom`.
 
-**This is the step ff-rdp is missing.** If you don't call this, you don't
+Without this step or an equivalent document measurement, you don't
 know the full-page dimensions, and the parent-process actor at step 3 will
 default `rect = null`, which `drawSnapshot` interprets as "current viewport".
 
@@ -113,8 +112,8 @@ Wire packet:
 Implementation: `devtools/server/actors/utils/capture-screenshot.js:73-182`.
 
 The actor calls
-[`browsingContext.currentWindowGlobal.drawSnapshot(rect, ratio, "rgb(255,255,255)", fullpage)`](https://searchfox.org/mozilla-central/search?q=drawSnapshot)
-at line 114-119, then draws the resulting `ImageBitmap` to a canvas, then
+[`browsingContext.currentWindowGlobal.drawSnapshot(rect, ratio, "rgb(255,255,255)", {resetScrollPosition: args.fullpage})`](https://raw.githubusercontent.com/mozilla-firefox/firefox/FIREFOX_155_0_1_RELEASE/devtools/server/actors/utils/capture-screenshot.js)
+at Firefox 155.0.1 lines 115–120, then draws the resulting `ImageBitmap` to a canvas, then
 `canvas.toDataURL("image/png", "")` and returns:
 
 ```json
@@ -135,9 +134,9 @@ Note `filename` is auto-suffixed with `-fullpage` at line 78-80 of
 | Wrong browsing context (e.g. screenshot of about:blank) | Forgot `browsingContextID` in args. |
 | Got truncated fullpage | `clampDimensionsIfNeeded` in `capture-screenshot.js:87` capped the dimensions. `messages` carries `screenshotTruncationWarning` in this case. |
 
-## ff-rdp fix sketch
+## Standard actor sequence
 
-Our `screenshot --full-page` command should:
+The standard actor sequence is:
 
 1. `getTarget` on the chosen tab descriptor → form contains
    `screenshotContentActor` and `browsingContextID`.
@@ -147,6 +146,58 @@ Our `screenshot --full-page` command should:
 4. Send `capture` to the **root** `screenshot` actor with
    `{fullpage:true, rect, snapshotScale, browsingContextID, filename, dpr}`.
 5. Decode `data` (a `data:image/png;base64,...` URL) and write to disk.
+
+## Firefox 155 signature and ff-rdp compatibility (iteration 257)
+
+The actual path is `dom/chrome-webidl/WindowGlobalActors.webidl`, not
+`dom/webidl/WindowGlobalActors.webidl`. Verified release-tagged source:
+
+- [Firefox 120.0](https://raw.githubusercontent.com/mozilla-firefox/firefox/FIREFOX_120_0_RELEASE/dom/chrome-webidl/WindowGlobalActors.webidl), lines 155–158, and
+  [154.0.1](https://raw.githubusercontent.com/mozilla-firefox/firefox/FIREFOX_154_0_1_RELEASE/dom/chrome-webidl/WindowGlobalActors.webidl), lines 215–218:
+  argument 4 is `optional boolean resetScrollPosition = false`.
+- [Firefox 155.0.1](https://raw.githubusercontent.com/mozilla-firefox/firefox/FIREFOX_155_0_1_RELEASE/dom/chrome-webidl/WindowGlobalActors.webidl), lines 90–102 and 227–230:
+  argument 4 is `optional DrawSnapshotOptions options = {}`. The dictionary
+  members are `boolean resetScrollPosition = false` and `boolean drawView = false`.
+  Firefox 155.0 has the same declaration.
+
+[Bug 2058388](https://bugzilla.mozilla.org/show_bug.cgi?id=2058388), final landed
+[commit 78f289876b9c2022059c951097c71713142c67a0](https://github.com/mozilla-firefox/firefox/commit/78f289876b9c2022059c951097c71713142c67a0),
+changed this signature. The first stable release is **155.0**. This is separate
+from the historical Firefox 151 actor-module loading problem (fixed on 153 by
+bug 2043900). The local July 8 Firefox checkout is not a 155 source tree.
+
+With a non-null rectangle and `drawView: false`, `resetScrollPosition` temporarily
+resets the root scroll frame for fixed-element positioning. `drawView: true`
+instead uses viewport-relative coordinates and includes root scrollbars. Null
+rectangles always render the visible viewport. ff-rdp keeps `drawView: false`
+for document captures, passes a full-document `DOMRect`, and retains null-rect
+viewport capture, scale 1, and its fixed/sticky freeze/restore cleanup.
+
+The fallback tries the boolean first, preserving both values on Firefox 120–154.
+Only the exact `TypeError: WindowGlobalParent.drawSnapshot: Argument 4 can't be
+converted to a dictionary.` permits one retry with
+`{resetScrollPosition: <same boolean>, drawView: false}`. Conversion failed
+before rendering, so this retry does not duplicate a completed capture. Other
+errors and the retry's own error propagate. A dictionary-first try/catch would
+silently coerce an object to `true` on old WebIDL and cannot detect support.
+
+The CLI deliberately bypasses `ScreenshotActor::capture` for every full-page
+request, retaining iteration 92's Firefox 151 viewport-clamp workaround. Thus
+the seven Firefox 155 failures do not prove a primary-actor failure: the actor
+was never called. Firefox 155's upstream primary helper already uses the new
+dictionary. The iteration257 direct primary-actor probe on Firefox155.0.1
+returned a decoded1366×4000 PNG after `prepareCapture(fullpage=true)` returned
+that same rectangle: no primary failure occurred in that measurement.
+
+The checked-in dogfood script also captured viewport1366×683 and fullpage1366×4000
+on both the absolute official120.0 runtime and installed155.0.1, preserving
+scrollY500, viewport dimensions and fixed-header style. The new direct-core
+live guard passes on155, and disabling the retry makes both its unit test and
+live guard fail with the dictionary TypeError. All seven original full-page
+regressions passed in iteration257's own dual-gate sweep (342pass/2unrelated
+consent failures across344 exact names). See
+[[iteration-257-firefox-155-drawsnapshot-dictionary-arg]] for retained artifacts,
+source provenance and explicit unrelated-failure dispositions.
 
 ## Backward-compat note
 
