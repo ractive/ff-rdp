@@ -85,7 +85,7 @@ Run `chrome-devtools-axi --help` for available commands and usage.
 
 Its SHA-256 is `576f9835b62ad24111d2d6cbc78bd1b58ac2d1e6546570e90a7c0a0f0578e12a`.
 These append paragraphs supplement Claude Code's default system prompt. Historical
-CLI **2.1.241** differs from the currently verified **2.1.259**, so exact default
+CLI **2.1.241** differs from the currently verified **2.1.270** (2026-09-13), so exact default
 prompt equivalence cannot be claimed. Agent and judge request
 `claude-sonnet-4-6`; no model fallback is allowed. Actual `modelUsage` can include
 auxiliary Haiku usage and must be reported honestly.
@@ -113,9 +113,91 @@ is bounded so such a process cannot hang the recorder's cancellation reporting.
 
 The stale inherited `ANTHROPIC_API_KEY` is omitted only for the child process and
 its descendants, retaining the existing cached account. No login, account switch,
-global environment, settings or model changes occur. `--setting-sources ""`
-disables baseline hooks/settings; a later ambient payload versus installed-hook
-treatment must be separate and labeled explicitly. It is not implemented here.
+global environment, account or model changes occur. `--setting-sources ""`
+disables baseline hooks/settings. The separate treatment below adds only a private
+explicit settings file to agent invocations.
+
+## Ambient measurement: private SessionStart
+
+The final iteration 256 design is **42 unchanged baseline runs + 42 separately
+labeled SessionStart runs = 84 runs**, with the same 14 tasks and three repeats in
+each condition. The earlier 255 six-run matrix and capability/smoke calls are
+separate. Run each condition once after the supervisor's reviewed clean checkpoint:
+
+```sh
+tools/axi-bench/run.sh --label iteration-256-baseline --output /tmp/iteration-256-baseline
+tools/axi-bench/run.sh --treatment session-start --label iteration-256-session-start \
+  --output /tmp/iteration-256-session-start
+```
+
+The selected treatment loads a **real SessionStart hook**, through private
+`--settings` while retaining `--setting-sources ""`. No payload is appended in
+its place. `prepare-ambient.sh` runs the exact product binary's
+`install-hook --claude --project` in a newly created private Git project. It
+retains and validates the installed shape/command (`ff-rdp home --hook`), then
+each agent gets a separate settings file whose command wraps that same binary
+and arguments with `session-start.sh` for recording. Paths are passed as shell
+quoted arguments, not evaluated as generated code. The hook checks that PATH's
+first ff-rdp is the intended binary. The judge never receives treatment settings.
+Neither user's settings nor the product checkout's settings are installed/edited.
+
+On 2026-09-13, one bounded Sonnet capability probe on CLI **2.1.270** verified
+actual execution: the `hook_started`/`hook_response` events named SessionStart,
+the successful runtime response matched the recorder's captured stdout, and the
+model quoted its first line and recognized the reachable private Firefox. Total
+list cost was **$0.0397914** (Sonnet $0.0388014, auxiliary Haiku $0.00099); recorder
+and owned-browser cleanup both exited zero. It was a no-tools delivery probe,
+**zero matrix runs**, with its own task prompt. The baseline append paragraph
+remained byte-identical. This proves delivery capability, not benchmark adoption.
+Evidence is retained in the supervisor's
+`.git/ralph-loop/20260912-validation-efficiency/iter256-ambient-implementation/runtime-probe/`.
+
+Per invocation, `argv.json` is upstream's original argv and `delivered-argv.json`
+records the actual child argv. `delivery.json` names condition and role. The
+original/delivered append paragraph and hashes, installed/actual settings and
+hashes, hook script hash, hook input/output/stderr/exit, binary identity, and
+runtime hook events distinguish installed-hook execution from injected text.
+An absent/failed hook, empty payload, or missing matching runtime success response
+makes the treatment recorder fail (65 unless another failure already occurred),
+even if upstream grades the answer as passing. Keep these rows in the denominator
+and report their failure; never silently replace them with successful reruns.
+
+`first-tool.json` uses the first **top-level assistant `tool_use` block** in stream
+order and retains its ID, name and command. It excludes system/hook events,
+stream deltas, and nested-agent tools. A first Read or other unrelated tool stays
+`other`, even if a later Bash command browses successfully. Categories are `--help`,
+`browser command`, `bare ff-rdp`, `other`, and `missing`; terminal-result absence
+and error flags stay explicit alongside invocation exits. Browser-command matching
+is deliberately conservative: only a direct `ff-rdp` invocation with simple,
+unquoted tokens and an actual CLI browser subcommand is classified automatically.
+The names and nested paths come from `cli/args.rs`, checked against this binary's
+help; verbs such as `fill`, `press`, `page`, and `tab` are not CLI commands.
+Recognized command paths ending in `--help`/`-h`, and top-level or nested `help`
+forms, are `--help` before browser matching. Help tokens amid other arguments stay
+`other`, as do shell wrappers, global flags before the subcommand, all pipelines,
+compound commands, quoted arguments, expansion, redirection and unknown verbs.
+This is a lexical classification of the attempted first decision, not proof of
+valid arguments or successful browser execution. **Adjudicate every `other`,
+missing and failed row from its raw trace before publishing final percentages**;
+also check the first command's own result, since a later successful terminal
+result does not erase its usage/runtime error. Retain the automatic category,
+original ID/name/command, adjudicated category and supporting trace evidence.
+Judge first calls and hook/lifecycle commands are excluded from adoption metrics.
+Report browser-command-first shares on each condition's full 42-run denominator,
+with all category counts and missing/error rows; a failed outcome is not a clean
+first-browser result. Preserve the original historical tables and unmet targets.
+
+The extra context tests ambient discoverability under a paragraph that still
+explicitly asks the agent to run `ff-rdp --help`. Neither that instruction nor the
+default CLI prompt drift is hidden: this is the original benchmark's treatment
+comparison, not a claim about an otherwise identical 2026-08-29 model runtime.
+
+Zero-cost delivery regressions and corresponding mutations:
+
+```sh
+bash tools/axi-bench/test-ambient.sh
+bash tools/axi-bench/test-ambient-mutations.sh
+```
 
 ## Ownership and evidence
 

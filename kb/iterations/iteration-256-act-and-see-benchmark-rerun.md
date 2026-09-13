@@ -24,6 +24,7 @@ takeover_sequencing_2026_09_09: >-
 takeover_reconciliation_252: "2026-09-09, reconciliation after252: historical runner and task sources recovered from original Claude transcripts; runner SHA25611659d64e71fa116744f6b837d0b8b246c8623eb0f3cf796a2342a7567a24a8b matches pinned upstream d28c5e79aa7ee7a59a386fc34125f8cd1470fbeb. Use agent AND judge claude-sonnet-4-6. Actual same-model probes twice failed HTTP401 invalid API key before tokens, unlike the historical organization error. ThemeA implementation/export can proceed; real clean-checkout comparison and remaining measurement ACs cannot be claimed satisfied without successful account capability. Keep baseline prompt unchanged and label the separate ambient payload/hook treatment precisely; preserve all historical completed measurements and unmet targets."
 benchmark_auth_resolution_252: "2026-09-09: the two earlier HTTP401 probes are retained as history. A third exact same-model probe succeeded with CAPABILITY_OK, exit0, claude-sonnet-4-6 modelUsage and 900ms duration, using the already cached claude.ai Team session with only the stale ANTHROPIC_API_KEY omitted per process. No login, global configuration or model/prompt change. Use that scoped environment for actual harness runs. This resolves account capability only; actual benchmark acceptance criteria remain unticked until measured. Evidence: .git/ralph-loop/20260909-takeover/harness-prep/auth-resolution.md and capability-cached-session.stdout."
 theme_a_preparation_2026_09_13: "Theme A is prepared on the dedicated 256 branch at base f18a876866fd5fa047d4ca7e3a71dd88018b8824. Preserve the existing prepare/verify/export then 255 then final 256 sequence. Historical task wording remains unchanged: actual inventory is 14 task definitions x 3 repetitions = 42 runs, not 126. Final clean-checkout comparison and ambient-delivery ACs remain pending; no acceptance is inferred from harness smoke. Actual agent and judge modelUsage, list cost, Claude CLI 2.1.259 versus historical 2.1.241, both source revisions and binary hash are required provenance."
+dogfood_script: iteration-256-act-and-see-benchmark-rerun.dogfood.sh
 ---
 
 # Iteration 256: re-measure the axi benchmark after act-and-see
@@ -185,6 +186,56 @@ full tables and trajectory analysis in [[axi-benchmark-comparison]] § "Re-measu
   `lifecycle.ts` diff, all still only in a session scratchpad.
 
 ## Design notes
+
+### Final measurement preparation, 2026-09-13
+
+255 merged at `01f8c28244cc90dece74a8cfcbf7053662ea60e7`; its six measurements
+used the immutable 256 Theme A export at `5786329668c95479a4b91710764c7cee0e782f4a`.
+The published 256 branch integrates that new main without rewriting the export or
+published history. Its baseline runner, task prompts, append paragraph (including
+newline) and requested agent/judge `claude-sonnet-4-6` remain unchanged.
+
+Before final measurements, the supervisor selected **14 tasks × 3 repetitions =
+42 baseline runs and the same 42 runs with a separately labeled ambient
+treatment**, totaling **84 final 256 runs**, not 126. Neither condition has run in
+this preparation phase. Prior 255 runs and all diagnostic smokes/probes remain
+separate; the original historical outcomes and acceptance wording above stand.
+
+Theme D's selected mechanism is a **real private SessionStart hook**, not a
+payload appended to the prompt. The harness obtains the settings shape and command
+from the exact binary's `install-hook --claude --project` in a new private project,
+then adds an instrumented per-agent settings file with explicit `--settings` while
+keeping default `--setting-sources ""`. The judge remains untreated and the
+append paragraph is identical in both conditions. Nothing is installed in the
+user's configuration or this checkout. See `tools/axi-bench/README.md` for recorded
+identities, the conservative first-actual-tool classifier and failure semantics.
+
+The 2026-09-13 independent review found that subcommand help and invented verbs
+were incorrectly counted as browser-first. Repair batch 2 recognizes actual
+command-path help before browser matching, restricts positives to CLI names,
+and retains ambiguous shell/argument syntax as `other`. Raw-trace adjudication
+must resolve those rows and the first command's own errors before final shares;
+a later successful terminal result cannot repair an invalid first decision.
+Regression/mutation evidence is retained in
+`.git/ralph-loop/20260912-validation-efficiency/iter256-repair2/`.
+No final measurements or historical outcomes changed in this repair.
+
+One separately labeled, bounded no-tools delivery probe on actual Claude CLI
+**2.1.270** succeeded: SessionStart runtime events confirmed the captured hook
+stdout, and the requested Sonnet model quoted its first line and recognized the
+owned reachable Firefox. Probe/cleanup exits were 0/0; list cost **$0.0397914**
+includes Sonnet $0.0388014 and auxiliary Haiku $0.00099. This proves hook delivery
+under disabled default sources, not any adoption or task outcome. CLI 2.1.270
+differs from historical 2.1.241, so default-system-prompt identity is not claimed.
+Raw evidence is under
+`.git/ralph-loop/20260912-validation-efficiency/iter256-ambient-implementation/runtime-probe/`.
+
+The final baseline/treatment tables, per-run first-call shares, extraction/flag
+adoption and default recommendation are pending the reviewed clean checkpoint
+and actual 84-run execution. The original ambient AC and harness landing/clean
+comparison boxes stay unticked until their full requirements are satisfied. The
+new checked-in dogfood script exercises this checkout's live Wikipedia
+Ada → Babbage path and trimmed hook view; it does not claim matrix coverage.
 
 ### Theme A preparation, 2026-09-13
 

@@ -4,6 +4,7 @@ set -eu
 root="$(cd "$(dirname "$0")" && pwd)"
 scratch="${FF_RDP_BENCH_MUTATION_OUTPUT:-$(mktemp -d -t ff-rdp-bench-mutations-XXXXXX)}"
 mkdir -p "$scratch"
+cp "$root/first-tool.jq" "$scratch/first-tool.jq"
 echo "Mutation evidence: $scratch"
 awk '
   /tee "\$audit\/stdout.jsonl" < "\$audit\/stream.pipe" &/ {

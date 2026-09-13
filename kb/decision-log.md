@@ -2379,3 +2379,53 @@ already network-gated, and five of the fourteen files making genuine *content* a
 `crates/ff-rdp-cli/src/commands/profiles.rs`, `crates/ff-rdp-cli/src/daemon/client.rs`,
 `crates/ff-rdp-cli/tests/common/mod.rs`, and the live tier's launch sites.
 Extends DEC-022's ownership-marker line; does not supersede any earlier decision.
+
+## DEC-055: fact links are additive, and formation queries use a bounded vocabulary
+
+**Date**: 2026-09-13. **Iteration**: [[iteration-255-infobox-facts-refs-and-query-matching]].
+Recorded before product implementation.
+
+The published `facts` is an array of `{key: string, value: string}` rows. Preserve
+those strings, normalization, deduplication, row order and collection caps. Add an
+optional `links` array to each retained row, with `{name, href, ref?}` for each
+retained anchor in the value source, in DOM order and within the independent
+budgets below. Links from multiple definition-list values share those budgets.
+The anchor itself is included when microdata lives on an anchor.
+Empty link arrays are omitted; existing fact text is unchanged. Links use the
+existing unique CSS-selector resolver and daemon allocation/registration generation
+checks, independently of the interactive cap. Direct connections and failed
+allocation/registration retain names/hrefs but publish no unusable refs. Private
+resolvers are stripped on every route. Text output retains `key: value` and prints
+indented link lines, with handles only when registered.
+
+General literal substring and regex query semantics stay unchanged. Fact keys get
+one deliberately bounded vocabulary: a literal query consisting solely of one or
+more whitespace-separated words from `formed`, `founded`, `formation` can also
+match a whole key token `formation`, `formed`, or `founded` (case insensitive).
+This is an explicit founding-date vocabulary, not general stemming: `Founder`,
+`Foundation`, `Information`, `Format`, `Platform`, `Stable release`, `Genre`, and
+`Dissolved` are negative controls. Mixed queries such as `not formed` and regex
+queries get no expansion. Normal literal matches still work for every key/value.
+In particular, literal `formation` continues to match the substring in
+`Information`; the negative controls forbid additional near-matches, not existing
+literal substring matches.
+
+An active query additionally reports `query_fact_keys` (the exact collected row
+keys considered, in order) and `query_facts_truncated` (whether the collector
+omitted rows). These describe bounded collected candidates, never full-page
+coverage, including when `--page-chars 0` prevents a text fallback. Text output
+prints these candidates on a zero match. No-match hints retain the existing
+rendered-text fallback semantics. Original ACs and benchmark records remain
+unchanged; the six paid measurements follow a reviewed clean source checkpoint.
+
+**Review repair, 2026-09-13:** fact links have independent collection budgets:
+eight per retained row, 32 across all retained rows, and 8,192 UTF-16 code units
+across their normalized names, original hrefs and private selectors. Each name
+is at most 256 code units; each href and selector at most 2,048. These small
+summary budgets apply before serialization and daemon registration, in document
+order across all source shapes. Oversized links are omitted whole, never given
+shortened destinations or resolvers; later links can still fit. Any omission
+sets that row's `links_truncated: true`, even when no links fit, and text output
+says that some fact links were omitted. The key/value strings and row caps remain
+unchanged. Exact-limit links remain actionable. Query filtering runs afterward,
+so it cannot recover links omitted by the bounded collection.

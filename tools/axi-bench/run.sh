@@ -9,6 +9,7 @@ output=""
 tasks=""
 repeat=3
 label=baseline
+treatment=baseline
 prepare=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -19,13 +20,18 @@ while [ "$#" -gt 0 ]; do
     --task) tasks="$2"; shift 2;;
     --repeat) repeat="$2"; shift 2;;
     --label) label="$2"; shift 2;;
+    --treatment) treatment="$2"; shift 2;;
     --prepare-only) prepare=1; shift;;
-    --help) echo 'run.sh --output NEW_DIRECTORY [--source-root CHECKOUT --revision FULL_SHA] [--harness-revision EXPORT_SHA] [--task ID,ID --repeat N --label LABEL] [--prepare-only]'; exit 0;;
+    --help) echo 'run.sh --output NEW_DIRECTORY [--source-root CHECKOUT --revision FULL_SHA] [--harness-revision EXPORT_SHA] [--task ID,ID --repeat N --label LABEL] [--treatment baseline|session-start] [--prepare-only]'; exit 0;;
     *) echo "Unknown argument: $1" >&2; exit 2;;
   esac
 done
 [ -n "$output" ] || { echo '--output is required (must not exist)' >&2; exit 2; }
 case "$repeat" in ''|*[!0-9]*|0) echo 'repeat must be positive' >&2; exit 2;; esac
+case "$treatment" in baseline|session-start) ;; *) echo 'Unknown treatment' >&2; exit 2;; esac
+if [ "$treatment" != baseline ] && [ "$label" = baseline ]; then
+  echo 'A treatment requires a separate non-baseline --label' >&2; exit 2
+fi
 for dep in git cargo jq pnpm node claude lsof shasum; do command -v "$dep" >/dev/null; done
 source_root="$(cd -P "$source_root" && pwd)"
 head="$(git -C "$source_root" rev-parse HEAD)"
@@ -36,6 +42,8 @@ if lsof -nP -iTCP:6000 -sTCP:LISTEN >/dev/null 2>&1; then echo 'Refusing occupie
 mkdir "$output"
 output="$(cd "$output" && pwd)"
 export FF_RDP_BENCH_OUTPUT="$output"
+export FF_RDP_BENCH_TREATMENT="$treatment"
+export FF_RDP_BENCH_HARNESS="$harness"
 export FF_RDP_BENCH_SOURCE_ROOT="$source_root"
 FF_RDP_BENCH_CLAUDE="$(command -v claude)"
 export FF_RDP_BENCH_CLAUDE
@@ -67,6 +75,9 @@ ln -s "$harness/ffrdp-bench.sh" "$work/bin/ffrdp-bench.sh"
 ln -s "$harness/claude-record.sh" "$work/bin/claude"
 export PATH="$CARGO_TARGET_DIR/debug:$work/bin:$PATH"
 [ "$(command -v ff-rdp)" = "$FF_RDP_BENCH_BINARY" ]
+if [ "$treatment" = session-start ]; then
+  "$harness/prepare-ambient.sh" "$FF_RDP_BENCH_BINARY" "$output/ambient"
+fi
 # This exact YAML block scalar includes its trailing newline.
 export FF_RDP_BENCH_PROMPT_HASH=758dfb37452f8099cfb46460ee417ccc73839cf0ee3553f7da0558229be49c8b
 harness_revision="${harness_revision:-$(git -C "$harness" rev-parse HEAD)}"
@@ -80,14 +91,18 @@ jq -n --arg harness_revision "$harness_revision" --arg product_revision "$revisi
   --arg firefox_version "$("$FF_RDP_BENCH_FIREFOX" --version)" \
   --arg node_version "$(node --version)" --arg pnpm_version "$(pnpm --version)" \
   --arg prompt_sha256 "$FF_RDP_BENCH_PROMPT_HASH" --arg label "$label" \
+  --arg treatment "$treatment" \
   --arg task "$tasks" --argjson repeat "$repeat" \
-  '{$harness_revision,$product_revision,$source_root,$binary,$binary_sha256,$version,$cli_version,$firefox_version,$node_version,$pnpm_version,$prompt_sha256,$label,$task,$repeat,model:"claude-sonnet-4-6",judge_model:"claude-sonnet-4-6",historical_cli_version:"2.1.241",upstream_revision:"d28c5e79aa7ee7a59a386fc34125f8cd1470fbeb",credential_source:"existing cached account; ANTHROPIC_API_KEY omitted only for child",hook_delivery:"disabled baseline",judge_usage_instrumentation:"JSON output converted back to original text interface"}' > "$output/provenance.json"
+  '{$harness_revision,$product_revision,$source_root,$binary,$binary_sha256,$version,$cli_version,$firefox_version,$node_version,$pnpm_version,$prompt_sha256,$label,$treatment,$task,$repeat,model:"claude-sonnet-4-6",judge_model:"claude-sonnet-4-6",historical_cli_version:"2.1.241",upstream_revision:"d28c5e79aa7ee7a59a386fc34125f8cd1470fbeb",credential_source:"existing cached account; ANTHROPIC_API_KEY omitted only for child",hook_delivery:(if $treatment == "baseline" then "disabled baseline" else "private --settings SessionStart, agent only; unmodified append paragraph" end),judge_usage_instrumentation:"JSON output converted back to original text interface"}' > "$output/provenance.json"
 cd "$work/axi"
 jq --arg effective_pnpm_version "$(pnpm --version)" '. + {$effective_pnpm_version}' "$output/provenance.json" > "$output/provenance.tmp"
 mv "$output/provenance.tmp" "$output/provenance.json"
 pnpm install --frozen-lockfile > "$output/pnpm-install.log" 2>&1
 cd bench-browser
 pnpm exec tsc --noEmit > "$output/typecheck.log" 2>&1
+cp config/tasks.yaml "$output/tasks.yaml"
+cp config/conditions.yaml "$output/conditions.yaml"
+shasum -a 256 src/runner.ts config/tasks.yaml config/conditions.yaml > "$output/upstream-inputs.sha256"
 args=(matrix --condition ff-rdp --model claude-sonnet-4-6 --repeat "$repeat")
 [ -z "$tasks" ] || args+=(--task "$tasks")
 # Validate all task names and the actual denominator before any paid invocation.

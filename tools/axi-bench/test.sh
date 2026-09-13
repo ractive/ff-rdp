@@ -101,3 +101,4 @@ echo 'PASS model drift refused'
 
 bash "$root/tools/axi-bench/test-recorder.sh"
 bash "$root/tools/axi-bench/test-cleanup.sh"
+bash "$root/tools/axi-bench/test-ambient.sh"
