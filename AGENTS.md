@@ -17,8 +17,19 @@ The supervisor owns queue advancement and verified merges. Use fresh implementer
 and independent read-only reviewers, one writer in the checkout, and no messages
 to running workflow agents. Resolve plan 255's dependency on plan 256 Theme A
 before implementation while preserving one iteration per PR and the original ACs.
-Reconcile all upcoming pending plans, including those outside this execution range,
-after each iteration without executing the broader backlog.
+The owner revised the workflow on 2026-09-14: reconcile affected/new/changed
+pending plans after each iteration, and the full inventory at batch start and end.
+Verify each next plan’s prerequisites before starting; do not execute the broader
+backlog. This replaces the earlier full per-iteration reconciliation requirement.
+
+Use compact fresh agent contexts and one initial review of the finished code, docs
+and evidence. Review behavioral repairs in fresh scoped contexts. The supervisor
+verifies routine completion/status/evidence-reference edits without another review
+agent. Reuse recorded passing validation when relevant inputs are unchanged;
+preserve ordered commit gates, required live sweeps and exact-head green CI.
+Capture command/cleanup evidence as it happens, keep handoffs compact, and record
+time, available actual token usage, review rounds and repeated checks to assess
+the next three selected iterations. Missing token data stays explicitly unavailable.
 
 Checkpoint recoverable progress frequently, but never commit failing code:
 `cargo fmt`, strict workspace clippy, and workspace tests must pass in that order.

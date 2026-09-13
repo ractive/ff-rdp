@@ -175,3 +175,67 @@ longer applies. A tick records that somebody looked — never that a condition w
   exposure from the real sweep
 - [[iteration-191-stale-launch-record-recycled-pid-kill]] — the fix whose registry-path coverage
   gap was 192's condition 12, closed there
+
+
+## Owed242 sweep reconciliation and new reload watch, 2026-09-14
+
+Sweep343=331pass+12fail at `19f4e236a70399c2984e6d46eb15bdac37a55181` reconciles every compiled
+ignored name across all five tiers, with zero skips/reclassifications/profile
+leaks. Condition6's named145 click-not-found test failed with the measured
+promotion signature; its current owner is262 alongside a distinct140 zero-frame
+recurrence. The137 consent test passed, so no137 recurrence is claimed here.
+New named164 post-auth Timeout is filed under267; no pre-auth268 recurrence.
+BBC144 `consent_no_cmp` recurred in exact isolation and has its own proposed
+[[iteration-271-bbc-consent-no-cmp-recurrence]] diagnostic follow-up; it is neither
+HN's diagnosed mechanism nor the ready-target Sourcepoint action failure.
+
+**New separate watch:** `live_169_nav_verb_status_parity::live_169_nav_verbs_report_status_daemon`
+failed reload of local `/b`: ready_state complete, elapsed_ms21028,
+status null/status_reason not_observed; expected200. Firefox63163/debug58577,
+proxy58738, fixture58749. Exact isolation passed8.63s (command wall8.86s).
+The payload is consistent with the documented events-budget/readystate fallback
+in `navigate::wait_for_navigation_commit`, not evidence that HTTP returned no
+status. No failed-occurrence event, document identity, route or dispatcher trace
+establishes why fallback was reached. This daemon occurrence is distinct from
+historical174's fixed direct-route prelude and from267's explicit Timeout.
+On recurrence in another unpaused sweep or exact isolation, capture per-client
+and daemon event/subscription timing, route, document identity, actual network
+status and fallback reason, and file a scoped diagnostic plan before changing
+waits. Passing isolation does not reset this watch or prove load was the cause.
+
+Existing styles and unlocalized254 dogfood watches remain unchanged. Named
+ref-click, manifest, throttle, contended-bind and sustained-hop controls passed;
+no canary/locale audit or full-run ten-second sampling is claimed. Partial PID/load
+samples begin after startup and show the owned raw browser available through the
+sweep. It was stopped and waited for after isolations; desktop37270 remained.
+All original watch ACs stay untouched. Evidence: `.git/ralph-loop/20260912-validation-efficiency/iter242-owed-sweep/`.
+
+## Iteration257 watch reconciliation, 2026-09-14
+
+The screenshot fix's own closing sweep reconciled344 exact names across five
+tiers:342pass/2fail, zero missing/extra/duplicate names, skips or reclassifications.
+All five per-tier profile scans and the one final profile summary were clean.
+All seven screenshot regressions and the new direct drawSnapshot guard passed.
+
+The named137 Guardian test failed **after** live-target readiness106ms/1poll,
+with `consent_no_cmp`, not promotion failure or detected-not-actioned. Its exact
+isolation accepted Sourcepoint after readiness18ms, passing5.09s. This new
+distinct detection outcome is explicitly folded into262's existing named137
+requirement, with no failed-page/banner evidence or cause claimed. The BBC144
+direct-route no-CMP test failed both sweep and exact isolation4.77s, and remains
+owned by271. Identical error types do not establish a shared cause across sites.
+
+The owed242 reload169 watch test passed; styles, manifest, ref-click, both145,
+throttle, contended-bind, and sustained-hop controls also passed. No post-auth267
+or pre-auth268 observation recurred. These negatives do not reset the watches,
+supply missing failed-occurrence timing, diagnose load, or close their owners.
+The three264 timing controls passed without providing required distributions.
+No new canary or non-English locale audit is claimed. RawFirefox47188 was sampled
+with PID/listener/load every ten seconds throughout the sweep, then stopped and
+waited for. A later supervisor check at2026-09-14 01:00:43 CEST found no port6000
+listener and desktop37270 still alive, with its original September8 start time.
+Exact commands, exits and output are retained in
+`.git/ralph-loop/20260912-validation-efficiency/iter257-supervisor-verification/post-cleanup-processes.json`;
+no continuous-availability claim is made. Original watch ACs remain
+untouched. Evidence: `.git/ralph-loop/20260912-validation-efficiency/iter257-implementation/`,
+including `observed-verdicts.tsv`, both isolated logs and `sweep-pid-load-samples.txt`.

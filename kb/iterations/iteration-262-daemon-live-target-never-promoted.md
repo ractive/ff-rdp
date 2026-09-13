@@ -9,8 +9,8 @@ depends_on:
 first_call_sites:
   - primitive: (to be decided — a repair path on the frame-target subscription)
     site: crates/ff-rdp-cli/src/daemon/server.rs
-dogfood_path: |
-  # Reproduce under sweep contention — it does not appear in isolation.
+dogfood_path: |-
+  # Reproduce under sweep contention; isolation also failed in the recorded255 repair.
   firefox -no-remote --start-debugger-server 6000 --headless   # raw browser, NOT ff-rdp launch
   FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo run -p xtask -- live-sweep 2>&1 | tee /tmp/sweep.log
   grep "LIVE_TARGET_WAIT" /tmp/sweep.log
@@ -20,7 +20,7 @@ dogfood_path: |
   # reached=false line is accompanied by live_target_count>0 having been observed
   # and lost — i.e. the bookkeeping is repaired rather than latched.
   #
-  # Serial control, expected green today and after:
+  # Serial control: retain either result; isolation reproduced promotion in255:
   FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo test -p ff-rdp-cli --test live \
     live_137_consent_accept_via_daemon -- --include-ignored --test-threads=1
 tags: [iteration, daemon, frame-targets, race, live-tests, carry-over]
@@ -161,3 +161,57 @@ sweep's parallel execution; no new cause or timeout change is claimed.
 - [[iteration-179-live-62-runner-sees-no-network-events]] — the precedent for this shape
 - [[iteration-181-playbook-scoped-network-subscription]] — its fix, on the daemon/direct split
 - `crates/ff-rdp-cli/tests/common/mod.rs` — `wait_for_live_targets`, `LIVE_TARGET_WAIT`
+
+
+## Owed242 observations, 2026-09-14
+
+Two distinct cases recurred at `19f4e236a70399c2984e6d46eb15bdac37a55181`:
+
+- `live_145_error_envelope_completeness::live_145_click_element_not_found_unchanged`
+  failed promotion after15008ms/48polls. Firefox58291/debug55380;
+  daemon58392/proxy55550, uptime17s; target1/live0, network buffer12;
+  dispatcher alive56started/56finished/in_flight0, noRPCowner;
+  clients_dropped_on_write1. The write-drop counter is evidence, not a proved cause.
+  Exact isolation passed5.46s (command wall5.64s).
+- `live_140_element_targeting::live_140_frame_filter_count_accurate` reported
+  zero frames for the leaf1 filter, where five candidates were required.
+  Firefox56876/debug54498, proxy54633. Exact isolation passed5.57s
+  (command wall6.01s). No failed-occurrence target counters establish a shared cause.
+
+The137 consent, other145 and watcher-source tests passed this sweep, which does
+not satisfy the three-consecutive-green-sweeps AC. Historical ready-target
+Sourcepoint failures remain distinct and unresolved. The metadata dogfood claim
+that promotion does not occur in isolation is superseded by the recorded255
+repair isolation failure; treat isolation as a measured control, not expected
+success. This run made no promotion/consent fix and changed no deadline.
+Evidence: `.git/ralph-loop/20260912-validation-efficiency/iter242-owed-sweep/sweep-failures.txt`, exact isolated logs and
+`sweep-reconciliation.json` (343=331pass+12fail, no missing names/reclassifications/leaks).
+
+## Iteration257 reconciliation, 2026-09-14
+
+The screenshot fix's closing sweep344=342pass+2fail produced a **new distinct
+Guardian detection outcome** in `live_137_consent_accept_via_daemon`:
+Firefox51777/debug54644, proxy54746; live targets were ready in106ms/1poll,
+then consent returned `consent_no_cmp`, `cmp:null`, `action:null`,
+`status:no_cmp_detected`. This is neither the original promotion failure nor
+the previous detected-but-not-actioned Sourcepoint failure. Failed-occurrence
+page/banner DOM and document identity were not retained; no cause is claimed,
+and the identical error type on BBC's separate direct-route test does not prove
+a common mechanism. Fold this named137 outcome here because the original
+three-green-sweeps requirement already owns that scenario. Preserve all three
+shapes; resolve or separately file the detection/action outcomes when pursuing
+that requirement, without weakening acceptance or changing waits.
+
+Exact serial dual-gate isolation passed5.09s: Firefox74320/debug65519,
+proxy49157, readiness18ms/1poll, Sourcepoint accepted through the daemon.
+This does not diagnose or close the sweep failure. Both145 tests, both140
+frame controls and watcher-source passed; no promotion fix or three-green-sweep
+claim is made. All original tasks and ACs remain unchanged and unmet.
+
+The metadata dogfood comments now agree with the already-recorded255 repair
+isolation failure: isolation is a measured control, not guaranteed green.
+This corrects validation guidance without executing this plan. The seven
+full-page screenshot regressions owned by257 passed together; their prior
+negative history remains intact. Evidence:
+`.git/ralph-loop/20260912-validation-efficiency/iter257-implementation/`,
+`sweep.log`, the exact isolated137 log and both launch logs.

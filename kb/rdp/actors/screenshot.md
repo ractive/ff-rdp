@@ -52,7 +52,7 @@ Returns `{ data: dataURL, height, width, filename, messages: [{level, text}, …
 The `screenshot` actor itself is paper-thin. Real work is split:
 
 1. **`screenshot-content` actor** (per target, content-process) — see [[screenshot-content]] — its `prepareCapture({fullpage, selector, nodeActorID})` runs inside the page and returns a `rect` plus `windowDpr/windowZoom`. For the default current-viewport case it returns `{rect: null}`.
-2. **`screenshot` actor** (root, parent-process) — its `capture()` then calls `browsingContext.currentWindowGlobal.drawSnapshot(rect, ratio, "rgb(255,255,255)", fullpage)`.
+2. **`screenshot` actor** (root, parent-process) — its `capture()` calls `WindowGlobalParent.drawSnapshot` with the document rectangle and scroll-position options below.
 
 The Firefox DevTools client orchestrates this two-step flow in `devtools/client/shared/screenshot.js`.
 
@@ -63,11 +63,11 @@ const snapshot = await browsingContext.currentWindowGlobal.drawSnapshot(
   rect,                  // DOMRect or null (null = current viewport)
   actualRatio,           // device pixel ratio
   "rgb(255,255,255)",    // background color
-  args.fullpage          // boolean — THIS is what makes full-page actually render
+  { resetScrollPosition: args.fullpage } // Firefox 155+; boolean before 155
 );
 ```
 
-Inside `capture-screenshot.js:114`. Note that **`fullpage` is the 4th positional argument** to `drawSnapshot`; passing only a large rect is not enough — without `fullpage: true` Gecko clips at the visual viewport boundaries.
+Inside Firefox 155.0.1 `capture-screenshot.js:115–120`. Argument 4 controls fixed-element scroll positioning, not capture extent. The explicit rectangle selects the document region; a null rectangle always renders the visible viewport. See [[take-screenshot]] for the release IDLs and compatibility policy.
 
 ## Full-page rect computation (in screenshot-content.js)
 
@@ -82,7 +82,7 @@ if (fullpage) {
 }
 ```
 
-So the "page width/height" is `innerWidth + scrollMaxX - scrollMinX − scrollbar`. Critical for ff-rdp's --full-page bug: if we only set a custom `width/height` rect without also passing `fullpage: true` to `drawSnapshot`, Gecko will clip.
+So the actor's page dimensions are `innerWidth + scrollMaxX - scrollMinX − scrollbar`. ff-rdp's full-page fallback instead measures the document scroll dimensions and supplies an explicit `DOMRect`.
 
 ## Other behaviors
 
@@ -94,7 +94,7 @@ So the "page width/height" is `innerWidth + scrollMaxX - scrollMinX − scrollba
 
 ## Gotchas for ff-rdp
 
-- **The full-page bug**: if your CLI computes a giant rect from `document.documentElement.scrollWidth/Height` but does not set the actor's `fullpage: true`, Firefox will still clip to the viewport. The fix is to either pass `fullpage: true` in the `capture` args or compute a rect from `scrollMax{X,Y}` and pass it to the screenshot-content actor.
+- Full-page captures require an explicit rectangle. Argument 4's `resetScrollPosition` controls fixed-element placement, and is not a full-page extent flag.
 - `dpr` is typed as **string** in the spec. ff-rdp serialises it as a JSON string (e.g. `"2"`) since iter-70 — see `crates/ff-rdp-core/src/actors/screenshot.rs::ScreenshotActor::capture`. Closed.
 - `browsingContextID` must be the **content browsing context** id (from TabDescriptor.form's `browsingContextID`), not the chrome window id.
 - `data:` URL can be huge — for the parent process actor there's no streaming, the whole base64 PNG comes back in one JSON packet. ff-rdp must be ready to receive multi-MB responses.
@@ -259,6 +259,7 @@ The old failure text told users to relaunch headless *even when they already
 were*, and appended "screenshot actor not found in Firefox N root form" on a
 path only reached **after** an actor was found and called. Both claims are gone;
 `capture_failure_message()` now states that Firefox rendered no image and
-suggests dropping `--full-page` or running `ff-rdp doctor`.
+suggests running `ff-rdp doctor`. Since iteration 257, the suggestion to drop
+`--full-page` requires an explicit size-limit diagnostic and never accompanies a TypeError.
 `screenshot_errors_carry_no_headless_relaunch_hint` greps the module source so
 the hint cannot be reintroduced.

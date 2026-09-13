@@ -45,3 +45,18 @@ tags:
 iteration_253_precheckpoint_2026_09_12: "2026-09-12 final253 pre-checkpoint sweep has three further DISTINCT named post-auth Timeout observations: live_161_eval_and_flag_strictness::live_161_fields_and_sort_reject_unknown_names failed autostart eval1 with exit124 before flag assertions (Firefoxport58109); live_219_reader_view::live_219_collection_leaves_the_dom_byte_identical failed eval of DOM/ref count (proxy60330); live_240_daemon_frame_desync_and_wedge::live_240_sustained_hops_never_desynchronise failed origin view at hop28/40, reconnects0 (proxy61263). All envelopes explicitly say timeout after auth. Exact isolations passed4.99s,5.13s,28.71s respectively; no source fix or common cause is established. Attributable failed-occurrence auth/request/dispatcher timing was not captured and remains an unticked mandatory requirement. This is not the earlier auth-stage EOF at240hop27 carried by203. Current sweep334=322passed+12failed reconciles exact names and all five tiers, no reclassifications or profile leaks. Evidence: .git/ralph-loop/20260912-validation-efficiency/iter253/precheckpoint-edge-verification/sweep-failures.txt and the three exact isolated logs. All original tasks and ACs remain unchanged and unmet."
 iteration_254_review_repair_1_2026_09_12: "NEW DISTINCT NAMED OCCURRENCE: unpaused final254repair1 dual-gate sweep failed live_161_eval_and_flag_strictness::live_161_build_script_matrix_evaluates at autostart eval1, exit124, envelope: daemon did not respond within the timeout after auth. Firefoxport51734; the matrix never executed. Exact isolated rerun passed8.07s (8.0685s command wall), no source fix or proved common cause. This is post-auth Timeout, not the historical pre-auth EOF. Attributable per-process/client failed-occurrence auth/request/dispatcher timing was NOT captured and stays a mandatory unmet/unticked requirement. Do not infer cause from success or broaden timeouts. Sweep338=330pass+8fail reconciles every name in all5tiers with no skips/reclassifications/profile leaks. Evidence .git/ralph-loop/20260912-validation-efficiency/iter254/review-repair-1/sweep.log lines356-360 and isolated-live_161_eval_and_flag_strictness__live_161_build_script_matrix_evaluates.log. Original scope/tasks/AC text and ticks unchanged; no267 implementation is claimed."
 ---
+
+
+## Owed242 named post-auth recurrence, 2026-09-14
+
+`live_164_block_and_daemon_autostart::live_164_block_url_pattern_rejects`
+failed `navigate https://example.com` with the explicit post-auth Timeout envelope
+at `19f4e236a70399c2984e6d46eb15bdac37a55181`. Firefox61711/debug57584, daemon proxy57820.
+The test invokes navigate more than once; the retained failure does not localize
+which occurrence. It does not demonstrate broken block-list enforcement.
+Exact serial dual-gate isolation passed8.06s (command wall8.27s).
+Attributable failed-occurrence client/auth/request/dispatcher timing was not
+captured and remains a mandatory unmet requirement in the original metadata ACs.
+No common cause, retry or timeout change is claimed. This is separate from the
+pre-auth EOF/reset observations owned by268, which did not recur in this sweep.
+Evidence: `.git/ralph-loop/20260912-validation-efficiency/iter242-owed-sweep/sweep-failures.txt` and its exact isolated164 log.

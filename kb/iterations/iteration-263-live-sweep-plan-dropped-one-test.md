@@ -103,3 +103,27 @@ own live test came within one `grep` of being reported green without ever having
   plan that is silently smaller than the corpus, whatever produced it.
 - Related: [[iteration-203-live-sweep-watch-conditions-third-holder]] (the sweep's other standing
   watch conditions).
+
+
+## Owed242 exact-name negative, 2026-09-14
+
+At `19f4e236a70399c2984e6d46eb15bdac37a55181`, compiled ignored-name lists and actual verdicts match
+for all343 names in five tiers (CLI334/core9):331pass+12fail, no missing,
+duplicate or extra test; no reclassifications. This additional uncontended
+negative does not explain or fix the original319/320 omission. No scanner or
+coverage guard changed; original tasks and ACs remain pending.
+Evidence: `.git/ralph-loop/20260912-validation-efficiency/iter242-owed-sweep/expected-names.tsv`, `observed-names.tsv`,
+all five binary enumeration files and `sweep-reconciliation.json`.
+
+## Iteration257 inventory reconciliation, 2026-09-14
+
+Adding the direct drawSnapshot guard increases this branch's ignored CLI corpus
+from334 to335. The closing dry-run and real sweep both qualified344=335CLI+9core.
+Every compiled ignored name has exactly one verdict:342pass+2fail, no missing,
+extra, duplicate, skipped or reclassified name across all five tiers. The new
+guard and all seven original screenshot regressions passed. This is another
+uncontended accounting negative, not a scanner fix or an explanation for the
+historical319/320 discrepancy; original tasks/ACs remain unchanged.
+Evidence: `.git/ralph-loop/20260912-validation-efficiency/iter257-implementation/`,
+`enumeration-*.txt`, `expected-names.tsv`, `observed-verdicts.tsv`,
+`name-discrepancies.txt`, `duplicate-names.txt` and `sweep-dry-run.log`.
