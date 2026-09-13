@@ -2,7 +2,7 @@
 title: "Iteration 254: install-hook for Codex and OpenCode, against pinned schemas"
 type: iteration
 date: 2026-08-30
-status: in-review
+status: done
 branch: iter-254/hook-targets
 depends_on: [212]
 first_call_sites: []
@@ -17,18 +17,10 @@ tags: [iteration, cli, agent-ergonomics]
 takeover_reconciliation_252: "2026-09-09: Codex0.153.4 published hooks default ON, while new/changed commands require trust via /hooks. Preserve the original explicit [features] hooks=true refusal AC as ff-rdp opt-in policy and describe it accurately; do not claim it is Codex's current default. hooks.SessionStart[].hooks[] command shape confirmed; matcher group permits ownership metadata in published schema, runtime verification still owed. OpenCode1.3.13 pinned b5b5f7e0190cdd5272b6d2aeb3d4589a822675a6 only supplies a JS/TS plugin contract, permitting ThemeC obsolete disposition. Evidence: https://learn.chatgpt.com/docs/hooks and https://opencode.ai/docs/plugins/; saved full source/schema in takeover hooks254-prep. Original tasks/AC text and ticks unchanged."
 dogfood_script: iteration-254-hook-targets.dogfood.sh
 outcome: "2026-09-12: Codex target implemented with a recorded input schema and actual Codex0.153.4 loader acceptance. Uses parsed explicit features.hooks=true installer opt-in, atomic managed-group merge, byte/mtime-preserving no-op, duplicate/shape/path repair, dry-run and uninstall. Malformed Codex containers refuse; Claude behavior stays unchanged. Shell-specific command encoding has argv/sentinel positive controls and mutation proof. Research: [[agent-hook-formats]]. Theme C is obsolete: pinned OpenCode1.3.13 only provides a JS/TS module contract; refusal remains and no installed OpenCode runtime was available."
-editing_limitations: >-
-  Hyalo has no arbitrary body editor. Outcome is recorded in this frontmatter
-  property and research findings are frontmatter in the Hyalo-created research
-  scaffold. Theme C task remains unticked because its literal requirement to put the
-  reason in an Outcome body section cannot be satisfied through this tool. Its
-  substantive supported obsolete disposition is recorded above. Original task/AC text is
-  unchanged. Heading counters cannot be edited through Hyalo and are superseded by
-  verified counts in closing_counts metadata.
 closing_counts: >-
-  A 2/2; B 3/3; C 0/1 (obsolete disposition established, literal Outcome body
-  placement unavailable); Acceptance Criteria 5/5. Original heading counters cannot be
-  updated through Hyalo.
+  A 2/2; B 3/3; C 1/1 (obsolete under the allowed pinned JS/TS-only contract,
+  with required Outcome body section); Acceptance Criteria 5/5. Original task and AC
+  wording preserved.
 validation_notes: "Targeted positive controls:14 unit plus14 e2e tests pass. Two deliberate mutations (gate missing-case acceptance and stripped path quoting) each failed the named regression, restored source hash recorded. Codex loader: one untrusted user SessionStart handler, no warnings/errors, isolated HOME/USERPROFILE/CODEX_HOME, config and installed entry unchanged. Native Unix argv controls exercised installed /bin/sh,/bin/bash,/bin/zsh. Windows code and platform-gated cmd.exe/PowerShell test present; no native Windows result is claimed from macOS. First strict clippy attempt caught two single-element loops in the retained OpenCode refusal tests; corrected before restarting ordered gates."
 carry_over: |-
   Carry-over (2026-09-12)
@@ -67,6 +59,7 @@ supervisor_repair1_closing: >-
   pending bodies remain unchanged; new161post-auth Timeout remains267 with
   failing-occurrence attribution unmet. Native Windows exact-head CI and fresh independent
   review are still pending. No254/246body exception received or applied.
+finalization_2026_09_13: "Owner clarified: use Hyalo for supported operations; direct KB body edits allowed. Required Outcome section and heading counts now written, Theme C ticked via Hyalo. Original AC wording unchanged. All ten native CI checks34710505693 passed exact product/test headf0385a556d157f2d15c845ab58280d81582acca8, including actual Windows PowerShell controls and custom-home e2e; fresh independent review01a096d3-1053-7770-9245-d41fb3a56f4b exit0 explicit[] (9read-onlyexec). This finalization changes documentation only; final updated-head checks and review required before merge. Historical metadata below records earlier attempts, including resolved tooling and Windows blockers; it is not current status. Final product sweep is review_repair_1_sweep:338=330pass+8fail, all five tiers/names/profilezero. Seven screenshots257 and distinct161post-authTimeout267 remain with causes/failed-occurrence timing unmet. All9xtask gates passed on unchanged production; ordered gates rerun for this docs checkpoint."
 ---
 
 # Iteration 254: install-hook for Codex and OpenCode
@@ -96,24 +89,24 @@ published documentation first, then write against the pinned shape.
 
 ## Tasks
 
-### A. Pin the schemas [0/2]
+### A. Pin the schemas [2/2]
 - [x] `kb/research/agent-hook-formats.md`: Codex `hooks.json` entry shape + the `[features]`
       gate, and OpenCode's plugin contract, each with source URL and version read
 - [x] A fixture per target under `crates/ff-rdp-cli/tests/fixtures/` recording the shape, so the
       writer is tested against a recorded document rather than a guess
 
-### B. Codex [0/3]
+### B. Codex [3/3]
 - [x] `Target::Codex` resolves `~/.codex/hooks.json` (honoring `HOME`/`USERPROFILE`) and merges
       one managed entry, leaving every other entry untouched
 - [x] The `[features] hooks = true` gate is detected by parsing, not by substring search; an
       unset gate refuses with the exact line to add and writes nothing
 - [x] `--dry-run`, `--uninstall`, idempotence and path repair all behave as `--claude` does
 
-### C. OpenCode [0/1]
-- [ ] Either implemented against the pinned contract, or this theme is closed `obsolete` with
+### C. OpenCode [1/1]
+- [x] Either implemented against the pinned contract, or this theme is closed `obsolete` with
       the reason recorded in the Outcome section and in `agent-hook-formats.md`
 
-## Acceptance Criteria [0/5]
+## Acceptance Criteria [5/5]
 
 - [x] `install_hook_codex_is_idempotent` (unit, `HOME` redirected): two installs produce a
       byte-identical `hooks.json`; second run reports no-op
@@ -123,6 +116,12 @@ published documentation first, then write against the pinned shape.
 - [x] `install_hook_codex_leaves_other_entries_untouched` (unit): a hand-written entry survives
       install, repair and uninstall
 - [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+
+## Outcome
+
+Codex installation, repair, dry-run, idempotence and uninstall are implemented. The actual Codex 0.153.4 loader accepted the installed entry. The explicit `features.hooks = true` check is ff-rdp installer opt-in policy; Codex itself enables hooks by default. New or changed commands still require trust through `/hooks`.
+
+Theme C is **obsolete**, as permitted by this plan: the pinned OpenCode 1.3.13 contract requires a JavaScript/TypeScript plugin module. `--opencode` retains its refusal. The pinned documentation, fixture and source evidence are recorded in [[agent-hook-formats]].
 
 ## Out of scope
 
