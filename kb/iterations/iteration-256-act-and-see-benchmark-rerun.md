@@ -2,7 +2,7 @@
 title: "Iteration 256: re-measure the axi benchmark after act-and-see"
 type: iteration
 date: 2026-08-29
-status: in-progress
+status: done
 branch: iter-256/act-and-see-benchmark-rerun
 depends_on: [iteration-210-act-and-see, iteration-211-find-not-guess, iteration-212-ambient-context]
 dogfood_path: |
@@ -78,8 +78,8 @@ would measure the same 8 turns and would be the correct answer, not a broken run
 
 ## Tasks
 
-### A. Reproduce the harness [1/2]
-- [ ] Land the ff-rdp side of the harness under `tools/axi-bench/` **without checking in the
+### A. Reproduce the harness [2/2]
+- [x] Land the ff-rdp side of the harness under `tools/axi-bench/` **without checking in the
       upstream TypeScript** (CLAUDE.md: no polyglot tooling): a `README.md` pinning the upstream
       `kunchenguid/axi` commit, `ff-rdp-condition.patch` (the `conditions.yaml` / `types.ts` /
       `lifecycle.ts` diff), `ffrdp-bench.sh` (sources `dogfood-lib.sh`, launches one headless
@@ -101,8 +101,8 @@ would measure the same 8 turns and would be the correct answer, not a broken run
 - [x] Classify every extraction trajectory as "used `--query`" or "did not" — the same
       mechanism-vs-discoverability split Theme C applies to `--with-page`
 
-### D. Ambient context (from iter-212) [1/2]
-- [ ] Decide and record how the hook is delivered under `--setting-sources ""`: either a harness
+### D. Ambient context (from iter-212) [2/2]
+- [x] Decide and record how the hook is delivered under `--setting-sources ""`: either a harness
       change that loads a real settings file, or `--append-system-prompt` with the hook's output —
       and state plainly which of the two the recorded numbers measure
 - [x] Classify every ff-rdp trajectory by its **first** tool call: `--help`, a browser command, or
@@ -127,9 +127,9 @@ would measure the same 8 turns and would be the correct answer, not a broken run
       existing 2026-08-30 table — done 2026-08-31: `link_follow` 7.7, `infobox_hop` 10.3 on
       `5a0071d`; not ≤ 5; causes filed as 224 (daemon reset) and 225 (excerpt lacks infobox)
 
-## Acceptance Criteria [3/6]
+## Acceptance Criteria [6/6]
 
-- [ ] `tools/axi-bench/run.sh` runs the comparison from a clean checkout with no scratchpad recovery
+- [x] `tools/axi-bench/run.sh` runs the comparison from a clean checkout with no scratchpad recovery
       and no TypeScript committed to this repo
 - [x] The three click-through tasks (`wikipedia_infobox_hop`, `wikipedia_link_follow`,
       `wikipedia_search_click`) have a measured post-210 average turn count recorded, whatever it
@@ -143,13 +143,13 @@ would measure the same 8 turns and would be the correct answer, not a broken run
       211's own target was ≤ 6 turns for the first two (were 9.3, 10.7) and 3/3 passes for the
       third, but as with the click-through tasks a number that did NOT improve is a valid,
       publishable result and must not be re-run until it looks better
-- [ ] Carried over from [[iteration-212-ambient-context]] (left unticked there, not reworded):
+- [x] Carried over from [[iteration-212-ambient-context]] (left unticked there, not reworded):
       every ff-rdp run's first tool call is classified, and the share that is a browser command
       rather than `--help` is recorded. 212's own target was ≥ 80%; as above, a number that did
       NOT improve is a valid, publishable result. The record must also say which delivery
       mechanism Theme D chose, because "≥ 80% with the hook's text pasted into the system prompt"
       and "≥ 80% with the hook installed" are different claims.
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean.
 
 ## Outcome (2026-08-30, measured by hand from the launching session — Theme A not yet done)
 
@@ -184,6 +184,273 @@ full tables and trajectory analysis in [[axi-benchmark-comparison]] § "Re-measu
 - Remaining here: Theme A (land the harness under `tools/axi-bench/`), Theme D's delivery
   mechanism, and the ff-rdp condition's `ffrdp-bench.sh` plus the `conditions.yaml`/`types.ts`/
   `lifecycle.ts` diff, all still only in a session scratchpad.
+
+## Outcome — final frozen-source measurement, 2026-09-13
+
+Exactly one baseline matrix and one separately labeled **real private SessionStart**
+matrix ran, each 14 task definitions × 3 repetitions =42 runs. All 84 result rows
+and168 agent/judge invocations are retained and uniquely associated by actual
+agent session/output and the judge's exact formatted trajectory. No missing,
+duplicate, unmatched, timed-out, interrupted or replaced invocation was found.
+No axi rerun, smoke, preparation-only call or new capability probe was added.
+Earlier 255/smoke/probe records remain separate and are not pooled into these tables.
+
+Both conditions used clean product/harness HEAD
+`8c400376aa1d8ee85bc0bcee2a7bb2a898a9e277`, tree
+`06b2ea52b06cee1ed28d172ac7be229ab11e5d7a`. The source stayed clean through both
+matrices and their cleanup; KB changes began afterward. Each setup built its own
+private debug binary: baseline SHA-256
+`dd9d838db6bb32bdfb4452515a2da219cde9059db90faec67608564274135de9`, treatment
+`6eada0b705cbaaee7a2069f281b1968b0eb17bf12f8612d87a2fcbc3a94bb778`.
+These are distinct build artifacts of the same source, not a claim of identical
+binary bytes. Both report ff-rdp 0.3.0 /8c400376aa1d /2026-09-13.
+
+Task definitions, conditions, harness hashes, every per-task prompt hash and the
+append paragraph are byte-identical across conditions. The append hash remains
+`758dfb37452f8099cfb46460ee417ccc73839cf0ee3553f7da0558229be49c8b`, including
+its newline; it still explicitly says to run `ff-rdp --help`. Both request agent
+and judge `claude-sonnet-4-6`, with actual Claude Code **2.1.270**, Firefox 155.0.1,
+Node 24.19.0, pnpm launcher 11.24.0 / pinned effective 11.1.1. Historical CLI 2.1.241's
+default prompt is **not proven identical**. Cached-account selection was retained;
+the stale API key was omitted only for child processes. Costs below are reported
+**list/API equivalents, not subscription billing**.
+
+### Delivery and execution evidence
+
+The treatment uses the exact binary's installed `ff-rdp home --hook` command,
+wrapped for recording in a private per-agent `--settings` file while retaining
+`--setting-sources ""`. All 42 treated agents have hook input, stdout, stderr,
+exit 0 and exactly one matching successful SessionStart runtime response. This is
+installed-hook execution, not hook text pasted into the append prompt. Baseline
+agents and all 84 judges have no treatment settings or hook events. Every original
+and delivered argv was checked; only treatment settings and the documented judge
+JSON-output instrumentation differ.
+
+All 168 invocations have one terminal success, `is_error:false`, child/recorder/
+interruption exits 0; all 84 agent stream exits are 0. Both matrix/cleanup/driver
+triples are 0/0/0. This does **not** mean every task or command passed.
+Each lifecycle records 42 private Firefox starts and84 matching daemon/browser
+terminations; no owned process identity survives, port 6000 is free and desktop
+Firefox PID 37270 is preserved. Baseline driver ran20:25:13–20:48:09 UTC;
+SessionStart ran20:48:45–21:12:25 UTC. These wall periods include setup and judges;
+per-task seconds below are the unchanged upstream agent wall metric.
+
+Evidence root: `.git/ralph-loop/20260912-validation-efficiency/iter256-measurement/`.
+`baseline/` and `session-start/` retain 3587 raw files, hashes in
+`raw-evidence-sha256.json`; `evidence-verification.json` records coverage,
+provenance, argv/prompt equality, hook delivery and cleanup. The two
+`*-audit-classified.json` files retain every actual top-level first ID/name/command,
+automatic and adjudicated categories, its own result/errors, all raw tool results,
+modelUsage and agent/judge associations. `per-run.csv` and `per-run-analysis.md`
+cover every run's turns, Bash command count, grade, separate/combined costs,
+seconds, errors, adoption and task-fidelity caveats. Upstream `turn_count` equals
+the terminal `num_turns` in all 84 runs. Bash tools are counted by unique top-level
+IDs; baseline's two additional Read tools explain why186 Bash tools are fewer
+than230−42. No nested-agent tool was observed. Reasoning-token zero in upstream
+usage is not proof of no thinking; raw modelUsage remains authoritative.
+
+### Aggregate results (42 runs per condition)
+
+| Condition | Passes | Turns / mean | Bash tools | Agent USD total | Judge USD total | Combined USD total | Agent seconds/run | P/Q runs |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| Baseline (B) | 41/42 | 230 /5.476 | 186 | 4.0562285 | 2.7425790 | 6.7988075 | 22.636 | 40/38 |
+| SessionStart (S) | 41/42 | 293 /6.976 | 251 | 4.3384146 | 2.3922554 | 6.7306700 | 25.585 | 5/38 |
+
+Combined final-matrix list cost: **$13.5294775** (agents 8.3946431,
+judges 5.1348344). Average agent costs are B $0.0965769 / S $0.1032956;
+average combined costs B $0.1618764 / S $0.1602540. The small combined-cost decrease
+comes from judges, while agent turns/cost increased. No statistical or billing
+claim follows from this small sequential sample.
+
+| Condition / role | Sonnet list USD | Auxiliary Haiku list USD |
+|---|---:|---:|
+| B agent | 4.0139295 | 0.0422990 |
+| B judge | 2.4909000 | 0.2516790 |
+| S agent | 4.2961356 | 0.0422790 |
+| S judge | 2.1775854 | 0.2146700 |
+
+Actual modelUsage keys are `claude-sonnet-4-6` and
+`claude-haiku-4-5-20251001`; requested Sonnet does not imply exclusive Sonnet use.
+
+### Per-task results
+
+B is unchanged baseline; S is real SessionStart. P/Q counts runs that actually
+used `--with-page` / `--query`, not strings printed by help or hooks. Each row has
+three runs; no failed grade is removed from its means or denominator.
+
+| Task | Condition | Turns per run | Mean turns | Agent USD/run | Judge USD/run | Combined USD/run | Seconds/run | Passes | P/Q runs |
+|---|---|---|---:|---:|---:|---:|---:|---:|---|
+| github_issue_investigation | B | 5/4/5 | 4.667 | 0.1238554 | 0.1057307 | 0.2295860 | 45.662 | 2/3 | 3/3 |
+| github_issue_investigation | S | 9/6/4 | 6.333 | 0.1069458 | 0.0729174 | 0.1798632 | 25.646 | 3/3 | 0/3 |
+| github_navigate_to_file | B | 5/5/5 | 5.000 | 0.0882014 | 0.0646423 | 0.1528437 | 18.578 | 3/3 | 3/3 |
+| github_navigate_to_file | S | 4/4/4 | 4.000 | 0.0710173 | 0.0566461 | 0.1276634 | 13.557 | 3/3 | 0/3 |
+| github_repo_stars | B | 5/5/5 | 5.000 | 0.0731537 | 0.0476857 | 0.1208394 | 17.097 | 3/3 | 3/3 |
+| github_repo_stars | S | 4/7/4 | 5.000 | 0.0801519 | 0.0555887 | 0.1357406 | 15.556 | 3/3 | 0/3 |
+| multi_page_comparison | B | 4/4/4 | 4.000 | 0.0848350 | 0.0694580 | 0.1542930 | 16.005 | 3/3 | 3/3 |
+| multi_page_comparison | S | 6/6/6 | 6.000 | 0.0868371 | 0.0508027 | 0.1376398 | 20.884 | 3/3 | 0/3 |
+| multi_site_research | B | 11/8/9 | 9.333 | 0.1186796 | 0.0702250 | 0.1889046 | 30.855 | 3/3 | 3/3 |
+| multi_site_research | S | 10/12/8 | 10.000 | 0.1456267 | 0.0697021 | 0.2153288 | 34.032 | 3/3 | 1/3 |
+| navigate_404 | B | 4/6/4 | 4.667 | 0.0904887 | 0.0698680 | 0.1603567 | 25.275 | 3/3 | 2/0 |
+| navigate_404 | S | 5/5/5 | 5.000 | 0.0695257 | 0.0410037 | 0.1105294 | 20.781 | 3/3 | 0/0 |
+| read_static_page | B | 4/5/5 | 4.667 | 0.0712805 | 0.0493270 | 0.1206075 | 13.406 | 3/3 | 2/2 |
+| read_static_page | S | 4/4/4 | 4.000 | 0.0496229 | 0.0303967 | 0.0800196 | 12.071 | 3/3 | 0/3 |
+| tabular_data_analysis | B | 7/7/6 | 6.667 | 0.1042654 | 0.0609807 | 0.1652461 | 23.819 | 3/3 | 3/3 |
+| tabular_data_analysis | S | 7/4/5 | 5.333 | 0.0830323 | 0.0524929 | 0.1355253 | 21.101 | 3/3 | 0/3 |
+| wikipedia_deep_extraction | B | 8/6/9 | 7.667 | 0.1493763 | 0.0968153 | 0.2461916 | 29.779 | 3/3 | 3/3 |
+| wikipedia_deep_extraction | S | 11/6/6 | 7.667 | 0.1161492 | 0.0653791 | 0.1815283 | 25.664 | 3/3 | 0/3 |
+| wikipedia_fact_lookup | B | 3/3/3 | 3.000 | 0.0492921 | 0.0418760 | 0.0911681 | 11.608 | 3/3 | 3/3 |
+| wikipedia_fact_lookup | S | 3/3/3 | 3.000 | 0.0415150 | 0.0328664 | 0.0743814 | 10.131 | 3/3 | 0/3 |
+| wikipedia_infobox_hop | B | 7/7/6 | 6.667 | 0.1497300 | 0.0718503 | 0.2215804 | 25.178 | 3/3 | 3/3 |
+| wikipedia_infobox_hop | S | 11/9/7 | 9.000 | 0.1271686 | 0.0610274 | 0.1881960 | 26.112 | 3/3 | 1/3 |
+| wikipedia_link_follow | B | 4/4/4 | 4.000 | 0.0910577 | 0.0748993 | 0.1659570 | 16.725 | 3/3 | 3/3 |
+| wikipedia_link_follow | S | 15/9/7 | 10.333 | 0.1559121 | 0.0718567 | 0.2277689 | 53.474 | 2/3 | 1/3 |
+| wikipedia_search_click | B | 7/6/6 | 6.333 | 0.0866817 | 0.0465080 | 0.1331897 | 25.434 | 3/3 | 3/3 |
+| wikipedia_search_click | S | 10/12/16 | 12.667 | 0.1808988 | 0.0788957 | 0.2597945 | 45.543 | 3/3 | 2/2 |
+| wikipedia_table_read | B | 5/5/5 | 5.000 | 0.0711787 | 0.0443267 | 0.1155054 | 17.478 | 3/3 | 3/3 |
+| wikipedia_table_read | S | 9/8/11 | 9.333 | 0.1317348 | 0.0578427 | 0.1895775 | 33.636 | 3/3 | 0/3 |
+
+### First actual tool, adoption and targets
+
+All 84 first **top-level assistant tool_use** blocks were inspected, excluding
+hook/system/stream events, judge/lifecycle calls and nested tools. The conservative
+recorder automatically returned B:6help/36other; S:2browser/40other. Manual review
+resolves quoted URLs, redirection, help pipelines and the exact private binary path
+from each original command and its own result; no later success replaces that result.
+
+| First-call classification (full42 denominator) | Baseline | SessionStart |
+|---|---:|---:|
+| Help | 40 (95.238%) | 0 |
+| Recognized browser-command attempts | 2 (4.762%) | 40 (95.238%) |
+| Other (nonexistent `nav`) | 0 | 2 (4.762%) |
+| Bare ff-rdp / missing / missing own result | 0 /0 /0 | 0 /0 /0 |
+| First calls with actual usage errors | 1 | 5 |
+| **Successful browser-command-first** | **1 (2.381%)** | **37 (88.095%)** |
+
+B static-page1 begins `navigate … && ff-rdp content`; navigate succeeds, but the
+nonexistent second command makes the first tool fail with exit 2. S multi-site1
+and search 1/2 attempt `navigate --url` and fail with exit 2; S search 3 and infobox 2
+attempt nonexistent `nav` and remain other. All five S errors are visible even
+though final invocations succeeded. Thus212's ≥80% target is met by **37/42
+successful browser-first calls with an installed hook**, not by counting errors
+or merely the40 recognized attempts. It is an adoption result, not evidence of
+better task efficiency.
+
+- **210 click-through ≤ 5 on all three is still not met.** Baseline infobox/link/
+  search means6.667/4.000/6.333; treatment 9.000/10.333/12.667. Only B link meets it.
+- **211 extraction targets remain partly unmet.** B tabular 6.667 and deep 7.667
+  miss≤ 6, issue investigation 2/3 misses 3/3. S tabular 5.333 meets≤ 6, deep 7.667
+  misses it, issue investigation 3/3 meets its pass target. All 18 extraction
+  trajectories across those three tasks and both conditions used --query.
+- B uses --with-page in 40/42 runs and S in 5/42; --query is38/42 in each.
+  Every run's binary adoption is recorded in the per-run artifacts. Initial
+  navigation uses --with-page in 40/42 B runs and **0/42 S runs**. The five S
+  adopters discover it later; skipping help also skips its working navigation idiom.
+- B infobox 7/7/6 still hunts PSF handles3/3/2 commands and consumes no Developer
+  fact ref, although all three eventual clicks and Formation views succeed.
+  S infobox 11/9/7 consumes none either; only run 1 clicks successfully, while2/3
+  navigate directly and recover page-text's "founded formed" miss via "2001".
+  These are additional observations under269, not replacements for255's6 runs.
+
+### Failures, action fidelity and decision
+
+B issue-investigation 2 fails for omitting issue37617's full title; no recovery
+was attempted. S link-follow2 fails for substituting direct URL navigation for
+the requested click. Both failures stay in the42-run denominators. Raw grade
+PASS does not certify all actions: all six Makefile runs skip the repository-root
+step; all three S link-follow runs replace unsuccessful clicks with URLs (grades
+PASS/FAIL/PASS); S infobox 2/3 do likewise (PASS/PASS); B search 1 types into the
+box but uses a Special:Search URL after a hidden-button timeout (PASS).
+
+Observed CLI/tool errors total **B6 in 5 runs / S19 in 14 runs**, versus upstream
+error_count totals5/18. Every error has an exact tool ID and raw result in the
+audit. B search 1's hidden-button timeout is masked by a pipe; S infobox 3's empty
+ref is masked by `||` recovery. Other errors include invented commands, unsupported
+options and invalid ref/selector/type syntax. Help text mentioning error fields
+is excluded from the observed-error count. German console messages from this
+raw unmanaged Firefox do not reproduce147's separate managed-launch locale AC.
+
+**Keep --with-page opt-in; do not enable the current hook by default.** The hook
+moves the first decision to browsing, but this sample adds 1.500 mean turns and
+loses navigation-with-page adoption. Its actual533-byte welcome-page payload
+suggests a11y/page-text/console, with no navigate-with-page or click/type syntax.
+The next surface to improve is the compact **home/SessionStart next-step guidance**,
+with correct act-and-see and ref/type examples, then a separately authorized
+controlled validation. This is a measured design recommendation, not a default-on
+experiment: neither matrix tests default-on --with-page, n=3 per task is small,
+conditions ran sequentially in different upstream-randomized task orders, and
+historical CLI prompt parity is unproved. No product/help/default behavior changed.
+
+## Carry-over — final measurement and closing state
+
+| Observation or unmet requirement | Disposition |
+|---|---|
+| Infobox≤ 5 miss, unconsumed fact refs, query/handle recovery and URL substitution | Folded into [[iteration-269-infobox-discovery-after-fact-refs]] with both256 conditions; original255 evidence and ACs unchanged |
+| Remaining click/extraction targets, incomplete issue title, ambient action fluency, invalid commands/options and strict task-action/error audit | Filed as [[iteration-270-benchmark-ambient-action-and-extraction-gaps]]; no broader backlog execution |
+| Default-on efficacy unmeasured; historical default-prompt equivalence unproved; sequential/n=3 limits | No claim or product change;270 requires a controlled design and separate authorization before any new paid comparison |
+| Prior harness smokes/probe and255 measurement | Preserved separately; not pooled or erased by the84-run result |
+| Prior255 sweep334passed/9failed =343 across all tiers, zero profiles | Separate255 evidence only: seven screenshot failures remain 257, promotion137 remains262, pre-auth240 remains268; this harness/KB-only 256 delta requires no product sweep |
+| Independent final documentation review, exact-head CI and GitHub merge | Review `01a09cab-c897-7211-a705-70c8db47c143` completed with zero findings after 15 successful inspection calls; all iteration ACs fulfilled. Supervisor verifies final-head CI and the GitHub merge separately before queue advancement |
+
+### Per-occurrence dispositions
+
+Every row below remains in its original run; line numbers refer to that run's `agent_output.txt`. Full commands/results remain in the classified audit.
+
+| Condition/task/run | Non-green observation | Evidence | Disposition |
+|---|---|---|---|
+| B/github_issue_investigation/2 | Upstream FAIL: incomplete issue title | grade.json and terminal answer | Filed 270; no replacement |
+| B/github_navigate_to_file/1 | Skipped initial repository-root visit; raw grade PASS | Full command/result trace | Filed/folded 270; strict action caveat retained |
+| B/github_navigate_to_file/2 | Skipped initial repository-root visit; raw grade PASS | Full command/result trace | Filed/folded 270; strict action caveat retained |
+| B/github_navigate_to_file/3 | Skipped initial repository-root visit; raw grade PASS | Full command/result trace | Filed/folded 270; strict action caveat retained |
+| B/navigate_404/2 | unrecognized subcommand 'content' | line 10, toolu_011KoPZZdkE6bPxc3chyYGGx | Filed/folded 270; preserve actual error |
+| B/read_static_page/1 | unrecognized subcommand 'content' | line 6, toolu_01SyjZRdTdfbL9vkGVwc53U6 | Filed/folded 270; preserve actual error |
+| B/wikipedia_search_click/1 | the argument '--ref <REF_ID>' cannot be used with '[SELECTOR_POS]' | line 10, toolu_01LxuiLD8ZM1iFTpKF8GcD9r | Filed/folded 270; preserve actual error |
+| B/wikipedia_search_click/1 | selector '#vector-sticky-header > div:nth-child(1) > div:nth-child(1) > button:nth-child(1)' not ready — the 1 matching element is hidden after 10000ms; masked by shell | line 16, toolu_017rLwxYYs6sfCbnCRALjevc | Filed/folded 270; preserve actual error |
+| B/wikipedia_search_click/1 | No successful required click/submission; URL recovery substituted; raw grade PASS | Full command/result trace | Filed/folded 270; strict action caveat retained |
+| B/wikipedia_search_click/2 | the argument '--ref <REF_ID>' cannot be used with '[SELECTOR_POS]' | line 12, toolu_01UUb2V4WRvAu4x32KSrPhrb | Filed/folded 270; preserve actual error |
+| B/wikipedia_search_click/3 | the argument '--ref <REF_ID>' cannot be used with '[SELECTOR_POS]' | line 12, toolu_01HkDRcRpr9Tti6krv8LqWP8 | Filed/folded 270; preserve actual error |
+| S/github_issue_investigation/1 | unrecognized subcommand 'js' | line 20, toolu_01QBNpD3bpWWNFBQZrkek1Cq | Filed/folded 270; preserve actual error |
+| S/github_navigate_to_file/1 | Skipped initial repository-root visit; raw grade PASS | Full command/result trace | Filed/folded 270; strict action caveat retained |
+| S/github_navigate_to_file/2 | Skipped initial repository-root visit; raw grade PASS | Full command/result trace | Filed/folded 270; strict action caveat retained |
+| S/github_navigate_to_file/3 | Skipped initial repository-root visit; raw grade PASS | Full command/result trace | Filed/folded 270; strict action caveat retained |
+| S/multi_site_research/1 | unexpected argument '--url' found | line 10, toolu_01Wsg1yWobgWFb1KL7mRooCj | Filed/folded 270; preserve actual error |
+| S/multi_site_research/2 | unrecognized subcommand 'tab-new' | line 19, toolu_01R2m8B2ioyv7KzWwjVAhQDJ | Filed/folded 270; preserve actual error |
+| S/multi_site_research/2 | unrecognized subcommand 'tab-new' | line 21, toolu_01AVJBzxZe3h9msctTLViFCu | Filed/folded 270; preserve actual error |
+| S/wikipedia_infobox_hop/1 | unrecognized subcommand 'find-refs' | line 21, toolu_01DHsyKDZkKXoGrP3kssHvRM | Filed/folded 269; preserve actual error |
+| S/wikipedia_infobox_hop/2 | unrecognized subcommand 'nav' | line 8, toolu_01JoZQ9sDCZxiGxr6NT3waQA | Filed/folded 269; preserve actual error |
+| S/wikipedia_infobox_hop/2 | No successful required click/submission; URL recovery substituted; raw grade PASS | Full command/result trace | Filed/folded 269; strict action caveat retained |
+| S/wikipedia_infobox_hop/3 | resolve-ref requires a non-empty id field; masked by shell | line 15, toolu_011iTA4jH2nuZfPPxSwdigB8 | Filed/folded 269; preserve actual error |
+| S/wikipedia_infobox_hop/3 | No successful required click/submission; URL recovery substituted; raw grade PASS | Full command/result trace | Filed/folded 269; strict action caveat retained |
+| S/wikipedia_link_follow/1 | unrecognized subcommand 'find-ref' | line 13, toolu_01Vjpti2WS8hhJDkk7927Kqy | Filed/folded 270; preserve actual error |
+| S/wikipedia_link_follow/1 | selector 'Charles Babbage' not ready — 0 elements matched (not found) after 2009ms — the page is idle (document complete, no network in flight, no DOM mutations), so the rest of the 10000ms auto-wait budget could not have changed  | line 15, toolu_014H5qPnaCDixZQZDVNUZyGJ | Filed/folded 270; preserve actual error |
+| S/wikipedia_link_follow/1 | selector 'a[href='/wiki/Charles_Babbage']' not ready — 0 elements matched (not found) after 2098ms — the page is idle (document complete, no network in flight, no DOM mutations), so the rest of the 10000ms auto-wait budget could n | line 32, toolu_01L7GSPCS9VUdwPBf3fMoXQ6 | Filed/folded 270; preserve actual error |
+| S/wikipedia_link_follow/1 | No successful required click/submission; URL recovery substituted; raw grade PASS | Full command/result trace | Filed/folded 270; strict action caveat retained |
+| S/wikipedia_link_follow/2 | ref Charles Babbage not found (not registered in this daemon session) | line 18, toolu_01McbxG7ifuZJbAFNBSqeyHx | Filed/folded 270; preserve actual error |
+| S/wikipedia_link_follow/2 | Upstream FAIL: URL substituted for click | grade.json and terminal answer | Filed 270; no replacement |
+| S/wikipedia_link_follow/2 | No successful required click/submission; URL recovery substituted; raw grade FAIL | Full command/result trace | Filed/folded 270; strict action caveat retained |
+| S/wikipedia_link_follow/3 | selector 'e209' not ready — 0 elements matched (not found) after 2009ms — the page is idle (document complete, no network in flight, no DOM mutations), so the rest of the 10000ms auto-wait budget could not have changed the answer | line 14, toolu_013KK1KkRL4NYUZ6JLvJyhgm | Filed/folded 270; preserve actual error |
+| S/wikipedia_link_follow/3 | No successful required click/submission; URL recovery substituted; raw grade PASS | Full command/result trace | Filed/folded 270; strict action caveat retained |
+| S/wikipedia_search_click/1 | unexpected argument '--url' found | line 8, toolu_01W2548LvTNGtygtjZUEyWfx | Filed/folded 270; preserve actual error |
+| S/wikipedia_search_click/2 | unexpected argument '--url' found | line 8, toolu_01RSCfFj6gPGy4RYDHUucnNK | Filed/folded 270; preserve actual error |
+| S/wikipedia_search_click/3 | unrecognized subcommand 'nav' | line 8, toolu_01Bxe6meQkjXpvBmcpxX6wkJ | Filed/folded 270; preserve actual error |
+| S/wikipedia_search_click/3 | unexpected argument '--value' found | line 24, toolu_01JmJnsLi5vLLN2baNxfooqU | Filed/folded 270; preserve actual error |
+| S/wikipedia_search_click/3 | selector '#searchform button[type=submit]' not ready — 0 elements matched (not found) after 2132ms — the page is idle (document complete, no network in flight, no DOM mutations), so the rest of the 10000ms auto-wait budget could n | line 30, toolu_01LFgqS3VbBXrUoTd2oDvWyb | Filed/folded 270; preserve actual error |
+| S/wikipedia_table_read/1 | unexpected argument '--expression' found | line 20, toolu_01Vspx3rqH7eNk9q2rjdBZus | Filed/folded 270; preserve actual error |
+| S/wikipedia_table_read/3 | unexpected argument '--expression' found | line 20, toolu_01Xkg1CXi2YM9Z6GgWN1hQ7S | Filed/folded 270; preserve actual error |
+
+Original acceptance wording and historical tables are unchanged. The record-only
+measurement ACs are fulfilled despite numeric target misses; no predecessor's
+unticked numeric criterion is silently ticked. Fresh ordered stable update,
+fmt, strict workspace clippy and workspace tests passed on 2026-09-13 for the
+final measurement documentation: 2466 passed, 0 failed, 415 ignored over 36
+summaries; clippy 0.1.98 (48a229ceae 2026-09-01). Evidence is retained in
+`iter256-measurement-review/ordered-gates.json` beneath the same run root.
+All nine xtask gates and actual dogfood remain applicable to unchanged harness
+inputs, with prior reuse proofs retained. Affected documentation/plan checks
+are rerun after completion-only status and evidence updates. All upcoming
+planned iterations, including outside 252–257, have property/body snapshots,
+hashes and dispositions in `upcoming-reconciliation.json`; inspecting them does
+not execute them. Earlier preparation records describe their then-pending
+state and are superseded by this final measurement record.
 
 ## Design notes
 
