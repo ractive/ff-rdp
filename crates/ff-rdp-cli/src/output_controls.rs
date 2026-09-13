@@ -222,6 +222,25 @@ impl QueryFilter {
         }
     }
 
+    /// Literal matching plus a bounded founding-date vocabulary for fact keys.
+    /// Other fields and regex queries retain their ordinary matching semantics.
+    pub(crate) fn matches_fact_key(&self, key: &str) -> bool {
+        if self.matches(key) {
+            return true;
+        }
+        let Some(Matcher::Substring(needle)) = &self.matcher else {
+            return false;
+        };
+        let founding = |word: &str| matches!(word, "formation" | "formed" | "founded");
+        let mut words = needle.split_whitespace().peekable();
+        words.peek().is_some()
+            && words.all(founding)
+            && key
+                .to_lowercase()
+                .split(|c: char| !c.is_alphanumeric())
+                .any(founding)
+    }
+
     /// Whether any string *directly* reachable in `value` matches: the value
     /// itself when it is a string, every element of an array, and every
     /// value of an object.
@@ -648,6 +667,55 @@ mod tests {
             !f.matches("abc"),
             "'.' must be literal without --query-regex"
         );
+    }
+
+    #[test]
+    fn unit_255_fact_key_vocabulary_has_positive_and_negative_real_keys() {
+        // Keys from organization, language and software infoboxes. In particular,
+        // Foundation/Founder and Information must not be mistaken for Formation.
+        for needle in ["formed", "founded", "founded formed", "FORMED", "formation"] {
+            let filter = QueryFilter::from_query_args(&query_args(Some(needle), None));
+            for key in ["Formation", "Founded", "Formed", "Date founded"] {
+                assert!(
+                    filter.matches_fact_key(key),
+                    "{needle:?} must match {key:?}"
+                );
+            }
+            for key in [
+                "Founder",
+                "Founders",
+                "Foundation",
+                "Information",
+                "Format",
+                "Platform",
+                "Stable release",
+                "Developer",
+                "Genre",
+                "Dissolved",
+                "Headquarters",
+            ] {
+                assert_eq!(
+                    filter.matches_fact_key(key),
+                    filter.matches(key),
+                    "{needle:?} must not add a near-match for {key:?}"
+                );
+            }
+        }
+        for needle in ["not formed", "new foundation", "found", "form"] {
+            let filter = QueryFilter::from_query_args(&query_args(Some(needle), None));
+            // Existing literal substrings such as `form` still match, but no
+            // expansion may manufacture a hit on a different key.
+            assert_eq!(
+                filter.matches_fact_key("Formation"),
+                filter.matches("Formation")
+            );
+        }
+        let literal = QueryFilter::from_query_args(&query_args(Some("founded formed"), None));
+        assert!(!literal.matches("Formation"));
+        assert!(!literal.matches_shallow(&serde_json::json!({"name": "Formation"})));
+        let regex = QueryFilter::from_query_args(&query_args(None, Some("^formed$")));
+        assert!(!regex.matches_fact_key("Formation"));
+        assert!(regex.matches_fact_key("formed"));
     }
 
     #[test]
