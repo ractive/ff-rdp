@@ -94,23 +94,103 @@ pub(super) fn resolve_command() -> Result<String, AppError> {
             )
         })?
     };
-    Ok(command_for_path(path))
+    command_for_path(path)
 }
 
-fn command_for_path(path: &str) -> String {
+// Windows can refuse system-path discovery/quoting; keep the shared signature.
+#[cfg_attr(not(windows), allow(clippy::unnecessary_wraps))]
+fn command_for_path(path: &str) -> Result<String, AppError> {
     #[cfg(not(windows))]
     {
         // Codex invokes SHELL -lc (fallback /bin/sh). Single quotes preserve
         // whitespace, substitutions, backslashes, separators and wildcards.
-        format!("'{}' {HOOK_ARGS}", path.replace('\'', "'\"'\"'"))
+        Ok(format!("'{}' {HOOK_ARGS}", path.replace('\'', "'\"'\"'")))
     }
     #[cfg(windows)]
     {
-        // Codex's Windows default is COMSPEC /C, where percent expansion still
-        // happens inside quotes. cmd sees only base64, never path characters.
-        let encoded = powershell_encoded_command(path);
-        format!("powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand {encoded}")
+        windows_command_for_path(path, &system_powershell()?)
     }
+}
+
+#[cfg(windows)]
+fn system_powershell() -> Result<String, AppError> {
+    // Discover the OS directory, not an environment variable (SystemRoot/WINDIR)
+    // or PATH. The existing CLI unsafe policy allows only audited FFI blocks.
+    let directory = system_directory_with(|buffer| {
+        let size = u32::try_from(buffer.len()).map_err(std::io::Error::other)?;
+        #[allow(unsafe_code)]
+        // SAFETY: buffer is writable for exactly size u16 elements. Windows
+        // retains no pointer; read only the returned initialized prefix below.
+        let length = unsafe {
+            windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW(
+                buffer.as_mut_ptr(),
+                size,
+            )
+        };
+        if length == 0 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(length as usize)
+        }
+    })
+    .map_err(|error| {
+        AppError::User(format!(
+            "cannot resolve Windows system directory ({error}) — no hook written"
+        ))
+    })?;
+    let shell = Path::new(&directory).join(r"WindowsPowerShell\v1.0\powershell.exe");
+    if !shell.is_absolute() || !shell.is_file() {
+        return Err(AppError::User(format!(
+            "system PowerShell is not an absolute executable file: {} — no hook written",
+            shell.display()
+        )));
+    }
+    shell.into_os_string().into_string().map_err(|_| {
+        AppError::User("system PowerShell path is not valid Unicode — no hook written".to_owned())
+    })
+}
+
+#[cfg(any(windows, test))]
+fn system_directory_with(
+    mut read: impl FnMut(&mut [u16]) -> std::io::Result<usize>,
+) -> std::io::Result<String> {
+    let mut buffer = vec![0; 260];
+    loop {
+        let length = read(&mut buffer)?;
+        if length == 0 {
+            return Err(std::io::Error::other("empty Windows system directory"));
+        }
+        if length < buffer.len() {
+            return String::from_utf16(&buffer[..length]).map_err(std::io::Error::other);
+        }
+        // GetSystemDirectoryW returns the required size including NUL when
+        // insufficient. Bound allocation to the Windows extended path limit.
+        if length >= 32_768 {
+            return Err(std::io::Error::other(
+                "Windows system directory exceeds path limit",
+            ));
+        }
+        buffer.resize(length + 1, 0);
+    }
+}
+
+#[cfg(any(windows, test))]
+fn windows_command_for_path(path: &str, shell: &str) -> Result<String, AppError> {
+    // cmd searches cwd before PATH for a bare executable, even for a trusted
+    // unchanged hook. Only the OS-discovered absolute PowerShell may launch.
+    // Quotes preserve spaces/&/Unicode; % expands even inside quotes and ! can
+    // expand with delayed expansion. Refuse unrepresentable system paths rather
+    // than falling back to an unsafe lookup. The ff-rdp path stays encoded data.
+    if shell
+        .chars()
+        .any(|c| matches!(c, '"' | '%' | '!') || c.is_control())
+    {
+        return Err(AppError::User("system PowerShell path cannot be represented safely in a Codex cmd hook — no hook written".to_owned()));
+    }
+    let encoded = powershell_encoded_command(path);
+    Ok(format!(
+        "\"{shell}\" -NoLogo -NoProfile -NonInteractive -EncodedCommand {encoded}"
+    ))
 }
 
 #[cfg(any(windows, test))]
@@ -132,6 +212,141 @@ fn powershell_encoded_command(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_system_directory_handles_resize_and_errors() {
+        let directory = format!("D:\\{}\\Grüße", "long".repeat(80));
+        let wide: Vec<_> = directory.encode_utf16().collect();
+        let mut calls = 0;
+        let actual = system_directory_with(|buffer| {
+            calls += 1;
+            if buffer.len() <= wide.len() {
+                return Ok(wide.len() + 1);
+            }
+            buffer[..wide.len()].copy_from_slice(&wide);
+            Ok(wide.len())
+        })
+        .unwrap();
+        assert_eq!(actual, directory);
+        assert_eq!(calls, 2);
+        assert!(
+            system_directory_with(|_| Err(std::io::Error::other("API failure")))
+                .unwrap_err()
+                .to_string()
+                .contains("API failure")
+        );
+        assert!(system_directory_with(|_| Ok(0)).is_err());
+        assert!(system_directory_with(|_| Ok(32_768)).is_err());
+        assert!(
+            system_directory_with(|buffer| {
+                buffer[0] = 0xD800;
+                Ok(1)
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn codex_windows_command_quotes_system_shell_and_refuses_expansion() {
+        let shell = r"D:\Windows space & Grüße\System32\WindowsPowerShell\v1.0\powershell.exe";
+        let command = windows_command_for_path("literal %path% James’s !", shell).unwrap();
+        assert_eq!(
+            command,
+            format!(
+                "\"{shell}\" -NoLogo -NoProfile -NonInteractive -EncodedCommand {}",
+                powershell_encoded_command("literal %path% James’s !")
+            )
+        );
+        for unsafe_shell in [
+            "D:\\%SHELL%\\powershell.exe",
+            "D:\\!SHELL!\\powershell.exe",
+            "D:\\a\"b\\powershell.exe",
+            "D:\\a\nb\\powershell.exe",
+            "D:\\a\0b\\powershell.exe",
+        ] {
+            assert!(
+                windows_command_for_path("ff-rdp", unsafe_shell)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("no hook written")
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn codex_windows_hook_ignores_cwd_powershell_decoy() {
+        use std::os::windows::process::CommandExt;
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("probe.rs");
+        let probe = temp.path().join("probe.exe");
+        std::fs::write(
+            &source,
+            r#"fn main() {
+            if std::env::current_exe().unwrap().file_name().unwrap() == "powershell.exe" {
+                std::fs::write("DECOY_EXECUTED", "bad").unwrap();
+                std::process::exit(97);
+            }
+            assert_eq!(std::env::args().skip(1).collect::<Vec<_>>(), ["home", "--hook"]);
+            println!("ARGV_OK");
+            std::process::exit(std::env::var("PROBE_EXIT").unwrap().parse().unwrap());
+        }"#,
+        )
+        .unwrap();
+        assert!(
+            std::process::Command::new("rustc")
+                .arg(&source)
+                .arg("-o")
+                .arg(&probe)
+                .status()
+                .unwrap()
+                .success()
+        );
+        std::fs::copy(&probe, temp.path().join("powershell.exe")).unwrap();
+        let marker = temp.path().join("DECOY_EXECUTED");
+        let command = command_for_path(probe.to_str().unwrap()).unwrap();
+        let shell = system_powershell().unwrap();
+        assert!(command.starts_with(&format!("\"{shell}\" ")));
+        let cmd = Path::new(&shell)
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("cmd.exe");
+        let run = |command: &str, exit: i32| {
+            let mut process = std::process::Command::new(&cmd);
+            // Match Codex's Windows adapter exactly: /C plus quoted raw command.
+            process.arg("/C").raw_arg(format!("\"{command}\""));
+            process
+                .current_dir(temp.path())
+                .env("PROBE_EXIT", exit.to_string())
+                .output()
+                .unwrap()
+        };
+        // Deliberately mutate only trusted shell selection. This positive
+        // control proves cmd selected the cwd decoy and the sentinel detects it.
+        let mutant = command.replacen(&format!("\"{shell}\""), "powershell.exe", 1);
+        let before = run(&mutant, 0);
+        assert_eq!(before.status.code(), Some(97), "mutation: {before:?}");
+        assert!(marker.exists());
+        std::fs::remove_file(&marker).unwrap();
+        for exit in [0, 23] {
+            let after = run(&command, exit);
+            assert_eq!(after.status.code(), Some(exit), "repaired: {after:?}");
+            assert_eq!(String::from_utf8(after.stdout).unwrap().trim(), "ARGV_OK");
+            assert!(!marker.exists(), "cwd PowerShell decoy executed");
+        }
+        let missing = command_for_path(temp.path().join("missing.exe").to_str().unwrap()).unwrap();
+        let output = run(&missing, 0);
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert!(!output.stderr.is_empty());
+        assert!(!marker.exists());
+        eprintln!(
+            "Native cmd control: bare-shell mutation executed decoy/97; trusted shell ran child0/23 and missing1 without decoy"
+        );
+    }
 
     #[test]
     fn codex_repairs_owned_shape_and_duplicates() {
@@ -186,7 +401,7 @@ mod tests {
             .iter()
             .flat_map(|shell| [&control, &binary].map(|path| (shell, path)))
         {
-            let command = command_for_path(path.to_str().unwrap());
+            let command = command_for_path(path.to_str().unwrap()).unwrap();
             #[cfg(not(windows))]
             let mut process = {
                 let mut p = std::process::Command::new(shell);

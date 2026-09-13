@@ -477,18 +477,21 @@ pub fn run(cli: &Cli, args: &InstallHookArgs) -> Result<(), AppError> {
         codex::check_gate(&path.with_file_name("config.toml"))?;
     }
     let command = if target == Target::Codex {
-        codex::resolve_command()?
+        // Removal needs no executable: it must work even if system PowerShell
+        // is missing or its path cannot safely represent an install command.
+        (!args.uninstall).then(codex::resolve_command).transpose()?
     } else {
-        resolve_hook_command()
+        Some(resolve_hook_command())
     };
+    let command_text = command.as_deref().unwrap_or_default();
     let mut settings = read_settings(&path)?;
 
     let action = if args.uninstall {
         apply_uninstall(&mut settings)
     } else if target == Target::Codex {
-        codex::install(&mut settings, &command)?
+        codex::install(&mut settings, command_text)?
     } else {
-        apply_install(&mut settings, &command)
+        apply_install(&mut settings, command_text)
     };
 
     if action.writes() && !args.dry_run {
@@ -502,7 +505,7 @@ pub fn run(cli: &Cli, args: &InstallHookArgs) -> Result<(), AppError> {
         "command": command,
         "action": action.as_str(),
         "dry_run": args.dry_run,
-        "entry": if args.uninstall { Value::Null } else { managed_group(&command) },
+        "entry": if args.uninstall { Value::Null } else { managed_group(command_text) },
     });
     if target == Target::Codex && !args.uninstall {
         results["next_step"] = json!(codex::TRUST_NOTE);
@@ -521,11 +524,11 @@ pub fn run(cli: &Cli, args: &InstallHookArgs) -> Result<(), AppError> {
             if target == Target::Codex {
                 println!("{}", codex::TRUST_NOTE);
             }
-            println!("SessionStart hook command: {command}");
+            println!("SessionStart hook command: {command_text}");
             println!(
                 "{}",
                 serialize_settings(&json!({
-                    "hooks": { "SessionStart": [managed_group(&command)] }
+                    "hooks": { "SessionStart": [managed_group(command_text)] }
                 }))
                 .trim_end()
             );

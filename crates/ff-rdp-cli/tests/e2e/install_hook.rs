@@ -499,6 +499,7 @@ fn install_hook_codex_uninstall_removes_only_its_entry() {
     let output = run(home.path(), &["--codex", "--uninstall"]);
     assert!(output.status.success(), "{}", support::output_note(&output));
     assert_eq!(results(&output)["action"], "uninstalled");
+    assert_eq!(results(&output)["command"], serde_json::Value::Null);
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&fs::read(&path).unwrap()).unwrap(),
         original

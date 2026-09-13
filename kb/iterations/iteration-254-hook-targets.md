@@ -2,7 +2,7 @@
 title: "Iteration 254: install-hook for Codex and OpenCode, against pinned schemas"
 type: iteration
 date: 2026-08-30
-status: done
+status: in-review
 branch: iter-254/hook-targets
 depends_on: [212]
 first_call_sites: []
@@ -60,6 +60,8 @@ supervisor_repair1_closing: >-
   failing-occurrence attribution unmet. Native Windows exact-head CI and fresh independent
   review are still pending. No254/246body exception received or applied.
 finalization_2026_09_13: "Owner clarified: use Hyalo for supported operations; direct KB body edits allowed. Required Outcome section and heading counts now written, Theme C ticked via Hyalo. Original AC wording unchanged. All ten native CI checks34710505693 passed exact product/test headf0385a556d157f2d15c845ab58280d81582acca8, including actual Windows PowerShell controls and custom-home e2e; fresh independent review01a096d3-1053-7770-9245-d41fb3a56f4b exit0 explicit[] (9read-onlyexec). This finalization changes documentation only; final updated-head checks and review required before merge. Historical metadata below records earlier attempts, including resolved tooling and Windows blockers; it is not current status. Final product sweep is review_repair_1_sweep:338=330pass+8fail, all five tiers/names/profilezero. Seven screenshots257 and distinct161post-authTimeout267 remain with causes/failed-occurrence timing unmet. All9xtask gates passed on unchanged production; ordered gates rerun for this docs checkpoint."
+review_repair_2: "2026-09-13 formal repair2 of2: P1 bare powershell.exe cwd hijack repaired with GetSystemDirectoryW plus existing absolute WindowsPowerShell/v1.0/powershell.exe; no SystemRoot/WINDIR/PATH discovery or hardcoded drive. Narrow audited FFI preserves unsafe policy. Quoted system path rejects percent/exclamation/quote/control expansion, API failure, invalid Unicode, missing/nonabsolute executable with visible no-write error; ff-rdp path encoding/child status semantics unchanged. Codex uninstall now skips command resolution and returns command:null, so removal remains available when shell resolution fails. Refetched pinned Codex0.153.4 source confirms COMSPEC/cmd /C raw-quoted command and session cwd. Added native Windows actual decoy + deliberate bare-shell mutation control, child0/23 and missing1 controls; Windows execution is mandatory and pending exact-head CI, not established by macOS. Local deterministic rendering and buffer/error tests pass; deliberate bare-shell and uninstall-resolution mutations each failed the named regression and were restored byte-for-byte. Earlier first ordered gate sequence passed before uninstall adjustment and is retained in gates-before-uninstall; final ordered gates and fresh sweep pending. No original tasks or AC wording changed."
+review_repair_2_sweep: "2026-09-13 final repair 2 product-source sweep after freeze a085f5d161ed77762717879de0aef907961b4b42, FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo run -p xtask -- live-sweep: LIVE_SWEEP_SUMMARY executed=338 skipped=0 preexisting=0 vanished=0 launch_timeout=0 timed_out=0 total=338. CLI 320 passed + 9 failed and core 1+3+3+2 passed = 329 passed + 9 failed. All 338 expected/observed qualified names reconcile, no missing/extra/duplicates; all five per-tier profile checks and final LIVE_SWEEP_PROFILES leaked=0 unattributed=0. Seven Firefox 155 full-page failures reproduced identical dictionary TypeError in exact isolation and remain in plan 257. Consent promotion and separately unattributed 140 zero-frame error passed exact isolation, remain in plan 262 with distinct evidence and no claimed common cause; prior ready-target Sourcepoint action failures remain unresolved. Prior 161 post-auth Timeout in plan 267 and 203 styles / first dogfood exit 124 observations remain preserved/unmet even though current sweep passed 161. Raw Firefox PID 65299 /tmp/ff-rdp-254-raw.sA6SzK stopped/reaped with status 143; port 6000 free; desktop PID 37270 untouched. All nine actual xtask checks passed after sweep/isolations, including live owned-browser dogfood 38.88 s. Ordered local gates: 2463 passed / 0 failed / 410 ignored before sweep; final docs checkpoint gates to follow. Native Windows decoy/mutation and final exact-head CI plus independent review remain supervisor-owned prerequisites, no macOS Windows result claimed. Full evidence review-repair-2 directory; all earlier failed attempts retained."
 ---
 
 # Iteration 254: install-hook for Codex and OpenCode
@@ -122,6 +124,47 @@ published documentation first, then write against the pinned shape.
 Codex installation, repair, dry-run, idempotence and uninstall are implemented. The actual Codex 0.153.4 loader accepted the installed entry. The explicit `features.hooks = true` check is ff-rdp installer opt-in policy; Codex itself enables hooks by default. New or changed commands still require trust through `/hooks`.
 
 Theme C is **obsolete**, as permitted by this plan: the pinned OpenCode 1.3.13 contract requires a JavaScript/TypeScript plugin module. `--opencode` retains its refusal. The pinned documentation, fixture and source evidence are recorded in [[agent-hook-formats]].
+
+## Review repair 2 (2026-09-13)
+
+The Windows command now selects an absolute system PowerShell path through
+`GetSystemDirectoryW`, with explicit discovery/quoting errors and no cwd or PATH
+lookup. Codex uninstall skips that resolution. Literal ff-rdp path data and child
+exit status handling are preserved. See [[agent-hook-formats]] for the pinned
+Codex shell adapter, Microsoft API contract, and trust assumptions.
+
+The fresh dual-gate sweep executed 338 tests: 329 passed and 9 failed. All five
+tiers and 338 exact names reconcile; all five profile scans are clean. Seven
+screenshot failures reproduce in isolation; consent promotion and the separate
+zero-frame report pass isolation without establishing a fix. All nine xtask
+checks ran after isolation, including actual live dogfood. Native Windows
+execution of the new decoy/mutation regression remains required on the final
+PR head before merge. The plan stays in-review.
+
+## Carry-over
+
+Earlier failed attempts and their full evidence remain in the historical
+frontmatter. These are the current dispositions; no acceptance criterion was
+reworded, and later passes do not close unresolved failing occurrences.
+
+| Item | Disposition |
+|---|---|
+| live_135_screenshot_ff153::live_135_screenshot_full_page_taller | Fold into [[iteration-257-firefox-155-drawsnapshot-dictionary-arg]]: identical Firefox 155 drawSnapshot fourth-argument dictionary TypeError in sweep and exact isolation. |
+| live_137_daemon_mode_parity::live_137_consent_accept_via_daemon | Fold into [[iteration-262-daemon-live-target-never-promoted]]: measured target_count=1 / live_target_count=0 promotion failure after 15042 ms / 47 polls; exact isolation promoted in 35 ms / 1 poll and accepted consent. This pass does not close promotion or the separate historical ready-target Sourcepoint failure. |
+| live_140_element_targeting::live_140_frame_error_bounded | Fold into [[iteration-262-daemon-live-target-never-promoted]] with the existing unattributed zero-frame family: missing-selector error reported 0 of 0 / of 0 total; exact isolation passed. No failing-occurrence counters or common cause captured; original promotion ACs remain unmet. |
+| live_144_session_hygiene_followup::live_144_full_page_no_duplicate_header | Fold into [[iteration-257-firefox-155-drawsnapshot-dictionary-arg]]: identical Firefox 155 drawSnapshot fourth-argument dictionary TypeError in sweep and exact isolation. |
+| live_61l::live_screenshot_full_page | Fold into [[iteration-257-firefox-155-drawsnapshot-dictionary-arg]]: identical Firefox 155 drawSnapshot fourth-argument dictionary TypeError in sweep and exact isolation. |
+| live_61r_screenshot::live_screenshot_full_page | Fold into [[iteration-257-firefox-155-drawsnapshot-dictionary-arg]]: identical Firefox 155 drawSnapshot fourth-argument dictionary TypeError in sweep and exact isolation. |
+| live_92_screenshot_full_page::live_screenshot_full_page_md5_differs_from_viewport | Fold into [[iteration-257-firefox-155-drawsnapshot-dictionary-arg]]: identical Firefox 155 drawSnapshot fourth-argument dictionary TypeError in sweep and exact isolation. |
+| live_92_screenshot_full_page::pre_fix_repro_screenshot_full_page_taller_than_viewport | Fold into [[iteration-257-firefox-155-drawsnapshot-dictionary-arg]]: identical Firefox 155 drawSnapshot fourth-argument dictionary TypeError in sweep and exact isolation. |
+| live_screenshot_shim::live_screenshot_unchanged_after_shim | Fold into [[iteration-257-firefox-155-drawsnapshot-dictionary-arg]]: identical Firefox 155 drawSnapshot fourth-argument dictionary TypeError in sweep and exact isolation. |
+| Historical live_161_build_script_matrix_evaluates post-auth Timeout from repair1 | Fold remains [[iteration-267-daemon-post-auth-timeout-recurrence]]: failing-occurrence auth/request/dispatcher timing is still mandatory and unmet. Current sweep pass does not establish cause or resolution. |
+| Historical styles/missing-selector sweep watches | Fold remains [[iteration-203-live-sweep-watch-conditions-third-holder]]; retain original observations and firing conditions. |
+| Historical first 254 dogfood exit 124 before sentinel | Fold remains [[iteration-203-live-sweep-watch-conditions-third-holder]]: output was lost; later passes do not explain that occurrence. |
+| Required native Windows P1 verification | Repair implemented in codex.rs; mandatory Windows test includes cwd decoy, deliberate bare-shell mutation, child 0/23 and missing 1. Exact-head Windows CI is still required before merge; this is not deferred to another plan. |
+| Uninstall when PowerShell resolution is unavailable | Closed in this repair: Codex uninstall skips executable resolution and emits command:null; the e2e regression and deliberate resolution mutation have opposite verdicts. |
+| Intentional bare-shell mutation and initial wrong --lib test invocation | Closed validation controls: bare-shell mutation failed its regression and source was restored; ff-rdp-cli has only a binary target, and the corrected --bin invocation passed. Neither is omitted from evidence. |
+| Theme C Outcome placement and heading counts | Closed by the owner-authorized documentation finalization before repair2; OpenCode remains obsolete under the original allowed JS/TS-only contract. Original task/AC wording is unchanged. |
 
 ## Out of scope
 
