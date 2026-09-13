@@ -85,3 +85,22 @@ screenshot, daemon promotion, pre-auth or post-auth transport repairs.
 - [[iteration-255-infobox-facts-refs-and-query-matching]]
 - [[iteration-256-act-and-see-benchmark-rerun]]
 - [[axi-benchmark-comparison]]
+
+## Iteration 256 reconciliation, 2026-09-13
+
+The separate final256 baseline infobox runs 7/7/6 (mean6.667) used --with-page
+and --query in all three, but still searched for the PSF handle (3/3/2 commands);
+no Developer fact ref was consumed. All three PSF clicks succeeded and their
+post-action Formation answer needed no recovery. The real SessionStart runs
+11/9/7 (mean9.000) all used --query but only run 1 used --with-page. Run1 eventually
+clicked a CSS selector; runs 2/3 directly navigated to PSF, with run 3 masking an
+empty-ref error via shell recovery. All three raw judges passed. Runs2/3 queried
+page-text with "founded formed" then recovered through "2001", so their destination
+recovery is not evidence against255's post-action fact-key mechanism.
+
+All six still miss ≤ 5. Preserve the original255 table and its target; this is an
+additional dataset with its own model/argv/hook evidence in 256's measurement
+artifacts. Existing diagnosis tasks cover these infobox paths unchanged. The
+broader hook/action/other-extraction follow-up is
+[[iteration-270-benchmark-ambient-action-and-extraction-gaps]]; neither plan is
+executed by this reconciliation.
