@@ -507,3 +507,154 @@ The Quick-start line did what it was measured to do: adoption 1/6 → 6/6, overa
 `link_follow` at target and level with axi. It did **not** get `infobox_hop` to target, and the
 reason is now specific and measured rather than suspected. Filed as
 [[iteration-255-infobox-facts-refs-and-query-matching]].
+
+
+## Re-measurement 2026-09-13 — iteration 255 facts refs and fact-key matching
+
+Exactly two tasks × three repetitions, ff-rdp only; no smoke, ambient treatment,
+axi rerun, or repeat selected for a better result. Product
+`7045195f66d0663e70fc68c2364b8003f7d5318c`, tree
+`47fc9414db8cbe2f5269b4aa67a4aea0f0f70cd0`, was clean and independently reviewed.
+The immutable iteration-256 Theme A export
+`5786329668c95479a4b91710764c7cee0e782f4a` built that exact product in a private target.
+The 10 exported file hashes, Git blobs and read-only executable/data modes matched
+its manifest; no harness code entered iteration 255. Binary SHA-256:
+`41189615eff8b66c93a85ea51362650d3bc092390a5b9987a0b15ee6062eb7d0`.
+
+Requested agent and judge: `claude-sonnet-4-6`. The recovered append-system-prompt
+is unchanged, including its trailing newline; SHA-256
+`758dfb37452f8099cfb46460ee417ccc73839cf0ee3553f7da0558229be49c8b`.
+The upstream runner remains pinned at `d28c5e79aa7ee7a59a386fc34125f8cd1470fbeb`.
+Actual Claude Code was **2.1.270**, not the preparation observation 2.1.259;
+historical runs used **2.1.241**. Default system-prompt equivalence is therefore
+unproved. Firefox 155.0.1, Node 24.19.0, pnpm launcher 11.24.0 / effective pinned
+11.1.1. Existing cached account; stale `ANTHROPIC_API_KEY` omitted only in the
+child environment, settings/hooks disabled. No account, model or global-setting
+change was made. Actual modelUsage includes auxiliary Haiku and is counted below.
+
+Evidence root (repository-relative):
+`.git/ralph-loop/20260912-validation-efficiency/iter255-measurement/`.
+`paid-evidence/` preserves 195 read-only files: exact task/condition prompts and
+argv, per-invocation streams and exits, source/binary provenance, upstream results,
+grades, lifecycle identities and cleanup verdict. `paid-evidence-sha256.json`
+records every file hash; `audit-classified.json` records every raw terminal result,
+full modelUsage, tool result, prompt hash and run-to-agent/judge identity.
+`per-run-analysis.md` gives every exact command, tool-use ID and classification.
+No historical table or metric was recalculated.
+
+### Six-run result
+
+Turns are terminal `result.num_turns`, equal to upstream `usage.turn_count` in all
+six runs; commands are a separate count of unique Bash tool-use IDs. Costs are
+CLI-reported list/API equivalents, **not subscription amounts billed**. Judges
+are shown separately from the historical agent-cost metric.
+
+| Task | Run | Grade | Turns | Commands | Agent USD | Judge USD | Seconds | Handle hunts | Query recovery |
+|---|---:|---|---:|---:|---:|---:|---:|---:|---:|
+| wikipedia_infobox_hop | 1 | PASS | 7 | 6 | 0.2345684 | 0.0864730 | 26.614 | 3 | 0 |
+| wikipedia_infobox_hop | 2 | PASS | 12 | 11 | 0.1703477 | 0.0664584 | 41.780 | 4 | 4 |
+| wikipedia_infobox_hop | 3 | PASS | 6 | 5 | 0.1443404 | 0.0996574 | 27.895 | 2 | 0 |
+| wikipedia_link_follow | 1 | PASS | 4 | 3 | 0.1042030 | 0.0872614 | 20.979 | 0 | 0 |
+| wikipedia_link_follow | 2 | PASS | 4 | 3 | 0.0705151 | 0.0533304 | 16.302 | 0 | 0 |
+| wikipedia_link_follow | 3 | PASS | 4 | 3 | 0.0703827 | 0.0530924 | 16.639 | 0 | 0 |
+
+| Task | Previous iteration 230 turns | Current mean turns | Mean agent USD | Mean judge USD | Mean seconds | Grades |
+|---|---:|---:|---:|---:|---:|---|
+| wikipedia_infobox_hop | 8.0 | 8.333 | 0.1830855 | 0.0841963 | 32.096 | 3/3 |
+| wikipedia_link_follow | 4.7 | 4.000 | 0.0817003 | 0.0645614 | 17.973 | 3/3 |
+
+Overall: 37 turns / 6 = **6.167**, 31 commands, mean agent cost **$0.1323929**,
+mean duration **25.035 s**. Agent total **$0.7943573**, judge total **$0.4462730**,
+combined list cost **$1.2406303**. Agent modelUsage splits into Sonnet
+$0.7882203 + Haiku $0.0061370; judge splits into Sonnet $0.4023420 + Haiku
+$0.0439310. Full per-run token/cache/thinking/model records remain in the audit;
+the upstream reasoning_tokens field remains zero even though raw modelUsage
+records thinkingTokens, so it is not relabeled as a measured absence of thinking.
+
+All 12 agent/judge invocations have one terminal `subtype: success`,
+`is_error: false`, child exit 0 and recorder exit 0; all six agent stream exits
+are 0, with no missing result, timeout, interruption, malformed JSON, duplicated
+run or unmatched invocation. All six per-run provenance copies match. Matrix,
+cleanup and external shell each independently exited **0**. The lifecycle log
+records six private Firefox starts and the corresponding daemon/Firefox stops;
+all owned PIDs are gone, port 6000 is free, and desktop Firefox PID 37270 survives.
+Execution wrapper: 2026-09-13 18:49:39–18:53:23 UTC (20:49:39–20:53:23 CEST).
+
+### Adoption and the remaining work
+
+All six initial navigations used `--with-page --query`; all six destination
+actions did too. Every first tool was `ff-rdp --help` (whole help in infobox run 3
+and link-follow run 1; `head -50` in the other four). All three link-follow runs
+used initial interactive ref `e1`, then `click --ref e1 --with-page --query born`:
+4/4/4 turns, zero ref hunts, zero recovery commands. No regression is observed
+in this three-run control; it does not establish statistical equivalence.
+
+Infobox runs 1 and 3 queried `stable release`, so only that fact and its links
+survived filtering; the Developer fact was outside the query. Run 2 queried
+`stable release infobox developer` as one literal string and got zero matches,
+with `query_fact_keys` explicitly listing Developer and Stable release. No run
+consumed a Developer fact ref. The new handle exists when that fact is retained,
+as the live tests and dogfood demonstrate, but these trajectories never requested
+it through a page view. This is an observed discovery gap, not evidence that a
+returned fact ref failed.
+
+Handle hunts below count commands seeking a handle for the task's already named
+PSF target, including unsuccessful text/a11y attempts and the URL recovery in run
+2. They do not count all post-navigation commands as hunts. Run 3's DOM hunt
+ended in a CSS-selector click, not a numeric-ref click. Run 2 ended in URL
+navigation, not a click. Exact commands and tool-use IDs:
+
+**Infobox run 1 — 3 handle hunts.**
+
+- Command 3, `toolu_012TwpKuaYe7TR1D3CGoY2r8`: `ff-rdp page-text --query "Python Software Foundation" 2>&1`
+- Command 4, `toolu_01JGsWgVtxZGC1dwPab1bQ1k`: `ff-rdp a11y summary 2>&1 | grep -i "Python Software Foundation" | head -20`
+- Command 5, `toolu_014dDQyoaUFyhcksKDfcAwBh`: `ff-rdp dom "a[href*='Python_Software_Foundation']" 2>&1 | head -40`
+
+**Infobox run 2 — 4 handle hunts.**
+
+- Command 7, `toolu_01GJ7XxuEKUM6nPo9xWpi5Qm`: `ff-rdp page-text --query "Python Software Foundation" 2>&1`
+- Command 8, `toolu_011a28jmFpMjVzEVLGU1r2bA`: `ff-rdp a11y summary 2>&1 | grep -i "python software foundation" | head -20`
+- Command 9, `toolu_01VX3ZqQ4Sz7y2G5iYZ9Exat`: `ff-rdp eval "Array.from(document.querySelectorAll('.infobox a')).map(a => ({text: a.textContent.trim(), href: a.href})).filter(a => a.text.includes('Python Software Foundation'))" 2>&1`
+- Command 10, `toolu_01LAqf4JPaGHLoyHBnLqySAJ`: `ff-rdp eval "JSON.stringify(Array.from(document.querySelectorAll('.infobox a')).map(a => ({text: a.textContent.trim(), href: a.href})).filter(a => a.text.includes('Python Software Foundation')))" 2>&1`
+
+**Infobox run 3 — 2 handle hunts.**
+
+- Command 3, `toolu_01MDks1Qj9osHEq1j5UCRjBA`: `ff-rdp page-text --query "Python Software Foundation" --format text`
+- Command 4, `toolu_01PSsW3WCvBhFHmroSGM5u7N`: `ff-rdp dom "a[href*='Python_Software_Foundation']" --text-attrs --format text`
+
+Run 1: text returned no handle, a11y grep returned nothing, DOM supplied e54.
+Run 2: text returned no handle, a11y grep returned nothing, the first eval returned
+object grips without href values, and JSON.stringify recovered the URL. Run 3:
+text returned no handle; DOM text/attrs plus its hint supplied the selector used
+for the click. Thus ref/handle hunting persists at 3/4/2 commands, mean **3.0**.
+
+Separately, infobox run 2 commands 3–6 recover the initial compound-query miss:
+`page-text --query "Stable release Developer"` (`toolu_01DmSadgTpkpzJtj51zbJ2VJ`)
+also misses; `snapshot` filtered through grep
+(`toolu_01KccfrawC4orjZfF4mj9qPN`) returns nothing;
+`dom --selector ".infobox"` (`toolu_01F4L2x4Jg63GngQ8Eb4T2jp`) is a CLI
+argument error; corrected `dom ".infobox"` (`toolu_012AEyNaURtzxVRiamFyvQD1`)
+recovers the information. These four commands are query recovery, not ref hunts.
+The full pipelines are in the exact command trace. The error is preserved at
+`paid-evidence/results/ff-rdp/wikipedia_infobox_hop/run2/agent_output.txt:18`:
+`error: unexpected argument '--selector' found`. Its `2>&1 | head -100`
+pipeline returned tool_result.is_error false; upstream error_count is 0 in all
+runs. Neither that zero nor the passing judge grade means no CLI error occurred;
+the inner CLI exit status was not separately recorded.
+
+The final PSF action returned `Formation: March 6, 2001` immediately in all three
+runs (`formed`, `formed founded`, `formed` respectively), with no destination
+query-recovery commands. JSON runs report matches 1/query_source facts; the text
+run prints the Formation fact. This directly exercises the bounded key vocabulary.
+Run 2's judge passed the correct answer despite URL navigation replacing the
+requested click; preserve that raw grade and this task-fidelity caveat separately.
+The three-run result does not prove all required task actions were followed.
+
+**Verdict:** infobox **8.333** versus previous **8.0**, target ≤5 **not met**.
+The small mean difference and changed CLI do not support a causal regression
+claim. Formation recovery disappeared in this sample; the fact-handle mechanism
+was not adopted. Iteration 255's measurement criterion is fulfilled and its
+original numeric target remains unticked. Remaining discovery/query-recovery and
+task-fidelity work is filed in
+[[iteration-269-infobox-discovery-after-fact-refs]] before merge. No prompt,
+query/default/help behavior or historical metric was changed to improve the score.

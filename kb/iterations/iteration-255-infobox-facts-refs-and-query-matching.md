@@ -2,7 +2,7 @@
 title: "Iteration 255: give infobox facts a ref, and stop --query missing Formation for \"formed\""
 type: iteration
 date: 2026-09-01
-status: in-progress
+status: done
 branch: iter-255/infobox-facts-refs-and-query-matching
 depends_on:
   - 230
@@ -106,17 +106,17 @@ Five of eight commands are recovering things the payload already had.
 - [x] `matches: 0` reports what was compared against
 - [x] Live test: `--query 'founded formed'` on the PSF article reaches `Formation`
 
-### C. Re-measure [0/2]
-- [ ] `matrix --condition ff-rdp --task wikipedia_infobox_hop,wikipedia_link_follow --repeat 3`
+### C. Re-measure [2/2]
+- [x] `matrix --condition ff-rdp --task wikipedia_infobox_hop,wikipedia_link_follow --repeat 3`
       on a browser this run owns
-- [ ] Record per-run turns and per-run ref-hunt command counts in [[axi-benchmark-comparison]]
+- [x] Record per-run turns and per-run ref-hunt command counts in [[axi-benchmark-comparison]]
 
-## Acceptance Criteria [2/4]
+## Acceptance Criteria [3/4]
 
 - [x] A `--query`-matched infobox fact whose value is a link exposes a handle that `click` accepts
 - [x] `--query 'founded formed'` on the PSF article either matches `Formation` or reports the keys
       it compared against
-- [ ] `wikipedia_infobox_hop` re-measured at `--repeat 3`, per-run numbers recorded whatever they are
+- [x] `wikipedia_infobox_hop` re-measured at `--repeat 3`, per-run numbers recorded whatever they are
 - [ ] `wikipedia_infobox_hop` ≤ 5 turns average — or the measured number recorded and this
       criterion left unticked, never reworded
 
@@ -303,3 +303,70 @@ the sweep and isolations. The raw unmanaged Firefox PID 52411 was stopped and
 its owned profile retained in `iter255-repair1/raw-profile-stopped`; the original
 implementation's stopped profile was preserved separately. The supervisor owns
 fresh repair review, all-upcoming-plan reconciliation, checkpoint and measurement.
+
+
+## Reviewed-checkpoint measurement — 2026-09-13
+
+The earlier implementation/repair statements that measurement was pending describe
+those phases; the exact six-run phase is now complete. Clean, pushed product
+`7045195f66d0663e70fc68c2364b8003f7d5318c` (reviewed tree
+`47fc9414db8cbe2f5269b4aa67a4aea0f0f70cd0`) was built by the immutable 256 Theme A
+export `5786329668c95479a4b91710764c7cee0e782f4a`, whose hashes and modes matched.
+No source, help, defaults, harness or prompt was edited for this measurement.
+Exactly `wikipedia_infobox_hop,wikipedia_link_follow --repeat 3`, ff-rdp only,
+label `iteration255-baseline`; no rerun or ambient treatment.
+
+| Task | Turns by run | Mean turns | Agent USD by run | Handle hunts by run | Query recovery by run | Grades |
+|---|---|---:|---|---|---|---|
+| wikipedia_infobox_hop | 7, 12, 6 | **8.333** | 0.2345684, 0.1703477, 0.1443404 | 3, 4, 2 | 0, 4, 0 | 3/3 PASS |
+| wikipedia_link_follow | 4, 4, 4 | **4.000** | 0.1042030, 0.0705151, 0.0703827 | 0, 0, 0 | 0, 0, 0 | 3/3 PASS |
+
+Turns are actual terminal num_turns, agreeing with upstream usage.turn_count;
+31 commands are separate from 37 turns. Initial navigate and final action used
+--with-page/--query in 6/6. Formation was returned immediately in 3/3 infobox
+runs, but no run requested the Developer fact through a matching page view, so
+none used its fact ref. Stable-release-only queries filter it out; one compound
+literal query misses all keys. Handle hunting persists. One run navigated by URL
+instead of clicking; its passing judge grade is preserved with that caveat.
+The same run's invalid `dom --selector` emitted an argument error hidden by a
+pipeline despite upstream error_count 0; all exact commands, outputs and IDs are
+recorded in [[axi-benchmark-comparison]] and the raw artifacts.
+
+The original ≤5 AC remains **unticked**. The measured 8.333 does not establish an
+improvement over the historical 8.0. The original alternative explicitly allows
+recording the measured miss without rewording or repeating it. All current
+implementation/measurement tasks are fulfilled; supervisor review, final status,
+backlog reconciliation and publication remain supervisor-owned.
+
+Evidence root: `.git/ralph-loop/20260912-validation-efficiency/iter255-measurement/`.
+Paid raw files are read-only with a SHA-256 manifest. Six result records and twelve
+agent/judge invocations reconcile exactly; all terminal results are success,
+is_error false, child/recorder exits 0, no timeout/missing result. Matrix exit 0,
+cleanup exit 0 and external exit 0 were inspected separately. Six owned browser
+starts/stops are recorded, port 6000 is free, desktop Firefox PID 37270 preserved.
+No authentication or infrastructure failure occurred.
+
+Requested agent/judge `claude-sonnet-4-6`; recovered append prompt unchanged.
+Actual CLI **2.1.270**, versus historical **2.1.241** and preparation observation
+2.1.259: default-prompt equivalence is unproved. Existing cached account, only
+child ANTHROPIC_API_KEY omitted. Agent list/API-equivalent total $0.7943573;
+judge $0.4462730, combined $1.2406303, not an inferred subscription bill.
+Auxiliary Haiku is included: agent $0.0061370, judge $0.0439310; full per-run
+modelUsage and separate Sonnet costs are retained. Binary SHA-256:
+`41189615eff8b66c93a85ea51362650d3bc092390a5b9987a0b15ee6062eb7d0`.
+
+| Measurement observation / requirement | Disposition |
+|---|---|
+| Two tasks × three actual runs and per-run turns/ref-hunts | **Closed in this phase**, all six records/12 invocations audited; no replacement measurements |
+| Infobox average 8.333 exceeds ≤5; continued 3/4/2 handle hunts and one four-command compound-query recovery | **File — [[iteration-269-infobox-discovery-after-fact-refs]]**; original target remains unticked. It does not defer a required 255 mechanism fix |
+| Infobox run 2 invalid --selector argument, pipeline-masked error, and URL navigation accepted by judge despite task click requirement | **Fold — iteration 269** diagnosis; preserve raw passing grade and tool error separately, no rewritten score |
+| Formation returns in 3/3 destination actions; link-follow 4/4/4 with no hunts | **No plan for a defect not observed**; retain evidence and reopen on an observed regression |
+| Actual CLI 2.1.270 differs from preparation 2.1.259 and historical 2.1.241 | **No plan, disclosed comparison limitation**; model and recovered append prompt verified, no causal claim from n=3 |
+| Clean matrix/process cleanup, no missing result or invocation | **No plan, measured clean**; infrastructure failures would require diagnosis before any repeat |
+
+The final-source sweep above remains 343 = 334 passed + 9 failed across all five
+tiers, with all five profile scans clean and all five new live tests passed.
+This KB-only phase preserves byte-identical product source; it does not rerun or
+relabel the sweep. Original 341 = 331 passed + 10 failed evidence, seven 257
+screenshot failures, 262 promotion/zero-frame and distinct pre-auth 268 carry-over
+remain intact. The post-auth 267 and 203 styles watches are not closed here.
