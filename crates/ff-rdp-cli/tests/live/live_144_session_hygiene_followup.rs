@@ -60,6 +60,83 @@ fn parse_json(out: &std::process::Output, test: &str) -> serde_json::Value {
     })
 }
 
+const BBC_FAILURE_CONTEXT_MAX_BYTES: usize = 16 * 1024;
+const BBC_FAILURE_CONTEXT_TRUNCATION_MARKER: &str = "\n...[diagnostic truncated]";
+
+fn cap_bbc_failure_context(note: String) -> String {
+    if note.len() <= BBC_FAILURE_CONTEXT_MAX_BYTES {
+        return note;
+    }
+
+    let prefix_limit =
+        BBC_FAILURE_CONTEXT_MAX_BYTES.saturating_sub(BBC_FAILURE_CONTEXT_TRUNCATION_MARKER.len());
+    let prefix_end = note
+        .char_indices()
+        .take_while(|(index, character)| *index + character.len_utf8() <= prefix_limit)
+        .map(|(index, character)| index + character.len_utf8())
+        .last()
+        .unwrap_or(0);
+    format!(
+        "{}{}",
+        &note[..prefix_end],
+        BBC_FAILURE_CONTEXT_TRUNCATION_MARKER
+    )
+}
+
+const BBC_FAILURE_CONTEXT_JS: &str = r#"(function() {
+      var MAX_MATCHES = 12;
+      var MAX_TEXT_LENGTH = 240;
+      var MAX_ATTRIBUTE_LENGTH = 160;
+      function truncate(value, limit) {
+        value = String(value || '');
+        return value.length <= limit ? value : value.slice(0, limit) + '...[truncated]';
+      }
+      function shape(el) {
+        var r = el.getBoundingClientRect();
+        return {
+          tag: el.tagName,
+          id: truncate(el.id, MAX_ATTRIBUTE_LENGTH),
+          role: truncate(el.getAttribute('role'), MAX_ATTRIBUTE_LENGTH),
+          className: truncate(el.className, MAX_ATTRIBUTE_LENGTH),
+          src: truncate(el.getAttribute('src'), MAX_ATTRIBUTE_LENGTH),
+          width: r.width,
+          height: r.height,
+          text: truncate(el.innerText || el.textContent, MAX_TEXT_LENGTH)
+        };
+      }
+      function cookieSummary() {
+        var raw = document.cookie || '';
+        var names = raw.split(';').map(function(part) {
+          return part.split('=')[0].trim();
+        }).filter(Boolean);
+        return {
+          present: raw.length > 0,
+          count: names.length,
+          names: names.slice(0, MAX_MATCHES).map(function(name) {
+            return truncate(name, MAX_ATTRIBUTE_LENGTH);
+          }),
+          omitted: Math.max(0, names.length - MAX_MATCHES),
+          rawLength: raw.length
+        };
+      }
+      function bounded(selector, limit) {
+        var all = Array.from(document.querySelectorAll(selector));
+        return {items: all.slice(0, limit).map(shape), omitted: Math.max(0, all.length - limit)};
+      }
+      return JSON.stringify({url: truncate(location.href, MAX_ATTRIBUTE_LENGTH),
+        documentURL: truncate(document.URL, MAX_ATTRIBUTE_LENGTH),
+        title: truncate(document.title, MAX_TEXT_LENGTH),
+        readyState: document.readyState,
+        language: navigator.language,
+        languages: Array.from(navigator.languages || []).slice(0, MAX_MATCHES),
+        documentLanguage: truncate(document.documentElement.lang, MAX_ATTRIBUTE_LENGTH),
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        cookies: cookieSummary(),
+        native: bounded('#bbccookies-continue-button', MAX_MATCHES),
+        banners: bounded('[id*="cookie"],[id*="consent"],[role="dialog"],iframe', MAX_MATCHES)
+      });
+    })()"#;
+
 /// `live_144_auto_consent_field_honest`:
 ///
 /// `launch --auto-consent`'s JSON reports `results.auto_consent_extension_installed`
@@ -157,13 +234,12 @@ fn live_144_bbc_cmp_dismissed() {
         .args(["navigate", "https://www.bbc.com/news"])
         .output()
         .expect("run navigate");
-    if !nav.status.success() {
-        eprintln!(
-            "{TEST}: navigate to www.bbc.com failed (network unavailable?) — skipping: {}",
-            String::from_utf8_lossy(&nav.stderr)
-        );
-        return;
-    }
+    assert!(
+        nav.status.success(),
+        "{TEST}: navigation failed; no dismissal was verified — {}\npage after failure: {}",
+        crate::common::output_note(&nav),
+        bbc_failure_context(ff.port())
+    );
 
     let out = Command::new(ff_rdp_bin())
         .args(base_args(ff.port()))
@@ -172,8 +248,10 @@ fn live_144_bbc_cmp_dismissed() {
         .expect("run consent accept");
     assert!(
         out.status.success(),
-        "{TEST}: consent accept failed — {}",
-        crate::common::output_note(&out)
+        "{TEST}: consent accept failed — {}\nnavigate: {}\npage after failure: {}",
+        crate::common::output_note(&out),
+        crate::common::output_note(&nav),
+        bbc_failure_context(ff.port())
     );
     let json = parse_json(&out, TEST);
     assert_eq!(
@@ -213,6 +291,37 @@ fn live_144_bbc_cmp_dismissed() {
         "{TEST}: the accept control is still visible after `consent accept` claimed \
          it was accepted: {inner}"
     );
+}
+
+// Read only after a failed command: an extra pre-consent round trip could hide
+// the readiness race this real-site test is intended to expose. This is a
+// subsequent observation, not an atomic snapshot of the failed consent call.
+fn bbc_failure_context(port: u16) -> String {
+    match Command::new(ff_rdp_bin())
+        .args(base_args(port))
+        .args(["eval", BBC_FAILURE_CONTEXT_JS])
+        .output()
+    {
+        Ok(out) => cap_bbc_failure_context(crate::common::output_note(&out)),
+        Err(err) => cap_bbc_failure_context(format!("could not collect page context: {err}")),
+    }
+}
+
+// allow-ungated-live: Firefox-free formatting regression; no browser or env gate is needed.
+#[test]
+fn bbc_failure_context_preserves_utf8_and_caps_bytes() {
+    let short = "short diagnostic é".to_owned();
+    assert_eq!(cap_bbc_failure_context(short.clone()), short);
+    let oversized = format!("prefix-{}", "é".repeat(BBC_FAILURE_CONTEXT_MAX_BYTES));
+    let capped = cap_bbc_failure_context(oversized);
+    assert!(capped.len() <= BBC_FAILURE_CONTEXT_MAX_BYTES);
+    assert!(capped.ends_with(BBC_FAILURE_CONTEXT_TRUNCATION_MARKER));
+    let prefix = capped
+        .strip_suffix(BBC_FAILURE_CONTEXT_TRUNCATION_MARKER)
+        .expect("truncation marker");
+    assert!(prefix.starts_with("prefix-"));
+    assert!(prefix["prefix-".len()..].chars().all(|ch| ch == 'é'));
+    assert!(BBC_FAILURE_CONTEXT_MAX_BYTES - capped.len() < 'é'.len_utf8());
 }
 
 /// `live_144_full_page_no_duplicate_header`:

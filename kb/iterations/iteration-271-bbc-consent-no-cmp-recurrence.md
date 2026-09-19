@@ -2,7 +2,7 @@
 title: "Iteration 271: diagnose recurring BBC consent_no_cmp"
 date: 2026-09-14
 type: iteration
-status: planned
+status: in-progress
 branch: iter-271/bbc-consent-no-cmp-recurrence
 tags: [iteration, carry-over, consent, live-tests]
 first_call_sites: []
@@ -96,3 +96,167 @@ BBC no-CMP recurred in both242/257 sweeps and exact isolation, but attributable 
 
 This source/evidence audit adds implementation guidance, not a new execution result.
 Original task and acceptance-criterion wording and checkbox states remain unchanged.
+
+## Bounded diagnosis and scoped test repair — 2026-09-19
+
+Baseline `2e604688d226f4e77303468c158f0d059a59cb44`, Firefox 156.0,
+direct route, a freshly launched owned profile, no auto-consent extension.
+The owned browser on port61271 navigated successfully to the actual BBC News
+document. A read-only pre-consent capture found the native
+`#bbccookies-continue-button` at195.2×15.6 CSS pixels. `consent accept`
+reported `cmp:bbc`, `action:accepted`; the subsequent capture found the
+same control at0×0. The separate unchanged exact test passed in5.29s.
+These are passing controls, not proof that the242/257 failures were fixed.
+The extra diagnostic round trip before consent could affect readiness;
+the exact test did not add that round trip.
+
+The diagnostic captures retain the navigate envelope, `location.href`,
+`document.URL`, title, readiness, banner HTML/rectangles, cookie/storage state
+and profile identity. Browser language was `en-US` (`en-US,en`), timezone
+`Europe/Zurich`; those do not establish the site's geolocation decision,
+which remains unverified. The native control was followed by a Sourcepoint
+acceptance in the same already-used profile, then a third consent call
+returned `consent_no_cmp` after dismissal. That is a post-consent control,
+not a reproduction of the fresh-profile failure or evidence of262's cause.
+
+No consent-adapter change is justified by these observations. The existing
+real-site test contract remains strict: native BBC match, accepted action,
+and an absent or zero-size native control afterward. No `--allow-no-cmp`,
+null-action acceptance or readiness delay was added.
+
+One independent test-honesty defect was demonstrated and repaired. Replacing
+only the BBC navigation URL temporarily with `http://127.0.0.1:1/` made
+Firefox report `deniedPortAccess`. The old test printed “skipping” and passed
+in2.51s without testing consent. With navigation failure asserted, the same
+mutation failed in2.59s and recorded the actual `about:neterror` document.
+The mutation is removed; with the BBC URL restored the test passed in4.37s.
+The assertion now includes the navigate envelope. On navigation or consent
+failure, a subsequent read-only page-context capture preserves URL/document,
+readiness, language/timezone, cookies and native/banner DOM. It is explicitly
+a later observation, not an atomic snapshot of the failing command, and runs
+only on failure so it cannot delay the successful pre-consent path.
+
+Evidence root: `.git/ralph-loop/20260919-queue/iter271/` in the primary
+checkout. Each command log has a `.meta` sidecar with command/environment,
+start/end and exit status. Diagnostic logs: `launch.log`, `before.log`,
+`navigate.log`, `after-navigate.log`, `consent.log`, `after-consent.log`,
+`second-consent.log`, `third-consent.log`, `after-third.log`.
+Regression evidence: `exact-baseline.log`, `navigation-failure-mutation.patch`,
+`navigation-failure-mutation.log`, `navigation-failure-fixed.log`,
+`exact-final.log`. Original242/257 evidence above remains authoritative.
+
+The original attributable failing-occurrence requirement remains unmet:
+no fresh-profile BBC no-CMP occurrence was reproduced in the bounded initial
+diagnosis, and historical failures have no page snapshots. This iteration
+must not be marked done or described as a BBC detection fix on that evidence.
+
+## Initial closing validation and carry-over — 2026-09-19
+
+Initial-source dual-gate sweep (Firefox156.0, owned raw Firefox49282 on6000,
+readiness verified before the sweep; desktop1112 preserved):
+
+```text
+LIVE_SWEEP_SUMMARY executed=346 skipped=0 preexisting=0 vanished=0 launch_timeout=0 timed_out=0 total=346
+LIVE_SWEEP_PROFILES leaked=0 unattributed=0 root=/Users/james/Library/Application Support/ff-rdp/profiles
+```
+
+All346 compiled ignored-test names have actual verdicts: CLI332 passed/3 failed;
+core tiers1+3+3+2+2 passed, including the newer `live_watcher_protocol` target.
+No missing, duplicate or unexpected names. BBC passed. Sweep exit1 is retained;
+no whole-sweep rerun or unrelated isolation was used to erase its failures.
+The344-name totals from older iterations are not reused for this baseline.
+
+All nine enumerated xtask checks passed. `check-dogfood-script` explicitly
+skipped execution because this plan has no script; the exact live BBC test
+and sweep provide its real-site verification. `rustup update stable`,
+`cargo fmt`, strict workspace/all-target clippy, and `cargo test --workspace -q`
+passed in that order. Logs: `xtask-gates.log`, per-gate logs,
+`ordered-gates.log`, `rustup-update.log`, `fmt.log`, `clippy.log`,
+`workspace-tests.log`, `reconciliation.log` and their `.meta` records.
+
+| Observation or unmet requirement | Disposition |
+|---|---|
+| Original242/257 fresh-profile BBC no-CMP failures lack attributable page evidence; no fresh-profile recurrence here | Retain in271. Original cause AC remains unticked, status in-progress. Passing controls and test-honesty repair do not discharge it. |
+| Old live144 passed after failed navigation without attempting dismissal | Closed by this branch's assertion; identical blocked-port mutation passes before and fails after. BBC action/post-action assertions remain intact. |
+| Sweep `live_137_daemon_mode_parity::live_137_consent_accept_via_daemon`:15079ms/47 polls, targets1/live0 | Fold into [[iteration-262-daemon-live-target-never-promoted]], dated target-lifecycle observation; no262 investigation here. |
+| Sweep `live_140_element_targeting::live_140_frame_filter_count_accurate`:0 available frames instead of5 filtered candidates | Fold separately into262's zero-frame observations; no shared cause asserted. |
+| Sweep `live_166_navigate_document_status::live_166_navigate_status_direct_parity`:HTTP200, committed `about:blank` | File [[iteration-277-direct-navigate-committed-about-blank]], diagnostic-only carry-over; not executed. |
+| Site geolocation decision unverified; initial and historical failed-page evidence unavailable | Retain in271's attribution requirement. Browser language/timezone are not treated as geographic proof. |
+
+Original tasks and AC wording are unchanged. Their boxes remain unticked for
+supervisor reconciliation; the required original-cause evidence is unavailable.
+The frozen change is a test-honesty repair and diagnostic improvement, not a
+product consent correction or a completed271 claim.
+
+## Repair R271-1 — bounded failure diagnostics, 2026-09-19
+
+The independent review found that `bbc_failure_context` could emit every
+matching node's complete `outerHTML` and the complete cookie string. The
+failure-only diagnostic now caps native/banner matches at12, records bounded
+identifying attributes, rectangles and text, and reports cookie presence,
+names, count and raw length without returning cookie values. The final
+diagnostic note is UTF-8 safely capped at16KiB with an explicit truncation
+marker. BBC navigation, native-CMP matching, `action:accepted` and the
+post-dismissal zero-size assertion are unchanged.
+
+The initial repair's string-match assertions did not execute JavaScript and
+were insufficient proof of cookie-value omission. Its preliminary logs remain
+under `iter271/repair1-*.log`; those checks are not the final verification.
+The final Firefox-free test
+`bbc_failure_context_preserves_utf8_and_caps_bytes` checks unchanged short
+input, a multibyte oversized payload, the16KiB limit, preserved content and
+the explicit marker. It is explicitly annotated as Firefox-free for the live
+test-layout checker.
+
+Actual JavaScript behavior was measured on an owned Firefox156.0 with a local
+HTTP fixture, using the exact `BBC_FAILURE_CONTEXT_JS` extracted from source.
+The fixture created36 visible nodes with5000-character text and1000-character
+attributes, including16 native-selector matches, and20 actual document cookies
+with `COOKIE_VALUE_SENTINEL_` values. Setup verified those values were present
+in the cookie store. The diagnostic returned12 native entries/4 omitted,
+12 banner entries/24 omitted,12 cookie names/8 omitted, and capped text and
+attributes with truncation markers. Assertions over the executed JSON passed;
+no cookie-value sentinel was present anywhere in the diagnostic output.
+The fixture is an ad-hoc verification artifact, not a new permanent live test.
+
+Evidence: primary checkout `.git/ralph-loop/20260919-queue/iter271/repair1/`:
+`fixture.rs`, `setup.js`, `exact-diagnostic.js`, `fixture-setup.log`,
+`fixture-diagnostic.log`, `fixture-assertions.log`, `cap-test.log` and
+command `.meta` sidecars. This repair addresses only R271-1. The original BBC
+cause remains unexplained; all original tasks/ACs stay unticked and status
+remains `in-progress`.
+
+### Final repair sweep
+
+R271-1 changed source, so its own dual-gate closing sweep was required; it was
+not a retry of the unchanged initial source. On the frozen repair source it
+reported:
+
+```text
+LIVE_SWEEP_SUMMARY executed=346 skipped=0 preexisting=0 vanished=0 launch_timeout=0 timed_out=0 total=346
+LIVE_SWEEP_PROFILES leaked=0 unattributed=0 root=/Users/james/Library/Application Support/ff-rdp/profiles
+```
+
+CLI334 passed/1 failed and all11 core tests passed. The failure was again
+`live_137_daemon_mode_parity::live_137_consent_accept_via_daemon`:
+15104ms/47 polls, daemon78161/proxy56135/debug56031, targets1/live0,
+dispatcher alive with89 frames started/finished and none in flight. Folded
+as another target-lifecycle observation into262, without a cause claim.
+BBC,140 and166 passed; none of those passes discharges the historical BBC
+cause requirement, the initial140 zero-frame failure, or plan277's initial166
+committed-URL failure. Both sweep records and every original disposition remain.
+
+The owned raw Firefox75058 was verified listening on6000 before the sweep,
+survived all core tiers, and was stopped afterward; its profile was removed.
+The local fixture server75107 was also stopped; desktop1112 was preserved.
+All repair execution logs and metadata are in `iter271/repair1/`, separately
+from the initial sweep and incomplete preliminary repair logs.
+
+All346 compiled ignored names reconcile against actual verdicts across all
+six targets, with0 missing, unexpected or duplicate names. All nine xtask
+checks passed, including the live-layout exemption for the Firefox-free cap
+test; dogfood-script execution remains an explicit no-script skip. Stable
+update, fmt, strict workspace/all-target clippy and workspace tests passed
+in order on the frozen repair source. Evidence: `repair1/reconciliation.log`,
+`xtask-gates.log`, `ordered-gates.log` and their per-command logs/metadata.
+Fresh scoped independent review of R271-1 remains required before checkpointing.

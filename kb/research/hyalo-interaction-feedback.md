@@ -96,3 +96,29 @@ Supervisor: `read --section Outcome` correctly rejected the guessed nonexistent 
 ## 2026-09-19 iteration265 closure
 
 Hyalo0.23.0: selected plan `read --frontmatter --format text` and body read kept metadata and preflight explicit. Supervisor initially used positional `set FILE KEY VALUE`; tool rejected with a useful `--property K=V --file` hint. Operator syntax mistake, not a Hyalo defect. Corrected `set --file iterations/iteration-265-typed-watcher-protocol-fidelity.md --property scope_note=... --property status=done` changed both scalars; HYALO005 passed. Direct body appends for exact sweep recurrences and this feedback remain the supported-workflow exception because Hyalo has no general prose editor. No Hyalo version change or ../hyalo edit.
+
+## 2026-09-19 iteration271 interactions
+
+
+Version: `/Users/james/.cargo/bin/hyalo --version` reported 0.23.0
+(adbafda6c7fc, 2026-09-13). No edits to Hyalo.
+
+Good: title-property search found the exact selected plan and displayed its
+vault-relative path; `read iterations/iteration-271-bbc-consent-no-cmp-recurrence.md
+--format text` returned body/preflight; `find --file ... --fields properties`
+returned frontmatter including dogfood commands. `set --dry-run` then `set`
+changed only status to in-progress; raw execution records retained.
+
+Caller errors, not defects: initial `read iteration-271-...md` omitted the
+`iterations/` directory (exit 1 with a useful path hint). Initial `find --glob
+'*271*'` returned no results because the glob did not descend into `iterations/`;
+title search corrected this. Full `set --help` displayed through a capped tool
+output was truncated; the command itself succeeded. No verified Hyalo defect.
+
+Additional caller errors: a guessed264 slug did not exist; title-property
+lookup supplied `iteration-264-sweep-load-timing-bounds.md`. A guessed262
+section `Measured observations` did not exist; the error suggested `The
+evidence`, which succeeded. These were operator assumptions, not parser/search
+defects. New277 copied the repository template because this vault declares no
+schema type for `hyalo new`; all new frontmatter changes used `hyalo set`.
+Final HYALO005 lint passed after status and277 frontmatter edits.

@@ -223,6 +223,39 @@ Correct the historical interpretation before selecting a fix: daemon target_coun
 This source/evidence audit adds implementation guidance, not a new execution result.
 Original task and acceptance-criterion wording and checkbox states remain unchanged.
 
+## Iteration271 closing-sweep observations — 2026-09-19
+
+The separate271 sweep on baseline `2e604688d226f4e77303468c158f0d059a59cb44`
+(Firefox156.0, both live gates, six CLI workers) recorded two distinct
+observations retained here without a shared-cause claim:
+
+- `live_137_daemon_mode_parity::live_137_consent_accept_via_daemon` exhausted
+  its15000ms live-target bound after15079ms/47 polls. Daemon52042/proxy58624
+  on Firefox debug58520 reported `target_count:1`, `live_target_count:0`,
+  dispatcher alive,78 frames started/finished,0 in flight and no RPC owner.
+  This matches the recorded target-lifecycle symptom, not proof of a missing
+  promotion operation or permanently latched state.
+- `live_140_element_targeting::live_140_frame_filter_count_accurate` on
+  daemon proxy59371 returned `click --frame 'leaf1' matched no frame
+  (0 frame(s) available: )`, where the local fixture expected five filtered
+  candidates among15 total. No failed-occurrence status/event trace was
+  retained, so this zero-frame observation is not attributed to the137 cause.
+
+Neither test was retried to mask its sweep result, and no262 implementation
+or diagnosis was undertaken by271. Existing262 scope owns the target-lifecycle
+and separate zero-frame observations. Evidence: primary checkout
+`.git/ralph-loop/20260919-queue/iter271/sweep.log`, `.meta`,
+`sweep-launches.log` and `actual-verdicts.tsv`. The sweep's346 actual verdicts
+include both failures; all profile counts are0. Original ACs remain untouched.
+
+The required final-source sweep after271's bounded-diagnostic repair recorded
+another137 failure:15104ms/47 polls at debug56031, daemon78161/proxy56135,
+targets1/live0, dispatcher alive with89 started/finished frames and0 in flight.
+The140 zero-frame test passed this time; its earlier failure remains open.
+Evidence: `.git/ralph-loop/20260919-queue/iter271/repair1/sweep.log` and
+sidecar/launch log.346 executed,345 passed/1 failed, profiles0/0. This is
+another observation only, not262 implementation or proof of a shared cause.
+
 ## Iteration263 reconciliation — 2026-09-19
 
 Firefox156.0 final263 repair sweep executed344=342passed+2failed with exact
