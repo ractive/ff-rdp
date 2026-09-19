@@ -133,13 +133,33 @@ own rather than a footnote.
 - `crates/ff-rdp-cli/src/daemon/client_writer.rs` — the one writer per client socket
 - [[iteration-240-daemon-frame-desync-root-cause]] — the resumable framer, the single client
   writer, and the owner-only slot release
-- [[iteration-137-daemon-rpc-queue]] — where contended clients started queueing for the slot
-- [[iteration-224-say-goodbye-before-closing-a-client]] — the unattributable client resets that
+- [[iteration-137-daemon-mode-parity]] — where contended clients started queueing for the slot
+- [[iteration-224-with-page-daemon-connection-reset]] — the unattributable client resets that
   may share this cause
 
 ## Implementation preflight — 2026-09-19
 
-The current-owner forwarding gap remains an investigation target, not a demonstrated wrong-answer reproduction. Slow eval is not a generic uncorrelated response: ConsoleActor captures resultID and matches evaluationResult. Distinguish delivery to another client from that client accepting the result; use an applicable deterministic reply scenario. Reconcile the plan's permitted unsuccessful-reproduction outcome with its original regression/instrumentation criteria honestly, leaving unmet criteria unticked. Resolve reply-attribution implications before iteration 266 changes shared-connection releases. The references iteration-137-daemon-rpc-queue and iteration-224-say-goodbye-before-closing-a-client are unresolved and need their actual targets established.
+The current-owner forwarding gap remains an investigation target, not a demonstrated wrong-answer reproduction. Slow eval is not a generic uncorrelated response: ConsoleActor captures resultID and matches evaluationResult. Distinguish delivery to another client from that client accepting the result; use an applicable deterministic reply scenario. Reconcile the plan's permitted unsuccessful-reproduction outcome with its original regression/instrumentation criteria honestly, leaving unmet criteria unticked. Resolve reply-attribution implications before iteration 266 changes shared-connection releases. The references iteration-137-daemon-mode-parity and iteration-224-with-page-daemon-connection-reset are unresolved and need their actual targets established.
 
 This source/evidence audit adds implementation guidance, not a new execution result.
 Original task and acceptance-criterion wording and checkbox states remain unchanged.
+
+
+## Execution checkpoint — 2026-09-19
+
+The selected investigation was stopped by an automated content filter that
+reported possible cybersecurity risk before any attributable reproduction or
+product implementation was completed. This is an execution blocker, not evidence
+that the proposed reply-ownership diagnosis is correct. No workaround, rephrased
+retry, or delegated repetition of the rejected action was attempted.
+
+The clean product baseline was `010059c632da4ce1344b0516a05a7c911b4cfe15`.
+Owned raw Firefox PID70596 and its wrapper PID70579 were stopped; port6000 was
+verified free and desktop Firefox PID1112 was preserved. Exact evidence is in
+`.git/ralph-loop/20260919-queue/iter259/execution-blocker.md` and the retained
+source-fetch/build/cleanup artifacts. No acceptance criterion is fulfilled by
+this attempt. Resume requires an appropriate permitted execution path; iteration266
+remains blocked on this plan's unresolved reply attribution.
+
+The batch-end inventory audit corrected two stale historical wikilink names only.
+No product investigation was resumed by that bookkeeping change.

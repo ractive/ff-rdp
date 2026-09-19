@@ -4,7 +4,7 @@ title: "Iteration 266: daemon console resource grip lifetime"
 date: 2026-09-12
 status: planned
 branch: iter-266/daemon-console-resource-grip-lifetime
-depends_on: []
+depends_on: ["259"]
 first_call_sites: []
 origin: >-
   Filed during iteration252's direct-console grip-lifetime repair. This is a
@@ -55,3 +55,12 @@ The direct-console lifetime repair in252 does not close daemon cleanup. Quantify
 
 This source/evidence audit adds implementation guidance, not a new execution result.
 Original task and acceptance-criterion wording and checkbox states remain unchanged.
+
+
+## Queue dependency checkpoint — 2026-09-19
+
+Not started in this batch. Safe release-reply attribution depends on the unresolved
+work in [[iteration-259-rpc-slot-handover-strands-an-in-flight-reply]], whose
+execution was blocked before implementation. The dependency is now explicit in
+frontmatter. All original tasks and acceptance criteria remain unticked; this
+record does not authorize bypassing259's execution blocker.
