@@ -2,7 +2,7 @@
 title: "Iteration 268: diagnose recurrent daemon pre-auth connection loss"
 type: iteration
 date: 2026-09-13
-status: planned
+status: in-progress
 branch: iter-268/daemon-pre-auth-connection-loss
 first_call_sites: []
 dogfood_path: |
@@ -138,3 +138,51 @@ failures. It does not supply missing failed-occurrence traces for this plan's
 historical224/240 EOF/reset observations, and does not close this plan or any of
 its original ACs. Preserve every original observation and await the required
 attributed evidence before assigning those occurrences the same cause.
+
+## Bounded investigation — 2026-09-19
+
+Investigation baseline: `03ba1fd9e2d74193e99b3ff51d4e732b8e7b5337`, containing
+the merged iteration 267 repair. No new product change was justified. Temporary
+diagnostics recorded client and server socket endpoints, PID, monotonic auth
+milestones, shutdown state, dispatcher counters and a nonblocking snapshot of
+whether the RPC slot was empty, occupied or locked. No auth token or request
+payload was logged. These snapshots were observation only; this did not investigate
+iteration 259's request/reply handover or iteration 262's target lifecycle.
+
+The two named repeated-hop tests passed with the merged repair and diagnostics
+intact: 2 passed, 0 failed, 43.17 s, with all 12 and 40 hops completed. Removing
+only iteration 267's `set_nonblocking(false)` repair, retaining the same diagnostics
+and test assertions, also passed the serial pair: 2 passed, 0 failed, 43.84 s.
+One six-worker diagnostic batch then ran those modules alongside the established
+160/161/164/165/219 load controls: 36 passed, 1 failed, 62.40 s. Both named
+224/240 repeated-hop tests passed again. No EOF or reset in either named scenario
+was captured. These were targeted investigations, not a closing live sweep.
+
+The mutant batch's failure was
+`live_165_eval_call_scope::live_165_wrap_trigger_is_confined_to_declaring_scripts`,
+whose greeting-wait Timeout envelope contained an underlying reset 54. The trace
+joins client 1170/local 53521 to daemon 853/proxy 53400: handler entry at monotonic
+45366.878300916, auth-read error at 45366.879477916 (about 1.177 ms later), intentional
+auth rejection at 45366.879522083, and client reset at 45366.893829250. At rejection,
+shutdown was false, the dispatcher was alive with 41 frames started and finished,
+and the RPC slot was empty. Client auth-send completion was recorded after
+rejection. This is an additional controlled observation consistent with 267's
+already-demonstrated mechanism, not a newly attributed 224/240 failure. It does
+not explain any historical EOF, nor establish that all historical resets shared
+that cause. The removed repair was restored; no retry or timeout bound changed.
+
+Evidence and exact command/env/start/end/exit metadata are retained under
+`.git/ralph-loop/20260919-queue/iter268/`: `fixed-pair.log`, `fixed-trace.log`,
+`mutant-pair.log`, `mutant-trace.log`, `mutant-loaded.log`,
+`mutant-loaded-trace.log`, their launch logs and `.meta` sidecars. The temporary
+patches are retained there for a reproducible diagnostic setup; product sources
+were restored to the baseline and rebuilt (`restored-build.log`).
+
+**Blocked, not complete:** no attributed failing 224/240 occurrence was obtained,
+and the missing historical auth/dispatcher traces cannot be recovered from passing
+controls. Every original task and AC remains unticked. A new regression or second
+fix would be speculative; 267 already supplies its own failing-before/passing-after
+regression. A closing 268 dual-gate sweep has not run. Resume on a new attributable
+224/240 failure or a concrete new diagnostic hypothesis, preserving the original
+EOF/reset observations and acceptance strength. This investigation adds no new
+carry-over plan and requests no completion PR.

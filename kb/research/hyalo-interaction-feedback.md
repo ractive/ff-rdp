@@ -108,3 +108,9 @@ Installed executable: /Users/james/.cargo/bin/hyalo, version 0.23.0 (adbafda6c7f
 - The combined read-help tool output was truncated by the tool-output budget, not Hyalo. No verified Hyalo defect found; no ../hyalo changes.
 
 Supervisor: new cascade carry-over initially reused275, already allocated on blocked262 branch. Hyalo mv dry-run correctly previewed one backlink rewrite; apply moved it to276 and updated that backlink. Scalar title/branch updated with set; unsupported body heading prose updated directly. This was queue-numbering coordination, not a Hyalo defect. Long mv --help output exceeded the calling-tool budget; no provider output loss established.
+
+## 2026-09-19 iteration268 investigation
+
+Hyalo0.23.0 remained installed. `find --file iterations/iteration-268-daemon-pre-auth-connection-loss.md --fields tasks,properties --format text` successfully verified the original unticked requirements after the investigation body was appended directly (unsupported general prose operation). Raw result is retained in iter268/hyalo-verify.log. This records successful metadata verification; no verified new defect or version change is claimed.
+
+Additional268 operator notes: `find iteration=268` used a nonexistent metadata key and returned no result; title search corrected it. Batched guidance output truncation occurred at the calling-tool budget and was recovered with smaller reads. Neither is a verified Hyalo defect. Supervisor used `set --property status=in-progress` and HYALO005 after review; original eight boxes stayed unticked.
