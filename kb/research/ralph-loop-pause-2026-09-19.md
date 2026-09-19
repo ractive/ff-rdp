@@ -8,6 +8,9 @@ tags: [ralph-loop, handoff]
 
 # Owner-requested stop at a safe checkpoint
 
+Subsequent explicit continuation and latest blocked checkpoints:
+[[ralph-loop-resume-2026-09-20]]. The pause below is retained as history.
+
 The owner requested a stop during iteration268 so the loop can be restarted with
 workflow improvements. No271/259/266 execution is authorized by this handoff;
 wait for an explicit new launch. Preserve the original five-plan scope and all
