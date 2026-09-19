@@ -1,5 +1,17 @@
 # ff-rdp project memory
 
+## Prepared remaining queue — 2026-09-19
+
+The fourteen-iteration September19 batch is closed: nine outcomes merged and
+five remain blocked. The owner subsequently requested preparation for a new
+session, not immediate execution. After the required guidance below, read
+`kb/research/ralph-loop-open-iterations-2026-09-19.md` with Hyalo. It records the
+exact remaining inventory262,268,271,259,266, preserved checkpoints, entry gates
+and a launch prompt. Original147/203 and new272–277 stay outside execution scope.
+Do not replay the historical252–257 or completed September19 queue. Begin the
+prepared loop only on a new explicit launch/resume request; a fresh session does
+not clear259's recorded execution restriction.
+
 ## Takeover resumed — 2026-09-09
 
 The owner explicitly lifted the pause and authorized Codex to finish iterations
