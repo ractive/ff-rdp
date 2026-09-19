@@ -92,3 +92,20 @@ provide an explicit structured YAML/JSON property input or a clear shape warning
 Version0.23.0 (adbafda6c7fc2026-09-13). Working directory was dedicated worktree; paths vault-relative. read (body/frontmatter), read section, backlinks, task read --all, task set --line --status x with preview, set status and lint HYALO005 all worked. Precise frontmatter-only read prevented losing the dogfood instructions; targeted task mutations preserved original text. One operator error: task read without --all/--line/--section correctly refused with helpful syntax guidance; corrected --all succeeded. Tool output truncation occurred on overly broad combined reads and a full historical reconciliation JSON, not a Hyalo defect; narrowed reads recovered relevant text. No verified Hyalo defects; no ../hyalo edits.
 
 Supervisor: `read --section Outcome` correctly rejected the guessed nonexistent heading and offered closest sections; this was an operator lookup error. `find --fields tasks --jq` precisely selected the landed-answer checkbox; preview and apply preserved its wording.
+
+## 2026-09-19 — iteration262 diagnostic checkpoint
+
+Hyalo 0.23.0 (adbafda6c7fc 2026-09-13), vault kb; commands from repository root.
+Successful: read discipline-rationale; read262 body; read262 --frontmatter;
+read246 --section 'Part D'; find title consent/Guardian/Sourcepoint; find title275
+(no results); types list (no schema types configured); lint --rule HYALO005 exit0.
+Help read/append/new and top-level help inspected. No Hyalo verified defect.
+Operator error: queried nonexistent `create --help` (exit2), then read `new --help`.
+`new` needs configured schema type; none exists, so new275 created directly.
+Append help clarified it only appends frontmatter values, not prose; body262 edited
+directly under owner allowance. Tool output truncation came from exec output budgets,
+not a Hyalo finding. User-facing instructions in consent erroneously suggest
+`dom --frames`; this CLI option does not exist, unrelated to Hyalo.
+Supervisor to append feedback after260 feedback merge, not this worker.
+
+Supervisor used `find --fields tasks --jq` to locate three exact evidence-backed tasks, then task-set preview/apply and status set. Original requirement wording was preserved.
