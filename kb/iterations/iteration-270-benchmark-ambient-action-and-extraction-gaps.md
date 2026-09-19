@@ -86,3 +86,10 @@ and [[axi-benchmark-comparison]]. No implementation is authorized in the current
 Executing this follow-up during252–257; rerunning or replacing the84 measurements;
 turning on --with-page or hooks by default; rewriting upstream tasks/grades to
 remove required actions; repairing screenshot or daemon lifecycle defects here.
+
+## Implementation preflight — 2026-09-19
+
+Dependency256 is delivered;254 already supplied installation-target support. Audit the actual trimmed533-byte hook payload and retained trajectories, not merely full home output or shared-idiom unit tests. Preserve the measured distinctions: browser-first1/42 to37/42, with-page40/42 to5/42, mean turns5.476 to6.976, and both grades41/42 despite action-fidelity problems. These samples support investigation, not a causal default-on decision. Keep guidance opt-in and coordinate269's overlapping action/error audit. No new paid comparison, smoke, model probe or judge is authorized; use retained traces and ordinary local reproduction, leaving any paid measurement explicitly pending.
+
+This source/evidence audit adds implementation guidance, not a new execution result.
+Original task and acceptance-criterion wording and checkbox states remain unchanged.

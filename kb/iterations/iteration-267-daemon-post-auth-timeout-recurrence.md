@@ -60,3 +60,23 @@ captured and remains a mandatory unmet requirement in the original metadata ACs.
 No common cause, retry or timeout change is claimed. This is separate from the
 pre-auth EOF/reset observations owned by268, which did not recur in this sweep.
 Evidence: `.git/ralph-loop/20260912-validation-efficiency/iter242-owed-sweep/sweep-failures.txt` and its exact isolated164 log.
+
+## Implementation preflight — 2026-09-19
+
+The historical wording overstates the phase: connect_tab emits 'timeout after auth' while waiting for the greeting immediately after sending the auth frame. That does not establish server-side authentication success or an authenticated request stall. Correct the diagnostic interpretation; capture a connection identity before successful authentication, since server client_id is assigned afterwards. Preserve timeout versus EOF/reset observations but do not rule out a shared handshake mechanism with268. Obtain attributable failed-occurrence evidence before choosing a fix; do not hide failures with larger timeouts or blind retries. depends_on203 expresses trigger/provenance, not a requirement to finish the parked watch holder.
+
+This source/evidence audit adds implementation guidance, not a new execution result.
+Original task and acceptance-criterion wording and checkbox states remain unchanged.
+
+## Iteration263 greeting-wait recurrence — 2026-09-19
+
+Final263 security-dependency sweep failed
+`live_165_eval_call_scope::live_165_scope_behaviour_table`: `eval [] "typeof c1"`
+returned the existing `daemon did not respond within the timeout after auth`
+Timeout envelope, daemon proxy52636. As established by the preflight, this proves
+waiting for the greeting after sending authentication, not successful server-side
+authentication. Attributable failed-occurrence timing remains unavailable.
+Full344=341pass/3fail with exact names and zero profile leaks. No root cause,
+retry, timeout change or isolated-pass substitute is claimed. Original tasks/ACs
+remain unchanged. Evidence:
+`.git/ralph-loop/20260919-queue/iter263-security/sweep.log`.

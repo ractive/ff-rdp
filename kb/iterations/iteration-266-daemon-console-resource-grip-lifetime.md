@@ -48,3 +48,10 @@ tags:
   - console
   - protocol
 ---
+
+## Implementation preflight — 2026-09-19
+
+The direct-console lifetime repair in252 does not close daemon cleanup. Quantify actual retained actors, then define ownership across caches, RPC clients and stream subscribers before broadening extraction. Current guard scope can end after raw copies are forwarded, so indiscriminate cleanup could release actors still in use. The release drainer writes on the shared Firefox connection, making259's response-attribution implications a prerequisite to resolve before implementation despite the historical empty depends_on list. Coordinate while preserving one iteration per PR. Cover observed flat/nested fields and object/longString/symbol behavior. The original substantive requirements reside in YAML frontmatter; read them explicitly rather than treating an empty historical body as an empty plan.
+
+This source/evidence audit adds implementation guidance, not a new execution result.
+Original task and acceptance-criterion wording and checkbox states remain unchanged.

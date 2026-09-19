@@ -88,3 +88,29 @@ failed-occurrence auth/dispatcher timing remains an unticked requirement.
 - The target-promotion and distinct Sourcepoint consent-action failures, owned by
   [[iteration-262-daemon-live-target-never-promoted]].
 - Raising timeout defaults or claiming an isolated pass discharges a sweep recurrence.
+
+## Implementation preflight — 2026-09-19
+
+Coordinate diagnostic boundaries with267: its 'timeout after auth' message only proves the client sent authentication and then waited for a greeting, not that authentication succeeded. Keep EOF/reset and timeout observations separately attributable, without assuming different root causes. Instrument a connection identity before authentication completes. Existing isolated passes do not explain failed occurrences; obtain bounded failed-occurrence evidence before repair, and avoid timeout increases or blind retries.
+
+This source/evidence audit adds implementation guidance, not a new execution result.
+Original task and acceptance-criterion wording and checkbox states remain unchanged.
+
+## Iteration263 recurrence — 2026-09-19
+
+Final263 repair sweep on Firefox156.0 failed
+`live_240_sustained_hops_never_desynchronise` at hop20/40, zero reconnects,
+proxy58186: `daemon auth failed: recv failed: Connection reset by peer
+(os error 54)`. All344names reconcile (342pass/2fail), with no skipped or
+reclassified tests and zero profile leaks. Attributable failed-auth timing is
+still unavailable; no root cause or shared mechanism is claimed. No isolated
+pass replaces this failed occurrence. Original tasks/ACs remain unchanged.
+Evidence: `.git/ralph-loop/20260919-queue/iter263-repair2/live-sweep.log`,
+`reconciliation.json` and `live-launches.log`.
+
+The final263 security-dependency sweep separately failed the same240 scenario at
+hop3/40, proxy55319,0reconnects: `daemon auth failed: recv failed: failed to fill
+whole buffer`. Keep this EOF distinct from the preceding hop20 reset; attributable
+failed-auth timing remains unavailable and no shared cause is proved.
+Full344=341pass/3fail, no missing names or profile leaks. Evidence:
+`.git/ralph-loop/20260919-queue/iter263-security/sweep.log`.

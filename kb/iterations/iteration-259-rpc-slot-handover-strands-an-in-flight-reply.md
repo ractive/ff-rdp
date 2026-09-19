@@ -136,3 +136,10 @@ own rather than a footnote.
 - [[iteration-137-daemon-rpc-queue]] — where contended clients started queueing for the slot
 - [[iteration-224-say-goodbye-before-closing-a-client]] — the unattributable client resets that
   may share this cause
+
+## Implementation preflight — 2026-09-19
+
+The current-owner forwarding gap remains an investigation target, not a demonstrated wrong-answer reproduction. Slow eval is not a generic uncorrelated response: ConsoleActor captures resultID and matches evaluationResult. Distinguish delivery to another client from that client accepting the result; use an applicable deterministic reply scenario. Reconcile the plan's permitted unsuccessful-reproduction outcome with its original regression/instrumentation criteria honestly, leaving unmet criteria unticked. Resolve reply-attribution implications before iteration 266 changes shared-connection releases. The references iteration-137-daemon-rpc-queue and iteration-224-say-goodbye-before-closing-a-client are unresolved and need their actual targets established.
+
+This source/evidence audit adds implementation guidance, not a new execution result.
+Original task and acceptance-criterion wording and checkbox states remain unchanged.

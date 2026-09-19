@@ -89,3 +89,10 @@ Guardian's concurrent daemon-route no-CMP result is separately preserved under26
 the shared error type does not establish a shared mechanism.
 Evidence: `.git/ralph-loop/20260912-validation-efficiency/iter257-implementation/sweep.log`,
 the exact isolated144 log and both launch logs. Original tasks/ACs stay untouched.
+
+## Implementation preflight — 2026-09-19
+
+BBC no-CMP recurred in both242/257 sweeps and exact isolation, but attributable failed-page/banner/readiness/region evidence remains missing. Capture it before choosing adapter changes. Keep BBC separate from262's Guardian/Sourcepoint observations unless evidence establishes a connection. The current live144 test also prints 'skipping' and returns success on navigation failure; assess this concrete test-honesty gap in regression scope without conflating it with the observed no-CMP result.
+
+This source/evidence audit adds implementation guidance, not a new execution result.
+Original task and acceptance-criterion wording and checkbox states remain unchanged.

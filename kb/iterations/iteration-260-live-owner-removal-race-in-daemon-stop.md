@@ -194,3 +194,10 @@ failure, retain the READINESS/SITE diagnostic and actual document state before
 naming a mechanism. The obsolete chunk split remains unrun, not silently replaced
 by profile-zero counts. Evidence: `.git/ralph-loop/20260912-validation-efficiency/iter242-owed-sweep/sweep.log` and
 `sweep-reconciliation.json`. No260 product implementation is claimed.
+
+## Implementation preflight — 2026-09-19
+
+Part B's live verification is already discharged by the September 14 evidence; do not repeat a sweep solely because the historical introduction says it is owed. Parts A/C remain investigations. Stop already exposes profile_skip_reason; a stop-path ENOTEMPTY race is not established by the source audit. The cited live_160 test already owns a LiveFirefox guard, so do not assume missing ownership. Inspect the remaining one-shot removal path and obtain attributable measurements before choosing a repair. Iteration 261 is not a prerequisite for existing stop diagnostics.
+
+This source/evidence audit adds implementation guidance, not a new execution result.
+Original task and acceptance-criterion wording and checkbox states remain unchanged.

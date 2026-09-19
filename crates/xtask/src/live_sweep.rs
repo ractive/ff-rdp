@@ -544,8 +544,10 @@ fn parse_fn_name(src: &str, start: usize) -> Option<String> {
 pub fn scan_modules_dir(dir: &Path) -> Result<Vec<GatedTest>> {
     let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
         .with_context(|| format!("reading directory {}", dir.display()))?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<Vec<_>>>()
+        .with_context(|| format!("reading an entry in {}", dir.display()))?
+        .into_iter()
         .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("rs"))
         .collect();
     files.sort();
@@ -580,6 +582,149 @@ pub struct SweepTarget {
     pub gated: Vec<GatedTest>,
 }
 
+/// Compare the source-derived gated plan with the ignored tests registered in
+/// the compiled libtest binary.
+///
+/// The compiled list is authoritative for host inclusion: a source test may
+/// be excluded by `#[cfg]` on this host, but a compiled ignored test absent
+/// from the source plan always indicates that the scanner dropped a test.
+pub fn reconcile_compiled_corpus(
+    source_names: &[String],
+    compiled_names: &[String],
+) -> Result<Vec<String>> {
+    let source: std::collections::BTreeSet<_> = source_names.iter().cloned().collect();
+    let compiled: std::collections::BTreeSet<_> = compiled_names.iter().cloned().collect();
+    let missing_from_plan: Vec<_> = compiled.difference(&source).cloned().collect();
+
+    if !missing_from_plan.is_empty() {
+        return Err(anyhow!(
+            "compiled ignored-test corpus contains names missing from plan (absent from the source-derived \
+             live-sweep metadata) \
+             (would be silently dropped): {}",
+            missing_from_plan.join(", ")
+        ));
+    }
+
+    Ok(compiled.into_iter().collect())
+}
+
+/// Ask libtest for the ignored names actually registered in one compiled test
+/// binary. `--ignored --list` enumerates without executing any test.
+fn compiled_ignored_names(workspace_root: &Path, target: &SweepTarget) -> Result<Vec<String>> {
+    let output = Command::new("cargo")
+        .current_dir(workspace_root)
+        .args([
+            "test",
+            "-q",
+            "-p",
+            &target.package,
+            "--test",
+            &target.test_name,
+            "--",
+            "--ignored",
+            "--list",
+            "--format",
+            "terse",
+        ])
+        .output()
+        .with_context(|| {
+            format!(
+                "enumerating compiled ignored tests for -p {} --test {}",
+                target.package, target.test_name
+            )
+        })?;
+    if !output.status.success() {
+        return Err(anyhow!(
+            "compiled ignored-test enumeration failed for -p {} --test {} ({}): {}",
+            target.package,
+            target.test_name,
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    let stdout = String::from_utf8(output.stdout).with_context(|| {
+        format!(
+            "compiled ignored-test enumeration for -p {} --test {} was not UTF-8",
+            target.package, target.test_name
+        )
+    })?;
+    let mut names: Vec<String> = stdout
+        .lines()
+        .filter_map(|line| line.strip_suffix(": test"))
+        .map(str::to_owned)
+        .collect();
+    names.sort();
+    names.dedup();
+    Ok(names)
+}
+
+fn verify_compiled_corpora(workspace_root: &Path, targets: &mut [SweepTarget]) -> Result<()> {
+    for target in targets {
+        let compiled_names = compiled_ignored_names(workspace_root, target)?;
+        filter_compiled_target(target, &compiled_names)?;
+    }
+    Ok(())
+}
+
+/// Keep host-compiled tests, rejecting compiled names without gating metadata.
+fn filter_compiled_target(target: &mut SweepTarget, compiled_names: &[String]) -> Result<()> {
+    let source_names: Vec<String> = target
+        .gated
+        .iter()
+        .map(|test| test.full_name.clone())
+        .collect();
+    let compiled_names =
+        reconcile_compiled_corpus(&source_names, compiled_names).with_context(|| {
+            format!(
+                "reconciling -p {} --test {}",
+                target.package, target.test_name
+            )
+        })?;
+    let compiled: std::collections::BTreeSet<_> = compiled_names.into_iter().collect();
+    target
+        .gated
+        .retain(|test| compiled.contains(&test.full_name));
+    Ok(())
+}
+
+/// Both dry-run reporting and real execution consume this same target plan.
+struct TargetPhasePlan {
+    part: Partition,
+    vanished: Vec<String>,
+    summary: SweepSummary,
+    jobs: usize,
+    command: Option<Command>,
+}
+
+fn plan_target_phase(
+    target: &SweepTarget,
+    gates: &EnvGates,
+    probe_now: bool,
+    requested_jobs: usize,
+) -> TargetPhasePlan {
+    let (part, vanished) = repartition_for_probe(&target.gated, gates, probe_now);
+    let summary = summarize(&part);
+    let jobs = jobs_for_target(
+        target.gated.iter().any(|test| test.needs_preexisting),
+        requested_jobs,
+    );
+    let command = phase_command(
+        &target.package,
+        &target.test_name,
+        &part.qualified,
+        true,
+        jobs,
+    );
+    TargetPhasePlan {
+        part,
+        vanished,
+        summary,
+        jobs,
+        command,
+    }
+}
+
 /// Resolve the fixed set of live-test targets under `workspace_root`:
 /// `ff-rdp-cli`'s consolidated `tests/live/` tree (one binary, many modules),
 /// plus each of `ff-rdp-core`'s standalone `tests/live_*.rs` binaries other
@@ -599,8 +744,10 @@ pub fn default_targets(workspace_root: &Path) -> Result<Vec<SweepTarget>> {
     let core_tests_dir = workspace_root.join("crates/ff-rdp-core/tests");
     let mut core_files: Vec<PathBuf> = std::fs::read_dir(&core_tests_dir)
         .with_context(|| format!("reading directory {}", core_tests_dir.display()))?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<Vec<_>>>()
+        .with_context(|| format!("reading an entry in {}", core_tests_dir.display()))?
+        .into_iter()
         .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("rs"))
         .collect();
     core_files.sort();
@@ -2030,10 +2177,7 @@ fn capture_stacks(cargo_pid: u32, dir: &Path) -> Vec<PathBuf> {
 // ---------------------------------------------------------------------------
 
 pub fn run(args: Args) -> Result<()> {
-    let targets = default_targets(&args.workspace_root)?;
-    let gates = EnvGates::from_process_env();
-    let bounds = PhaseBounds::from_args(&args);
-
+    let mut targets = default_targets(&args.workspace_root)?;
     let total_gated: usize = targets.iter().map(|t| t.gated.len()).sum();
     if total_gated == 0 {
         return Err(anyhow!(
@@ -2045,6 +2189,9 @@ pub fn run(args: Args) -> Result<()> {
             args.workspace_root.display()
         ));
     }
+    verify_compiled_corpora(&args.workspace_root, &mut targets)?;
+    let gates = EnvGates::from_process_env();
+    let bounds = PhaseBounds::from_args(&args);
 
     if !gates.preexisting_available {
         eprintln!(
@@ -2096,7 +2243,13 @@ pub fn run(args: Args) -> Result<()> {
         } else {
             gates.preexisting_available
         };
-        let (part, vanished_before_tier) = repartition_for_probe(&target.gated, &gates, probe_now);
+        let TargetPhasePlan {
+            part,
+            vanished: vanished_before_tier,
+            summary,
+            jobs,
+            command,
+        } = plan_target_phase(target, &gates, probe_now, args.jobs);
         if !vanished_before_tier.is_empty() {
             eprintln!(
                 "live-sweep: the Firefox on 127.0.0.1:{PREEXISTING_PORT} was there at \
@@ -2108,7 +2261,6 @@ pub fn run(args: Args) -> Result<()> {
             );
         }
 
-        let summary = summarize(&part);
         totals.skipped += summary.skipped;
         // A vanished browser leaves the tests in `part.preexisting`; split
         // that count back out so `preexisting` keeps meaning "nobody had
@@ -2116,10 +2268,6 @@ pub fn run(args: Args) -> Result<()> {
         totals.preexisting += summary.preexisting - vanished_before_tier.len();
         totals.vanished += vanished_before_tier.len();
         let mut executed = summary.executed;
-
-        // Computed once so the number this prints and the number the real
-        // run below actually passes to libtest cannot drift apart.
-        let jobs = jobs_for_target(needs_preexisting, args.jobs);
 
         eprintln!(
             "live-sweep: -p {} --test {}: {} qualified (will run for real at \
@@ -2137,13 +2285,7 @@ pub fn run(args: Args) -> Result<()> {
             continue;
         }
 
-        if let Some(mut cmd) = phase_command(
-            &target.package,
-            &target.test_name,
-            &part.qualified,
-            true,
-            jobs,
-        ) {
+        if let Some(mut cmd) = command {
             let what = format!(
                 "`cargo test -p {} --test {}` (phase 1: real run, --test-threads={jobs})",
                 target.package, target.test_name
@@ -3252,6 +3394,107 @@ failures:
             err.to_string().contains("found 0 gated live tests"),
             "expected the empty-scan guard to fire, got: {err}"
         );
+    }
+
+    /// iter-263: a test present in the compiled ignored corpus but absent from
+    /// the source-derived plan is the historical false-green shape. It must
+    /// fail by exact name before either dry-run or real execution can report a
+    /// smaller, internally consistent total.
+    #[test]
+    fn test_263_compiled_test_dropped_from_plan_is_named() {
+        let source = vec!["live_a".to_owned()];
+        let compiled = vec!["live_a".to_owned(), "live_252_missing".to_owned()];
+        let err = reconcile_compiled_corpus(&source, &compiled).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("missing from plan"), "{message}");
+        assert!(message.contains("live_252_missing"), "{message}");
+    }
+
+    /// A source-only name is a valid host-cfg exclusion. The compiled corpus is
+    /// authoritative for the names passed to both dry-run counting and real
+    /// `--exact` commands, so the source-only test is filtered out.
+    #[test]
+    fn test_263_cfg_excluded_name_is_filtered_before_counting() {
+        let mut target = parity_fixture();
+        filter_compiled_target(
+            &mut target,
+            &["live_a".into(), "live_b".into(), "live_network".into()],
+        )
+        .unwrap();
+        assert_eq!(
+            target
+                .gated
+                .iter()
+                .map(|test| test.full_name.as_str())
+                .collect::<Vec<_>>(),
+            ["live_b", "live_a", "live_network"]
+        );
+        assert_eq!(target.gated.len(), 3);
+    }
+
+    fn parity_fixture() -> SweepTarget {
+        SweepTarget {
+            package: "ff-rdp-cli".into(),
+            test_name: "live".into(),
+            gated: ["live_b", "live_a", "live_cfg_excluded", "live_network"]
+                .into_iter()
+                .map(|name| GatedTest {
+                    full_name: name.into(),
+                    needs_live: true,
+                    needs_network: name == "live_network",
+                    needs_preexisting: false,
+                })
+                .collect(),
+        }
+    }
+
+    /// Exercise the same filtered target, report and command consumed by run.
+    #[test]
+    fn test_263_verified_corpus_has_one_count_for_dry_run_and_real() {
+        let gates = EnvGates {
+            live: true,
+            network: false,
+            preexisting_available: true,
+        };
+        let mut target = parity_fixture();
+        let compiled = vec!["live_a".into(), "live_b".into(), "live_network".into()];
+        filter_compiled_target(&mut target, &compiled).unwrap();
+        let dry = plan_target_phase(&target, &gates, true, 6);
+        let real = plan_target_phase(&target, &gates, true, 6);
+        let command = real.command.unwrap();
+        assert_eq!(command.get_program(), "cargo");
+        let args = arg_strings(&command);
+        assert_eq!(
+            args,
+            [
+                "test",
+                "-p",
+                "ff-rdp-cli",
+                "--test",
+                "live",
+                "--",
+                "--include-ignored",
+                "--test-threads=6",
+                "--exact",
+                "live_a",
+                "live_b"
+            ]
+        );
+        let exact_names = &args[args.iter().position(|arg| arg == "--exact").unwrap() + 1..];
+        assert_eq!(dry.summary.executed, exact_names.len());
+        assert_eq!(dry.part.qualified, exact_names);
+        assert_eq!(dry.summary.executed, 2);
+        assert_eq!(dry.summary.skipped, 1);
+        assert_eq!(dry.part.unqualified, ["live_network"]);
+        assert!(dry.vanished.is_empty());
+
+        // A compiled name without metadata blocks planning, rather than lowering
+        // either the reported count or the real command selection silently.
+        let mut missing_metadata = parity_fixture();
+        let mut missing_compiled = compiled;
+        missing_compiled.push("live_missing_metadata".into());
+        let error = filter_compiled_target(&mut missing_metadata, &missing_compiled).unwrap_err();
+        assert!(format!("{error:#}").contains("live_missing_metadata"));
     }
 
     // -----------------------------------------------------------------------

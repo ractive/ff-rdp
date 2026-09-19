@@ -108,3 +108,10 @@ was the *only* mechanism. The reporting gap is what makes the next occurrence an
 - [[iteration-175-failed-launch-leaks-unmarked-profile-dir]] — the guard this plan reports on
 - `crates/ff-rdp-cli/src/util/profile_dir.rs` — `ManagedProfileGuard::drop`
 - `crates/ff-rdp-cli/src/commands/launch.rs` — the port-deadline failure path
+
+## Implementation preflight — 2026-09-19
+
+The source audit confirms a reporting gap: ManagedProfileGuard traces skipped cleanup without returning details into the launch error envelope. Include both the build_command guard and the outer launch guard. Existing child kill/wait ordering from 246 is already present; preserve it. Decide explicitly how secure-root resolution failure that disarms a guard is reported. Preserve User/error exit semantics and one JSON envelope; do not emit an additional document from Drop. Focus regressions on actual cleanup/error paths rather than an exhaustive hypothetical exception matrix.
+
+This source/evidence audit adds implementation guidance, not a new execution result.
+Original task and acceptance-criterion wording and checkbox states remain unchanged.
