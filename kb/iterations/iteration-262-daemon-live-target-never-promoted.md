@@ -236,3 +236,9 @@ pass fixed neither and does not supply this plan's three consecutive sweeps.
 Original tasks/ACs remain unchanged. Evidence:
 `.git/ralph-loop/20260919-queue/iter263-repair2/live-sweep.log`,
 `reconciliation.json`, and the prior `iter263/logs/` and `iter263-repair1/` logs.
+
+The final263 security-dependency sweep separately repeated137's target-readiness
+failure:15,194ms/47polls, debug64969/proxy65086/daemon42087. It is not a new
+Sourcepoint-action observation. Full344=341pass/3fail, no missing names or profile
+leaks; original cause and three-sweep requirements remain unmet. Evidence:
+`.git/ralph-loop/20260919-queue/iter263-security/sweep.log`.

@@ -107,3 +107,10 @@ still unavailable; no root cause or shared mechanism is claimed. No isolated
 pass replaces this failed occurrence. Original tasks/ACs remain unchanged.
 Evidence: `.git/ralph-loop/20260919-queue/iter263-repair2/live-sweep.log`,
 `reconciliation.json` and `live-launches.log`.
+
+The final263 security-dependency sweep separately failed the same240 scenario at
+hop3/40, proxy55319,0reconnects: `daemon auth failed: recv failed: failed to fill
+whole buffer`. Keep this EOF distinct from the preceding hop20 reset; attributable
+failed-auth timing remains unavailable and no shared cause is proved.
+Full344=341pass/3fail, no missing names or profile leaks. Evidence:
+`.git/ralph-loop/20260919-queue/iter263-security/sweep.log`.

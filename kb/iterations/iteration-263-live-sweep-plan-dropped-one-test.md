@@ -236,3 +236,23 @@ statuses are in `iter263-repair2/gate-commands.json`.
 
 | Repair-2 closing sweep: target-promotion wait in `live_137_consent_accept_via_daemon` before consent handling | **Fold — [[iteration-262-daemon-live-target-never-promoted]]**, distinct from the preserved Sourcepoint action observations. |
 | Repair-2 closing sweep: hop 20/40 pre-auth reset in `live_240_sustained_hops_never_desynchronise`, zero reconnects | **Fold — [[iteration-268-daemon-pre-auth-connection-loss]]**, already owns this exact test and wire signature; attributable failed-auth timing remains unavailable. |
+
+## CI prerequisite and final dependency evidence — 2026-09-19
+
+PR254's first head6326620 passed nine CI checks but failed supply-chain for
+existing rustls0.23.40, RUSTSEC-2026-0285. Following CONTRIBUTING's patch-upgrade
+procedure, Cargo.lock now selects rustls0.23.45 and required webpki0.103.15;
+no provider/features or advisory policy changed. Independent security review
+returned explicit zero findings, separate from the two completed implementation
+repair batches. Local cargo audit and cargo deny pass.
+
+The final dependency-state dual-gate sweep qualifies344 in dry-run and real
+execution:341pass+3fail, all five tiers/exact names, zero skips/reclassifications
+or profile leaks. Failures:137 target readiness15,194ms/47polls→262;
+165 eval greeting-wait Timeout at proxy52636→267;240 hop3/40 auth EOF at
+proxy55319,0reconnects→268. This does not establish causes or authentication
+success. The prior342/2 repair record and every earlier attempt remain retained.
+Source runner hash is unchanged from the final independent review. Evidence:
+`.git/ralph-loop/20260919-queue/iter263-security/` and `iter263-security-review/`.
+The separate ordered gate ledger applies to the updated lockfile. Owned raw
+Firefox39206 stopped/waited; port6000free. No sweep was repeated to chase green.

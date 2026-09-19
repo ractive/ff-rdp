@@ -67,3 +67,16 @@ The historical wording overstates the phase: connect_tab emits 'timeout after au
 
 This source/evidence audit adds implementation guidance, not a new execution result.
 Original task and acceptance-criterion wording and checkbox states remain unchanged.
+
+## Iteration263 greeting-wait recurrence — 2026-09-19
+
+Final263 security-dependency sweep failed
+`live_165_eval_call_scope::live_165_scope_behaviour_table`: `eval [] "typeof c1"`
+returned the existing `daemon did not respond within the timeout after auth`
+Timeout envelope, daemon proxy52636. As established by the preflight, this proves
+waiting for the greeting after sending authentication, not successful server-side
+authentication. Attributable failed-occurrence timing remains unavailable.
+Full344=341pass/3fail with exact names and zero profile leaks. No root cause,
+retry, timeout change or isolated-pass substitute is claimed. Original tasks/ACs
+remain unchanged. Evidence:
+`.git/ralph-loop/20260919-queue/iter263-security/sweep.log`.
