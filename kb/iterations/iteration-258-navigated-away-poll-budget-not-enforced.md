@@ -2,7 +2,7 @@
 title: "Iteration 258: navigated_away's poll budget is advisory — one blocked read spends the whole --timeout"
 type: iteration
 date: 2026-09-07
-status: in-progress
+status: done
 branch: iter-258/navigated-away-poll-budget-not-enforced
 depends_on: [237]
 first_call_sites:
@@ -105,13 +105,13 @@ Nothing clamps the second to what is left of the first.
 ### C. Measure [1/1]
 - [x] Re-run the `dogfood_path` reproduction before and after; record both wall-clock numbers here
 
-## Acceptance Criteria [3/4]
+## Acceptance Criteria [4/4]
 
 - [x] `type --submit` against a real navigating search form still reports `navigated: true`, in
       measurably less wall-clock time than the 12.37 s recorded above (record the after number)
 - [x] A unit test proves `navigated_away` returns within its stated budget when the console never
       answers
-- [ ] `cargo run -p xtask -- live-sweep` clean with both env gates set
+- [x] `cargo run -p xtask -- live-sweep` clean with both env gates set
 - [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean
 
 ## Out of scope
@@ -188,6 +188,10 @@ iteration 258 on the iteration 263 implementation.
 
 ## Closing sweep and carry-over
 
+This section preserves the initial closing attempt and its then-unmet acceptance
+criterion. The integrated closing result below supersedes its completion status,
+without erasing either failure or claiming a repair to iteration262.
+
 The final-source dual-gate sweep on Firefox 156.0 (2026-09-19, 10:32–10:36 UTC)
 executed every compiled ignored live test, manually reconciled by exact name
 across all five targets: 344 expected and observed, zero duplicates or missing
@@ -226,3 +230,53 @@ stable1.98.1 / clippy0.1.98 (48a229ceae), ending10:40:03UTC. The stable update
 record from this day's iteration263 run was reused as authorized. No source
 changed after the closing sweep; SHA-256 verification passed after the gates.
 Independent review and supervisor checkpoint/PR actions remain outstanding.
+
+## Integrated closing result — 2026-09-19
+
+The initial independent review completed with explicit zero new actionable
+findings, covering the implementation, tests, documentation, plan272 and retained
+execution evidence. The reviewed four product files remain byte-for-byte unchanged.
+After iteration270 merged, verified main
+`64cdc4f0e2fba334325a3d3b17a0280985382e3c` was integrated once; the only conflicts
+were appended histories in plans262/267, with both sides retained. Main includes
+iteration267's accepted-socket blocking-mode repair, a relevant source change
+since the first sweep. No speculative262 repair or272 implementation was added.
+
+One new dual-gate closing sweep on Firefox156.0 ran from16:05:35 to16:10:36UTC,
+including its private-target compilation and owned raw-browser setup/cleanup:
+
+```text
+FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo run -p xtask -- live-sweep
+LIVE_SWEEP_SUMMARY executed=346 skipped=0 preexisting=0 vanished=0 launch_timeout=0 timed_out=0 total=346
+LIVE_SWEEP_PROFILES leaked=0 unattributed=0 root=/Users/james/Library/Application Support/ff-rdp/profiles
+```
+
+The runner exited0. All346 compiled names have exactly one passing verdict across
+six tiers: CLI335 and core1+3+3+2+2, with no missing/unexpected names or duplicates.
+Every per-target profile scan was clean; the single emitted profile-summary line
+is preserved above. The extra two tests versus the original344 corpus come from
+the integrated watcher-protocol target. Owned raw Firefox32871 was stopped and
+reaped, its unmanaged profile removed, port6000free and desktop Firefox1112
+preserved. The original342pass/2fail run remains recorded above. Passing the262
+scenario here does not explain its earlier failure, implement that plan, or
+satisfy its separate three-consecutive-sweep requirement.
+
+All nine enumerated xtask checks passed on the integrated source, including
+actor/KB sync against the verified main SHA, plan272 and the full plan inventory.
+Firefox-reference/dogfood checks still have no declared artifacts; their skip is
+not counted as live evidence. Stable remained Rust1.98.1/clippy0.1.98; ordered
+`cargo fmt`, strict workspace clippy and workspace tests passed, ending16:13:54UTC.
+The original focused tests, meaningful mutations, before/after dogfood and full
+independent review remain applicable and were not repeated. Routine closure
+bookkeeping is subject to supervisor verification before checkpoint/PR/merge.
+
+Evidence: primary checkout `.git/ralph-loop/20260919-queue/iter258-resume/`,
+particularly `sweep.log`, `reconciliation.log`, `actual-verdicts.tsv`,
+`xtask-gates.log`, `ordered-gates.log` and `frozen-source.sha256`.
+
+| Retained observation | Final disposition |
+|---|---|
+| Initial104 greeting timeout | Preserve its occurrence in267; integrated267 repairs the demonstrated socket-mode race, without retroactively attributing this untraced occurrence. |
+| Initial145 target-readiness failure | Fold into262, unchanged cause and original unmet requirements. This run's pass does not close262. |
+| Auto-wait diagnostic/deadline survey |272 remains planned and unexecuted, preserving its distinct diagnostic-policy work. |
+| Original clean dual-gate sweep AC | Fulfilled by this iteration's own integrated346/346 closing run; original wording unchanged and initial red result retained. |

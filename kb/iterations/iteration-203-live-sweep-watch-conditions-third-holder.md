@@ -239,3 +239,17 @@ Exact commands, exits and output are retained in
 no continuous-availability claim is made. Original watch ACs remain
 untouched. Evidence: `.git/ralph-loop/20260912-validation-efficiency/iter257-implementation/`,
 including `observed-verdicts.tsv`, both isolated logs and `sweep-pid-load-samples.txt`.
+
+## Iteration261 styles recurrence — 2026-09-19
+
+Documentation only; this holder remains parked. The first 261 sweep emitted
+`live_styles_applied::live_styles_applied_returns_real_rules ... FAILED`, but its
+panic body was not emitted before an unrelated contended-launch watchdog termination.
+No failed-page, URL, route or error category was captured; the cause is unknown.
+The corrected sweep passed this test, which does not diagnose or close the watch.
+The existing frontmatter filing trigger has fired. Its diagnostic follow-up is now
+[[iteration-274-styles-applied-unattributed-recurrence]], preserving the missing
+panic/URL/document/DOM/route evidence rather than resetting the trigger. The new plan
+is outside the selected execution queue; this holder remains parked.
+Evidence: `.git/ralph-loop/20260919-queue/iter261/logs/live-sweep.log` and
+`live-sweep-rerun.log`; exact-name counts are in `iter261-review/report.md`.

@@ -2,7 +2,7 @@
 title: "Iteration 260: daemon stop's profile removal races the browser it just stopped, and the live verifications iteration 242 could not run"
 type: iteration
 date: 2026-09-07
-status: planned
+status: obsolete
 branch: iter-260/live-owner-removal-race-in-daemon-stop
 depends_on:
   - iteration-242-profile-liveness-flake-in-prune-all
@@ -103,8 +103,8 @@ measurement took twenty minutes once the field existed.
 
 ### Tasks
 
-#### A. Measure [0/2]
-- [ ] `profile_skip_reason` is recorded across at least 20 `launch`/`daemon stop` cycles
+#### A. Measure [1/2]
+- [x] `profile_skip_reason` is recorded across at least 20 `launch`/`daemon stop` cycles
 - [ ] The value is `remove-failed` (shared mechanism) or is not (different defect — say which)
 
 #### B. Decide [0/2]
@@ -113,12 +113,12 @@ measurement took twenty minutes once the field existed.
       corrected the way iteration 242 corrected the iteration-97 Theme C assertion — asserting
       what the command can actually guarantee, and never silent about the other outcome
 
-### Acceptance Criteria [0/3]
+### Acceptance Criteria [1/3]
 
 - [ ] The mechanism behind `profile_removed: false` is named from a recorded
       `profile_skip_reason`, not inferred from its resemblance to Part A of iteration 242
 - [ ] A test pins whichever behaviour is chosen
-- [ ] `live_daemon_stop_profile_path_matches_launch_json` passes twenty consecutive runs, or its
+- [x] `live_daemon_stop_profile_path_matches_launch_json` passes twenty consecutive runs, or its
       assertion is corrected and *that* passes twenty
 
 ## Part B: the live verifications iteration 242 could not run
@@ -152,19 +152,19 @@ without determining whether the test itself leaked it or the process was an unre
 sweep's orphan. Iteration 242 re-flagged it as open and out of its own scope. It has had no owner
 since 176 closed.
 
-- [ ] Run `live_160_selector_diagnostics_survive` (`tests/live/live_160_envelope_honesty.rs`) in
+- [x] Run `live_160_selector_diagnostics_survive` (`tests/live/live_160_envelope_honesty.rs`) in
       isolation, under `FF_RDP_LIVE_TESTS=1`, and confirm with `ps` that no `firefox` process
       naming that test's `.ff-rdp-owner-test` marker survives the test's exit.
 - [ ] If it does leak: find the missing guard — Part B of iteration 242 enumerates launch sites,
       not guard sites, and this file was in scope for that scan
       (`tests/iter_242_launch_site_ownership.rs`); if the scan already covers it, say why it did
       not catch this case.
-- [ ] If it does not leak in isolation: say so and close this item as "unreproduced, likely an
+- [x] If it does not leak in isolation: say so and close this item as "unreproduced, likely an
       unrelated interrupted sweep's orphan" rather than leaving it open indefinitely.
 
-### Acceptance Criteria [0/1]
+### Acceptance Criteria [1/1]
 
-- [ ] The leak question has a landed answer (reproduced-and-fixed, or unreproduced-and-closed),
+- [x] The leak question has a landed answer (reproduced-and-fixed, or unreproduced-and-closed),
       not a re-deferral
 
 ## Out of scope
@@ -201,3 +201,74 @@ Part B's live verification is already discharged by the September 14 evidence; d
 
 This source/evidence audit adds implementation guidance, not a new execution result.
 Original task and acceptance-criterion wording and checkbox states remain unchanged.
+
+## Isolation evidence and disposition — 2026-09-19
+
+Investigation base: `3a398566281abfa48ce96f1f8d855e6c1116a302`, Firefox 156.0,
+macOS, stable Rust 1.98.1. Product and test source remain unchanged. Evidence lives
+in `.git/ralph-loop/20260919-queue/iter260/` in the primary checkout; the execution
+checkout is `/Users/james/.cache/ff-rdp/queue-20260919-260`, with its own Cargo target.
+
+Part A's twenty isolated `launch --headless --debug-port 39301..39320` / `daemon
+stop` cycles all returned `stopped: true`, `profile_removed: true`, and an actual
+`profile_skip_reason: null`. Each launch and stop envelope, stderr, timestamp and
+before/after owner-PID observation is retained (`cycle-N.*`, `measure.sh`,
+`measure.log`). There was no skipped removal to diagnose. Separately, twenty
+consecutive invocations of the unchanged exact test
+`live_96_profile_cleanup::live_daemon_stop_profile_path_matches_launch_json`
+passed with `FF_RDP_LIVE_TESTS=1`, `--exact --include-ignored --nocapture
+--test-threads=1` (`test96-1.log` through `test96-20.log`). These are twenty test
+verdicts, not the plain cycles relabelled as test runs.
+
+Disposition: **obsolete**, independently reviewed with zero findings: the planned race was not
+reproduced in this bounded investigation, as Theme A explicitly permits. Neither
+ENOTEMPTY nor a sweep-load cause is established. Leave the mechanism task/AC and
+chosen-behaviour test AC unticked. No one of the three proposed repairs was
+selected: a retry, a new reap wait, and an assertion change each need a reproduced
+failure and its actual cause before implementation is justified. The conditional
+shape-3 task therefore also remains unticked. The passing repetition AC is ticked
+on its own evidence; it does not prove the historical failure impossible.
+
+Part C's exact test
+`live_160_envelope_honesty::live_160_selector_diagnostics_survive` passed in
+isolation (4.19s libtest). During the run, `.ff-rdp-owner-test` named that exact
+test and `.ff-rdp-owner-pid` named PID 40124; the launch log records port 51294.
+`test160.ps-during` captured its command line naming the same profile. Immediately
+after the test exited, `ps` showed no process for that PID and no Firefox command
+naming the isolated home/profile; no owner marker survived. See `part-c.sh`,
+`test160.markers-during`, `test160-launches.log`, `test160.ps-after`, and
+`test160.owner-40124.ps-after`. The existing `LiveFirefox` guard reaches
+`kill_pid_and_wait` on drop; no missing guard was found. Close the orphan question
+as **unreproduced, likely an unrelated interrupted sweep's orphan**; the latter is
+a plausible historical explanation, not a measured attribution. The conditional
+leak-repair task remains unticked because no leak occurred. The landed-answer AC records this evidence-backed closure in the iteration checkpoint.
+
+The first Part C run also passed (PID 39800, 4.14s), with no surviving owner PID,
+but the observer initially searched `$FF_RDP_HOME/profiles` instead of the actual
+`$FF_RDP_HOME/ff-rdp/profiles`. It therefore lacked during-run marker evidence.
+That operator error prompted the one corrected repeat, not a test failure or a
+product repair. Preserve `part-c-attempt1/` and its separate owner-PID observation.
+
+Part B reuses the September 14 owed242 evidence above, including its actual
+331pass/12fail, five-tier accounting and `leaked=0 unattributed=0`; no new full
+sweep was required for this documentation-only disposition. Unchanged source gates
+are reused from `iter263-security/commands.log`: ordered fmt, strict workspace
+clippy and workspace tests passed on the final rustls-updated inputs. The measured
+source/dependency tree matches those merged inputs. Before checkpoint, the branch
+fast-forwarded to verified main `38add406f711434f520fa06494b2e02ab3f5e0b2`, incorporating
+261's independently reviewed launch-warning change; that merge's unchanged ordered
+gates (`iter261/gates-record.md`) cover the final source tree. The stop-cleanup and
+selector-test sources measured here did not change. No source or test changes are
+introduced by260. Documentation checks run on this plan are recorded in
+`iter260/checks.log`; final status/heading checks were repeated after finalization.
+
+## Carry-over
+
+| Item | Disposition |
+| --- | --- |
+| Historical false removal / mechanism task and AC; choice and chosen-behaviour test AC; conditional shape-3 correction | **No plan, with a stated reason:** no skipped removal occurred in twenty cycles or twenty exact tests. Preserve unticked requirements and obsolete disposition. Reopen only on a recorded false removal, retaining the actual skip reason, OS error/log, profile/owner state and failed-occurrence conditions before choosing a repair. |
+| Historical six dead-owner directories in iteration245's carry-over row 5 | **No plan, with a stated reason:** that historical observation does not establish a stop-path cause; this investigation found none. Dead-owner leftovers and live-owner leaks are distinct. A new reproducible failed stop removal with attribution reopens the investigation; no source repair is justified from that old count alone. |
+| Historical selector-test orphan / conditional missing-guard repair | **Closed in this iteration's evidence:** exact isolation, marker/PID attribution and post-exit process check above; no leak reproduced. Landing remains supervisor-owned. |
+| First selector observer missed the actual profile-root nesting | **Closed in this iteration's evidence:** operator path correction and one attributable repeat; first passing result preserved separately. |
+| HN readiness-versus-site diagnosis inherited from242 | **No plan, with a stated reason:** the retained pass does not explain the old failure, and no new HN failure fired its trigger in this investigation. Preserve242's unticked mechanism AC. On the next failure, retain READINESS/SITE diagnostics and actual document state before naming a cause. |
+| September14 owed242 sweep failures | **Fold:** retain each exact named failure and its existing owner in242's evidence table; this docs-only closure does not change those dispositions or turn that sweep green. |

@@ -128,6 +128,13 @@ which dominates the iteration loop's wall-clock cost.
   machine-readable
   `LIVE_SWEEP_SUMMARY executed=N skipped=M preexisting=K vanished=V launch_timeout=L timed_out=X total=T` line — quote
   `executed=N` in the PR body instead of the `cargo test` summary line. Add `--dry-run` to see the split without invoking `cargo test`.
+- **The source-derived plan is checked against the compiled ignored-test corpus** (iter-263).
+  Before either a dry-run or a real sweep reports any counts, each target runs libtest's
+  `--ignored --list` enumeration. Compiled names absent from the source plan are named hard
+  failures, while source names absent from the compiled binary are excluded as host `#[cfg]`
+  tests. The compiled names then drive both partition counts and real `--exact` arguments.
+  This prevents a transient directory-read omission or scanner gap from shrinking an internally
+  consistent `total` without saying which compiled test disappeared.
 - **The sweep runs the self-launching tier in parallel** (iter-188). A headless Firefox cold start
   costs 5.64 s +/- 0.02 on an idle 10-core machine, the `ff-rdp-cli` tier performs ~200 of them,
   and only 8% of its tests finish in under 6 s — so roughly half of the old 38-minute serial sweep

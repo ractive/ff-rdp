@@ -62,6 +62,10 @@ const HOOK_INTERACTIVE_LIMIT: usize = 15;
 /// skimming is a list it will skim.
 const MAX_HINTS: usize = 5;
 
+/// Byte ceiling for the hook's complete loaded-page next-step block.
+#[cfg(test)]
+const HOOK_HINT_BYTES_MAX: usize = 600;
+
 // Text-renderer caps. The `page` block is already capped by
 // `interactive_limit`, but headings and landmarks are not, so a link farm with
 // 300 headings would blow the budget the AC `home_text_view_is_bounded` pins.
@@ -184,6 +188,53 @@ fn hints_for(state: HintState<'_>) -> Vec<String> {
         }
     }
     hints.push("ff-rdp console --limit 20".into());
+    hints.truncate(MAX_HINTS);
+    hints
+}
+
+/// The loaded-page next steps used by the opt-in session hook.
+///
+/// Iteration 256 measured a 533-byte hook that successfully oriented agents to
+/// the browser but omitted the action path: it named `a11y`, `page-text`, and
+/// `console`, without showing the navigate-with-page, click-ref, or type-ref
+/// forms. Keep that guidance local to `home --hook`; the ordinary home view and
+/// every command default retain their existing hints and behaviour.
+///
+/// A concrete ref is shown only when this invocation actually minted one. The
+/// type example needs an input-specific ref that this generic page summary
+/// cannot identify, so its angle-bracket token is explicitly labelled as a
+/// placeholder. When no ref exists at all, both action examples use labelled
+/// placeholders and the preceding line tells the caller how to mint them.
+fn hook_hints_for(state: HintState<'_>) -> Vec<String> {
+    if !state.browser_reachable || !state.has_loaded_page {
+        return hints_for(state);
+    }
+
+    let mut hints = vec![format!(
+        "{}  # land, filter, and mint refs",
+        NAVIGATE_IDIOM.0
+    )];
+    if let Some(r) = state.first_ref {
+        hints.push(format!(
+            "ff-rdp click --ref {r} --with-page  # {r} is minted above; CSS is positional"
+        ));
+    } else {
+        hints.push("ff-rdp a11y summary  # mint refs; none are available above".into());
+        hints.push(
+            "ff-rdp click --ref <minted-ref> --with-page  # replace the placeholder with a minted ref"
+                .into(),
+        );
+    }
+    hints.push(
+        "ff-rdp type --ref <input-ref> --text \"<text>\" --with-page  # replace <input-ref> with a minted input ref"
+            .into(),
+    );
+    hints.push(
+        "ff-rdp click \"<css>\" --with-page  # CSS is positional; never pass CSS to --ref".into(),
+    );
+    if state.first_ref.is_some() {
+        hints.push("ff-rdp a11y summary  # re-read the page and mint fresh refs".into());
+    }
     hints.truncate(MAX_HINTS);
     hints
 }
@@ -600,7 +651,7 @@ pub fn run(cli: &Cli, args: &HomeArgs) -> Result<(), AppError> {
         (_, other) => other,
     };
 
-    let results = build_results(
+    let mut results = build_results(
         &bin,
         env!("CARGO_PKG_VERSION"),
         &daemon,
@@ -608,6 +659,19 @@ pub fn run(cli: &Cli, args: &HomeArgs) -> Result<(), AppError> {
         &tabs,
         page,
     );
+
+    if args.hook {
+        let page = results.get("page").filter(|page| !page.is_null());
+        let state = HintState {
+            browser_reachable: results["browser"]["reachable"].as_bool() == Some(true),
+            has_loaded_page: results["tabs"].as_array().is_some_and(|tabs| {
+                tabs.iter()
+                    .any(|tab| !is_blank_url(tab["url"].as_str().unwrap_or_default()))
+            }),
+            first_ref: first_ref(page),
+        };
+        results["hints"] = json!(hook_hints_for(state));
+    }
 
     let invocation: Vec<String> = std::env::args().collect();
     let wants_envelope =
@@ -772,6 +836,63 @@ mod tests {
         assert!(
             !hints.iter().any(|h| h.contains("click --ref")),
             "an inert ref handle must never be offered as a command: {hints:?}"
+        );
+    }
+
+    #[test]
+    fn unit_270_hook_hints_show_the_action_path_with_a_real_ref() {
+        let hints = hook_hints_for(HintState {
+            browser_reachable: true,
+            has_loaded_page: true,
+            first_ref: Some("e7"),
+        });
+        let joined = hints.join("\n");
+        assert_eq!(hints.len(), MAX_HINTS, "{hints:?}");
+        assert!(
+            joined.len() <= HOOK_HINT_BYTES_MAX,
+            "{} bytes: {joined}",
+            joined.len()
+        );
+        assert!(
+            joined.contains("navigate <URL> --with-page --query \"<text>\""),
+            "{joined}"
+        );
+        assert!(
+            joined.contains("click --ref e7 --with-page  # e7 is minted above"),
+            "{joined}"
+        );
+        assert!(
+            joined.contains("type --ref <input-ref> --text \"<text>\" --with-page"),
+            "{joined}"
+        );
+        assert!(
+            joined.contains("click \"<css>\" --with-page  # CSS is positional"),
+            "{joined}"
+        );
+    }
+
+    #[test]
+    fn unit_270_hook_hints_do_not_invent_a_daemon_ref() {
+        let hints = hook_hints_for(HintState {
+            browser_reachable: true,
+            has_loaded_page: true,
+            first_ref: None,
+        });
+        let joined = hints.join("\n");
+        assert_eq!(hints.len(), MAX_HINTS, "{hints:?}");
+        assert!(
+            joined.len() <= HOOK_HINT_BYTES_MAX,
+            "{} bytes: {joined}",
+            joined.len()
+        );
+        assert!(joined.contains("a11y summary  # mint refs"), "{joined}");
+        assert!(
+            joined.contains("click --ref <minted-ref> --with-page  # replace the placeholder"),
+            "{joined}"
+        );
+        assert!(
+            !joined.contains("click --ref e"),
+            "no concrete ref exists, so none may be presented as runnable: {joined}"
         );
     }
 
