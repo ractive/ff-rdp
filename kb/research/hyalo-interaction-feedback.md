@@ -96,3 +96,15 @@ Supervisor: `read --section Outcome` correctly rejected the guessed nonexistent 
 ## 2026-09-19 iteration265 closure
 
 Hyalo0.23.0: selected plan `read --frontmatter --format text` and body read kept metadata and preflight explicit. Supervisor initially used positional `set FILE KEY VALUE`; tool rejected with a useful `--property K=V --file` hint. Operator syntax mistake, not a Hyalo defect. Corrected `set --file iterations/iteration-265-typed-watcher-protocol-fidelity.md --property scope_note=... --property status=done` changed both scalars; HYALO005 passed. Direct body appends for exact sweep recurrences and this feedback remain the supported-workflow exception because Hyalo has no general prose editor. No Hyalo version change or ../hyalo edit.
+
+## 2026-09-19 iteration267 interactions
+
+Installed executable: /Users/james/.cargo/bin/hyalo, version 0.23.0 (adbafda6c7fc 2026-09-13).
+- Supplied executable /Users/james/.cargo/bin/hyalo0.23.0 did not exist (exit127); corrected to verified installed executable. Operator/launch-input error, not Hyalo defect.
+- read discipline-rationale.md --format text: success.
+- find --property 'title~=267|268' --format text: success, exposed full metadata including267 tasks/ACs.
+- read267 and268 --format text: success. read267 --frontmatter --format text: success. Metadata/body distinction is documented in help.
+- read203 --section '8.': exit1, accurate section-not-found and suggested headings; corrected to --section 'Carried-forward conditions': success. Operator selector error, not defect.
+- The combined read-help tool output was truncated by the tool-output budget, not Hyalo. No verified Hyalo defect found; no ../hyalo changes.
+
+Supervisor: new cascade carry-over initially reused275, already allocated on blocked262 branch. Hyalo mv dry-run correctly previewed one backlink rewrite; apply moved it to276 and updated that backlink. Scalar title/branch updated with set; unsupported body heading prose updated directly. This was queue-numbering coordination, not a Hyalo defect. Long mv --help output exceeded the calling-tool budget; no provider output loss established.

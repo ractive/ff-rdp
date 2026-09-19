@@ -118,3 +118,23 @@ Full344=341pass/3fail, no missing names or profile leaks. Evidence:
 ## Iteration265 sweep recurrence — 2026-09-19
 
 The final265 sweep failed `live_224_with_page_connection_reset::live_repeated_hop_never_loses_the_connection` on hop9, proxy63178: `daemon auth failed: recv failed: failed to fill whole buffer`. This is another EOF observation, not proof of a common cause with resets or greeting timeouts. Attributable failed-auth timing remains unavailable. Full346=344pass2fail, zero profile leaks. Evidence: `.git/ralph-loop/20260919-queue/iter265/live-sweep.log` and `supervisor-accounting.json`. Original tasks/ACs remain unchanged.
+
+## Attributed267 handshake evidence — 2026-09-19
+
+Iteration267 reproduced the scope-table greeting-wait Timeout envelope with
+attributable connection timing: daemon13895/proxy56229 rejected its auth read
+about88microseconds after handler entry, before client13984/local56297 completed
+its auth send. The client then received reset54; the existing transient-error
+mapping presented that reset as "timeout after auth". A separate control
+confirmed accepted sockets inherit the listener's nonblocking mode on macOS.
+The scoped267 repair restores blocking mode before applying existing deadlines;
+its explicit nonblocking-socket regression fails without that repair and passes
+with it. See [[iteration-267-daemon-post-auth-timeout-recurrence]] and primary
+checkout evidence `.git/ralph-loop/20260919-queue/iter267/trace-v2.log`,
+`loaded-modules-v2.log`, and `trace-flags.log`.
+
+This demonstrates why presentation alone cannot separate267 and268 handshake
+failures. It does not supply missing failed-occurrence traces for this plan's
+historical224/240 EOF/reset observations, and does not close this plan or any of
+its original ACs. Preserve every original observation and await the required
+attributed evidence before assigning those occurrences the same cause.
