@@ -2,7 +2,7 @@
 title: "Iteration 264: three live timing bounds fail under sweep load, and nothing distinguishes that from a regression"
 type: iteration
 date: 2026-09-07
-status: planned
+status: done
 branch: iter-264/sweep-load-timing-bounds
 depends_on:
   - iteration-252-content-process-resources-on-the-direct-route
@@ -62,22 +62,87 @@ of the thing being asserted. What these tests need is a way to say *why* they we
 
 ## Scope
 
-- [ ] measure each of the three in isolation, ten runs, and record the distribution — a bound
+- [x] measure each of the three in isolation, ten runs, and record the distribution — a bound
       cannot be re-sized against a single loaded observation
-- [ ] measure the same three under a deliberate sweep-like load and record the distribution
-- [ ] for each, decide between: a wider bound justified by the isolated distribution; a bound
+- [x] measure the same three under a deliberate sweep-like load and record the distribution
+- [x] for each, decide between: a wider bound justified by the isolated distribution; a bound
       expressed against a measured baseline rather than a constant; or a failure message that
       distinguishes "over the bound" from "over the bound while the box was saturated" (e.g.
       capturing load average at assertion time, the way iteration 203's conditions 6 and 7 use it)
-- [ ] whatever is chosen, the test must still fail on the regression it was written for —
+- [x] whatever is chosen, the test must still fail on the regression it was written for —
       demonstrate that, do not assert it
 
-## Acceptance Criteria [0/3]
+## Acceptance Criteria [3/3]
 
-- [ ] each of the three tests has an isolated and a loaded distribution recorded in this plan
-- [ ] each has one of the three dispositions above applied, with the measurement that justifies it
-- [ ] for at least `live_navigate_elapsed_matches_wall`, the iter-122 regression it guards is
+- [x] each of the three tests has an isolated and a loaded distribution recorded in this plan
+- [x] each has one of the three dispositions above applied, with the measurement that justifies it
+- [x] for at least `live_navigate_elapsed_matches_wall`, the iter-122 regression it guards is
       re-introduced locally and shown to still fail the reworked assertion
+
+## Iteration 264 measurements — 2026-09-19
+
+Every entry below came from a separate test process and emitted exactly one
+`TIMING_SAMPLE` marker after the timed operation. The runner rejected a run unless that marker
+was present exactly once, so an exit-zero bind skip could not enter either distribution. Raw
+per-run output, argv, environment, UTC start/end and exit status are under
+`.git/ralph-loop/20260919-queue/iter264/{isolated,loaded}/`.
+
+The isolated set ran the tests sequentially with no deliberate load process and no foreign
+Cargo or managed-Firefox workload present. The host was not idle: its one-minute load average
+was 18.13–30.17. Values are sorted milliseconds; the third row measures
+`abs(external wall - results.elapsed_ms)`.
+
+| test | isolated distribution (10/10 reached measurement) |
+|---|---|
+| `live_non_navigating_click_with_page_is_not_delayed` | 117, 119, 127, 129, 134, 163, 163, 167, 191, 220 |
+| `live_237_cancelled_submit_does_not_wait_out_the_timeout` | 1322, 1360, 1385, 1393, 1393, 1403, 1419, 1429, 1446, 1448 |
+| `live_navigate_elapsed_matches_wall` delta | 179, 190, 191, 192, 194, 194, 195, 197, 200, 227 |
+
+The loaded set used eight run-owned `yes` CPU workers on this 10-logical-core host, held for
+the complete sequential 30-run set. This reproduces the CPU scheduling pressure of the six
+parallel sweep workers without launching competing Cargo builds or sibling Firefox profiles.
+The one-minute load average rose from 18.19 to 102.92. The cleanup trap stopped and waited for
+the eight recorded PIDs; its post-cleanup process check was empty.
+
+| test | loaded distribution (10/10 reached measurement) |
+|---|---|
+| `live_non_navigating_click_with_page_is_not_delayed` | 178, 180, 192, 193, 194, 216, 216, 217, 237, 253 |
+| `live_237_cancelled_submit_does_not_wait_out_the_timeout` | 1344, 1386, 1395, 1421, 1427, 1448, 1450, 1454, 1468, 1483 |
+| `live_navigate_elapsed_matches_wall` delta | 249, 333, 378, 422, 431, 468, 507, 509, 523, 656 |
+
+### Dispositions
+
+All three use the permitted diagnostic disposition. Their existing bounds remain unchanged:
+the largest deliberately loaded observations stayed well below 2500 ms, 2000 ms and 750 ms,
+respectively. Each test now records the post-measurement host load-average line and includes it
+in any bound failure. Collection happens after the timed operation, so it cannot inflate the
+measurement. A future red therefore preserves the behavioral assertion while exposing whether
+the host was saturated; load is context, not an automatic waiver.
+
+For the iter-122 sensitivity check, a temporary product mutation replaced plain `navigate`'s
+reported `elapsed_ms` with `1`, reproducing the dishonest internal timing shape. The reworked
+test reached its measurement (`wall_ms=425`, `reported_ms=1`, `delta_ms=424`) and failed with
+exit 101 on the existing lower sanity assertion. The mutation was then removed; the restored
+`navigate.rs` SHA-256 is `40ecd8188d6a63eb3967b8bf921af0e0899ebc7cd21eb5c3a6b79356c1e16a46`,
+byte-for-byte equal to the branch baseline. Evidence:
+`.git/ralph-loop/20260919-queue/iter264/temporary-iter122-mutation.patch` and
+`iter122-mutation.log`.
+
+## Closing validation — 2026-09-19
+
+- Firefox 156.0 dual-gate sweep:
+  `LIVE_SWEEP_SUMMARY executed=346 skipped=0 preexisting=0 vanished=0 launch_timeout=0 timed_out=0 total=346`
+- Profile accounting:
+  `LIVE_SWEEP_PROFILES leaked=0 unattributed=0 root=/Users/james/Library/Application Support/ff-rdp/profiles`
+- The three timing tests were named passes in that sweep. All nine enumerated xtask `check-*`
+  gates passed, followed in order by current-stable `cargo fmt`, strict workspace/all-target
+  clippy, and workspace tests.
+
+## Carry-over
+
+No new behavioral failure, diagnostic anomaly, unticked acceptance criterion or deferred item
+was produced by this iteration. The pre-existing parked iteration 203 observations and the
+unselected backlog remain outside this plan's scope.
 
 ## Notes
 
