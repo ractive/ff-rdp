@@ -119,3 +119,12 @@ Hyalo defects. Final264 scalar `set --file ... --property status=done` and
 HYALO005 validation support completion without altering original AC wording.
 Long combined reads were truncated by the calling tool, not Hyalo. No version
 change or ../hyalo edit.
+
+## 2026-09-19 iteration269 reproduction and closure
+
+Hyalo remains0.23.0. Body/frontmatter reads and `set --file ... --property
+status=done` supported the evidence-backed no-product-change outcome;
+HYALO005 checked470files with zero violations. The first dogfood xtask
+invocation omitted FF_RDP_LIVE_TESTS and correctly failed; the corrected
+invocation recorded its no-script skip. This is an operator environment error
+in xtask, not a Hyalo defect. No paid work, Hyalo version change or ../hyalo edit.
