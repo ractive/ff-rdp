@@ -1,5 +1,15 @@
 # ff-rdp project memory
 
+## Owner-requested pause — 2026-09-19
+
+The owner requested a safe stop during the remaining-queue restart to apply
+workflow improvements. Read `kb/research/ralph-loop-pause-2026-09-19.md` with
+Hyalo after the required guidance below.262 and268 retain blocked investigation
+checkpoints;271 was not started. Wait for an explicit new launch/resume request.
+A new session does not reset investigation caps,259's recorded execution
+restriction, or266's reply-ownership prerequisite. Preserve all recovered branches,
+original acceptance criteria, reviewed271 partial repair and local evidence.
+
 ## Prepared remaining queue — 2026-09-19
 
 The fourteen-iteration September19 batch is closed: nine outcomes merged and

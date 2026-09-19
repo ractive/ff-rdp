@@ -7,6 +7,12 @@ tags: [ralph-loop, handoff, iteration-planning]
 
 # Prepared restart for the remaining five iterations
 
+Latest owner-requested stop and recovered checkpoints:
+[[ralph-loop-pause-2026-09-19]]. That handoff supersedes this document's launch
+state; the original scope, acceptance criteria and investigation limits below
+remain binding.
+
+
 **Preparation only.** The owner asked for plans for a new session. No new loop,
 product implementation, Firefox experiment, PR or merge is started by this file.
 Execute only when the owner launches the prepared queue. Preserve iteration
