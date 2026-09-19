@@ -86,3 +86,9 @@ the shape immediately; the unsupported list-of-maps edit was repaired directly
 and checked with the repository plan validator. This is an unsupported structured
 input/operator assumption, not established data corruption. Proposed improvement:
 provide an explicit structured YAML/JSON property input or a clear shape warning.
+
+## 2026-09-19 — iteration260 investigation
+
+Version0.23.0 (adbafda6c7fc2026-09-13). Working directory was dedicated worktree; paths vault-relative. read (body/frontmatter), read section, backlinks, task read --all, task set --line --status x with preview, set status and lint HYALO005 all worked. Precise frontmatter-only read prevented losing the dogfood instructions; targeted task mutations preserved original text. One operator error: task read without --all/--line/--section correctly refused with helpful syntax guidance; corrected --all succeeded. Tool output truncation occurred on overly broad combined reads and a full historical reconciliation JSON, not a Hyalo defect; narrowed reads recovered relevant text. No verified Hyalo defects; no ../hyalo edits.
+
+Supervisor: `read --section Outcome` correctly rejected the guessed nonexistent heading and offered closest sections; this was an operator lookup error. `find --fields tasks --jq` precisely selected the landed-answer checkbox; preview and apply preserved its wording.
