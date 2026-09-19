@@ -216,10 +216,15 @@ fn live_navigate_elapsed_matches_wall() {
     // strictly ≤ the externally-measured wall time (which also includes connect
     // + teardown). Assert it is within ±750ms and never absurdly small.
     let delta = (measured_wall_ms - elapsed_ms).abs();
+    let load = crate::common::timing_load_note();
+    eprintln!(
+        "TIMING_SAMPLE test=live_navigate_elapsed_matches_wall wall_ms={measured_wall_ms} \
+         reported_ms={elapsed_ms} delta_ms={delta} {load}"
+    );
     assert!(
         delta <= 750,
         "elapsed_ms ({elapsed_ms}) must be within ±750ms of measured wall ({measured_wall_ms}); \
-         delta {delta}ms — honest-timing fix (iter-122 Theme B) regressed"
+         delta {delta}ms — honest-timing fix (iter-122 Theme B) regressed; {load}"
     );
     assert!(
         elapsed_ms > 5,

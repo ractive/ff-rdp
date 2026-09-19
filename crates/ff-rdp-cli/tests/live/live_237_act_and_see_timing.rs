@@ -338,6 +338,11 @@ fn live_237_cancelled_submit_does_not_wait_out_the_timeout() {
     let started = Instant::now();
     let typed = run_json(port, &["type", "input[name=q]", "lovelace", "--submit"]);
     let elapsed = started.elapsed();
+    let load = crate::common::timing_load_note();
+    eprintln!(
+        "TIMING_SAMPLE test=live_237_cancelled_submit_does_not_wait_out_the_timeout elapsed_ms={} {load}",
+        elapsed.as_millis()
+    );
 
     assert_eq!(
         typed["results"]["navigated"], false,
@@ -352,7 +357,7 @@ fn live_237_cancelled_submit_does_not_wait_out_the_timeout() {
     assert!(
         elapsed < Duration::from_millis(CLICK_TIMEOUT_MS / 5),
         "a cancelled submission must stay on the fast local check, not the wider \
-         post-requestSubmit grace period, took {elapsed:?}"
+         post-requestSubmit grace period, took {elapsed:?}; {load}"
     );
 
     stop_daemon(port);

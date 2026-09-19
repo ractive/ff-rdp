@@ -1555,6 +1555,21 @@ pub fn assert_colors_equal(actual: &str, expected: &str, context: &str) {
     );
 }
 
+/// Return the host's current load-average text for timing-test diagnostics.
+///
+/// This runs only after the timed operation, so collecting the diagnostic
+/// cannot inflate the measurement it explains. Platforms without `uptime`
+/// retain an explicit unavailable value rather than hiding the sample.
+pub fn timing_load_note() -> String {
+    std::process::Command::new("uptime")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .filter(|output| !output.is_empty())
+        .unwrap_or_else(|| "load average unavailable".to_owned())
+}
+
 // ---------------------------------------------------------------------------
 // PNG pixel decoding (iter-144 Theme D)
 // ---------------------------------------------------------------------------
