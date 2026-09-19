@@ -182,3 +182,12 @@ evidence`, which succeeded. These were operator assumptions, not parser/search
 defects. New277 copied the repository template because this vault declares no
 schema type for `hyalo new`; all new frontmatter changes used `hyalo set`.
 Final HYALO005 lint passed after status and277 frontmatter edits.
+
+## 2026-09-19 iteration269 reproduction and closure
+
+Hyalo remains0.23.0. Body/frontmatter reads and `set --file ... --property
+status=done` supported the evidence-backed no-product-change outcome;
+HYALO005 checked470files with zero violations. The first dogfood xtask
+invocation omitted FF_RDP_LIVE_TESTS and correctly failed; the corrected
+invocation recorded its no-script skip. This is an operator environment error
+in xtask, not a Hyalo defect. No paid work, Hyalo version change or ../hyalo edit.
