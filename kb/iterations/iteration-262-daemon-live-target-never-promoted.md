@@ -253,3 +253,7 @@ uptime17s, target_count1/live_target_count0, network-event buffer455, dispatcher
 failed occurrence to explain, not proof of a promotion phase or a particular cause.
 343 other tests passed, all344 names accounted for, zero profile leaks.
 Evidence: `.git/ralph-loop/20260919-queue/iter261/logs/live-sweep-rerun.log`.
+
+## Iteration265 sweep recurrence — 2026-09-19
+
+The final265 sweep failed `live_137_daemon_mode_parity::live_137_consent_accept_via_daemon`: target_count1/live_target_count0 after the readiness bound; dispatcher95/95, no frame in flight. These counters preserve the observation without proving a promotion mechanism. The separate blocked262 investigation branch retains its watcher-lifecycle diagnosis and unmet requirements. No265 change repairs this finding. Full346=344pass2fail, zero profile leaks. Evidence: `.git/ralph-loop/20260919-queue/iter265/live-sweep.log` and `supervisor-accounting.json`. Original262 ACs remain unchanged.

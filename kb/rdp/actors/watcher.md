@@ -99,12 +99,12 @@ State of the `WatcherFront` (`crates/ff-rdp-core/src/fronts/watcher.rs`) after i
 | `watchResources` | yes | `watch_resources` | yes | Via `ResourceCommand::subscribe` (iter-61q/t). |
 | `unwatchResources` | yes (oneway) | `unwatch_resources` | yes | |
 | `clearResources` | yes (oneway) | `clear_resources` | primitive | Front exists; no production call site yet. |
-| `getParentBrowsingContextID` | yes | `get_parent_browsing_context_id` | primitive | iter-61u — Front only. |
-| `getNetworkParentActor` | yes | `get_network_parent_actor` | wired | iter-109 — `NetworkParentFront` + `throttle` CLI command (network throttling / URL blocking).  Reply shape corrected to the nested `{networkParent: {actor}}` form (was flat `ActorRef`) — see below. |
-| `getBlackboxingActor` | yes | `get_blackboxing_actor` | primitive | iter-61u — Front only. |
-| `getBreakpointListActor` | yes | `get_breakpoint_list_actor` | primitive | iter-61u — Front only. |
+| `getParentBrowsingContextID` | yes | `get_parent_browsing_context_id` | primitive | iter-265: takes the required numeric context ID and decodes the nullable reply; the earlier no-argument public signature was removed because every call it could make was invalid. |
+| `getNetworkParentActor` | yes | `get_network_parent_actor` | wired | iter-109/110 — `NetworkParentFront` + `throttle` CLI command. Reply shape is nested `{network: {actor}}`. |
+| `getBlackboxingActor` | yes | `get_blackboxing_actor` | primitive | iter-265: decodes `{blackboxing: {actor}}`, live-verified on Firefox 156. |
+| `getBreakpointListActor` | yes | `get_breakpoint_list_actor` | primitive | iter-265: decodes `{breakpointList: {actor}}`, live-verified on Firefox 156. |
 | `getTargetConfigurationActor` | yes | `get_target_configuration_actor` | primitive | iter-61u; `TargetConfigurationFront` exists but not yet called from a CLI command. |
-| `getThreadConfigurationActor` | yes | `get_thread_configuration_actor` | primitive | iter-61u — Front only. |
+| `getThreadConfigurationActor` | yes | `get_thread_configuration_actor` | primitive | iter-265: decodes `{configuration: {actor}}`, live-verified on Firefox 156. |
 
 See [[from-our-codebase/wired-vs-primitive]] for the broader wired-vs-primitive snapshot across iter-61p..61u landings.
 
@@ -112,7 +112,7 @@ See [[from-our-codebase/wired-vs-primitive]] for the broader wired-vs-primitive 
 
 `unwatchTargets`, `unwatchResources`, and `clearResources` are all declared `oneway: true` in `devtools/shared/specs/watcher.js`. Firefox **never** sends a reply packet for these. Calling `actor_request` on them would hang until the socket read timeout.
 
-In ff-rdp these are now routed through `actor_send` (which writes the packet and returns immediately). The `WatcherActor::unwatch_resources`, `unwatch_targets`, and `clear_resources` methods all return `Result<(), ProtocolError>` — no `Value` reply.
+In ff-rdp these are now routed through the oneway send path (which writes the packet and returns immediately). Both the legacy `WatcherActor` helpers and the typed `WatcherFront`/spec methods return without reading a reply.
 
 Contrast with `walker.releaseNode` (`devtools/shared/specs/walker.js:127-133`): it is response-less in practice but is **not** declared `oneway: true` in the spec, so it correctly remains an `actor_request`. Do not conflate "no useful reply value" with "oneway" — only the spec annotation determines oneway status.
 
@@ -148,7 +148,7 @@ The Rust entry points are:
 - **Throttle delay** means a tiny burst of network events can be batched into one `resources-available-array` packet — your handler must iterate.
 - A WatcherActor will not see anything until you `watchTargets("frame")` AND `watchResources([...])`. Resources alone get nothing.
 - `getNetworkParentActor()` must be the path to set throttling — the per-event NetworkEventActor only reads, never writes.
-- **`getNetworkParentActor` reply is nested (iter-109):** like `getTargetConfigurationActor` (iter-103), the actor ID is returned under a named typed-actor key — `{"networkParent": {"actor": "<id>", …}, "from": …}` — not at the top level. `spec::response::NetworkParentActorRef` reads `networkParent.actor`; `WatcherFront::get_network_parent_actor` unwraps it. The flat `ActorRef` shape (still used by the blackboxing/breakpoint-list/thread-configuration accessors) was wrong for this method.
+- **Watcher accessor replies are nested:** Firefox 156 returns the network actor under `network`, blackboxing under `blackboxing`, breakpoint list under `breakpointList`, and both target/thread configuration actors under `configuration`. The typed spec response structs decode those named objects and the front methods return their nested actor IDs.
 - The registry lives in `ParentProcessWatcherRegistry.sys.mjs` (singleton, `global: "shared"`) — devtools can only have one logical view of the watcher set per process tree.
 
 ## Iter-76 update — ResourceGripGuard

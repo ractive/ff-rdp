@@ -114,3 +114,7 @@ whole buffer`. Keep this EOF distinct from the preceding hop20 reset; attributab
 failed-auth timing remains unavailable and no shared cause is proved.
 Full344=341pass/3fail, no missing names or profile leaks. Evidence:
 `.git/ralph-loop/20260919-queue/iter263-security/sweep.log`.
+
+## Iteration265 sweep recurrence — 2026-09-19
+
+The final265 sweep failed `live_224_with_page_connection_reset::live_repeated_hop_never_loses_the_connection` on hop9, proxy63178: `daemon auth failed: recv failed: failed to fill whole buffer`. This is another EOF observation, not proof of a common cause with resets or greeting timeouts. Attributable failed-auth timing remains unavailable. Full346=344pass2fail, zero profile leaks. Evidence: `.git/ralph-loop/20260919-queue/iter265/live-sweep.log` and `supervisor-accounting.json`. Original tasks/ACs remain unchanged.
