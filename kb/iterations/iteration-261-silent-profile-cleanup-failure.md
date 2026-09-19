@@ -2,13 +2,13 @@
 title: "Iteration 261: a failed profile cleanup on the launch failure path is silent to every caller"
 type: iteration
 date: 2026-09-07
-status: planned
+status: done
 branch: iter-261/silent-profile-cleanup-failure
 depends_on:
   - 246
 first_call_sites:
-  - primitive: (to be decided — likely a warning on the `launch` error envelope)
-    site: crates/ff-rdp-cli/src/commands/launch.rs
+  - primitive: AppError::with_warning and ManagedProfileGuard::cleanup
+    site: crates/ff-rdp-cli/src/commands/launch.rs::report_failed_profile_cleanup
 dogfood_path: |
   # Reproduce the silence, not the race: make the removal fail on purpose.
   # (A directory the process cannot remove is the cheapest stand-in for the
@@ -77,22 +77,22 @@ was the *only* mechanism. The reporting gap is what makes the next occurrence an
 
 ## Tasks
 
-### A. Surface the skip [0/2]
-- [ ] A failed removal on the launch failure path reaches the caller's JSON envelope
-- [ ] The message names the directory and the `ProfileCleanupSkip` reason
+### A. Surface the skip [2/2]
+- [x] A failed removal on the launch failure path reaches the caller's JSON envelope
+- [x] The message names the directory and the `ProfileCleanupSkip` reason
 
-### B. Exit code [0/1]
-- [ ] State, in the Outcome, what the exit code is and why it did not change
+### B. Exit code [1/1]
+- [x] State, in the Outcome, what the exit code is and why it did not change
 
-### C. Sibling paths [0/1]
-- [ ] Audit the other `ManagedProfileGuard` drop sites for the same silence
+### C. Sibling paths [1/1]
+- [x] Audit the other `ManagedProfileGuard` drop sites for the same silence
 
-## Acceptance Criteria [0/3]
+## Acceptance Criteria [3/3]
 
-- [ ] A launch whose profile removal is made to fail prints a warning naming the surviving
+- [x] A launch whose profile removal is made to fail prints a warning naming the surviving
       directory, in JSON output, with no `RUST_LOG` set
-- [ ] The existing `unit_175_*` and `live_175_*` tests still pass unchanged
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean
+- [x] The existing `unit_175_*` and `live_175_*` tests still pass unchanged
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean
 
 ## Out of scope
 
@@ -115,3 +115,57 @@ The source audit confirms a reporting gap: ManagedProfileGuard traces skipped cl
 
 This source/evidence audit adds implementation guidance, not a new execution result.
 Original task and acceptance-criterion wording and checkbox states remain unchanged.
+
+## Outcome — 2026-09-19
+
+`ManagedProfileGuard::cleanup` now exposes a skipped cleanup to its owner before `Drop` runs.
+Both owners use that result: `build_command` decorates failures after its managed directory is
+created, and `launch::run_with_hooks` decorates spawn, immediate-exit, debug-port, and process-status
+failures. The existing primary error remains authoritative and the single JSON document gains a
+`warnings` array naming the surviving directory and stable `profile_cleanup_skip_reason`.
+
+The warning wrapper delegates its error type and exit code to the original error. A failed launch
+therefore remains a `User` error with exit code 1; failed cleanup adds evidence, not severity. If
+the secure profile root cannot be resolved, the guard remains fail-closed, removes nothing, and
+reports `no-profile-root` through the same warning path. `Drop` remains the fallback for callers
+that do not explicitly collect cleanup, and emits no JSON of its own.
+
+The regression replaces the freshly created managed directory with a file before returning a
+simulated spawn error. That makes the real `remove_dir_all` operation fail deterministically and
+proves, without `RUST_LOG`, that the original error JSON names the path and `remove-failed` reason.
+The unchanged `unit_175_*` tests passed, and the closing dual-gate sweep passed both unchanged
+`live_175_*` tests.
+
+Validation used stable Rust 1.98.1. All nine current xtask `check-*` gates passed; the dogfood gate
+reported its documented skip because this plan has no `dogfood_script`. The ordered `cargo fmt`,
+strict workspace clippy, and workspace tests passed.
+
+## Carry-over
+
+- **No plan, setup corrected:** the first owned raw port-6000 browser was observed listening,
+  then was absent before startup classification. Its exit cause is unknown. Keeping the
+  replacement browser in an owned execution session restored all nine core tests; both
+  attempts and cleanup observations remain in `iter261/gates-record.md`. The first summary
+  was `executed=334 skipped=0 preexisting=9 vanished=0 launch_timeout=0 timed_out=1 total=344`,
+  with zero profile leaks. A browser that disappears while its owning session is retained
+  would require a separate investigation; no product cause is claimed here.
+- **File:** the initial `live_styles_applied::live_styles_applied_returns_real_rules` failure
+  fired the existing203 frontmatter trigger and is now owned by
+  [[iteration-274-styles-applied-unattributed-recurrence]]. Only `FAILED` survived before
+  watchdog termination, so its cause and required panic/URL/document/DOM/route diagnostics
+  remain unknown. The corrected pass does not close it. Plan274 is outside this batch,
+  and203 remains parked; the trigger is not reset to wait for another occurrence.
+- **File:** the initial `live_158_launch_lifecycle::live_158_launch_survives_contended_bind`
+  watchdog hang is owned by [[iteration-273-contended-launch-output-hang]]. Retained stacks
+  show a worker blocked reading subprocess output and the test joining it; they do not
+  identify the responsible pipe owner. The runner reaped four managed Firefox processes.
+  Both snapshots are preserved under `.git/ralph-loop/20260919-queue/iter261/watchdog/`.
+  The corrected pass remains a control, not evidence of repair. Plan 273 is not selected
+  for this batch.
+- The corrected full sweep reconciled all tiers and names:
+  `executed=344 skipped=0 preexisting=0 vanished=0 launch_timeout=0 timed_out=0 total=344`, with
+  zero leaked or unattributed profiles. It had one ordinary failure,
+  `live_137_consent_accept_via_daemon`, with `target_count=1`, `live_target_count=0`, a healthy
+  dispatcher, and no RPC owner after the 15-second bound. This is the already selected
+  [[iteration-262-daemon-live-target-never-promoted]] failure family; it is preserved there and was
+  not rerun to chase green.

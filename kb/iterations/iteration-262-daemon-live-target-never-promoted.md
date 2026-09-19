@@ -242,3 +242,14 @@ failure:15,194ms/47polls, debug64969/proxy65086/daemon42087. It is not a new
 Sourcepoint-action observation. Full344=341pass/3fail, no missing names or profile
 leaks; original cause and three-sweep requirements remain unmet. Evidence:
 `.git/ralph-loop/20260919-queue/iter263-security/sweep.log`.
+
+## Iteration261 recurrence — 2026-09-19
+
+The corrected 261 dual-gate sweep failed
+`live_137_daemon_mode_parity::live_137_consent_accept_via_daemon` at target readiness:
+15,077ms / 47 polls, debug port55205, proxy55274, daemon8566. The last status had
+uptime17s, target_count1/live_target_count0, network-event buffer455, dispatcher
+100 frames started/finished, no in-flight frame and no RPC owner. This is another
+failed occurrence to explain, not proof of a promotion phase or a particular cause.
+343 other tests passed, all344 names accounted for, zero profile leaks.
+Evidence: `.git/ralph-loop/20260919-queue/iter261/logs/live-sweep-rerun.log`.

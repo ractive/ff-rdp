@@ -64,3 +64,25 @@ Version remains0.23.0 (adbafda6c7fc,2026-09-13).
 - Verified good: `set status=done --dry-run`, then apply, and HYALO005 support
   routine completion without rewriting body evidence. General body prose remains
   a direct Markdown edit under the owner's established allowance.
+
+## 2026-09-19 — iteration261 supervisor and review
+
+Hyalo remains0.23.0 (`/Users/james/.cargo/bin/hyalo`). Good: `find --glob
+'**/*260*' --fields file,title` located the exact plan; `read` and `set` updated
+body metadata/status/tasks as intended. Worker reports seven task updates and
+HYALO005 zero violations; reviewer independently used body/frontmatter reads.
+Operator errors: guessed plan basenames, `create`, `property set`, and reviewer
+`properties <path>` are unsupported; corrected using `find`, `new -h`, `set -h`
+and `read --frontmatter`. `--glob '*260*'` does not match nested iteration paths;
+`**/*260*` does. These are calling mistakes, not verified defects. Long `--help`
+output was truncated by the calling tool; short `-h` avoided that friction.
+
+Verified limitation: `new --type iteration ... --dry-run` refused because this
+vault has no schema types. The plan body was created directly, then supported
+scalar/list metadata added through `set`. No schema or ../hyalo changes made.
+`set -p 'first_call_sites=[{"primitive":"...","site":"..."}]'` parsed the
+comma-separated value into two strings, not a nested mapping. The output exposed
+the shape immediately; the unsupported list-of-maps edit was repaired directly
+and checked with the repository plan validator. This is an unsupported structured
+input/operator assumption, not established data corruption. Proposed improvement:
+provide an explicit structured YAML/JSON property input or a clear shape warning.

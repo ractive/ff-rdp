@@ -368,10 +368,11 @@ pub(crate) fn build_command(
 
         managed_guard = crate::util::profile_dir::ManagedProfileGuard::armed(&tmp);
         std::fs::write(tmp.join("user.js"), USER_JS).map_err(|e| {
-            AppError::User(format!(
+            let error = AppError::User(format!(
                 "failed to write user.js to temporary profile {}: {e}",
                 tmp.display()
-            ))
+            ));
+            report_failed_profile_cleanup(error, &mut managed_guard)
         })?;
         cmd.arg("--profile").arg(&tmp);
         Some(tmp)
@@ -384,8 +385,10 @@ pub(crate) fn build_command(
         // the auto-created profile from the else branch above).
         if let Some(p) = &profile_path {
             // Prevent Firefox from auto-disabling the sideloaded extension.
-            ensure_extension_autoinstall(p)?;
-            super::auto_consent::install(p)?;
+            ensure_extension_autoinstall(p)
+                .map_err(|error| report_failed_profile_cleanup(error, &mut managed_guard))?;
+            super::auto_consent::install(p)
+                .map_err(|error| report_failed_profile_cleanup(error, &mut managed_guard))?;
         }
     }
 
@@ -417,6 +420,23 @@ pub(crate) fn build_command(
     // Nothing below can fail: hand the directory to the caller intact.
     managed_guard.disarm();
     Ok((cmd, profile_path))
+}
+
+/// Preserve the primary launch failure while making a failed managed-profile
+/// cleanup visible in that same JSON error document.
+fn report_failed_profile_cleanup(
+    error: AppError,
+    guard: &mut crate::util::profile_dir::ManagedProfileGuard,
+) -> AppError {
+    match guard.cleanup() {
+        Some((path, reason)) => error.with_warning(format!(
+            "could not remove managed Firefox profile {} after launch failed \
+             (profile_cleanup_skip_reason: {})",
+            path.display(),
+            reason.as_str()
+        )),
+        None => error,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -878,10 +898,11 @@ pub(crate) fn run_with_hooks(
     };
 
     let mut child = (hooks.spawn)(&mut cmd).map_err(|e| {
-        AppError::User(format!(
+        let error = AppError::User(format!(
             "failed to start Firefox at {}: {e}",
             firefox.display()
-        ))
+        ));
+        report_failed_profile_cleanup(error, &mut profile_guard)
     })?;
 
     // iter-171: mark ownership *here*, the instant the PID exists — not after
@@ -931,9 +952,8 @@ pub(crate) fn run_with_hooks(
             } else {
                 format!(": {stderr_text}")
             };
-            Err(AppError::User(format!(
-                "Firefox exited immediately with {status}{detail}"
-            )))
+            let error = AppError::User(format!("Firefox exited immediately with {status}{detail}"));
+            Err(report_failed_profile_cleanup(error, &mut profile_guard))
         }
         Ok(None) => {
             // Still running — verify the debug port is actually reachable
@@ -954,7 +974,7 @@ pub(crate) fn run_with_hooks(
                 // Reaping first also stops the process being left a zombie for
                 // the lifetime of this command.
                 let _ = child.wait();
-                return Err(e);
+                return Err(report_failed_profile_cleanup(e, &mut profile_guard));
             }
 
             // iter-97 Theme A wrote the owner markers here, after the port
@@ -1093,9 +1113,10 @@ pub(crate) fn run_with_hooks(
             let hint_ctx = HintContext::new(HintSource::Launch);
             OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
         }
-        Err(e) => Err(AppError::Internal(anyhow::anyhow!(
-            "failed to check Firefox status: {e}"
-        ))),
+        Err(e) => {
+            let error = AppError::Internal(anyhow::anyhow!("failed to check Firefox status: {e}"));
+            Err(report_failed_profile_cleanup(error, &mut profile_guard))
+        }
     }
 }
 
@@ -1857,6 +1878,59 @@ mod iter_175_tests {
             "iter-175: a launch whose spawn failed must not leave its profile directory behind: {}",
             dir.display()
         );
+    }
+
+    #[test]
+    fn unit_261_failed_cleanup_reaches_launch_error_json() {
+        static PROFILE: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+        let hooks = LaunchHooks {
+            is_port_in_use: |_port| false,
+            find_listener: |_port| None,
+            probe_port: |_host, _port, _timeout| PortWaitOutcome::Opened,
+            spawn: |cmd| {
+                let profile = profile_arg_of(cmd).expect("managed profile argument");
+                std::fs::remove_dir_all(&profile).expect("replace profile directory");
+                std::fs::write(&profile, b"force remove_dir_all to fail")
+                    .expect("replace profile with file");
+                *PROFILE.lock().expect("profile slot") = Some(profile);
+                Err(std::io::Error::other("simulated spawn failure"))
+            },
+            locate_firefox: || Ok(PathBuf::from("/nonexistent/ff-rdp-fake-firefox")),
+            ..LaunchHooks::none_running()
+        };
+
+        let err = run_with_hooks(&bare_launch_cli(), &managed_opts(7611), &hooks)
+            .expect_err("a failing spawn must fail the launch");
+        assert_eq!(
+            err.exit_code(),
+            1,
+            "cleanup reporting must preserve User exit semantics"
+        );
+        let json = err.to_error_json();
+        assert_eq!(json["error_type"], "User");
+        assert!(
+            json["error"]
+                .as_str()
+                .unwrap()
+                .contains("failed to start Firefox")
+        );
+
+        let profile = PROFILE.lock().expect("profile slot").take().unwrap();
+        let warning = json["warnings"][0].as_str().expect("warning string");
+        assert!(
+            warning.contains(&profile.display().to_string()),
+            "{warning}"
+        );
+        assert!(
+            warning.contains("profile_cleanup_skip_reason: remove-failed"),
+            "{warning}"
+        );
+        assert!(
+            profile.exists(),
+            "the forced cleanup failure must leave evidence behind"
+        );
+        std::fs::remove_file(profile).expect("clean up forced survivor");
     }
 
     /// AC 2, second error path: Firefox spawns but exits immediately. `run`

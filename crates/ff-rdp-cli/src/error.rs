@@ -38,6 +38,12 @@ fn socket_timeout_ms() -> Option<u64> {
 pub enum AppError {
     /// User-facing error (wrong arguments, tab not found, etc.)
     User(String),
+    /// An error carrying warnings that must be emitted in the same JSON
+    /// document as the primary failure.
+    WithWarnings {
+        source: Box<AppError>,
+        warnings: Vec<String>,
+    },
     /// Internal/unexpected error
     Internal(anyhow::Error),
     /// Exit with specific code (reserved for commands that need a precise exit code)
@@ -140,6 +146,23 @@ pub enum AppError {
 }
 
 impl AppError {
+    #[must_use]
+    pub fn with_warning(self, warning: impl Into<String>) -> Self {
+        match self {
+            Self::WithWarnings {
+                source,
+                mut warnings,
+            } => {
+                warnings.push(warning.into());
+                Self::WithWarnings { source, warnings }
+            }
+            source => Self::WithWarnings {
+                source: Box::new(source),
+                warnings: vec![warning.into()],
+            },
+        }
+    }
+
     /// Attach call-site context to a timeout, explaining what the CLI was doing
     /// when the reply failed to arrive (iter-220 Theme C).
     ///
@@ -171,6 +194,7 @@ impl AppError {
     /// Return the machine-readable discriminant string for JSON error output.
     pub fn error_type(&self) -> &'static str {
         match self {
+            Self::WithWarnings { source, .. } => source.error_type(),
             Self::User(_) | Self::Diagnostics { .. } => "User",
             Self::Internal(_) => "Internal",
             Self::Exit(_) => "Exit",
@@ -217,6 +241,7 @@ impl AppError {
     /// | `User` / `Internal` / `Diagnostics` / `DaemonVersionMismatch` / `Unsupported` | 1 |
     pub fn exit_code(&self) -> i32 {
         match self {
+            Self::WithWarnings { source, .. } => source.exit_code(),
             Self::RdpProtocol { .. } | Self::Connection(_) | Self::RdpActorDestroyed { .. } => 3,
             Self::RdpShape { .. } => 4,
             Self::RdpTimeout { .. } => 5,
@@ -258,6 +283,14 @@ impl AppError {
     /// CLI output envelope.  Used by the output pipeline to attach error
     /// metadata when a command fails.
     pub fn to_error_json(&self) -> serde_json::Value {
+        if let Self::WithWarnings { source, warnings } = self {
+            let mut json = source.to_error_json();
+            if let Some(obj) = json.as_object_mut() {
+                obj.insert("warnings".to_owned(), serde_json::json!(warnings));
+            }
+            return json;
+        }
+
         let error_type = self.error_type();
         let message = self.to_string();
 
@@ -302,6 +335,7 @@ impl AppError {
 impl fmt::Display for AppError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::WithWarnings { source, .. } => write!(f, "{source}"),
             Self::Internal(err) => write!(f, "{err:#}"),
             Self::Exit(code) => write!(f, "exit with code {code}"),
             Self::User(msg)

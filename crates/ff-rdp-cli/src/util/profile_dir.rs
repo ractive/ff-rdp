@@ -1034,7 +1034,7 @@ fn cleanup_profile_dir_under(root: &Path, path: &Path) -> ProfileCleanup {
 /// on the very next `launch`, rather than waiting out a seven-day age gate.
 pub(crate) struct ManagedProfileGuard {
     /// Profile root the removal is confined to. Resolved once at construction.
-    root: PathBuf,
+    root: Option<PathBuf>,
     /// `None` once disarmed — the success path transfers ownership of the
     /// directory to the Firefox that is now using it.
     path: Option<PathBuf>,
@@ -1057,8 +1057,8 @@ impl ManagedProfileGuard {
                     path.display()
                 );
                 Self {
-                    root: PathBuf::new(),
-                    path: None,
+                    root: None,
+                    path: Some(path.to_path_buf()),
                 }
             }
         }
@@ -1068,7 +1068,15 @@ impl ManagedProfileGuard {
     /// behaviour is testable against a temp root.
     fn armed_under(root: PathBuf, path: &Path) -> Self {
         Self {
-            root,
+            root: Some(root),
+            path: Some(path.to_path_buf()),
+        }
+    }
+
+    #[cfg(test)]
+    fn armed_without_resolved_root(path: &Path) -> Self {
+        Self {
+            root: None,
             path: Some(path.to_path_buf()),
         }
     }
@@ -1077,7 +1085,7 @@ impl ManagedProfileGuard {
     /// have no managed directory to protect (a user-supplied `--profile`).
     pub(crate) fn disarmed() -> Self {
         Self {
-            root: PathBuf::new(),
+            root: None,
             path: None,
         }
     }
@@ -1087,29 +1095,39 @@ impl ManagedProfileGuard {
     pub(crate) fn disarm(&mut self) {
         self.path = None;
     }
-}
 
-impl Drop for ManagedProfileGuard {
-    fn drop(&mut self) {
-        let Some(path) = self.path.take() else {
-            return;
+    /// Attempt cleanup now and consume the guarded path. A skipped cleanup is
+    /// returned to the caller so it can be included in the command's error
+    /// envelope; `Drop` will not retry or produce a second report.
+    pub(crate) fn cleanup(&mut self) -> Option<(PathBuf, ProfileCleanupSkip)> {
+        let path = self.path.take()?;
+        let outcome = match self.root.as_deref() {
+            Some(root) => cleanup_profile_dir_under(root, &path),
+            None => ProfileCleanup::Skipped(ProfileCleanupSkip::NoProfileRoot),
         };
-        match cleanup_profile_dir_under(&self.root, &path) {
+        match outcome {
             ProfileCleanup::Removed(p) => {
                 tracing::debug!(
                     "ManagedProfileGuard: removed profile dir of a launch that never started \
                      Firefox: {}",
                     p.display()
                 );
+                None
             }
-            ProfileCleanup::Skipped(reason) => {
-                tracing::warn!(
-                    "ManagedProfileGuard: could not remove {} ({}) — it may survive as an orphan \
-                     until the next launch's prune",
-                    path.display(),
-                    reason.as_str()
-                );
-            }
+            ProfileCleanup::Skipped(reason) => Some((path, reason)),
+        }
+    }
+}
+
+impl Drop for ManagedProfileGuard {
+    fn drop(&mut self) {
+        if let Some((path, reason)) = self.cleanup() {
+            tracing::warn!(
+                "ManagedProfileGuard: could not remove {} ({}) — it may survive as an orphan \
+                 until the next launch's prune",
+                path.display(),
+                reason.as_str()
+            );
         }
     }
 }
@@ -2583,6 +2601,24 @@ mod tests {
             dir.exists(),
             "the guard must refuse a path outside its root: {}",
             dir.display()
+        );
+    }
+
+    #[test]
+    fn unit_261_guard_reports_unresolved_secure_root_without_removing() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = seed_fake_profile(root.path(), &"r".repeat(16), Duration::ZERO);
+        let mut guard = ManagedProfileGuard::armed_without_resolved_root(&dir);
+
+        let (reported_path, reason) = guard
+            .cleanup()
+            .expect("an unresolved secure root must be a visible skipped cleanup");
+
+        assert_eq!(reported_path, dir);
+        assert_eq!(reason, ProfileCleanupSkip::NoProfileRoot);
+        assert!(
+            dir.exists(),
+            "fail-closed root resolution must never remove the candidate path"
         );
     }
 
