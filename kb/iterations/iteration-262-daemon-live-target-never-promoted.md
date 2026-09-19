@@ -215,3 +215,10 @@ full-page screenshot regressions owned by257 passed together; their prior
 negative history remains intact. Evidence:
 `.git/ralph-loop/20260912-validation-efficiency/iter257-implementation/`,
 `sweep.log`, the exact isolated137 log and both launch logs.
+
+## Implementation preflight — 2026-09-19
+
+Correct the historical interpretation before selecting a fix: daemon target_count is cumulative available events, while live_target_count counts currently retained forms. An available event immediately records its form; destruction removes it. Therefore 1/0 can mean arrival followed by destruction, not a failed separate promotion step. Existing initialization code documents a placeholder about:blank available/destroyed/no-replacement sequence and a 350ms settling mitigation. This is an investigation lead, not proof of the recorded failures' cause; repeated expiration of a bound alone does not prove a permanently latched state. Preserve distinct target-lifecycle, ready-target Sourcepoint action, Guardian detection, zero-frame and network-source observations unless evidence connects them. Original repeated-sweep acceptance requirements remain unchanged.
+
+This source/evidence audit adds implementation guidance, not a new execution result.
+Original task and acceptance-criterion wording and checkbox states remain unchanged.

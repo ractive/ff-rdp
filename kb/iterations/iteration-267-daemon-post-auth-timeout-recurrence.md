@@ -60,3 +60,10 @@ captured and remains a mandatory unmet requirement in the original metadata ACs.
 No common cause, retry or timeout change is claimed. This is separate from the
 pre-auth EOF/reset observations owned by268, which did not recur in this sweep.
 Evidence: `.git/ralph-loop/20260912-validation-efficiency/iter242-owed-sweep/sweep-failures.txt` and its exact isolated164 log.
+
+## Implementation preflight — 2026-09-19
+
+The historical wording overstates the phase: connect_tab emits 'timeout after auth' while waiting for the greeting immediately after sending the auth frame. That does not establish server-side authentication success or an authenticated request stall. Correct the diagnostic interpretation; capture a connection identity before successful authentication, since server client_id is assigned afterwards. Preserve timeout versus EOF/reset observations but do not rule out a shared handshake mechanism with268. Obtain attributable failed-occurrence evidence before choosing a fix; do not hide failures with larger timeouts or blind retries. depends_on203 expresses trigger/provenance, not a requirement to finish the parked watch holder.
+
+This source/evidence audit adds implementation guidance, not a new execution result.
+Original task and acceptance-criterion wording and checkbox states remain unchanged.

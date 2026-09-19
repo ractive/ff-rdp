@@ -88,3 +88,10 @@ failed-occurrence auth/dispatcher timing remains an unticked requirement.
 - The target-promotion and distinct Sourcepoint consent-action failures, owned by
   [[iteration-262-daemon-live-target-never-promoted]].
 - Raising timeout defaults or claiming an isolated pass discharges a sweep recurrence.
+
+## Implementation preflight — 2026-09-19
+
+Coordinate diagnostic boundaries with267: its 'timeout after auth' message only proves the client sent authentication and then waited for a greeting, not that authentication succeeded. Keep EOF/reset and timeout observations separately attributable, without assuming different root causes. Instrument a connection identity before authentication completes. Existing isolated passes do not explain failed occurrences; obtain bounded failed-occurrence evidence before repair, and avoid timeout increases or blind retries.
+
+This source/evidence audit adds implementation guidance, not a new execution result.
+Original task and acceptance-criterion wording and checkbox states remain unchanged.

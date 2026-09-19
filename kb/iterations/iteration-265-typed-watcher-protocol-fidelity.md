@@ -41,3 +41,10 @@ scope_note: >-
   future carry-over plan, with every task and AC still unticked. Full substantive plan
   is in metadata because installed hyalo0.22 has no general body editor.
 ---
+
+## Implementation preflight — 2026-09-19
+
+Current source still waits for an ACK to one-way unwatchResources, omits browsingContextID from the parent-context request, and reads top-level actor IDs instead of named blackboxing/breakpointList/configuration reply fields. Verify with supported Firefox source and real replies before changing behavior. Correct both front and spec layers: UnwatchResources also lacks ONEWAY=true in the typed spec, so switching to typed call alone does not fix the wait. Explicitly decide compatibility for the parent-context method signature and identify real non-test consumers of new public request/reply types. Do not invent CLI capabilities or dummy consumers. These unused typed methods are separate from252's legacy WatcherActor console path.
+
+This source/evidence audit adds implementation guidance, not a new execution result.
+Original task and acceptance-criterion wording and checkbox states remain unchanged.

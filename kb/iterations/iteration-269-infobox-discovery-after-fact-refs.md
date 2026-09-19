@@ -104,3 +104,10 @@ artifacts. Existing diagnosis tasks cover these infobox paths unchanged. The
 broader hook/action/other-extraction follow-up is
 [[iteration-270-benchmark-ambient-action-and-extraction-gaps]]; neither plan is
 executed by this reconciliation.
+
+## Implementation preflight — 2026-09-19
+
+Dependencies255/256 are delivered. Preserve fact refs, Formation matching and literal-query semantics. A stable-release-only query excluding Developer is not evidence of broken refs, and a compound literal miss does not authorize token-OR matching. Preserve255's original7/12/6 turns (mean8.333), unmet<=5 criterion and distinct256 datasets. Analyze recorded paths and reproduce ordinary owned-browser interactions, then choose a supported discovery improvement or document correct existing behavior. Coordinate overlapping action/error analysis with270. No new paid comparison, smoke, model probe or judge is authorized; any such requirement stays pending with a separately bounded proposal.
+
+This source/evidence audit adds implementation guidance, not a new execution result.
+Original task and acceptance-criterion wording and checkbox states remain unchanged.

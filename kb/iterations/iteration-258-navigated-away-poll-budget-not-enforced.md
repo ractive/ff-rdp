@@ -123,3 +123,10 @@ Nothing clamps the second to what is left of the first.
 - [[iteration-237-submit-navigation-grace-period]] — Part A, where the measurement was taken
 - `crates/ff-rdp-cli/src/commands/type_text.rs` — `navigated_away`, `navigated_after_refresh`
 - `crates/ff-rdp-cli/src/error.rs` — `socket_timeout_ms`, the per-process read timeout
+
+## Implementation preflight — 2026-09-19
+
+Iteration 253 repaired readiness labeling, not polling deadlines. Start with the existing transport read-timeout setter and prior-timeout getter; preserve and restore the actual prior value on every exit. Enforce an absolute operation budget: an idle socket timeout alone does not bound evaluation while push events or multiple reply phases keep arriving. Cover a blocked evaluation, bounded incoming-event traffic and restoration, while preserving reply correlation and refreshed-target navigation detection. Re-measure the historical 12.37-second observation on an owned browser rather than treating it as a current baseline. Relevant code: commands/type_text.rs::navigated_away, commands/js_helpers.rs polling helpers, and core transport timeout APIs.
+
+This source/evidence audit adds implementation guidance, not a new execution result.
+Original task and acceptance-criterion wording and checkbox states remain unchanged.

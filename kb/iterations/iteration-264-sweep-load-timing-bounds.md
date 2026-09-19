@@ -97,3 +97,10 @@ positive controls, not satisfaction of this plan's original ACs. The distinct
 169 daemon reload status-null observation is a new watch in203; its21028ms
 readystate-fallback-shaped envelope is not folded into these three timing bounds.
 Evidence: `.git/ralph-loop/20260912-validation-efficiency/iter242-owed-sweep/sweep.log`.
+
+## Implementation preflight — 2026-09-19
+
+Iteration 246's elapsed-time conclusion has been corrected: external CLI wall time includes connection/teardown and other work outside internal dispatch timing, so contention can widen the gap without dishonest internal measurement. Later passing sweeps do not supply the required distributions. Preserve the specified ten isolated runs per named test, loaded measurements, per-test dispositions and timing-mutation sensitivity check. Prefer measurement after daemon repairs reduce confounding failures. This plan permits measured sweep-like load; the parked203 holder's restrictions on its own watch conditions do not prohibit this plan's experiments.
+
+This source/evidence audit adds implementation guidance, not a new execution result.
+Original task and acceptance-criterion wording and checkbox states remain unchanged.

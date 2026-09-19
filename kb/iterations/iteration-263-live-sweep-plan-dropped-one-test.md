@@ -127,3 +127,10 @@ historical319/320 discrepancy; original tasks/ACs remain unchanged.
 Evidence: `.git/ralph-loop/20260912-validation-efficiency/iter257-implementation/`,
 `enumeration-*.txt`, `expected-names.tsv`, `observed-verdicts.tsv`,
 `name-discrepancies.txt`, `duplicate-names.txt` and `sweep-dry-run.log`.
+
+## Implementation preflight — 2026-09-19
+
+The source-based inventory still lacks independent reconciliation with compiled test enumeration. Later exact-name reconciliations are negative observations, not an installed guard. Directory-entry errors discarded via filter_map(|e| e.ok()) are a possible omission path, not proof of the historical319/320 cause; speculative concurrent source-directory writes are also unproved. Bound historical investigation and preserve the original permitted unsuccessful-investigation disposition. Implement and test detection/naming of uncovered gated tests and dry-run/real qualified-count parity without repeatedly running whole live suites during development.
+
+This source/evidence audit adds implementation guidance, not a new execution result.
+Original task and acceptance-criterion wording and checkbox states remain unchanged.
