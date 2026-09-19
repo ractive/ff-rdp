@@ -45,3 +45,22 @@ observed interactions rather than claiming to be a verbatim full transcript.
   actually observed on the current executable.
 - Treat improvement suggestions as proposals, not verified implementation requirements.
 - Keep collection local to ff-rdp until the owner starts the later Hyalo work.
+
+## 2026-09-19 — iteration263 execution
+
+Version remains0.23.0 (adbafda6c7fc,2026-09-13).
+
+- Verified good: projected pending inventory using `find --jq` gave all16 numbered
+  pending plans; body plus `read --frontmatter --lines 1:500` exposed YAML-only
+  requirements. `read -h` explicitly documents body-relative line coordinates,
+  clarifying H09 without proving a bug.
+- Verified operator/calling-tool friction: broad `find --fields properties` and
+  `hyalo --help` again exceeded the calling-tool output budget. Narrow jq
+  projections and short `-h` recovered; no Hyalo truncation defect is claimed.
+- Verified operator error: guessed section `Outcome` was absent; `read --section`
+  exited1 with nearby headings. Body-relative range recovered the closing text.
+- Agent-reported: searching property `iteration=263` returned no match because
+  this vault encodes numbers in titles/filenames; filename selection worked.
+- Verified good: `set status=done --dry-run`, then apply, and HYALO005 support
+  routine completion without rewriting body evidence. General body prose remains
+  a direct Markdown edit under the owner's established allowance.

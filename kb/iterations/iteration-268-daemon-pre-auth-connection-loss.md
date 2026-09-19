@@ -95,3 +95,15 @@ Coordinate diagnostic boundaries with267: its 'timeout after auth' message only 
 
 This source/evidence audit adds implementation guidance, not a new execution result.
 Original task and acceptance-criterion wording and checkbox states remain unchanged.
+
+## Iteration263 recurrence — 2026-09-19
+
+Final263 repair sweep on Firefox156.0 failed
+`live_240_sustained_hops_never_desynchronise` at hop20/40, zero reconnects,
+proxy58186: `daemon auth failed: recv failed: Connection reset by peer
+(os error 54)`. All344names reconcile (342pass/2fail), with no skipped or
+reclassified tests and zero profile leaks. Attributable failed-auth timing is
+still unavailable; no root cause or shared mechanism is claimed. No isolated
+pass replaces this failed occurrence. Original tasks/ACs remain unchanged.
+Evidence: `.git/ralph-loop/20260919-queue/iter263-repair2/live-sweep.log`,
+`reconciliation.json` and `live-launches.log`.

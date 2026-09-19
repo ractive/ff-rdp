@@ -222,3 +222,17 @@ Correct the historical interpretation before selecting a fix: daemon target_coun
 
 This source/evidence audit adds implementation guidance, not a new execution result.
 Original task and acceptance-criterion wording and checkbox states remain unchanged.
+
+## Iteration263 reconciliation — 2026-09-19
+
+Firefox156.0 final263 repair sweep executed344=342passed+2failed with exact
+all-tier names and zero profile leaks. Named137 failed target readiness at
+15,257ms/47polls, debug51281/proxy51370/daemon17257, uptime16s, target_count1 /
+live_target_count0, healthy dispatcher90started/90finished/in_flight0, no RPC
+owner and no dropped client writes. This does not identify a lifecycle cause.
+Earlier263 sweeps separately failed ready-target Sourcepoint action; the first
+reached targets in21ms. Preserve these distinct shapes. An intermediate344/344
+pass fixed neither and does not supply this plan's three consecutive sweeps.
+Original tasks/ACs remain unchanged. Evidence:
+`.git/ralph-loop/20260919-queue/iter263-repair2/live-sweep.log`,
+`reconciliation.json`, and the prior `iter263/logs/` and `iter263-repair1/` logs.

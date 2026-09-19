@@ -2,7 +2,7 @@
 title: "Iteration 263: two live sweeps ran 319 of 320 qualified tests and said nothing about the one they dropped"
 type: iteration
 date: 2026-09-07
-status: planned
+status: done
 branch: iter-263/live-sweep-plan-dropped-one-test
 depends_on:
   - iteration-252-content-process-resources-on-the-direct-route
@@ -83,18 +83,18 @@ own live test came within one `grep` of being reported green without ever having
       the phase is handed — candidates worth checking first: the directory read racing a
       concurrent `cargo` writing into the tree, and any cross-check of the partition against a
       binary listing that a concurrent build can leave stale
-- [ ] make the sweep **fail rather than under-report** when the names it was handed do not
+- [x] make the sweep **fail rather than under-report** when the names it was handed do not
       account for the whole gated corpus — the counter iteration 197 added for stalled phases,
       applied to the plan instead of the run
-- [ ] a regression test that a dropped name is reported, not silently absent
+- [x] a regression test that a dropped name is reported, not silently absent
 
-## Acceptance Criteria [0/3]
+## Acceptance Criteria [3/3]
 
-- [ ] the mechanism is identified and named in the plan, or the plan is closed with the
+- [x] the mechanism is identified and named in the plan, or the plan is closed with the
       measurements and a written reason the mechanism could not be found
-- [ ] a sweep whose `--exact` list does not cover every gated test it discovered exits non-zero
+- [x] a sweep whose `--exact` list does not cover every gated test it discovered exits non-zero
       and names the missing tests
-- [ ] `cargo run -p xtask -- live-sweep --dry-run` and a real sweep of the same tree, with the
+- [x] `cargo run -p xtask -- live-sweep --dry-run` and a real sweep of the same tree, with the
       same gates, report the same `qualified` count — asserted by a test, not by hand
 
 ## Notes
@@ -134,3 +134,105 @@ The source-based inventory still lacks independent reconciliation with compiled 
 
 This source/evidence audit adds implementation guidance, not a new execution result.
 Original task and acceptance-criterion wording and checkbox states remain unchanged.
+
+## Implementation and closing evidence — 2026-09-19
+
+The historical 319/320 mechanism could not be established. The filing commit changed only this
+plan, later uncontended reconciliations repeatedly found every compiled name, and the original
+logs retain no directory-entry error or compiled enumeration from the failing instant. Concurrent
+workspace compilation is the only recorded correlation, not a demonstrated cause. The old
+`filter_map(|entry| entry.ok())` directory scans were a credible silent-omission path, so they now
+propagate entry errors, but there is no evidence that such an error occurred in either 319 run.
+Evidence that would change this conclusion is a preserved failing run where compiled
+`--ignored --list` contains a name absent from the source plan, or a reproducible directory-entry
+or source mutation during classification that produces that exact set difference.
+
+Before either dry-run or real execution reports a count, `live-sweep` now enumerates every
+target's compiled ignored tests through libtest. Every compiled name absent from the
+source-derived gated plan is a named hard failure. Source-only names are accepted as host
+`#[cfg]` exclusions and filtered out before partitioning, counting, or constructing real
+`--exact` commands. Three focused regressions cover a compiled name dropped from the plan, a
+cfg-excluded source name being filtered, and the shared verified partition used for dry-run
+reporting and real `--exact` commands. The existing empty-corpus diagnostic remains ahead of
+compiled enumeration; all 74 sweep-runner tests pass after that integration correction.
+
+Pre-review same-tree dual-gate evidence agreed exactly: dry-run and real sweep both report 344
+qualified tests (335 CLI + 9 core). The replacement closing sweep passed all 344, with
+`skipped=0 preexisting=0 vanished=0 launch_timeout=0 timed_out=0`, and every target's profile
+scan plus the final summary reported `leaked=0 unattributed=0`. The first closing attempt remains
+preserved: 343 passed and `live_137_consent_accept_via_daemon` reached live targets in 21 ms but
+returned the already-recorded Sourcepoint `detected_not_actioned` result; it is assigned to
+[[iteration-262-daemon-live-target-never-promoted]] as that plan's distinct ready-target consent
+action observation. It passed in the required replacement sweep. No rerun was used merely to
+chase that red; the runner changed afterward to restore the empty-corpus diagnostic, requiring a
+new final sweep.
+
+All nine current xtask gates passed on that pre-review tree. The dogfood-script gate honestly skips because
+this plan has `dogfood_path` but no `dogfood_script`; the live dry-run and real sweep are its
+executed dogfood. Stable remained Rust 1.98.1, then `cargo fmt --all -- --check`, strict workspace
+clippy, and workspace tests passed in the required order. The first workspace-test attempt found
+the empty-corpus ordering regression above and is retained; the corrected final suite passed.
+
+Evidence: `.git/ralph-loop/20260919-queue/iter263/`, especially
+`logs/final-dry-run.log`, `logs/final-live-sweep.log`,
+`logs/final-live-sweep-replacement.log`, `logs/xtask-gates-final.log`,
+`logs/clippy-final.log`, and `logs/workspace-tests-final.log`.
+
+## Independent review repairs — 2026-09-19
+
+Repair 1 corrected host-cfg handling: source-only names are filtered against the host's
+compiled corpus. Its final sweep accounted for all 344 tests: 343 passed and
+`live_137_daemon_mode_parity::live_137_consent_accept_via_daemon` failed with the known
+Sourcepoint result; `LIVE_SWEEP_PROFILES leaked=0 unattributed=0`. The initial repair dry-run
+had no port-6000 browser (335 qualified, 9 preexisting); the supervisor's matching-precondition
+dry-run qualified all 344. These records supersede the earlier all-green run as repair-1
+source evidence without erasing it. Evidence: `iter263-repair1/` and its
+`supervisor/matched-dry-run.log` under `.git/ralph-loop/20260919-queue/`.
+
+Repair 2 addresses the review's two test-coverage findings. `filter_compiled_target` is the
+production operation called by `verify_compiled_corpora`; its regression now passes a target
+through that operation and checks exact retained names. `plan_target_phase` builds the
+partition, summary and actual phase command consumed by the real driver before its dry-run
+branch. The parity regression compares the dry-run report with the command's actual `--exact`
+arguments, with a host-excluded name and an unset network gate in the fixture. It also checks
+that a compiled name without source metadata fails by name. These are simulated host fixtures
+on macOS, not an actual Windows execution.
+
+Removing the production retain operation caused the cfg regression to fail; omitting the first
+name in the real command builder caused the parity regression to fail. Both mutations exited
+101 on assertion failures, the original source was restored byte-for-byte, and all 74 runner
+tests passed afterward. Evidence: `iter263-repair2/commands.json`, `mutation-filter.log`,
+`mutation-selection.log`, `restored-focused.log`, and `source-frozen.rs` in the same run store.
+The final-source dual-gate sweep and matching-precondition dry-run both qualified 344 names
+(335 CLI + 9 core). Exact-name reconciliation found zero missing, extra or duplicate names:
+342 passed and two failed. CLI passed 333/335; all nine core tests passed. The summary is
+`executed=344 skipped=0 preexisting=0 vanished=0 launch_timeout=0 timed_out=0 total=344`, with
+`LIVE_SWEEP_PROFILES leaked=0 unattributed=0`; all five per-tier profile checks were clean.
+The owned raw Firefox PID 15091 was terminated and reaped, and port 6000 was free afterward.
+
+The failures are distinct: `live_137_consent_accept_via_daemon` failed before consent handling,
+waiting 15,257 ms / 47 polls for live targets (debug port 51281, daemon proxy 51370, daemon PID
+17257), assigned to iteration 262's target-promotion investigation. This is not the earlier
+ready-target Sourcepoint action failure. `live_240_sustained_hops_never_desynchronise` failed
+hop 20/40 with zero reconnects and `daemon auth failed: recv failed: Connection reset by peer
+(os error 54)` (proxy 58186), assigned to iteration 268's existing pre-auth-reset investigation.
+No common cause is inferred, no application behavior was changed here, and no green-chasing
+rerun was performed. Final logs and all-tier reconciliation are in `iter263-repair2/live-sweep.log`
+and `reconciliation.json`.
+
+All nine xtask gates passed after the repair-2 sweep (dogfood-script explicitly skipped: no
+`dogfood_script` field). Then actual `cargo fmt`, strict workspace clippy and workspace tests
+passed in order. Stable 1.98.1 was verified earlier the same day and reused. Source remained
+byte-identical to the mutation-restored freeze throughout. Exact commands, timestamps and exit
+statuses are in `iter263-repair2/gate-commands.json`.
+
+## Carry-over
+
+| Observation | Disposition |
+|---|---|
+| Historical 319/320 cause remains unproved; the first two Scope investigation tasks remain unticked | **No plan, with a stated reason.** The shipped compiled/source set guard now turns any recurrence into a named hard failure. Re-open causal investigation only if that diagnostic captures a concrete set difference or a controlled source/directory mutation reproduces it. |
+| First closing sweep: ready-target Sourcepoint `detected_not_actioned` in `live_137_consent_accept_via_daemon`; replacement sweep passed | **Fold — [[iteration-262-daemon-live-target-never-promoted]]** already owns this exact, distinct ready-target consent-action observation and requires it to remain separate from target-promotion failures. |
+| First workspace suite: empty-workspace test saw Cargo-manifest enumeration error instead of the established zero-gated diagnostic | **Closed in this iteration.** The zero-gated guard now runs before compiled enumeration; all 74 runner tests and the final workspace suite pass. |
+
+| Repair-2 closing sweep: target-promotion wait in `live_137_consent_accept_via_daemon` before consent handling | **Fold — [[iteration-262-daemon-live-target-never-promoted]]**, distinct from the preserved Sourcepoint action observations. |
+| Repair-2 closing sweep: hop 20/40 pre-auth reset in `live_240_sustained_hops_never_desynchronise`, zero reconnects | **Fold — [[iteration-268-daemon-pre-auth-connection-loss]]**, already owns this exact test and wire signature; attributable failed-auth timing remains unavailable. |
