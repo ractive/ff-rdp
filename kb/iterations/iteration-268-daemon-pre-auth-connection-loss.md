@@ -118,3 +118,73 @@ Full344=341pass/3fail, no missing names or profile leaks. Evidence:
 ## Iteration265 sweep recurrence — 2026-09-19
 
 The final265 sweep failed `live_224_with_page_connection_reset::live_repeated_hop_never_loses_the_connection` on hop9, proxy63178: `daemon auth failed: recv failed: failed to fill whole buffer`. This is another EOF observation, not proof of a common cause with resets or greeting timeouts. Attributable failed-auth timing remains unavailable. Full346=344pass2fail, zero profile leaks. Evidence: `.git/ralph-loop/20260919-queue/iter265/live-sweep.log` and `supervisor-accounting.json`. Original tasks/ACs remain unchanged.
+
+## Attributed267 handshake evidence — 2026-09-19
+
+Iteration267 reproduced the scope-table greeting-wait Timeout envelope with
+attributable connection timing: daemon13895/proxy56229 rejected its auth read
+about88microseconds after handler entry, before client13984/local56297 completed
+its auth send. The client then received reset54; the existing transient-error
+mapping presented that reset as "timeout after auth". A separate control
+confirmed accepted sockets inherit the listener's nonblocking mode on macOS.
+The scoped267 repair restores blocking mode before applying existing deadlines;
+its explicit nonblocking-socket regression fails without that repair and passes
+with it. See [[iteration-267-daemon-post-auth-timeout-recurrence]] and primary
+checkout evidence `.git/ralph-loop/20260919-queue/iter267/trace-v2.log`,
+`loaded-modules-v2.log`, and `trace-flags.log`.
+
+This demonstrates why presentation alone cannot separate267 and268 handshake
+failures. It does not supply missing failed-occurrence traces for this plan's
+historical224/240 EOF/reset observations, and does not close this plan or any of
+its original ACs. Preserve every original observation and await the required
+attributed evidence before assigning those occurrences the same cause.
+
+## Restart plan — 2026-09-19
+
+Follow [[ralph-loop-open-iterations-2026-09-19]]. Recover the docs-only checkpoint
+`f5fed086c0a3992b165e7f231856a8990ccd3661`, integrate verified current main on
+its branch, and preserve every historical EOF/reset row. The original four tasks
+and four ACs remain unmet. Merged267's socket-mode repair is a verified input;
+its historical failure cannot be substituted for this plan's named occurrences.
+
+**New work must improve attribution before adding runs (Astra).**
+
+1. Restore/adapt only the retained temporary tracing patch from `iter268/` after
+   comparing it to current `daemon/server.rs` and the client auth path. Record
+   connection identity on accept, client/server endpoints and process IDs,
+   monotonic auth-read/write milestones, greeting-write outcome, close initiator
+   and reason, dispatcher state and RPC-slot state. Assign a trace-only identity
+   before authentication (and before fallible socket setup); the current normal
+   client ID is allocated only after auth succeeds and misses rejected clients.
+   Record auth read error/category and decision separately without token content.
+   The logger must preserve
+   complete records under concurrency; validate that first. Do not log tokens,
+   page payloads or unrelated traffic. Keep this scoped to connection setup,
+   without retrying259's rejected request/reply investigation.
+2. State a differentiating hypothesis before testing. Trace the causal path:
+   auth-read failure followed by explicit rejection, independent shutdown/early
+   handler exit, or greeting-write failure after successful auth. A failed auth
+   read can itself cause an intentional close; those are not competing causes.
+   Record the peer-close observation and preceding milestones so an EOF can be
+   located within the sequence instead of classified by its error string alone.
+   Existing fixed/reverted controls and the incidental165 failure are already
+   recorded; do not repeat the267 mutation to manufacture new268 evidence.
+3. With instrumentation active, run one exact named224/240 pair on current source.
+   If neither fails, one bounded reproduction block may run the same pair with
+   the existing six-worker160/161/164/165/219 contention set, at most three batches.
+   Preserve all results. Do not change assertions, timeout defaults, ports or
+   browser ownership to manufacture a failure. Stop early on an attributable
+   named failure and inspect its joined trace before another invocation.
+4. If a named failure is captured, distinguish auth rejection, daemon shutdown,
+   greeting delivery and later transport framing before changing code. Preserve
+   EOF versus reset as separate observations until evidence relates them. Build
+   a deterministic regression from the demonstrated cause; prove it fails before
+   and passes after the scoped repair, then run both named tests and this
+   iteration's own closing dual-gate sweep and ordered gates.
+
+A complete trace with no failure yields a bounded negative result and a preserved
+checkpoint, not a completed iteration. A missing trace field yields a precise
+instrumentation repair task, not another blind batch. The three-batch allowance is
+an investigation ceiling, not a new acceptance requirement. An unresolved failure
+outside the two named cases receives its own existing owner or newly filed plan,
+without expanding execution scope. All four original ACs remain binding.

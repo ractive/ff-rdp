@@ -260,3 +260,101 @@ update, fmt, strict workspace/all-target clippy and workspace tests passed
 in order on the frozen repair source. Evidence: `repair1/reconciliation.log`,
 `xtask-gates.log`, `ordered-gates.log` and their per-command logs/metadata.
 Fresh scoped independent review of R271-1 remains required before checkpointing.
+## Restart plan — 2026-09-19
+
+Follow [[ralph-loop-open-iterations-2026-09-19]]. Resume the existing partial-code
+branch at `0e9f978b67f6de74bbd276e04dec4704b5554a61`, currently checked out in
+`/Users/james/.cache/ff-rdp/queue-20260919-271`. Integrate current verified main
+there; preserve its BBC navigation assertion, bounded failure capture and
+branch-only plan277, plus both previous sweep records. Main does not yet contain
+this test repair. The original four tasks/four ACs remain unticked.
+
+**Reuse already-reviewed work.** The old test passed after a navigation failure;
+the same blocked-port mutation failed after the repair. The independent review's
+unbounded-DOM/cookie finding was repaired and freshly reviewed with explicit zero
+remaining findings. The exact diagnostic JavaScript was exercised against an
+oversized real-Firefox fixture; final output is16KiB-bounded and omits cookie
+values. Preserve those contracts and reuse unchanged evidence. Do not repeat the
+initial full review or fixture measurements solely for another model's opinion.
+
+**Attribution experiment (Sol for capture; Astra for ambiguous diagnosis).**
+
+1. Inspect integration changes and verify the retained diagnostic code still runs
+   only after failure, so a successful test gains no extra pre-consent delay.
+   Preserve the exact native-BBC match, real accepted action and post-action
+   control absence/zero-size assertions. No `--allow-no-cmp` or null-action pass.
+2. Use fresh exclusively owned profiles on the existing network route and record
+   installed Firefox identity, profile history, locale/timezone, navigation
+   envelope and timing, actual URL/document/title/readiness, observed banner/CMP
+   markers and bounded cookie-name/presence metadata. Locale/timezone are not proof
+   of the site's geolocation decision. Do not use paid proxies, new accounts or
+   assumed regional emulation. Post-consent no-CMP is a control, not reproduction.
+3. Run up to three unchanged exact BBC tests serially with failure capture. If
+   all pass, one existing contention configuration may be tried, with at most
+   three additional fresh-profile BBC attempts. A run must exercise dismissal;
+   navigation failure cannot be counted as a BBC no-CMP occurrence. These are
+   bounded discovery attempts, not new repeated-measurement ACs or a green streak.
+4. On a qualifying failure, preserve immediately available command/page evidence
+   before another navigation or consent action. Mark later snapshots as later
+   observations, not atomic failure state. Use targeted read-only inspection to
+   distinguish wrong document, delayed banner, legitimately absent/already-consented
+   banner, regional/site contract, or adapter mismatch. Test only the demonstrated
+   distinction. A local regression fixture must come from recorded real Firefox
+   evidence; no invented e2e payloads.
+5. Implement the demonstrated scoped correction, or document a supported site/test
+   contract decision without silently changing original acceptance. Keep the old
+   failing observations and their missing data visible. Review only new behavioral
+   changes/affected contracts against preserved initial review coverage, then run
+   current-source gates and this iteration's own dual-gate closing sweep.
+
+If all bounded fresh-profile attempts pass, retain the test-honesty improvement
+on its recoverable branch and report the missing failing-occurrence evidence.
+There is no authorization here to merge that partial repair as completed271 or to
+rewrite its causal AC. Broader test-contract changes need an explicit, reviewed
+scope decision. Plan277 remains filed and unexecuted; a later pass does not close it.
+
+## Restart attribution capture — 2026-09-19
+
+The prepared branch was integrated with verified main/planning while preserving
+the reviewed test-honesty repair unchanged (source SHA-256
+`f42f2f95bd172574d6c01132b6f2d1231ae24a65251a6e57d1d09faedc422fbe`).
+Its diagnostic remains failure-only; successful runs add no pre-consent probe.
+The exact assertions still require `cmp:bbc`, `action:accepted`, and native-button
+absence or zero size after action.
+
+The worker reported Firefox156.0 (`CFBundleVersion 15626.9.9`,
+BuildID20260909172920), but the version command/output was not retained as a
+contemporaneous receipt. The contemporaneous launch ledgers and test logs retain
+the existing direct network route, fresh test-owned launch policy, no auto-consent
+extension, named launch PIDs/ports and the six test verdicts. They do not retain
+per-profile paths or a profile-removal receipt. Three serial unchanged exact BBC
+attempts used fresh test-owned profiles and passed after exercising dismissal in4.88s,4.36s
+and4.70s. The single permitted contention configuration paired each subsequent
+serial BBC attempt with five existing local Firefox tests, matching the measured
+six-worker setting. All three BBC attempts and all companions passed; BBC times
+were9.32s,7.77s and7.29s. No contemporaneous per-profile teardown receipt was
+retained, and the worker's cleanup command outputs are unavailable.
+
+The supervisor later captured current process state at 2026-09-19T21:59:18Z in
+`../supervisor-current-processes.log`: no test workload, desktop Firefox1112
+present and no listener on port6000. This is a later current-state observation,
+not reconstructed capture/teardown evidence. The supervisor later captured the
+currently installed browser version at 2026-09-19T22:02:01Z in
+`../supervisor-current-firefox.log`, with the same reported identity. This is a
+later installed-version observation, not contemporaneous capture identity.
+
+The tests use the direct route, fresh per-launch profiles and no auto-consent
+extension. Host timezone was Europe/Zurich. Failure-only diagnostics would have
+retained actual URL/document/title/readiness, locale/timezone, bounded banner/CMP
+markers and cookie names/presence, but no qualifying failure occurred, so those
+page fields were deliberately not collected on successful paths. Locale/timezone
+would not establish the site's geolocation decision. No proxy, account or region
+emulation was used.
+
+Evidence: `.git/ralph-loop/20260919-resume-2349/iter271/`, including six BBC
+logs and metadata, launch ledgers, companion logs and the frozen phase report.
+The bounded experiment therefore supplies no attributable failing occurrence
+and justifies no consent-adapter or broader contract change. The historical
+242/257 failures and their missing page evidence remain recorded. All original
+tasks and acceptance criteria remain unticked (0/4); this passing capture is not
+partial completion, a retry-based green claim or authorization to merge271.

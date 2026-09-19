@@ -2504,6 +2504,13 @@ fn handle_client(
     stream: TcpStream,
     firefox_writer: &Arc<Mutex<ff_rdp_core::FramedWriter>>,
 ) -> Result<()> {
+    // Accepted sockets can inherit the listener's nonblocking mode (macOS).
+    // This handler uses blocking reads with deadlines: otherwise an auth
+    // read before the client's first write immediately returns WouldBlock,
+    // which is mistaken for an expired authentication deadline.
+    stream
+        .set_nonblocking(false)
+        .context("setting accepted client socket blocking")?;
     // Best-effort: disable Nagle for lower latency.
     let _ = stream.set_nodelay(true);
 
@@ -5991,6 +5998,54 @@ mod tests {
             !err.contains("not registered"),
             "must not fall back to the generic 'not registered' message: {err:?}"
         );
+    }
+
+    #[test]
+    fn unit_267_nonblocking_accepted_socket_waits_for_auth() {
+        use std::io::Write as _;
+
+        let mut state = test_state();
+        state.auth_token = "correct-token".to_owned();
+        let state = Arc::new(state);
+        let (ff_server, _ff_client) = loopback_pair();
+        let firefox_writer = Arc::new(Mutex::new(FramedWriter::from_stream(ff_server)));
+        let (server, mut client) = loopback_pair();
+        // macOS inherits this from the nonblocking listener; setting it
+        // explicitly makes the regression meaningful on every platform.
+        server
+            .set_nonblocking(true)
+            .expect("nonblocking accepted socket");
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let handler = std::thread::spawn(move || {
+            let result = handle_client(&state, server, &firefox_writer);
+            let _ = finished_tx.send(result);
+        });
+        assert!(
+            matches!(
+                finished_rx.recv_timeout(Duration::from_millis(100)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ),
+            "the handler must wait for authentication, not reject an empty nonblocking socket"
+        );
+        client
+            .write_all(
+                ff_rdp_core::transport::encode_frame(r#"{"auth":"correct-token"}"#).as_bytes(),
+            )
+            .expect("send delayed auth");
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("bounded greeting read");
+        let mut reader = FramedReader::from_stream(client.try_clone().expect("clone client"));
+        let greeting = reader.recv().expect("greeting after delayed auth");
+        assert_eq!(greeting["applicationType"], "browser");
+        client
+            .shutdown(std::net::Shutdown::Both)
+            .expect("close client");
+        finished_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("handler exits")
+            .expect("successful handler");
+        handler.join().expect("join handler");
     }
 
     #[test]

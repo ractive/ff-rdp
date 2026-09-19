@@ -256,6 +256,17 @@ Evidence: `.git/ralph-loop/20260919-queue/iter271/repair1/sweep.log` and
 sidecar/launch log.346 executed,345 passed/1 failed, profiles0/0. This is
 another observation only, not262 implementation or proof of a shared cause.
 
+## Iteration258 sweep observation — 2026-09-19
+
+`live_145_error_envelope_completeness::live_145_click_element_not_found_unchanged`
+failed its readiness precondition before invoking click: debug64018/proxy64126,
+daemon70185, reached=false after15.213s/47polls, target_count1/live_target_count0,
+dispatcher alive with52started/52finished, no in-flight frame or RPC owner.
+This repeats the original target-promotion signature; no common cause with
+consent-action failures is inferred. No isolation rerun was used to replace it.
+The344-name sweep had342pass/2fail and zero skips, reclassifications or leaks;
+its other failure was a greeting timeout owned by267. Original ACs remain unmet.
+Evidence: primary checkout `.git/ralph-loop/20260919-queue/iter258/sweep.log`.
 ## Iteration263 reconciliation — 2026-09-19
 
 Firefox156.0 final263 repair sweep executed344=342passed+2failed with exact
@@ -290,3 +301,96 @@ Evidence: `.git/ralph-loop/20260919-queue/iter261/logs/live-sweep-rerun.log`.
 ## Iteration265 sweep recurrence — 2026-09-19
 
 The final265 sweep failed `live_137_daemon_mode_parity::live_137_consent_accept_via_daemon`: target_count1/live_target_count0 after the readiness bound; dispatcher95/95, no frame in flight. These counters preserve the observation without proving a promotion mechanism. The separate blocked262 investigation branch retains its watcher-lifecycle diagnosis and unmet requirements. No265 change repairs this finding. Full346=344pass2fail, zero profile leaks. Evidence: `.git/ralph-loop/20260919-queue/iter265/live-sweep.log` and `supervisor-accounting.json`. Original262 ACs remain unchanged.
+
+## Iteration270 sweep recurrence — 2026-09-19
+
+The initial iteration270 dual-gate sweep again failed
+`live_137_daemon_mode_parity::live_137_consent_accept_via_daemon` before consent:
+readiness stayed false for15,135ms/47polls with daemon PID64449/proxy57180,
+uptime17s, target_count1/live_target_count0, network buffer484, dispatcher alive
+with83frames started/finished, no in-flight frame or RPC owner, and zero dropped
+client writes. Exact serial dual-gate isolation reached a live target in110ms/one
+poll and accepted Sourcepoint in5.75s. This is another target-lifecycle recurrence,
+not a new consent-action result; the isolation does not repair it or count as a
+green full sweep. All345 other names passed, all346 names/six tiers reconciled,
+and every profile scan was clean. Iteration270 changed only hook guidance and its
+live fixture, so no cause or repair is claimed. Original262 tasks, acceptance
+criteria and distinct observed shapes remain unchanged. Evidence:
+`.git/ralph-loop/20260919-queue/iter270/logs/final-live-sweep.log` and
+`live-137-consent-rerun.log`.
+
+After the iteration270 clippy-only style repair, a second complete dual-gate
+sweep passed all346 names, including this test, with zero skipped/precondition/
+timeout classifications and zero profile leaks or unattributed profiles. That
+green sweep is final iteration270 closure evidence; it does not erase the first
+recurrence or satisfy this plan's three-consecutive-sweep requirement. Evidence:
+`.git/ralph-loop/20260919-queue/iter270/logs/final-live-sweep-after-style-repair.log`.
+
+## Restart plan — 2026-09-19
+
+This is preparation for a new session, not another execution result. Follow
+[[ralph-loop-open-iterations-2026-09-19]] for queue, ownership and validation.
+Recover checkpoint `e9c9e88c355782d9f645f4ca7a766b5d827e9be3` on this plan's
+branch, integrate verified current main there, and preserve both sets of dated
+observations plus branch-only plan275. The checkpoint has Locate2/2 and AC1/5;
+main's older unchecked state must not erase that reviewed evidence. Restore only
+evidence-backed tick/status differences, using Hyalo, after inspecting the merge.
+
+**Question to answer.** Which exact Firefox branch prevents the replacement
+window target from reaching this watcher? `target_count` is cumulative discovery,
+not proof that a current live target exists. The daemon observed available →
+destroyed without replacement. Idle direct watchers retained targets6/6 while
+daemons lost5/6; adding legacy `getTarget` could induce direct loss. This supports
+an experiment, not a proved suppression diagnosis or an actor-ID mismatch.
+
+**First experiment (Astra implementation and review).**
+
+1. Verify installed Firefox version, BuildID and source revision. The retained
+   comparison used156.0 / BuildID20260909172920; local Firefox checkout HEAD was
+   different. Use the retained exact-revision modules as locators, then verify
+   against the browser actually running. Reuse the Rust comparison harness and
+   ownership scripts under `iter262/attempt2/` in the previous run store.
+2. Establish a supported way to observe the required Firefox process/module.
+   In an exclusively owned browser/profile, trace each replacement window's
+   browsing-context/window identity, watcher actor ID and connection prefix,
+   watcher-registry membership, `findTargetActor` result and
+   `createdFromJsWindowActor`, the selected suppression/creation branch,
+   `onNewTargetActor` send, and parent acceptance or exception. Join these with
+   the client's target-available/destroyed stream and existing daemon counters.
+   Locate these checkpoints in retained `window-global.sys.mjs`,
+   `target-actor-registry.sys.mjs` and registry/parent modules; verify line locations.
+   Do not assume a parent-console evaluator can inspect a content-process registry.
+3. First prove the probes execute on an ordinary passing replacement. Then use
+   paired idle-watcher / watcher-plus-legacy-lookup controls with identical
+   navigation and fresh owned profiles. Keep daemon and direct connection IDs
+   separate; include a daemon observation. Record full15-second windows when
+   claiming persistent loss. Begin with two paired trials; extend to at most six
+   only if probes are complete but the failure has not recurred. Existing six-arm
+   results are retained evidence, not a required repetition baseline.
+4. Select a scoped correction only after a failing occurrence identifies whether
+   the loss is legacy-target reuse/suppression, registry omission, delivery
+   rejection or client bookkeeping. Verify the other boundaries explicitly before
+   concluding. No global timeout increase, blind reconnect/reset or broad target
+   redesign. Preserve resource subscription and concurrent consumer behavior.
+
+The initial probe-feasibility budget is45minutes. A supported debugger or an
+isolated instrumented Firefox build may be used if available; never replace the
+installed browser or edit the shared Firefox source checkout in place. If a build
+is needed, first record exact prerequisites and an honest bounded build plan; do
+not silently begin an unbounded build. Missing tooling is a concrete blocker.
+Needing instrumentation alone is remaining engineering work, not evidence of an
+external blocker. Stop a repeated unchanged experiment when it adds no distinction.
+
+**Proof and closing decision.** Retain a real-Firefox failing-before/passing-after
+regression for the identified branch, plus focused protocol/ordering coverage.
+Run the original three consecutive full dual-gate sweeps on stable final inputs;
+all three named137/145 tests must be green. Apply the original separate rule for
+`live_network_watcher_source_after_navigate_with_network`. Count every target,
+qualified name and profile summary. A failure breaks the qualifying streak;
+preserve it and diagnose before any new justified sequence. No retry loop merely
+collecting three green samples. Preserve all original AC text and requirements.
+
+The independent ready-target Guardian/Sourcepoint defects remain owned by275.
+If those prevent the named137 criterion, leave it unmet: filing275 does not satisfy
+it, and this five-iteration queue does not authorize implementing275. Record that
+precise prerequisite instead of widening this iteration or weakening consent.

@@ -42,6 +42,14 @@ Returns immediately with `{ resultID }` (a `"<timestamp>-<counter>"` string).
 
 The **actual** result arrives later as an unsolicited `evaluationResult` event carrying the same `resultID`. Client must correlate.
 
+Iteration 258 bounds navigation and condition polls with one absolute transport
+read deadline spanning both this acknowledgement and the matching event, even
+under push traffic or a partial frame. The previous socket timeout is restored
+after each scoped evaluation. If the acknowledgement itself times out, the
+transport discards its eventual untyped reply before accepting another reply
+from that actor; otherwise the old `resultID` could be assigned to a later
+evaluation. Late result events still undergo the normal `resultID` match.
+
 Critical pattern from `webconsole.js:786`:
 
 ```js

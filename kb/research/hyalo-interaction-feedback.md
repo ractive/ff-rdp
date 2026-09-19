@@ -97,6 +97,66 @@ Supervisor: `read --section Outcome` correctly rejected the guessed nonexistent 
 
 Hyalo0.23.0: selected plan `read --frontmatter --format text` and body read kept metadata and preflight explicit. Supervisor initially used positional `set FILE KEY VALUE`; tool rejected with a useful `--property K=V --file` hint. Operator syntax mistake, not a Hyalo defect. Corrected `set --file iterations/iteration-265-typed-watcher-protocol-fidelity.md --property scope_note=... --property status=done` changed both scalars; HYALO005 passed. Direct body appends for exact sweep recurrences and this feedback remain the supported-workflow exception because Hyalo has no general prose editor. No Hyalo version change or ../hyalo edit.
 
+## 2026-09-19 iteration267 interactions
+
+Installed executable: /Users/james/.cargo/bin/hyalo, version 0.23.0 (adbafda6c7fc 2026-09-13).
+- Supplied executable /Users/james/.cargo/bin/hyalo0.23.0 did not exist (exit127); corrected to verified installed executable. Operator/launch-input error, not Hyalo defect.
+- read discipline-rationale.md --format text: success.
+- find --property 'title~=267|268' --format text: success, exposed full metadata including267 tasks/ACs.
+- read267 and268 --format text: success. read267 --frontmatter --format text: success. Metadata/body distinction is documented in help.
+- read203 --section '8.': exit1, accurate section-not-found and suggested headings; corrected to --section 'Carried-forward conditions': success. Operator selector error, not defect.
+- The combined read-help tool output was truncated by the tool-output budget, not Hyalo. No verified Hyalo defect found; no ../hyalo changes.
+
+Supervisor: new cascade carry-over initially reused275, already allocated on blocked262 branch. Hyalo mv dry-run correctly previewed one backlink rewrite; apply moved it to276 and updated that backlink. Scalar title/branch updated with set; unsupported body heading prose updated directly. This was queue-numbering coordination, not a Hyalo defect. Long mv --help output exceeded the calling-tool budget; no provider output loss established.
+
+## 2026-09-19 iteration264 and next-plan lookup
+
+Hyalo remains0.23.0. Worker operator error: `hyalo version` is unsupported;
+`/Users/james/.cargo/bin/hyalo --version` succeeded. Supervisor guessed a269
+basename that did not exist; the exact filename recorded in the prior audit
+worked with body/frontmatter reads. These are operator mistakes, not verified
+Hyalo defects. Final264 scalar `set --file ... --property status=done` and
+HYALO005 validation support completion without altering original AC wording.
+Long combined reads were truncated by the calling tool, not Hyalo. No version
+change or ../hyalo edit.
+
+## 2026-09-19 iteration270 interactions
+
+Installed executable `/Users/james/.cargo/bin/hyalo` reports version0.23.0
+(`adbafda6c7fc`, 2026-09-13). `read` returned the complete iteration270 body and
+frontmatter; `task read --all` returned all four tasks and four acceptance
+criteria with absolute file line numbers. `task set --line ... --status x` and
+`set --property status=in-progress --validate` both produced accurate dry-run
+previews and then applied the requested targeted changes without rewriting the
+new body evidence. Body prose and heading counts were edited directly under the
+owner's established unsupported-operation allowance. No Hyalo command failed in
+this iteration and no verified Hyalo defect was found. Broad combined tool output
+was truncated once by the calling-tool output budget; narrower reads recovered
+the content, so this is classified as caller/output-budget friction rather than
+a Hyalo error. No `../hyalo` files were edited.
+
+## 2026-09-19 — iteration262 diagnostic checkpoint
+
+Hyalo 0.23.0 (adbafda6c7fc 2026-09-13), vault kb; commands from repository root.
+Successful: read discipline-rationale; read262 body; read262 --frontmatter;
+read246 --section 'Part D'; find title consent/Guardian/Sourcepoint; find title275
+(no results); types list (no schema types configured); lint --rule HYALO005 exit0.
+Help read/append/new and top-level help inspected. No Hyalo verified defect.
+Operator error: queried nonexistent `create --help` (exit2), then read `new --help`.
+`new` needs configured schema type; none exists, so new275 created directly.
+Append help clarified it only appends frontmatter values, not prose; body262 edited
+directly under owner allowance. Tool output truncation came from exec output budgets,
+not a Hyalo finding. User-facing instructions in consent erroneously suggest
+`dom --frames`; this CLI option does not exist, unrelated to Hyalo.
+
+Supervisor used `find --fields tasks --jq` to locate three exact evidence-backed tasks, then task-set preview/apply and status set. Original requirement wording was preserved.
+
+## 2026-09-19 iteration268 investigation
+
+Hyalo0.23.0 remained installed. `find --file iterations/iteration-268-daemon-pre-auth-connection-loss.md --fields tasks,properties --format text` successfully verified the original unticked requirements after the investigation body was appended directly (unsupported general prose operation). Raw result is retained in iter268/hyalo-verify.log. This records successful metadata verification; no verified new defect or version change is claimed.
+
+Additional268 operator notes: `find iteration=268` used a nonexistent metadata key and returned no result; title search corrected it. Batched guidance output truncation occurred at the calling-tool budget and was recovered with smaller reads. Neither is a verified Hyalo defect. Supervisor used `set --property status=in-progress` and HYALO005 after review; original eight boxes stayed unticked.
+
 ## 2026-09-19 iteration271 interactions
 
 
@@ -122,3 +182,66 @@ evidence`, which succeeded. These were operator assumptions, not parser/search
 defects. New277 copied the repository template because this vault declares no
 schema type for `hyalo new`; all new frontmatter changes used `hyalo set`.
 Final HYALO005 lint passed after status and277 frontmatter edits.
+
+## 2026-09-19 iteration269 reproduction and closure
+
+Hyalo remains0.23.0. Body/frontmatter reads and `set --file ... --property
+status=done` supported the evidence-backed no-product-change outcome;
+HYALO005 checked470files with zero violations. The first dogfood xtask
+invocation omitted FF_RDP_LIVE_TESTS and correctly failed; the corrected
+invocation recorded its no-script skip. This is an operator environment error
+in xtask, not a Hyalo defect. No paid work, Hyalo version change or ../hyalo edit.
+
+## 2026-09-19 iteration258 implementation and integrated closure
+
+Original implementer reported PATH resolving Hyalo0.21.0, then explicitly used
+`/Users/james/.cargo/bin/hyalo`0.23.0 (adbafda6c7fc). The resumer used that same
+0.23.0 version. Body/frontmatter reads, inventory, exact task-line updates,
+status set and HYALO005 supported final4/4 acceptance verification. Nested
+first_call_sites maps and general body prose used the established direct-edit
+exception. No ../hyalo edits or verified new Hyalo defect.
+
+Reported operator errors: guessed `properties`, `create`, `taskset`, a plan
+basename and a Tasks selector containing only nested headings. Supported
+read/frontmatter, find, task help and exact task-line selection corrected them.
+Long instruction/help output was truncated by the calling tool; narrower reads
+recovered it. A guessed historical log path was absent; no passing result was
+inferred. Final plan-only verification repeated once to correct a one-second
+sweep-start transcription against the raw log; no test was repeated for this.
+
+## 2026-09-19 remaining-queue planning
+
+Hyalo0.23.0 (adbafda6c7fc) remained installed. Body/frontmatter reads and the
+supported scalar/list set preview made the existing266dependency visible before
+editing. First dry-run used `depends_on=["259"]`; the CLI preview exposed literal
+quote characters in the list member. Corrected to `depends_on=[259]`, previewed
+`["259"]` as the actual parsed value, then applied and verified the frontmatter.
+The incorrect draft was never applied. This is an operator assumption about the
+CLI's list grammar, not a verified data-corruption defect. Proposed improvement:
+a help example distinguishing its comma-list syntax from JSON string quoting.
+
+Restart sections and the new research handoff use direct body/file authoring for
+unsupported prose/creation operations; existing original tasks and ACs stay intact.
+Large batched guidance reads exceeded the calling-tool output budget; narrowed
+reads recovered the needed sections. That truncation was outside Hyalo. No version
+change or ../hyalo edits; documentation validators are recorded separately.
+
+Planning review telemetry: the fresh scoped reviewer reported four basename-only
+reads failing with file-not-found; vault-relative `iterations/` and `research/`
+paths corrected them. Combined body/help output exceeded the calling-tool budget;
+the complete repair delta and required266 frontmatter were then read. These are
+operator/path and output-budget errors, not verified Hyalo defects. Independent
+plan review ran once, then fresh scoped review of one consolidated repair batch
+returned explicit zero findings; no product or Firefox experiment was executed.
+
+## 2026-09-19 — remaining-queue execution
+
+Hyalo 0.24.1 was used for this run, while the prepared queue documentation records Hyalo 0.23.0. Vault-relative body and frontmatter reads succeeded. An operator mistakenly supplied `--file` with a glob; Hyalo rejected the file-not-found input and suggested `--glob`, after which the selection was corrected.
+
+The first broad `find` used the default limit of 50 results. Filtering those first 50 entries misleadingly produced no pending entries; the envelope reported 279 total, so the inventory was rerun with `--limit 0` before making any decision. The corrected query found 11 pending main-branch entries; separate Git inspection confirmed 2 branch-only entries, 13 total.
+
+Large batched guidance and Hyalo outputs were truncated by the calling tool. Narrow reads and projections recovered the needed content; this was not established as a Hyalo defect. Supported operations used Hyalo, and no `../hyalo` edits were made. Existing hashes, reviews, and gates for unchanged prepared documents were reused. No new semantic Hyalo defect was established. A possible usability improvement is to make the default result limit visible near result output; this is a suggestion, not a bug finding.
+
+Astra's262 reviewer reported a guessed nonexistent plan slug, unsupported `properties get` and `frontmatter` subcommands, and a nonrecursive glob. These were corrected with the exact vault-relative path and `read --frontmatter --section`. Calling-tool truncations were narrowed for the relevant evidence. These are operator errors and output-budget friction, not verified Hyalo defects.
+
+Further scoped-review telemetry: a reviewer guessed a nonexistent section and corrected to the exact heading; an initial jq traversal was corrected. A supervisor guessed section `R1 managed-path`; `find --fields sections` located the actual heading and an exact section read succeeded. The268 designer tried `--section 268`, but268 was a table/paragraph rather than a heading; a full read succeeded. A guessed `spawn.rs` source path was corrected to the actual server/client/process modules. Combined output truncation was narrowed. These are operator or calling-tool issues, not product or Hyalo defects.
