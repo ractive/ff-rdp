@@ -1167,6 +1167,7 @@ pub(crate) fn wait_for_predicates(
     let started = Instant::now();
 
     // Build JS expressions once up front.
+    let deadline = started + timeout;
     let js_exprs: Vec<String> = predicates
         .iter()
         .map(WaitForPredicate::to_js)
@@ -1183,8 +1184,18 @@ pub(crate) fn wait_for_predicates(
 
         let mut all_met = true;
         for (js, predicate) in js_exprs.iter().zip(predicates.iter()) {
-            let eval = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, js)
-                .map_err(AppError::from)?;
+            let eval = match ctx
+                .transport_mut()
+                .with_read_deadline(deadline, |transport| {
+                    WebConsoleActor::evaluate_js_async(transport, console_actor, js)
+                }) {
+                Ok(eval) => eval,
+                Err(ProtocolError::Timeout) => {
+                    all_met = false;
+                    break;
+                }
+                Err(error) => return Err(AppError::from(error)),
+            };
             if let Some(ref exc) = eval.exception {
                 let msg = exc
                     .message
@@ -1205,7 +1216,7 @@ pub(crate) fn wait_for_predicates(
             return Ok(());
         }
 
-        std::thread::sleep(poll);
+        std::thread::sleep(poll.min(deadline.saturating_duration_since(Instant::now())));
     }
 }
 
@@ -1352,6 +1363,7 @@ pub(crate) fn poll_js_condition(
     let timeout = Duration::from_millis(timeout_ms);
     let poll = Duration::from_millis(POLL_INTERVAL_MS);
     let started = Instant::now();
+    let deadline = started + timeout;
 
     loop {
         // A transport-level recv timeout (Firefox didn't answer within the
@@ -1363,12 +1375,21 @@ pub(crate) fn poll_js_condition(
         // `RdpTimeout { phase: "recv", after_ms: 0 }` ("timed out after 0ms
         // (phase: recv)") that tells the user nothing about which condition
         // failed to become true.
-        let eval_result =
-            match WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, js) {
-                Ok(result) => Some(result),
-                Err(ProtocolError::Timeout) => None,
-                Err(e) => return Err(AppError::from(e)),
-            };
+        // Preserve the documented zero-budget single evaluation. Positive
+        // budgets cover the whole operation, not a fresh timeout per frame.
+        let evaluate = |transport: &mut ff_rdp_core::RdpTransport| {
+            WebConsoleActor::evaluate_js_async(transport, console_actor, js)
+        };
+        let result = if timeout_ms == 0 {
+            evaluate(ctx.transport_mut())
+        } else {
+            ctx.transport_mut().with_read_deadline(deadline, evaluate)
+        };
+        let eval_result = match result {
+            Ok(result) => Some(result),
+            Err(ProtocolError::Timeout) => None,
+            Err(e) => return Err(AppError::from(e)),
+        };
 
         if let Some(eval_result) = eval_result {
             if let Some(ref exc) = eval_result.exception {
@@ -1389,7 +1410,7 @@ pub(crate) fn poll_js_condition(
             return Err(AppError::Timeout(timeout_context.to_owned()));
         }
 
-        std::thread::sleep(poll);
+        std::thread::sleep(poll.min(deadline.saturating_duration_since(Instant::now())));
     }
 }
 
@@ -1685,6 +1706,38 @@ mod tests {
         let console_actor = ActorId::from("conn0/console1");
         let ctx = ConnectedTab::for_test(transport, console_actor.clone());
         (ctx, console_actor)
+    }
+
+    #[test]
+    fn unit_258_sibling_polls_share_one_budget() {
+        for predicates in [false, true] {
+            let (port, server) = spawn_scripted_console(|_| {
+                std::thread::sleep(Duration::from_millis(350));
+                json!(true)
+            });
+            let (mut ctx, actor) = connect_for_test(port);
+            let prior = ctx.transport_mut().read_timeout().unwrap();
+            let started = Instant::now();
+            let result = if predicates {
+                wait_for_predicates(
+                    &mut ctx,
+                    &actor,
+                    &[
+                        WaitForPredicate::Text("first"),
+                        WaitForPredicate::Text("second"),
+                    ],
+                    500,
+                )
+            } else {
+                poll_js_condition(&mut ctx, &actor, "true", 100, "exception", "not ready")
+                    .map(|_| ())
+            };
+            assert!(matches!(result, Err(AppError::Timeout(_))), "{result:?}");
+            assert!(started.elapsed() < Duration::from_millis(700));
+            assert_eq!(ctx.transport_mut().read_timeout().unwrap(), prior);
+            drop(ctx);
+            server.join().unwrap();
+        }
     }
 
     /// The observation floor scales with the caller's budget, but never drops

@@ -200,7 +200,13 @@ impl WebConsoleActor {
         // The immediate ack is a reply (no `type` field) from the console
         // actor; push events arriving in the gap are forwarded to the
         // transport's event sink by `recv_reply_from`.
-        let immediate = recv_reply_from(transport, console_actor.as_ref())?;
+        let immediate = match recv_reply_from(transport, console_actor.as_ref()) {
+            Err(ProtocolError::Timeout) => {
+                transport.abandon_reply(console_actor.as_ref());
+                return Err(ProtocolError::Timeout);
+            }
+            result => result?,
+        };
 
         let result_id = immediate
             .get("resultID")
@@ -821,6 +827,73 @@ mod tests {
         let reader = BufReader::new(client);
         let transport = RdpTransport::from_parts(reader, writer);
         (transport, server_stream)
+    }
+
+    #[test]
+    fn unit_258_deadline_bounds_partial_frame_and_restores_reader() {
+        use std::time::{Duration, Instant};
+        let (mut transport, mut stream) = make_transport_pair();
+        transport
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let prior = transport.read_timeout().unwrap();
+        let value = json!({"from":"console", "resultID":"slow"});
+        let frame = encode_frame(&value.to_string());
+        let server = std::thread::spawn(move || {
+            for byte in frame.bytes() {
+                stream.write_all(&[byte]).unwrap();
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+        let start = Instant::now();
+        let result =
+            transport.with_read_deadline(start + Duration::from_millis(80), RdpTransport::recv);
+        assert!(matches!(result, Err(ProtocolError::Timeout)), "{result:?}");
+        assert!(start.elapsed() < Duration::from_millis(250));
+        assert_eq!(transport.read_timeout().unwrap(), prior);
+        assert_eq!(transport.recv().unwrap(), value);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn unit_258_late_ack_cannot_supply_next_evaluations_result_id() {
+        use std::time::{Duration, Instant};
+        let (mut transport, stream) = make_transport_pair();
+        transport
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let prior = transport.read_timeout().unwrap();
+        let server = std::thread::spawn(move || {
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            transport_recv_from(&mut reader).unwrap();
+            std::thread::sleep(Duration::from_millis(150));
+            send_frame(&stream, &json!({"from":"console", "resultID":"old"}));
+            send_frame(
+                &stream,
+                &json!({"from":"console", "type":"evaluationResult", "resultID":"old", "result":true}),
+            );
+            transport_recv_from(&mut reader).unwrap();
+            send_frame(&stream, &json!({"from":"console", "resultID":"new"}));
+            // A late old result must also be rejected after the new ack.
+            send_frame(
+                &stream,
+                &json!({"from":"console", "type":"evaluationResult", "resultID":"old", "result":true}),
+            );
+            send_frame(
+                &stream,
+                &json!({"from":"console", "type":"evaluationResult", "resultID":"new", "result":false}),
+            );
+        });
+        let actor = ActorId::from("console");
+        let result = transport
+            .with_read_deadline(Instant::now() + Duration::from_millis(60), |t| {
+                WebConsoleActor::evaluate_js_async(t, &actor, "old")
+            });
+        assert!(matches!(result, Err(ProtocolError::Timeout)));
+        assert_eq!(transport.read_timeout().unwrap(), prior);
+        let result = WebConsoleActor::evaluate_js_async(&mut transport, &actor, "new").unwrap();
+        assert_eq!(result.result, Grip::Value(json!(false)));
+        server.join().unwrap();
     }
 
     fn send_frame(stream: &TcpStream, msg: &serde_json::Value) {

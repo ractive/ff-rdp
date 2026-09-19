@@ -2,10 +2,14 @@
 title: "Iteration 258: navigated_away's poll budget is advisory — one blocked read spends the whole --timeout"
 type: iteration
 date: 2026-09-07
-status: planned
+status: in-progress
 branch: iter-258/navigated-away-poll-budget-not-enforced
 depends_on: [237]
-first_call_sites: []
+first_call_sites:
+- primitive: RdpTransport::with_read_deadline
+  site: crates/ff-rdp-cli/src/commands/type_text.rs::navigated_away
+- primitive: RdpTransport::abandon_reply
+  site: crates/ff-rdp-core/src/actors/console.rs::WebConsoleActor::evaluate_js_async_scoped
 dogfood_path: |
   ff-rdp launch --headless
   ff-rdp navigate https://en.wikipedia.org/wiki/Main_Page
@@ -86,29 +90,29 @@ Nothing clamps the second to what is left of the first.
 
 ## Tasks
 
-### A. Bound the read by the poll's deadline [0/3]
-- [ ] Establish what per-read deadline control `RdpTransport` already exposes; add one only if it
+### A. Bound the read by the poll's deadline [3/3]
+- [x] Establish what per-read deadline control `RdpTransport` already exposes; add one only if it
       genuinely has none
-- [ ] Clamp `navigated_away`'s `evaluate_js_async` read to the remainder of its own deadline
-- [ ] Unit test with a scripted console that never answers: `navigated_away(.., 600)` must return
+- [x] Clamp `navigated_away`'s `evaluate_js_async` read to the remainder of its own deadline
+- [x] Unit test with a scripted console that never answers: `navigated_away(.., 600)` must return
       inside ~1 s, not inside `--timeout`
 
-### B. Survey the sibling loops [0/1]
-- [ ] Determine whether `poll_js_condition` / `wait_for_predicates` / `autowait_element` share the
+### B. Survey the sibling loops [1/1]
+- [x] Determine whether `poll_js_condition` / `wait_for_predicates` / `autowait_element` share the
       defect; fix them here if the mechanism from A applies unchanged, otherwise record which do
       and file separately
 
-### C. Measure [0/1]
-- [ ] Re-run the `dogfood_path` reproduction before and after; record both wall-clock numbers here
+### C. Measure [1/1]
+- [x] Re-run the `dogfood_path` reproduction before and after; record both wall-clock numbers here
 
-## Acceptance Criteria [0/4]
+## Acceptance Criteria [3/4]
 
-- [ ] `type --submit` against a real navigating search form still reports `navigated: true`, in
+- [x] `type --submit` against a real navigating search form still reports `navigated: true`, in
       measurably less wall-clock time than the 12.37 s recorded above (record the after number)
-- [ ] A unit test proves `navigated_away` returns within its stated budget when the console never
+- [x] A unit test proves `navigated_away` returns within its stated budget when the console never
       answers
 - [ ] `cargo run -p xtask -- live-sweep` clean with both env gates set
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean
 
 ## Out of scope
 
@@ -130,3 +134,95 @@ Iteration 253 repaired readiness labeling, not polling deadlines. Start with the
 
 This source/evidence audit adds implementation guidance, not a new execution result.
 Original task and acceptance-criterion wording and checkbox states remain unchanged.
+
+## Implementation and measured evidence — 2026-09-19
+
+`RdpTransport::with_read_deadline` scopes one absolute deadline across every
+buffered/socket read, partial frame, unsolicited event and evaluation phase,
+then restores the actual prior read timeout on success and error. The scope
+uses its remaining budget instead of restarting the socket idle timeout.
+Navigation-signal errors and the refreshed-target second opinion are preserved.
+An expired scope does not send another probe. A timed-out immediate console
+acknowledgement is tracked and its eventual untyped reply discarded, so a later
+evaluation cannot accidentally adopt the old result ID. Matching evaluation
+events still use their result IDs.
+
+The same mechanism now bounds positive-budget `poll_js_condition` and all
+`wait_for_predicates` evaluations, including multiple predicates. The documented
+zero-budget condition probe retains its single-evaluation behavior. The survey
+confirmed the same defect in `autowait_element`, but its intentionally post-timeout
+diagnostic probes and separate stability allowance need a diagnostic policy;
+that distinct work is filed in [[iteration-272-autowait-deadline-and-diagnostics]].
+
+Fresh Firefox 156.0, daemon-route Wikipedia measurement on separately owned
+browsers, using the freshly built CLI and `dogfood-lib.sh` isolation/teardown:
+
+| Source | Submission wall time | Result |
+|---|---:|---|
+| Iteration base `a5e2bf8`, before code edits | 11.361 s | `navigated:true`, `method:request_submit` |
+| This implementation | 3.800 s | `navigated:true`, `method:request_submit` |
+
+Both runs navigated to Wikipedia Main_Page, registered the search inputs with
+`dom 'input[name=search]'`, and submitted `Turing Award` with the equivalent
+`--selector 'input[name=search]'` selection. The historical 12.37 s observation
+remains historical. This before/after pair improves by 7.561 s (about 67%).
+Raw commands, owned launch envelopes and wall times are in
+`.git/ralph-loop/20260919-queue/iter258/{dogfood.sh,baseline.log,after.log}`
+in the primary checkout; worktree `.git` is a pointer, not that artifact directory.
+
+Non-live coverage includes a 600 ms silent console bound, continuous push events,
+an acknowledgement/result pair that together exceed the budget, successful
+navigation despite a shorter prior idle timeout, actor teardown, finite/infinite
+timeout restoration, a slowly trickling partial frame that resumes correctly,
+late-ack/result-ID correlation, and sibling polls sharing a single budget.
+The focused tests passed. Removing the navigation deadline makes its elapsed-time
+assertion fail; omitting abandoned-ack tracking makes the next evaluation return
+the old true result instead of its own false result. Both mutations were restored.
+An initial mutation regex matched no formatted call site and is explicitly an
+operator error, not useful mutation evidence.
+
+Only `Cargo.lock` was imported from verified main merge
+`3a398566281abfa48ce96f1f8d855e6c1116a302` after the supervisor's merge marker;
+this takes the independently reviewed rustls advisory patch without stacking
+iteration 258 on the iteration 263 implementation.
+
+## Closing sweep and carry-over
+
+The final-source dual-gate sweep on Firefox 156.0 (2026-09-19, 10:32–10:36 UTC)
+executed every compiled ignored live test, manually reconciled by exact name
+across all five targets: 344 expected and observed, zero duplicates or missing
+verdicts. CLI 333 passed / 2 failed; core tiers 1 + 3 + 3 + 2 passed.
+
+```text
+FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo run -p xtask -- live-sweep
+LIVE_SWEEP_SUMMARY executed=344 skipped=0 preexisting=0 vanished=0 launch_timeout=0 timed_out=0 total=344
+LIVE_SWEEP_PROFILES leaked=0 unattributed=0 root=/Users/james/Library/Application Support/ff-rdp/profiles
+```
+
+The runner exited 1. Both failures occur before the affected poll code and match
+existing daemon-failure signatures; this is not a clean sweep and the original
+clean-sweep AC stays unticked. No isolation rerun or second sweep was used to
+replace that evidence. The owned raw browser PID 66490 was stopped and reaped,
+its profile removed, and port 6000 verified free. There is one emitted profile
+summary, retained above; per-target profile diagnostics also reported no leaks.
+
+| Finding / unmet work | Disposition |
+|---|---|
+| `live_104_security_pwa::live_manifest_fetch_canonical`: manifest exited 124 with the existing “timeout after auth” envelope; proxy 61100. The diagnostic means the greeting wait after the client sends auth, not proof of server authentication or a manifest-evaluation timeout. | Fold into [[iteration-267-daemon-post-auth-timeout-recurrence]]; this observation does not provide the required attributed handshake timing. |
+| `live_145_error_envelope_completeness::live_145_click_element_not_found_unchanged`: readiness failed before click, 15.213 s / 47 polls, target_count 1, live_target_count 0, dispatcher 52 started/finished, no in-flight frame or RPC owner. | Fold into [[iteration-262-daemon-live-target-never-promoted]]; preserve the original promotion failure and unmet green-sweep requirements. |
+| Auto-wait reads plus post-timeout diagnostic evaluations are not bounded by the advertised readiness budget. | Filed [[iteration-272-autowait-deadline-and-diagnostics]]; distinct diagnostic policy required. |
+| Original clean dual-gate sweep AC. | Unmet; this iteration remains in progress despite the implemented deadline fix. Existing failure owners do not satisfy this AC. |
+
+All raw sweep output, compiled enumeration, name reconciliation and source-hash
+verification are retained in the primary checkout's
+`.git/ralph-loop/20260919-queue/iter258/` directory.
+
+All nine enumerated xtask checks passed (including plan272, full plan inventory,
+actor/KB sync against `a5e2bf8` and source invariants). Firefox-reference and
+dogfood-script checks had no referenced fixture/script to execute; the actual
+owned-browser dogfood evidence above is separate. Hyalo0.23.0 HYALO005 passed.
+The ordered `cargo fmt`, strict workspace clippy and workspace tests passed on
+stable1.98.1 / clippy0.1.98 (48a229ceae), ending10:40:03UTC. The stable update
+record from this day's iteration263 run was reused as authorized. No source
+changed after the closing sweep; SHA-256 verification passed after the gates.
+Independent review and supervisor checkpoint/PR actions remain outstanding.

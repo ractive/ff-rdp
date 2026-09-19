@@ -222,3 +222,15 @@ Correct the historical interpretation before selecting a fix: daemon target_coun
 
 This source/evidence audit adds implementation guidance, not a new execution result.
 Original task and acceptance-criterion wording and checkbox states remain unchanged.
+
+## Iteration258 sweep observation — 2026-09-19
+
+`live_145_error_envelope_completeness::live_145_click_element_not_found_unchanged`
+failed its readiness precondition before invoking click: debug64018/proxy64126,
+daemon70185, reached=false after15.213s/47polls, target_count1/live_target_count0,
+dispatcher alive with52started/52finished, no in-flight frame or RPC owner.
+This repeats the original target-promotion signature; no common cause with
+consent-action failures is inferred. No isolation rerun was used to replace it.
+The344-name sweep had342pass/2fail and zero skips, reclassifications or leaks;
+its other failure was a greeting timeout owned by267. Original ACs remain unmet.
+Evidence: primary checkout `.git/ralph-loop/20260919-queue/iter258/sweep.log`.
