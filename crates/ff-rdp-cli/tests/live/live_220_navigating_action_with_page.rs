@@ -308,6 +308,11 @@ fn live_non_navigating_click_with_page_is_not_delayed() {
     let started = Instant::now();
     let click = run_json(port, &["click", "#noop", "--with-page"]);
     let elapsed = started.elapsed();
+    let load = crate::common::timing_load_note();
+    eprintln!(
+        "TIMING_SAMPLE test=live_non_navigating_click_with_page_is_not_delayed elapsed_ms={} {load}",
+        elapsed.as_millis()
+    );
 
     assert_eq!(
         first_heading(&click),
@@ -317,7 +322,7 @@ fn live_non_navigating_click_with_page_is_not_delayed() {
     assert!(
         elapsed < NO_NAVIGATION_BUDGET,
         "a non-navigating click --with-page took {elapsed:?}, over the {NO_NAVIGATION_BUDGET:?} \
-         bound — the navigation settle loop must not run when nothing navigated: {click}"
+         bound — the navigation settle loop must not run when nothing navigated; {load}: {click}"
     );
 
     stop_daemon(port);

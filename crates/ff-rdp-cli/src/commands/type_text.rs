@@ -423,11 +423,14 @@ fn navigated_away(
     let before_lit = serde_json::to_string(url_before).unwrap_or_else(|_| "\"\"".to_owned());
     let js = format!("window.location.href !== {before_lit}");
     let poll_interval = std::time::Duration::from_millis(50);
-    let deadline = std::time::Duration::from_millis(timeout_ms);
-    let started = std::time::Instant::now();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
 
     loop {
-        match WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, &js) {
+        match ctx
+            .transport_mut()
+            .with_read_deadline(deadline, |transport| {
+                WebConsoleActor::evaluate_js_async(transport, console_actor, &js)
+            }) {
             Ok(result) if result.exception.is_none() => {
                 if super::js_helpers::is_truthy(&result.result) {
                     return true;
@@ -452,10 +455,11 @@ fn navigated_away(
             Err(_) => return false,
         }
 
-        if started.elapsed() >= deadline {
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
             return false;
         }
-        std::thread::sleep(poll_interval);
+        std::thread::sleep(poll_interval.min(remaining));
     }
 }
 
@@ -814,6 +818,72 @@ mod tests {
     /// implementation) collapsed every non-timeout `Err`, including this one,
     /// into `false`, sending `press_enter_and_submit` into the
     /// `requestSubmit()` fallback against a target that had already moved on.
+    #[test]
+    fn unit_258_navigation_poll_bounds_blocked_and_busy_console() {
+        use ff_rdp_core::transport::{RdpTransport, encode_frame, recv_from};
+        use std::io::{BufReader, Write};
+        use std::net::TcpListener;
+        use std::time::{Duration, Instant};
+
+        for mode in ["blocked", "events", "phases", "success", "error"] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut send = |value: serde_json::Value| {
+                    stream.write_all(encode_frame(&value.to_string()).as_bytes())
+                };
+                send(json!({"from":"root"})).unwrap();
+                recv_from(&mut reader).unwrap();
+                if mode == "blocked" {
+                    std::thread::sleep(Duration::from_millis(1200));
+                } else if mode == "events" {
+                    for _ in 0..60 {
+                        if send(json!({"from":"console", "type":"consoleAPICall"})).is_err() {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                } else if mode == "error" {
+                    send(json!({"from":"console", "error":"noSuchActor"})).unwrap();
+                } else {
+                    let delay = if mode == "phases" { 400 } else { 40 };
+                    std::thread::sleep(Duration::from_millis(delay));
+                    send(json!({"from":"console", "resultID":"current"})).unwrap();
+                    std::thread::sleep(Duration::from_millis(delay));
+                    let _ = send(json!({"from":"console", "type":"evaluationResult",
+                        "resultID":"current", "result":true}));
+                }
+            });
+            let mut transport =
+                RdpTransport::connect("127.0.0.1", port, Duration::from_secs(3)).unwrap();
+            // Exercise both an infinite prior timeout and a finite timeout
+            // shorter than a successful evaluation's two phases.
+            transport
+                .set_read_timeout(if mode == "success" {
+                    Some(Duration::from_millis(20))
+                } else {
+                    None
+                })
+                .unwrap();
+            let prior = transport.read_timeout().unwrap();
+            let actor = ff_rdp_core::ActorId::from("console");
+            let mut ctx = ConnectedTab::for_test(transport, actor.clone());
+            let started = Instant::now();
+            let result = navigated_away(&mut ctx, &actor, "https://example.test", 600);
+            let elapsed = started.elapsed();
+            assert_eq!(ctx.transport_mut().read_timeout().unwrap(), prior, "{mode}");
+            assert_eq!(result, matches!(mode, "success" | "error"), "{mode}");
+            assert!(elapsed < Duration::from_secs(1), "{mode}: {elapsed:?}");
+            if !result {
+                assert!(elapsed >= Duration::from_millis(550), "{mode}: {elapsed:?}");
+            }
+            drop(ctx);
+            server.join().unwrap();
+        }
+    }
+
     #[test]
     fn navigated_away_treats_unknown_actor_as_navigated() {
         use std::io::Write as _;

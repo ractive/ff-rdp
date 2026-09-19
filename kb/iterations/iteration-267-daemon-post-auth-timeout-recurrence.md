@@ -68,6 +68,18 @@ The historical wording overstates the phase: connect_tab emits 'timeout after au
 This source/evidence audit adds implementation guidance, not a new execution result.
 Original task and acceptance-criterion wording and checkbox states remain unchanged.
 
+## Iteration258 sweep observation — 2026-09-19
+
+`live_104_security_pwa::live_manifest_fetch_canonical` failed its manifest
+invocation with exit124 and the existing “daemon did not respond within the
+timeout after auth” Timeout envelope, daemon proxy61100. As the preflight
+clarifies, this is the greeting wait after the client sends auth; it establishes
+neither server authentication success nor a stalled manifest request. No
+attributable failed-connection handshake/dispatcher timing was captured and no
+isolation rerun replaced this result. The344-name sweep had342pass/2fail; the
+other failure was target-promotion readiness owned by262. Original ACs remain
+unmet. Evidence: primary checkout
+`.git/ralph-loop/20260919-queue/iter258/sweep.log`.
 ## Iteration263 greeting-wait recurrence — 2026-09-19
 
 Final263 security-dependency sweep failed

@@ -223,6 +223,17 @@ Correct the historical interpretation before selecting a fix: daemon target_coun
 This source/evidence audit adds implementation guidance, not a new execution result.
 Original task and acceptance-criterion wording and checkbox states remain unchanged.
 
+## Iteration258 sweep observation — 2026-09-19
+
+`live_145_error_envelope_completeness::live_145_click_element_not_found_unchanged`
+failed its readiness precondition before invoking click: debug64018/proxy64126,
+daemon70185, reached=false after15.213s/47polls, target_count1/live_target_count0,
+dispatcher alive with52started/52finished, no in-flight frame or RPC owner.
+This repeats the original target-promotion signature; no common cause with
+consent-action failures is inferred. No isolation rerun was used to replace it.
+The344-name sweep had342pass/2fail and zero skips, reclassifications or leaks;
+its other failure was a greeting timeout owned by267. Original ACs remain unmet.
+Evidence: primary checkout `.git/ralph-loop/20260919-queue/iter258/sweep.log`.
 ## Iteration263 reconciliation — 2026-09-19
 
 Firefox156.0 final263 repair sweep executed344=342passed+2failed with exact
@@ -257,3 +268,27 @@ Evidence: `.git/ralph-loop/20260919-queue/iter261/logs/live-sweep-rerun.log`.
 ## Iteration265 sweep recurrence — 2026-09-19
 
 The final265 sweep failed `live_137_daemon_mode_parity::live_137_consent_accept_via_daemon`: target_count1/live_target_count0 after the readiness bound; dispatcher95/95, no frame in flight. These counters preserve the observation without proving a promotion mechanism. The separate blocked262 investigation branch retains its watcher-lifecycle diagnosis and unmet requirements. No265 change repairs this finding. Full346=344pass2fail, zero profile leaks. Evidence: `.git/ralph-loop/20260919-queue/iter265/live-sweep.log` and `supervisor-accounting.json`. Original262 ACs remain unchanged.
+
+## Iteration270 sweep recurrence — 2026-09-19
+
+The initial iteration270 dual-gate sweep again failed
+`live_137_daemon_mode_parity::live_137_consent_accept_via_daemon` before consent:
+readiness stayed false for15,135ms/47polls with daemon PID64449/proxy57180,
+uptime17s, target_count1/live_target_count0, network buffer484, dispatcher alive
+with83frames started/finished, no in-flight frame or RPC owner, and zero dropped
+client writes. Exact serial dual-gate isolation reached a live target in110ms/one
+poll and accepted Sourcepoint in5.75s. This is another target-lifecycle recurrence,
+not a new consent-action result; the isolation does not repair it or count as a
+green full sweep. All345 other names passed, all346 names/six tiers reconciled,
+and every profile scan was clean. Iteration270 changed only hook guidance and its
+live fixture, so no cause or repair is claimed. Original262 tasks, acceptance
+criteria and distinct observed shapes remain unchanged. Evidence:
+`.git/ralph-loop/20260919-queue/iter270/logs/final-live-sweep.log` and
+`live-137-consent-rerun.log`.
+
+After the iteration270 clippy-only style repair, a second complete dual-gate
+sweep passed all346 names, including this test, with zero skipped/precondition/
+timeout classifications and zero profile leaks or unattributed profiles. That
+green sweep is final iteration270 closure evidence; it does not erase the first
+recurrence or satisfy this plan's three-consecutive-sweep requirement. Evidence:
+`.git/ralph-loop/20260919-queue/iter270/logs/final-live-sweep-after-style-repair.log`.
