@@ -92,3 +92,15 @@ provide an explicit structured YAML/JSON property input or a clear shape warning
 Version0.23.0 (adbafda6c7fc2026-09-13). Working directory was dedicated worktree; paths vault-relative. read (body/frontmatter), read section, backlinks, task read --all, task set --line --status x with preview, set status and lint HYALO005 all worked. Precise frontmatter-only read prevented losing the dogfood instructions; targeted task mutations preserved original text. One operator error: task read without --all/--line/--section correctly refused with helpful syntax guidance; corrected --all succeeded. Tool output truncation occurred on overly broad combined reads and a full historical reconciliation JSON, not a Hyalo defect; narrowed reads recovered relevant text. No verified Hyalo defects; no ../hyalo edits.
 
 Supervisor: `read --section Outcome` correctly rejected the guessed nonexistent heading and offered closest sections; this was an operator lookup error. `find --fields tasks --jq` precisely selected the landed-answer checkbox; preview and apply preserved its wording.
+
+## 2026-09-19 iteration267 interactions
+
+Installed executable: /Users/james/.cargo/bin/hyalo, version 0.23.0 (adbafda6c7fc 2026-09-13).
+- Supplied executable /Users/james/.cargo/bin/hyalo0.23.0 did not exist (exit127); corrected to verified installed executable. Operator/launch-input error, not Hyalo defect.
+- read discipline-rationale.md --format text: success.
+- find --property 'title~=267|268' --format text: success, exposed full metadata including267 tasks/ACs.
+- read267 and268 --format text: success. read267 --frontmatter --format text: success. Metadata/body distinction is documented in help.
+- read203 --section '8.': exit1, accurate section-not-found and suggested headings; corrected to --section 'Carried-forward conditions': success. Operator selector error, not defect.
+- The combined read-help tool output was truncated by the tool-output budget, not Hyalo. No verified Hyalo defect found; no ../hyalo changes.
+
+Supervisor: new cascade carry-over initially reused275, already allocated on blocked262 branch. Hyalo mv dry-run correctly previewed one backlink rewrite; apply moved it to276 and updated that backlink. Scalar title/branch updated with set; unsupported body heading prose updated directly. This was queue-numbering coordination, not a Hyalo defect. Long mv --help output exceeded the calling-tool budget; no provider output loss established.
