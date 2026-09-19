@@ -186,3 +186,114 @@ regression. A closing 268 dual-gate sweep has not run. Resume on a new attributa
 224/240 failure or a concrete new diagnostic hypothesis, preserving the original
 EOF/reset observations and acceptance strength. This investigation adds no new
 carry-over plan and requests no completion PR.
+
+## Restart plan — 2026-09-19
+
+Follow [[ralph-loop-open-iterations-2026-09-19]]. Recover the docs-only checkpoint
+`f5fed086c0a3992b165e7f231856a8990ccd3661`, integrate verified current main on
+its branch, and preserve every historical EOF/reset row. The original four tasks
+and four ACs remain unmet. Merged267's socket-mode repair is a verified input;
+its historical failure cannot be substituted for this plan's named occurrences.
+
+**New work must improve attribution before adding runs (Astra).**
+
+1. Restore/adapt only the retained temporary tracing patch from `iter268/` after
+   comparing it to current `daemon/server.rs` and the client auth path. Record
+   connection identity on accept, client/server endpoints and process IDs,
+   monotonic auth-read/write milestones, greeting-write outcome, close initiator
+   and reason, dispatcher state and RPC-slot state. Assign a trace-only identity
+   before authentication (and before fallible socket setup); the current normal
+   client ID is allocated only after auth succeeds and misses rejected clients.
+   Record auth read error/category and decision separately without token content.
+   The logger must preserve
+   complete records under concurrency; validate that first. Do not log tokens,
+   page payloads or unrelated traffic. Keep this scoped to connection setup,
+   without retrying259's rejected request/reply investigation.
+2. State a differentiating hypothesis before testing. Trace the causal path:
+   auth-read failure followed by explicit rejection, independent shutdown/early
+   handler exit, or greeting-write failure after successful auth. A failed auth
+   read can itself cause an intentional close; those are not competing causes.
+   Record the peer-close observation and preceding milestones so an EOF can be
+   located within the sequence instead of classified by its error string alone.
+   Existing fixed/reverted controls and the incidental165 failure are already
+   recorded; do not repeat the267 mutation to manufacture new268 evidence.
+3. With instrumentation active, run one exact named224/240 pair on current source.
+   If neither fails, one bounded reproduction block may run the same pair with
+   the existing six-worker160/161/164/165/219 contention set, at most three batches.
+   Preserve all results. Do not change assertions, timeout defaults, ports or
+   browser ownership to manufacture a failure. Stop early on an attributable
+   named failure and inspect its joined trace before another invocation.
+4. If a named failure is captured, distinguish auth rejection, daemon shutdown,
+   greeting delivery and later transport framing before changing code. Preserve
+   EOF versus reset as separate observations until evidence relates them. Build
+   a deterministic regression from the demonstrated cause; prove it fails before
+   and passes after the scoped repair, then run both named tests and this
+   iteration's own closing dual-gate sweep and ordered gates.
+
+A complete trace with no failure yields a bounded negative result and a preserved
+checkpoint, not a completed iteration. A missing trace field yields a precise
+instrumentation repair task, not another blind batch. The three-batch allowance is
+an investigation ceiling, not a new acceptance requirement. An unresolved failure
+outside the two named cases receives its own existing owner or newly filed plan,
+without expanding execution scope. All four original ACs remain binding.
+
+## Resumed bounded capture and owner pause — 2026-09-19
+
+Recovered the preserved checkpoint and integrated main
+`07e736e9b8567c40f60f819ac4de78cbf106038b`, retaining267's blocking-socket
+repair. Astra identified that the old diagnostics omitted
+`dispatch::resolve_ref_via_daemon`, the actual source of the historical named
+errors. Sol implemented temporary tracing of all three authentication entrypoints,
+pre-fallible-setup server identities, auth/greeting/terminal milestones and copied
+nonblocking dispatcher/RPC-state observations. No259 investigation, socket-mode
+mutation, timeout change or product repair was performed.
+
+Control attempt5 passed:135 records in5 process files with all three routes joined.
+Concurrent logging produced exact515+67+67 records, and copied missing-auth-read,
+missing-terminal and truncated-record mutations were rejected. Earlier control
+attempts and their corrections are retained; attempt4 also passed before the
+final refinement. Scope-exit records identify a close decision before destructors,
+not a kernel FIN. Cross-process ordering uses socket joins and causal milestones,
+not a shared monotonic clock.
+
+The complete allowance was consumed: one exact224/240 pair passed2/2 in37.08s,
+then three six-worker batches with the existing160/161/164/165/219 contention
+controls passed35/35 each in57.04s,57.10s and56.76s. Both named scenarios passed
+in every invocation; no attributed named failure was obtained. These are targeted
+diagnostics, not a closing live sweep. General record validators passed with
+5256/14289/14297/14293 records respectively. A later stricter all-route check
+passed the serial pair and batch1 but rejected batch2 and batch3 because daemon_rpc
+connections16251-1 and19452-1 recorded greeting_read_error/reset54 rather than
+greeting_read_ok. Preserve these anomalies and their raw traces; neither is
+evidence that the named tests failed, nor may every connection be called a
+complete successful handshake. Independent review found both resets associated with recorded daemon shutdown
+lifecycles, with no accepted-server endpoint join. A listener-destruction reset
+is consistent with the records but unproved; exact shutdown initiator and cause
+remain unresolved. They use different proxies from the named224/240 scenarios.
+
+Evidence: primary checkout `.git/ralph-loop/20260919-remaining-2211/iter268/`,
+including `control-manifest.md`, `logs/` command/env/time/exit metadata, all
+`traces/`, final temporary source patch and standalone `trace268.rs`. The
+seven pretrace snapshots and tracked baseline preserve restoration inputs; the
+temporary test change is preserved in the final patch. Temporary source was
+restored exactly to main. The supervisor took over checkpoint cleanup after the
+owner requested a safe stop; no further live experiment is authorized by that stop.
+
+**Blocked, not complete:** original tasks and ACs remain0/4. No cause, repair,
+regression or closing dual-gate sweep is claimed. Do not reset this consumed
+allowance in another session. Resume requires a new attributable named failure
+or a concrete new diagnostic hypothesis with a newly bounded investigation.
+
+Independent Astra review (`iter268-review/report.md` beside the evidence root)
+returned zero actionable findings against this blocked documentation checkpoint.
+Read-only joins verified unique endpoints and required milestones for every
+connect_tab/resolve_ref connection, including12/40 named hop refs per invocation.
+Before any newly authorized capture, add the omitted worker-return/panic,
+Firefox-reader shutdown-reason and explicit shutdown-request hooks; improve the
+checker to accept error alternatives, verify causal order and reject ambiguous
+process-qualified endpoint joins. Those are precise diagnostic repairs, not
+permission to repeat the exhausted batches. Synchronous tracing may perturb timing.
+No universal trace-completeness or uninstrumented absence claim is made.
+Restored bins/tests build passed; unchanged-source ordered gate evidence was
+reused from the independently verified main baseline. Selected-plan validation,
+HYALO005 and diff checks passed.

@@ -208,3 +208,38 @@ Long instruction/help output was truncated by the calling tool; narrower reads
 recovered it. A guessed historical log path was absent; no passing result was
 inferred. Final plan-only verification repeated once to correct a one-second
 sweep-start transcription against the raw log; no test was repeated for this.
+
+## 2026-09-19 remaining-queue planning
+
+Hyalo0.23.0 (adbafda6c7fc) remained installed. Body/frontmatter reads and the
+supported scalar/list set preview made the existing266dependency visible before
+editing. First dry-run used `depends_on=["259"]`; the CLI preview exposed literal
+quote characters in the list member. Corrected to `depends_on=[259]`, previewed
+`["259"]` as the actual parsed value, then applied and verified the frontmatter.
+The incorrect draft was never applied. This is an operator assumption about the
+CLI's list grammar, not a verified data-corruption defect. Proposed improvement:
+a help example distinguishing its comma-list syntax from JSON string quoting.
+
+Restart sections and the new research handoff use direct body/file authoring for
+unsupported prose/creation operations; existing original tasks and ACs stay intact.
+Large batched guidance reads exceeded the calling-tool output budget; narrowed
+reads recovered the needed sections. That truncation was outside Hyalo. No version
+change or ../hyalo edits; documentation validators are recorded separately.
+
+Planning review telemetry: the fresh scoped reviewer reported four basename-only
+reads failing with file-not-found; vault-relative `iterations/` and `research/`
+paths corrected them. Combined body/help output exceeded the calling-tool budget;
+the complete repair delta and required266 frontmatter were then read. These are
+operator/path and output-budget errors, not verified Hyalo defects. Independent
+plan review ran once, then fresh scoped review of one consolidated repair batch
+returned explicit zero findings; no product or Firefox experiment was executed.
+
+## 2026-09-19 — remaining-queue execution
+
+Hyalo 0.24.1 was used for this run, while the prepared queue documentation records Hyalo 0.23.0. Vault-relative body and frontmatter reads succeeded. An operator mistakenly supplied `--file` with a glob; Hyalo rejected the file-not-found input and suggested `--glob`, after which the selection was corrected.
+
+The first broad `find` used the default limit of 50 results. Filtering those first 50 entries misleadingly produced no pending entries; the envelope reported 279 total, so the inventory was rerun with `--limit 0` before making any decision. The corrected query found 11 pending main-branch entries; separate Git inspection confirmed 2 branch-only entries, 13 total.
+
+Large batched guidance and Hyalo outputs were truncated by the calling tool. Narrow reads and projections recovered the needed content; this was not established as a Hyalo defect. Supported operations used Hyalo, and no `../hyalo` edits were made. Existing hashes, reviews, and gates for unchanged prepared documents were reused. No new semantic Hyalo defect was established. A possible usability improvement is to make the default result limit visible near result output; this is a suggestion, not a bug finding.
+
+Astra's262 reviewer reported a guessed nonexistent plan slug, unsupported `properties get` and `frontmatter` subcommands, and a nonrecursive glob. These were corrected with the exact vault-relative path and `read --frontmatter --section`. Calling-tool truncations were narrowed for the relevant evidence. These are operator errors and output-budget friction, not verified Hyalo defects.

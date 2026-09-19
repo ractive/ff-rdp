@@ -143,3 +143,64 @@ The current-owner forwarding gap remains an investigation target, not a demonstr
 
 This source/evidence audit adds implementation guidance, not a new execution result.
 Original task and acceptance-criterion wording and checkbox states remain unchanged.
+
+## Restart plan — 2026-09-19
+
+Follow [[ralph-loop-open-iterations-2026-09-19]]. The preserved checkpoint is
+`cc44e873e977c979729372010ba65fcf088341b9` on this plan's branch and worktree
+`/Users/james/.cache/ff-rdp/queue-20260919-259`. It contains documentation only:
+execution blocker, corrected historical links and266's dependency. No attributable
+wrong-answer reproduction or product repair exists; all original ACs remain unmet.
+
+**Entry gate.** An automated content filter rejected the prior protocol
+investigation as possible cybersecurity risk. A fresh session, different model,
+renamed task or equivalent alternate tool is not evidence that this restriction
+has cleared. Inspect the recorded blocker and current applicable access/policy
+state without reissuing the rejected action as a capability probe. Proceed only
+through an actually available permitted path; record why it is permitted. If no
+such path is established, retain259blocked and skip266, continuing independent
+262/268/271. Do not reinterpret this plan as approval to bypass a denial.
+
+**Conditional implementation plan, only after the entry gate clears (Astra).**
+
+1. Verify the current owner-only RPC-slot release and shared writer from240, plus
+   the now-merged258 absolute deadlines/abandoned-ACK handling and267 auth fix.
+   Determine which layer owns each obligation; do not overwrite those fixes.
+   Update the historical slow-eval dogfood qualification before relying on it:
+   ConsoleActor uses a resultID, so arrival at a new client does not itself prove
+   that client accepted the wrong result.
+2. Establish a bounded, owned two-client lifecycle experiment for a reply type
+   whose actual correlation contract is verified in the running Firefox revision.
+   Record request/actor identity, departure, slot ownership transition, reply
+   arrival/forwarding and whether the recipient accepts/rejects the answer. Use
+   only local owned fixtures/connections. A deterministic transport-level test
+   may isolate ordering, but it cannot replace the required real-Firefox evidence.
+   After verifying that reply contract and before execution, record both a finite
+   attempt ceiling and wall-time budget, with a maximum of20 paired trials or
+   30minutes for this first reproduction block, whichever comes first. Stop early
+   on a conclusive attributed result. On exhaustion, preserve exact scenarios,
+   counts and negative evidence with all unmet ACs; do not extend or restart the
+   block unchanged. These discovery limits do not replace the separate required
+   60-hop dogfood/20-eval measurements or clear the execution entry gate.
+3. Measure outstanding work at release during the existing24060-hop dogfood,
+   and record the original20-sequential-eval before/after comparison. Define
+   matching build/environment and wall-time measurement before collecting data;
+   avoid a new unrequested benchmark suite. A no-reproduction result must list
+   the actual scenarios and counts; it does not automatically satisfy the status
+   instrumentation or regression criteria.
+4. After attribution, choose the narrow ownership/correlation fix, or an honest
+   detectable limitation if no safe correlation exists. Do not impose a universal
+   quiescence delay on the empty-outstanding common path. Define the observable
+   outstanding-work counter and its lifecycle in `daemon status`. Distinguish
+   ordinary replies, async result-ID traffic, events and one-way methods from the
+   published Firefox contracts; do not assume all methods ACK or share FIFO rules.
+5. Add the meaningful regression required by the original plan and validate
+   status answerability/common-path latency,60hops/0reconnects/0abandoned clients,
+   own dual-gate sweep and ordered gates. Independent Astra review must resolve
+   concurrency and reply-attribution findings before publication.
+
+The original plan permits a no-reproduction/documented-limitation outcome, while
+still requiring observable status and evidence. Reconcile each original box
+explicitly; do not mark the iteration complete just because no failure appeared.
+Two repair batches remain the normal new-run ceiling; preserve prior attempts
+and do not reset unresolved findings by changing sessions.
