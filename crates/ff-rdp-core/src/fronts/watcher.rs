@@ -60,7 +60,8 @@ impl WatcherFront {
 
     /// Unsubscribe from one or more resource types.
     ///
-    /// Uses an explicit filtered recv loop to skip push events before the ACK.
+    /// Firefox declares `unwatchResources` as oneway, so this sends the request
+    /// and returns without attempting to read a reply.
     pub fn unwatch_resources(
         &self,
         transport: &mut RdpTransport,
@@ -69,9 +70,8 @@ impl WatcherFront {
         let args = spec::request::UnwatchResources {
             resource_types: types.iter().map(|s| (*s).to_string()).collect(),
         };
-        let params = serde_json::to_value(&args)
-            .map_err(|e| ProtocolError::InvalidPacket(format!("encode unwatchResources: {e}")))?;
-        self.send_and_wait_ack(transport, "unwatchResources", params)
+        call::<spec::UnwatchResources>(transport, &self.id, &args)?;
+        Ok(())
     }
 
     /// Subscribe to target events of the given type.
@@ -131,8 +131,12 @@ impl WatcherFront {
     pub fn get_parent_browsing_context_id(
         &self,
         transport: &mut RdpTransport,
+        browsing_context_id: u64,
     ) -> Result<Option<u64>, ProtocolError> {
-        let reply = call::<spec::GetParentBrowsingContextId>(transport, &self.id, &NoArgs {})?;
+        let args = spec::request::GetParentBrowsingContextId {
+            browsing_context_id,
+        };
+        let reply = call::<spec::GetParentBrowsingContextId>(transport, &self.id, &args)?;
         Ok(reply.browsing_context_id)
     }
 
@@ -160,7 +164,7 @@ impl WatcherFront {
         transport: &mut RdpTransport,
     ) -> Result<ActorId, ProtocolError> {
         let reply = call::<spec::GetBlackboxingActor>(transport, &self.id, &NoArgs {})?;
-        Ok(reply.actor)
+        Ok(reply.blackboxing.actor)
     }
 
     /// Get the breakpoint list actor for this watcher's scope.
@@ -169,7 +173,7 @@ impl WatcherFront {
         transport: &mut RdpTransport,
     ) -> Result<ActorId, ProtocolError> {
         let reply = call::<spec::GetBreakpointListActor>(transport, &self.id, &NoArgs {})?;
-        Ok(reply.actor)
+        Ok(reply.breakpoint_list.actor)
     }
 
     /// Get the target configuration actor for this watcher's scope.
@@ -192,7 +196,7 @@ impl WatcherFront {
         transport: &mut RdpTransport,
     ) -> Result<ActorId, ProtocolError> {
         let reply = call::<spec::GetThreadConfigurationActor>(transport, &self.id, &NoArgs {})?;
-        Ok(reply.actor)
+        Ok(reply.configuration.actor)
     }
 
     /// Send a watcher request and wait for the ACK, skipping any push events
@@ -367,7 +371,7 @@ mod tests {
             assert_eq!(req["to"], "server1.conn0.watcher4");
             assert_eq!(req["type"], "unwatchResources");
             assert_eq!(req["resourceTypes"], json!(["console-message"]));
-            server_reply(&server, json!({"from": "server1.conn0.watcher4"}));
+            // No reply: Firefox declares unwatchResources oneway.
         });
 
         front
