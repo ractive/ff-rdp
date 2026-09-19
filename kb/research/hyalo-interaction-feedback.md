@@ -233,3 +233,11 @@ the complete repair delta and required266 frontmatter were then read. These are
 operator/path and output-budget errors, not verified Hyalo defects. Independent
 plan review ran once, then fresh scoped review of one consolidated repair batch
 returned explicit zero findings; no product or Firefox experiment was executed.
+
+## 2026-09-19 — remaining-queue execution
+
+Hyalo 0.24.1 was used for this run, while the prepared queue documentation records Hyalo 0.23.0. Vault-relative body and frontmatter reads succeeded. An operator mistakenly supplied `--file` with a glob; Hyalo rejected the file-not-found input and suggested `--glob`, after which the selection was corrected.
+
+The first broad `find` used the default limit of 50 results. Filtering those first 50 entries misleadingly produced no pending entries; the envelope reported 279 total, so the inventory was rerun with `--limit 0` before making any decision. The corrected query found 11 pending main-branch entries; separate Git inspection confirmed 2 branch-only entries, 13 total.
+
+Large batched guidance and Hyalo outputs were truncated by the calling tool. Narrow reads and projections recovered the needed content; this was not established as a Hyalo defect. Supported operations used Hyalo, and no `../hyalo` edits were made. Existing hashes, reviews, and gates for unchanged prepared documents were reused. No new semantic Hyalo defect was established. A possible usability improvement is to make the default result limit visible near result output; this is a suggestion, not a bug finding.
