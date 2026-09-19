@@ -191,3 +191,20 @@ HYALO005 checked470files with zero violations. The first dogfood xtask
 invocation omitted FF_RDP_LIVE_TESTS and correctly failed; the corrected
 invocation recorded its no-script skip. This is an operator environment error
 in xtask, not a Hyalo defect. No paid work, Hyalo version change or ../hyalo edit.
+
+## 2026-09-19 iteration258 implementation and integrated closure
+
+Original implementer reported PATH resolving Hyalo0.21.0, then explicitly used
+`/Users/james/.cargo/bin/hyalo`0.23.0 (adbafda6c7fc). The resumer used that same
+0.23.0 version. Body/frontmatter reads, inventory, exact task-line updates,
+status set and HYALO005 supported final4/4 acceptance verification. Nested
+first_call_sites maps and general body prose used the established direct-edit
+exception. No ../hyalo edits or verified new Hyalo defect.
+
+Reported operator errors: guessed `properties`, `create`, `taskset`, a plan
+basename and a Tasks selector containing only nested headings. Supported
+read/frontmatter, find, task help and exact task-line selection corrected them.
+Long instruction/help output was truncated by the calling tool; narrower reads
+recovered it. A guessed historical log path was absent; no passing result was
+inferred. Final plan-only verification repeated once to correct a one-second
+sweep-start transcription against the raw log; no test was repeated for this.

@@ -2,7 +2,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -236,6 +236,8 @@ pub const MAX_FRAME_BYTES: usize = DEFAULT_MAX_FRAME_BYTES;
 ///   read exactly that many bytes and parse as JSON.
 pub struct RdpTransport {
     reader: BufReader<TcpStream>,
+    read_deadline: Option<Instant>,
+    abandoned_replies: Vec<String>,
     /// Resumable framer state for `reader` (iter-240) — one per stream, kept
     /// for the life of the stream.
     decoder: FrameDecoder,
@@ -264,6 +266,40 @@ pub struct RdpTransport {
 impl std::fmt::Debug for RdpTransport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RdpTransport").finish_non_exhaustive()
+    }
+}
+
+/// Check on every read, even when bytes are already buffered. Checking only
+/// between frames would let a slowly trickling frame outlive the operation.
+struct DeadlineReader<'a> {
+    reader: &'a mut BufReader<TcpStream>,
+    deadline: Instant,
+}
+
+impl Read for DeadlineReader<'_> {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        let available = self.fill_buf()?;
+        let count = available.len().min(out.len());
+        out[..count].copy_from_slice(&available[..count]);
+        self.consume(count);
+        Ok(count)
+    }
+}
+
+impl BufRead for DeadlineReader<'_> {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        let remaining = self.deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        if self.reader.buffer().is_empty() {
+            self.reader.get_ref().set_read_timeout(Some(remaining))?;
+        }
+        self.reader.fill_buf()
+    }
+
+    fn consume(&mut self, amount: usize) {
+        self.reader.consume(amount);
     }
 }
 
@@ -305,6 +341,8 @@ impl RdpTransport {
                     );
                     return Ok(Self {
                         reader,
+                        read_deadline: None,
+                        abandoned_replies: Vec::new(),
                         decoder: FrameDecoder::default(),
                         writer: stream,
                         event_sink: None,
@@ -354,6 +392,8 @@ impl RdpTransport {
     pub(crate) fn from_parts(reader: BufReader<TcpStream>, writer: TcpStream) -> Self {
         Self {
             reader,
+            read_deadline: None,
+            abandoned_replies: Vec::new(),
             decoder: FrameDecoder::default(),
             writer,
             event_sink: None,
@@ -512,8 +552,36 @@ impl RdpTransport {
             .map_err(ProtocolError::ConnectionFailed)
     }
 
+    /// Bound all reads in `operation` by one absolute deadline, including
+    /// push traffic, partial frames and multi-phase replies. Restore the actual
+    /// prior socket timeout and enclosing deadline on both success and error.
+    /// The operation's remaining budget replaces the idle timeout while scoped.
+    pub fn with_read_deadline<T>(
+        &mut self,
+        deadline: Instant,
+        operation: impl FnOnce(&mut Self) -> Result<T, ProtocolError>,
+    ) -> Result<T, ProtocolError> {
+        let previous_timeout = self.read_timeout()?;
+        let previous_deadline = self.read_deadline;
+        self.read_deadline = Some(previous_deadline.map_or(deadline, |d| d.min(deadline)));
+        let result = operation(self);
+        self.read_deadline = previous_deadline;
+        self.set_read_timeout(previous_timeout)?;
+        result
+    }
+
+    // evaluateJSAsync's immediate ack has no request ID. A timed-out ack
+    // must be consumed before a subsequent reply from that actor, otherwise
+    // its resultID could be mistaken for the next evaluation's ID.
+    pub(crate) fn abandon_reply(&mut self, actor: &str) {
+        self.abandoned_replies.push(actor.to_owned());
+    }
+
     /// Send a JSON message using Firefox RDP framing: `{len}:{json}`.
     pub fn send(&mut self, message: &Value) -> Result<(), ProtocolError> {
+        if self.read_deadline.is_some_and(|d| Instant::now() >= d) {
+            return Err(ProtocolError::Timeout);
+        }
         let json = serde_json::to_string(message)
             .map_err(|e| ProtocolError::InvalidPacket(e.to_string()))?;
 
@@ -536,27 +604,47 @@ impl RdpTransport {
 
     /// Receive a single length-prefixed JSON message.
     pub fn recv(&mut self) -> Result<Value, ProtocolError> {
-        let value = self.decoder.decode(&mut self.reader, max_frame_bytes())?;
+        loop {
+            let value = if let Some(deadline) = self.read_deadline {
+                let mut reader = DeadlineReader {
+                    reader: &mut self.reader,
+                    deadline,
+                };
+                self.decoder.decode(&mut reader, max_frame_bytes())?
+            } else {
+                self.decoder.decode(&mut self.reader, max_frame_bytes())?
+            };
 
-        if tracing::enabled!(tracing::Level::TRACE) {
-            tracing::trace!(
-                target: "ff_rdp_core::transport",
-                direction = "recv",
-                actor = %packet_actor(&value),
-                kind = %packet_kind(&value),
-                payload_size = serde_json::to_string(&value).map_or(0, |s| s.len()),
-                body = %serde_json::to_string(&redact(&value)).unwrap_or_default(),
-            );
+            if tracing::enabled!(tracing::Level::TRACE) {
+                tracing::trace!(
+                    target: "ff_rdp_core::transport",
+                    direction = "recv",
+                    actor = %packet_actor(&value),
+                    kind = %packet_kind(&value),
+                    payload_size = serde_json::to_string(&value).map_or(0, |s| s.len()),
+                    body = %serde_json::to_string(&redact(&value)).unwrap_or_default(),
+                );
+            }
+
+            // iter-220: latch top-level navigation announcements here — the one
+            // choke point every packet passes through, including the events the
+            // reply/event loops forward to the sink or drop on the floor.
+            if let Some(url) = navigation_start_url(&value) {
+                self.navigation_started = Some(url);
+            }
+
+            if value.get("type").is_none()
+                && let Some(from) = value.get("from").and_then(Value::as_str)
+                && let Some(index) = self
+                    .abandoned_replies
+                    .iter()
+                    .position(|actor| actor == from)
+            {
+                self.abandoned_replies.remove(index);
+                continue;
+            }
+            return Ok(value);
         }
-
-        // iter-220: latch top-level navigation announcements here — the one
-        // choke point every packet passes through, including the events the
-        // reply/event loops forward to the sink or drop on the floor.
-        if let Some(url) = navigation_start_url(&value) {
-            self.navigation_started = Some(url);
-        }
-
-        Ok(value)
     }
 
     // NOTE (iter-102): the blind `pub fn request(&mut self, &Value)` —
@@ -2384,6 +2472,8 @@ mod tests {
         let reader = BufReader::new(client_stream);
         let mut transport = RdpTransport {
             reader,
+            read_deadline: None,
+            abandoned_replies: Vec::new(),
             decoder: FrameDecoder::default(),
             writer,
             event_sink: None,
