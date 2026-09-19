@@ -1,5 +1,30 @@
 # ff-rdp project memory
 
+## Continuation checkpoint — 2026-09-20
+
+The owner explicitly resumed the September19 pause. Read
+`kb/research/ralph-loop-resume-2026-09-20.md` with Hyalo after the required
+guidance below; it supersedes the pause's starting state.271 was recovered,
+integrated and pushed at `f044e6791683126b9d45e4444982c918d6648e88`. Its six
+bounded BBC attempts all passed, leaving original tasks/AC0/4 and attribution
+unresolved. The allowance is exhausted; do not repeat it or merge the partial
+repair as completed271.262/268 caps,259 execution restriction and266 dependency
+also remain in force. All five selected plans are blocked, with no new PR/main
+merge. Preserve local planning and all branch checkpoints/evidence; further work
+requires the specific recorded entry conditions, not a fresh-session reset.
+Keep Hyalo and Jev observations in their `kb/research` feedback notes. No work
+continues in the background after this checkpoint.
+
+## Owner-requested pause — 2026-09-19
+
+The owner requested a safe stop during the remaining-queue restart to apply
+workflow improvements. Read `kb/research/ralph-loop-pause-2026-09-19.md` with
+Hyalo after the required guidance below.262 and268 retain blocked investigation
+checkpoints;271 was not started. Wait for an explicit new launch/resume request.
+A new session does not reset investigation caps,259's recorded execution
+restriction, or266's reply-ownership prerequisite. Preserve all recovered branches,
+original acceptance criteria, reviewed271 partial repair and local evidence.
+
 ## Prepared remaining queue — 2026-09-19
 
 The fourteen-iteration September19 batch is closed: nine outcomes merged and

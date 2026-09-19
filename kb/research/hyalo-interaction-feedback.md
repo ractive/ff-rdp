@@ -243,3 +243,74 @@ The first broad `find` used the default limit of 50 results. Filtering those fir
 Large batched guidance and Hyalo outputs were truncated by the calling tool. Narrow reads and projections recovered the needed content; this was not established as a Hyalo defect. Supported operations used Hyalo, and no `../hyalo` edits were made. Existing hashes, reviews, and gates for unchanged prepared documents were reused. No new semantic Hyalo defect was established. A possible usability improvement is to make the default result limit visible near result output; this is a suggestion, not a bug finding.
 
 Astra's262 reviewer reported a guessed nonexistent plan slug, unsupported `properties get` and `frontmatter` subcommands, and a nonrecursive glob. These were corrected with the exact vault-relative path and `read --frontmatter --section`. Calling-tool truncations were narrowed for the relevant evidence. These are operator errors and output-budget friction, not verified Hyalo defects.
+
+Further scoped-review telemetry: a reviewer guessed a nonexistent section and corrected to the exact heading; an initial jq traversal was corrected. A supervisor guessed section `R1 managed-path`; `find --fields sections` located the actual heading and an exact section read succeeded. The268 designer tried `--section 268`, but268 was a table/paragraph rather than a heading; a full read succeeded. A guessed `spawn.rs` source path was corrected to the actual server/client/process modules. Combined output truncation was narrowed. These are operator or calling-tool issues, not product or Hyalo defects.
+
+## 2026-09-19 — continuation from the pause checkpoint
+
+Observed directly with Hyalo0.24.1: vault-relative `read` successfully recovered
+the pause, queue and271 Restart guidance. `find --glob 'iterations/iteration-*.md'
+--property status=planned --fields file,title --format text` returned the eleven
+numbered pending plans in the primary checkout compactly. Branch-only275/277 are
+accounted for separately, not inferred absent from this checkout's inventory.
+
+Operator/calling-tool friction recurred: a broad `find --property status=planned`
+without projection included large historical metadata, and combined tool outputs
+were truncated. Narrow projections and body ranges recovered the required text.
+This is a repeated query-discipline problem, not evidence of a Hyalo defect.
+`read -h` clearly documents body-relative ranges and frontmatter selection.
+`find --glob 'research/*jev*' --fields file,title --format text` correctly reported
+no existing Jev research note. No edits to the Hyalo repository were made.
+
+Owner discussion: filtered batch reads would reduce the observed inventory →
+individual-read cycle. Current `read -h` advertises repeatable `--file`,
+`--glob`, `--files-from`, and body-relative `--lines`. The initial inference that
+multi-file reading therefore works was disproved by the tests below and corrected
+to the owner. Proposed improvement, not current verified
+syntax: allow the same property/tag filters as `find` directly on `read`, for
+example `read --glob 'iterations/iteration-*.md' --property status=planned
+--lines 1:30 --format text`.
+
+Desired result: filename/title boundaries, per-file excerpt limits and explicit
+remaining-content indicators; section selection across files with missing sections
+reported; a compact authored-summary/status/dependency projection. Prefer stored
+summary fields/sections to implicit generated summaries. First-N lines help for
+orientation but cannot stand in for current-state evidence when dated Restart or
+Outcome sections live near the end. A total output budget and matched/returned
+counts would help bound large selections without silently hiding files. This is
+a workflow proposal grounded in this session, not a request to implement changes
+in the Hyalo repository.
+
+Independent Sol preflight reported successful narrow unlimited projections and
+selected-plan body/frontmatter reads with0.24.1, no Hyalo errors. Its inventory
+confirmed thirteen pending plans including the two branch-only plans. Git branch
+inspection distinguished later checkpoint status from the planning copy; this
+version difference is expected, not a query defect.
+
+Verified help/behavior mismatch in0.24.1, reproduced directly:
+
+```sh
+hyalo read --file research/ralph-loop-pause-2026-09-19.md --file research/ralph-loop-open-iterations-2026-09-19.md --lines 1:8 --format text
+hyalo read --file research/ralph-loop-pause-2026-09-19.md --file research/ralph-loop-open-iterations-2026-09-19.md --format text
+hyalo read --glob 'research/ralph-loop-*2026-09-19.md' --lines 1:8 --format text
+```
+
+Both repeated-file commands exited1: `error: this command requires exactly one
+file; multiple files selected`. The glob command exited1: `error: --glob is not
+supported for this command`, with a single-file hint. Short help explicitly
+describes `--file` as repeatable and lists `--glob`. Thus batch read is an actual
+observed gap and help contradicts runtime behavior. `--files-from` was not tested;
+no claim about its behavior. Individual reads remain the working fallback. These
+were read-only functional checks prompted by the owner's question, not benchmarks
+or Hyalo implementation work. Each exit code above was captured in a separate
+command invocation, avoiding a later successful command masking the failure.
+
+Continuation review telemetry: the271 worker reported successful0.24.1 body
+reads and calling-tool truncation recovered by narrower reads. The fresh reviewer
+used body reads and HYALO005 successfully, but guessed unsupported `hyalo search`;
+this is an operator error. The supervisor also requested a guessed capture heading
+from the primary checkout instead of271's worktree. `find --fields sections` in
+the correct worktree exposed `Restart attribution capture — 2026-09-19`, and the
+exact section read succeeded. These mistakes reinforce the usefulness of compact
+outlines and explicit checkout context; they are separate from the reproduced
+multi-file help/runtime mismatch.
