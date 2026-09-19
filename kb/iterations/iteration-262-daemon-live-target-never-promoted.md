@@ -257,3 +257,27 @@ Evidence: `.git/ralph-loop/20260919-queue/iter261/logs/live-sweep-rerun.log`.
 ## Iteration265 sweep recurrence — 2026-09-19
 
 The final265 sweep failed `live_137_daemon_mode_parity::live_137_consent_accept_via_daemon`: target_count1/live_target_count0 after the readiness bound; dispatcher95/95, no frame in flight. These counters preserve the observation without proving a promotion mechanism. The separate blocked262 investigation branch retains its watcher-lifecycle diagnosis and unmet requirements. No265 change repairs this finding. Full346=344pass2fail, zero profile leaks. Evidence: `.git/ralph-loop/20260919-queue/iter265/live-sweep.log` and `supervisor-accounting.json`. Original262 ACs remain unchanged.
+
+## Iteration270 sweep recurrence — 2026-09-19
+
+The initial iteration270 dual-gate sweep again failed
+`live_137_daemon_mode_parity::live_137_consent_accept_via_daemon` before consent:
+readiness stayed false for15,135ms/47polls with daemon PID64449/proxy57180,
+uptime17s, target_count1/live_target_count0, network buffer484, dispatcher alive
+with83frames started/finished, no in-flight frame or RPC owner, and zero dropped
+client writes. Exact serial dual-gate isolation reached a live target in110ms/one
+poll and accepted Sourcepoint in5.75s. This is another target-lifecycle recurrence,
+not a new consent-action result; the isolation does not repair it or count as a
+green full sweep. All345 other names passed, all346 names/six tiers reconciled,
+and every profile scan was clean. Iteration270 changed only hook guidance and its
+live fixture, so no cause or repair is claimed. Original262 tasks, acceptance
+criteria and distinct observed shapes remain unchanged. Evidence:
+`.git/ralph-loop/20260919-queue/iter270/logs/final-live-sweep.log` and
+`live-137-consent-rerun.log`.
+
+After the iteration270 clippy-only style repair, a second complete dual-gate
+sweep passed all346 names, including this test, with zero skipped/precondition/
+timeout classifications and zero profile leaks or unattributed profiles. That
+green sweep is final iteration270 closure evidence; it does not erase the first
+recurrence or satisfy this plan's three-consecutive-sweep requirement. Evidence:
+`.git/ralph-loop/20260919-queue/iter270/logs/final-live-sweep-after-style-repair.log`.

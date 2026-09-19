@@ -119,3 +119,66 @@ Hyalo defects. Final264 scalar `set --file ... --property status=done` and
 HYALO005 validation support completion without altering original AC wording.
 Long combined reads were truncated by the calling tool, not Hyalo. No version
 change or ../hyalo edit.
+
+## 2026-09-19 iteration270 interactions
+
+Installed executable `/Users/james/.cargo/bin/hyalo` reports version0.23.0
+(`adbafda6c7fc`, 2026-09-13). `read` returned the complete iteration270 body and
+frontmatter; `task read --all` returned all four tasks and four acceptance
+criteria with absolute file line numbers. `task set --line ... --status x` and
+`set --property status=in-progress --validate` both produced accurate dry-run
+previews and then applied the requested targeted changes without rewriting the
+new body evidence. Body prose and heading counts were edited directly under the
+owner's established unsupported-operation allowance. No Hyalo command failed in
+this iteration and no verified Hyalo defect was found. Broad combined tool output
+was truncated once by the calling-tool output budget; narrower reads recovered
+the content, so this is classified as caller/output-budget friction rather than
+a Hyalo error. No `../hyalo` files were edited.
+
+## 2026-09-19 — iteration262 diagnostic checkpoint
+
+Hyalo 0.23.0 (adbafda6c7fc 2026-09-13), vault kb; commands from repository root.
+Successful: read discipline-rationale; read262 body; read262 --frontmatter;
+read246 --section 'Part D'; find title consent/Guardian/Sourcepoint; find title275
+(no results); types list (no schema types configured); lint --rule HYALO005 exit0.
+Help read/append/new and top-level help inspected. No Hyalo verified defect.
+Operator error: queried nonexistent `create --help` (exit2), then read `new --help`.
+`new` needs configured schema type; none exists, so new275 created directly.
+Append help clarified it only appends frontmatter values, not prose; body262 edited
+directly under owner allowance. Tool output truncation came from exec output budgets,
+not a Hyalo finding. User-facing instructions in consent erroneously suggest
+`dom --frames`; this CLI option does not exist, unrelated to Hyalo.
+
+Supervisor used `find --fields tasks --jq` to locate three exact evidence-backed tasks, then task-set preview/apply and status set. Original requirement wording was preserved.
+
+## 2026-09-19 iteration268 investigation
+
+Hyalo0.23.0 remained installed. `find --file iterations/iteration-268-daemon-pre-auth-connection-loss.md --fields tasks,properties --format text` successfully verified the original unticked requirements after the investigation body was appended directly (unsupported general prose operation). Raw result is retained in iter268/hyalo-verify.log. This records successful metadata verification; no verified new defect or version change is claimed.
+
+Additional268 operator notes: `find iteration=268` used a nonexistent metadata key and returned no result; title search corrected it. Batched guidance output truncation occurred at the calling-tool budget and was recovered with smaller reads. Neither is a verified Hyalo defect. Supervisor used `set --property status=in-progress` and HYALO005 after review; original eight boxes stayed unticked.
+
+## 2026-09-19 iteration271 interactions
+
+
+Version: `/Users/james/.cargo/bin/hyalo --version` reported 0.23.0
+(adbafda6c7fc, 2026-09-13). No edits to Hyalo.
+
+Good: title-property search found the exact selected plan and displayed its
+vault-relative path; `read iterations/iteration-271-bbc-consent-no-cmp-recurrence.md
+--format text` returned body/preflight; `find --file ... --fields properties`
+returned frontmatter including dogfood commands. `set --dry-run` then `set`
+changed only status to in-progress; raw execution records retained.
+
+Caller errors, not defects: initial `read iteration-271-...md` omitted the
+`iterations/` directory (exit 1 with a useful path hint). Initial `find --glob
+'*271*'` returned no results because the glob did not descend into `iterations/`;
+title search corrected this. Full `set --help` displayed through a capped tool
+output was truncated; the command itself succeeded. No verified Hyalo defect.
+
+Additional caller errors: a guessed264 slug did not exist; title-property
+lookup supplied `iteration-264-sweep-load-timing-bounds.md`. A guessed262
+section `Measured observations` did not exist; the error suggested `The
+evidence`, which succeeded. These were operator assumptions, not parser/search
+defects. New277 copied the repository template because this vault declares no
+schema type for `hyalo new`; all new frontmatter changes used `hyalo set`.
+Final HYALO005 lint passed after status and277 frontmatter edits.
