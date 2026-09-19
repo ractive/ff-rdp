@@ -243,6 +243,8 @@ fn live_home_with_blank_tab_asks_for_a_navigate() {
 
 /// The `--hook` form is what a session hook runs on every session, so its
 /// output has to stay small: landmarks dropped, interactive capped at 15.
+/// Its next steps must also drive the first real actions without confusing a
+/// daemon ref with a CSS selector (iter 270).
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
 fn live_home_hook_form_is_trimmed() {
@@ -253,17 +255,26 @@ fn live_home_hook_form_is_trimmed() {
     let ff = firefox_with_daemon("live_home_hook_form_is_trimmed");
     let port = ff.port();
 
-    // 40 links: more than the hook's 15-entry budget, fewer than the default 50.
-    let links = (0..40).fold(String::new(), |mut acc, i| {
-        let _ = write!(acc, "<a href=\"/#{i}\">link {i}</a>");
+    // One link plus 40 inputs exceeds the hook's 15-entry budget but stays below
+    // the default 50. Both action kinds remain visible after link-first grouping.
+    let inputs = (0..40).fold(String::new(), |mut acc, i| {
+        let _ = write!(acc, "<input aria-label=\"Search {i}\" type=\"text\">");
         acc
     });
     let mut routes = HashMap::new();
     routes.insert(
         "/".to_owned(),
         FixtureRoute::html(format!(
-            "<!doctype html><title>t212 many</title><body><nav><h1>Many</h1>{links}</nav></body>"
+            "<!doctype html><title>t212 many</title><body><main><h1>Many</h1>\
+             <form><a href=\"/clicked\">first action</a>\
+             {inputs}</form></main></body>"
         )),
+    );
+    routes.insert(
+        "/clicked".to_owned(),
+        FixtureRoute::html(
+            "<!doctype html><title>t270 clicked</title><body><h1>Hook action arrived</h1></body>",
+        ),
     );
     let Some(server) = FixtureServer::start(routes) else {
         eprintln!("live_home_hook_form_is_trimmed: no fixture HTTP — skipping");
@@ -289,6 +300,8 @@ fn live_home_hook_form_is_trimmed() {
         hook_interactive <= 15,
         "the hook form keeps at most 15 interactive entries, got {hook_interactive}: {hook}"
     );
+    assert_eq!(hook["results"]["page"]["interactive_total"], 41);
+    assert_eq!(hook["results"]["page"]["interactive_truncated"], true);
     assert!(
         hook["results"]["page"].get("landmarks").is_none(),
         "the hook form drops landmarks: {hook}"
@@ -298,6 +311,91 @@ fn live_home_hook_form_is_trimmed() {
             .as_array()
             .is_some_and(|h| !h.is_empty()),
         "…but keeps the headings that name the page: {hook}"
+    );
+
+    let json_first_ref = hook["results"]["page"]["interactive"]
+        .as_array()
+        .and_then(|entries| entries.first())
+        .and_then(|entry| entry["ref"].as_str())
+        .unwrap_or_else(|| panic!("hook page must mint a first-action ref: {hook}"));
+    let json_input_ref = hook["results"]["page"]["interactive"]
+        .as_array()
+        .and_then(|entries| {
+            entries.iter().find(|entry| {
+                entry["role"].as_str() == Some("input")
+                    && entry["name"].as_str() == Some("Search 0")
+            })
+        })
+        .and_then(|entry| entry["ref"].as_str())
+        .unwrap_or_else(|| panic!("hook page must mint the input ref: {hook}"));
+
+    let hook_text_out = run(port, &["home", "--hook"]);
+    assert!(
+        hook_text_out.status.success(),
+        "text hook failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&hook_text_out.stdout),
+        String::from_utf8_lossy(&hook_text_out.stderr)
+    );
+    let hook_text = String::from_utf8_lossy(&hook_text_out.stdout);
+    assert!(
+        hook_text.len() < 2_000,
+        "the hook remains a compact orientation payload ({} bytes): {hook_text}",
+        hook_text.len()
+    );
+    let action_ref = hook_text
+        .lines()
+        .find_map(|line| line.strip_prefix("-> ff-rdp click --ref "))
+        .and_then(|rest| rest.split_whitespace().next())
+        .unwrap_or_else(|| panic!("trimmed hook must print a concrete action ref: {hook_text}"));
+    // Resolve the placeholder from the same trimmed text payload an agent sees,
+    // not from ordinary home or a ref minted by the earlier JSON invocation.
+    let input_ref = hook_text
+        .lines()
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix('[')?
+                .strip_suffix("] input \"Search 0\"")
+        })
+        .unwrap_or_else(|| panic!("trimmed text hook must expose the input ref: {hook_text}"));
+    assert!(input_ref.starts_with('e'), "{hook_text}");
+    assert!(
+        action_ref.starts_with('e') && action_ref != "<minted-ref>",
+        "the page-bearing hook must print a real minted ref: {hook_text}"
+    );
+    assert!(
+        json_first_ref.starts_with('e') && json_input_ref.starts_with('e'),
+        "the JSON hook form must also mint both action refs: {hook}"
+    );
+    for expected in [
+        "navigate <URL> --with-page --query \"<text>\"".to_owned(),
+        format!("click --ref {action_ref} --with-page"),
+        "type --ref <input-ref> --text \"<text>\" --with-page".to_owned(),
+        "click \"<css>\" --with-page  # CSS is positional".to_owned(),
+    ] {
+        assert!(
+            hook_text.contains(&expected),
+            "trimmed hook is missing {expected:?}: {hook_text}"
+        );
+    }
+
+    // Exercise the two ref forms the actual trimmed hook advertises. This is
+    // deliberately live: string-only idiom tests cannot prove the hook minted
+    // handles that the first action accepts.
+    let typed = run_json(
+        port,
+        &["type", "--ref", input_ref, "--text", "hello", "--with-page"],
+    );
+    assert_eq!(typed["results"]["typed"], Value::Bool(true), "{typed}");
+    let clicked = run_json(port, &["click", "--ref", action_ref, "--with-page"]);
+    assert_eq!(
+        clicked["results"]["clicked"],
+        Value::Bool(true),
+        "{clicked}"
+    );
+    assert_eq!(
+        clicked["results"]["page"]["headings"][0]["text"],
+        Value::String("Hook action arrived".to_owned()),
+        "the advertised first action must reach its destination: {clicked}"
     );
 
     stop_daemon(port);
