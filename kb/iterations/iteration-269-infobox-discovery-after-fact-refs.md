@@ -2,7 +2,7 @@
 title: "Iteration 269: remaining infobox discovery costs after fact refs"
 type: iteration
 date: 2026-09-13
-status: planned
+status: done
 branch: iter-269/infobox-discovery-after-fact-refs
 depends_on: [255, 256]
 first_call_sites: []
@@ -41,36 +41,36 @@ tool-use ID, output and classification live under
 
 ## Tasks
 
-### A. Diagnose before selecting a change [0/3]
-- [ ] Reproduce the recorded query/filter and handle-discovery paths with an owned
+### A. Diagnose before selecting a change [3/3]
+- [x] Reproduce the recorded query/filter and handle-discovery paths with an owned
       browser; distinguish intended filtering from misleading affordances.
-- [ ] Compare the existing way to request the Developer fact/ref against the
+- [x] Compare the existing way to request the Developer fact/ref against the
       routes the agents chose; retain compatibility, bounded payloads and exact
       destinations. Document the smallest proposed improvement with evidence.
-- [ ] Audit why the judge accepted URL navigation when the task said click, and
+- [x] Audit why the judge accepted URL navigation when the task said click, and
       why a pipeline-masked CLI error is absent from upstream error_count; retain
       historical scores and report stricter observations separately.
 
-### B. Validate the selected outcome [0/2]
-- [ ] Implement a justified, bounded improvement with meaningful tests, or record
+### B. Validate the selected outcome [2/2]
+- [x] Implement a justified, bounded improvement with meaningful tests, or record
       evidence that no product change is warranted. A broader default, help or
       query-semantics change needs its own explicit design decision.
-- [ ] Record a controlled validation approach before any new paid run, preserving
+- [x] Record a controlled validation approach before any new paid run, preserving
       model/prompt identities, turn-count definition, per-run adoption/hunts,
       separate query recovery, real task actions and tool errors. Never rerun
       iteration 255 to replace its results.
 
-## Acceptance Criteria [0/4]
+## Acceptance Criteria [4/4]
 
-- [ ] The original three infobox trajectories have a reproducible explanation for
+- [x] The original three infobox trajectories have a reproducible explanation for
       every handle-hunt and query-recovery command, including the invalid option.
-- [ ] The chosen outcome preserves literal/regex compatibility and fact-link
+- [x] The chosen outcome preserves literal/regex compatibility and fact-link
       budgets, or explicitly documents a separately approved contract change;
       linked retained facts remain clickable and misses remain explainable.
-- [ ] Any new comparison reports per-run turns, grades, action fidelity, tool
+- [x] Any new comparison reports per-run turns, grades, action fidelity, tool
       errors, model/CLI/prompt identities and separate agent/judge list costs;
       missing results cannot count as cheap successes and old grades stay intact.
-- [ ] The measured result is recorded whatever it is; iteration 255's 8.333 and
+- [x] The measured result is recorded whatever it is; iteration 255's 8.333 and
       unticked ≤5 criterion remain unchanged.
 
 ## Out of scope
@@ -111,3 +111,80 @@ Dependencies255/256 are delivered. Preserve fact refs, Formation matching and li
 
 This source/evidence audit adds implementation guidance, not a new execution result.
 Original task and acceptance-criterion wording and checkbox states remain unchanged.
+
+## Outcome — 2026-09-19
+
+No product change is warranted. The existing targeted route returns the Developer
+fact with a registered, clickable PSF ref; the two apparent misses in the retained
+traces are the documented consequences of narrower queries. Keeping the current
+literal and regex contracts also preserves the bounded fact-link payload and the
+zero-match explanation.
+
+### Owned-Firefox reproduction
+
+The reproduction used baseline `03ba1fd9e2d74193e99b3ff51d4e732b8e7b5337`,
+this checkout's `ffrdp` helper, a private `$FF_RDP_HOME`, an owned Firefox on port
+27106 (PID 45399), and a private Cargo target. Raw commands, JSON and cleanup
+evidence are retained under
+`.git/ralph-loop/20260919-queue/iter269/`.
+
+- `navigate ... --with-page --query 'stable release'` returned only the
+  `Stable release` fact. `Developer` remained visible in `query_fact_keys`; its
+  absence from the retained result is intended filtering, not a lost link.
+- `page-text --query 'Python Software Foundation'` found the value but minted no
+  refs, `a11y summary` contained no PSF entry, and positional
+  `dom "a[href*='Python_Software_Foundation']"` returned seven matches with
+  seven refs. Those are the value-only, absent-a11y and DOM recovery paths seen
+  in the retained runs.
+- `navigate ... --with-page --query 'stable release infobox developer'`
+  returned `matches:0` and candidate keys including `Developer` and
+  `Stable release`. The default query is one case-insensitive literal, so this
+  is an explained miss rather than evidence for token-OR matching.
+- `dom --selector '.infobox' | head` produced pipeline statuses `2 0`: clap
+  rejected the unsupported option while `head` succeeded. Without `pipefail`,
+  the shell tool result therefore appeared successful and the upstream
+  `error_count` omitted the embedded CLI error.
+- `navigate ... --with-page --query Developer` returned the PSF link as ref
+  `e4` with `page_refs_registered:true`. `click --ref e4 --with-page --query
+  'founded formed'` reported `clicked:true`, reached exactly
+  `https://en.wikipedia.org/wiki/Python_Software_Foundation`, and returned the
+  `Formation` fact. The owned browser stopped, port 27106 closed, and the user's
+  desktop Firefox PID 1112 remained running.
+
+### Retained trajectory and grading audit
+
+Iteration255 run1 used a stable-release-only view, then page text, a11y and DOM
+before clicking the PSF ref; run3 used the same narrow view, then page text and
+DOM before its click. Run2 supplied the compound literal, tried a second compound
+query, snapshot grep and invalid `dom --selector` before positional DOM worked;
+it then used page text, a11y and two eval forms to recover the URL. It navigated
+to that URL instead of performing the requested click. The historical judge
+still returned PASS, so the raw grade remains PASS while the stricter action
+observation is recorded as a click-fidelity miss. The broader action/error
+accounting stays with
+[[iteration-270-benchmark-ambient-action-and-extraction-gaps]].
+
+The original infobox turns remain **7/12/6 (mean 8.333)**, the `<=5` criterion in
+iteration 255 remains unticked, link-follow remains 4/4/4, and the three original
+grades remain PASS. The distinct iteration 256 baseline and SessionStart datasets
+are unchanged.
+
+### Controlled validation boundary
+
+No paid comparison, smoke, model probe or judge ran. A future paid comparison is
+not justified by this outcome. If a separately approved contract change later
+needs comparison, pre-register the exact old and candidate product revisions,
+the original task/prompt hashes, agent and judge model identities, CLI version,
+three repetitions, turn-count rule, per-run query recovery and handle hunts,
+actual click-versus-navigation fidelity, every top-level and embedded tool error,
+raw grade, and separate agent/judge list costs. Missing or failed rows must remain
+missing or failed rather than becoming cheap successes; historical rows and
+grades must not be replaced.
+
+## Carry-over
+
+| Observation | Disposition |
+|---|---|
+| Iteration 255 infobox mean 8.333 remains above `<=5`. | **No plan:** the owned reproduction found a direct supported Developer/ref/click route and no product defect or approved contract change. File a bounded new plan only if a future controlled trace uses the targeted route and still demonstrates avoidable discovery cost. |
+| Run2 substituted URL navigation for the requested click, and its invalid option was shell-masked. | **Fold:** strict action and observed-versus-upstream error accounting are already owned by [[iteration-270-benchmark-ambient-action-and-extraction-gaps]]. Historical scores remain unchanged. |
+| No new paid comparison was run. | **No plan:** no measurement is missing for the selected no-product-change outcome. A future approved comparison must use the controlled boundary above. |
