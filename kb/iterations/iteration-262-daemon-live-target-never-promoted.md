@@ -647,3 +647,57 @@ Firefox/daemon endpoints and wire trace are retained. All temporary Rust changes
 were restored byte-for-byte, the relevant product-source diff against
 `origin/main` is empty, owned browsers/daemons/listeners are gone, and desktop
 Firefox PID1112 remained running. Actual token usage is unavailable.
+
+## Additional authorized capture — 2026-09-20
+
+The owner's new allowance preserves the exhausted earlier blocks: at most60minutes
+active discovery and six targeted captures including controls. Independent design
+and completed-instrumentation review preceded this block. Fresh managed USER_JS
+now enabled dump logging in the temporary diagnostic build; saved preference bytes
+and effective parent/content dump=true were observed. Private Firefox156.0 /
+BuildID20260909172920 / SourceStamp a80bd15ddee3b4bf3679aeba340e9d2db933c467
+was used without changing the installed app or shared Firefox source.
+
+Capture stopped after2/6attempts. Attempt1 reproduced the original managed-daemon
+loss: same daemon watcher server1.conn5.watcher3, replacement inner17179869185/BC11,
+legacy actor server1.conn5.child16/windowGlobalTarget2. Explicit watcher membership,
+context=true and fromJS=false lookup preceded suppress-legacy, then
+suppress-ignore-existing. The initial top-level form was destroyed, with no
+replacement top-level creation/send/parent/wire chain; readiness exhausted15.178s
+with target1/live0 and healthy90/90dispatcher. The shared daemon connection's
+getTarget request/reply and that actor's later replacement-window registry identity
+were joined; the older reply's about:blank document was not misidentified as the
+replacement. This attributes this occurrence, not every historical symptom.
+
+Attempt2 supplied the mandatory complete ordinary replacement control before the
+causal verdict: getWatcher(true), ordered watchTargets(frame), initial availability
+and destruction, replacement membership/context, empty legacy lookup, creation,
+send, parent acceptance, identical top-level wire form and live retained state.
+Independent Astra evidence review returned zero findings. External workspace tests
+in another session's Hyalo checkout overlapped attempt1; no uncontended timing or
+host-wide exclusivity claim is made. Explicit actor/branch evidence supports the
+attribution without inferring cause from timing.
+
+All temporary Rust instrumentation was restored byte-identical and CLI/live artifacts
+rebuilt. Both owned browsers/daemons and their four recorded ports were absent at
+cleanup; desktopFirefox1112 was preserved. Generated preference copies, exact argv,
+profile paths, command times/exits, browser metadata and cleanup observations were
+retained contemporaneously. Raw daemon logs contain ephemeral local authentication
+material and remain private; publish only sanitized derived evidence. This is not a
+full-sweep profile verdict.
+
+No product correction or new acceptance checkbox is claimed. Locate2/2, Fix0/2,
+Test0/1 and AC1/5 remain. The precise demonstrated caller is navigation's timer
+refresh, which invokes shared legacygetTarget while the watcher target is absent.
+A proposed daemon-local disposable target-snapshot query is under separate design
+review; it is not implemented or validated. Original live pre/post proof, three
+qualifying full sweeps, watcher-source requirement and ordered gates remain owed.
+Ready-target consent behavior remains275-owned and unexecuted.
+
+Evidence: primary checkout `.git/ralph-loop/20260920-additional/iter262/`, notably
+`capture/report.md`, `capture/phase-result.json`, `capture-review.md`,
+`capture/attempt-ledger.tsv`, `external-cargo-note.md`, private `instrumentation/attempt-1/`
+and `attempt-2/`, restored-source/build receipts and `fix-proposal.md`. The archived
+diagnostic binary differs from the restored runner alias; do not rerun the old
+capture command without reestablishing its reviewed inputs. This records the
+accepted diagnosis while the authorized selected queue remains active.
