@@ -207,3 +207,36 @@ Long instruction/help output was truncated by the calling tool; narrower reads
 recovered it. A guessed historical log path was absent; no passing result was
 inferred. Final plan-only verification repeated once to correct a one-second
 sweep-start transcription against the raw log; no test was repeated for this.
+
+## 2026-09-19 remaining-queue planning
+
+Hyalo0.23.0 (adbafda6c7fc) remained installed. Body/frontmatter reads and the
+supported scalar/list set preview made the existing266dependency visible before
+editing. First dry-run used `depends_on=["259"]`; the CLI preview exposed literal
+quote characters in the list member. Corrected to `depends_on=[259]`, previewed
+`["259"]` as the actual parsed value, then applied and verified the frontmatter.
+The incorrect draft was never applied. This is an operator assumption about the
+CLI's list grammar, not a verified data-corruption defect. Proposed improvement:
+a help example distinguishing its comma-list syntax from JSON string quoting.
+
+Restart sections and the new research handoff use direct body/file authoring for
+unsupported prose/creation operations; existing original tasks and ACs stay intact.
+Large batched guidance reads exceeded the calling-tool output budget; narrowed
+reads recovered the needed sections. That truncation was outside Hyalo. No version
+change or ../hyalo edits; documentation validators are recorded separately.
+
+Planning review telemetry: the fresh scoped reviewer reported four basename-only
+reads failing with file-not-found; vault-relative `iterations/` and `research/`
+paths corrected them. Combined body/help output exceeded the calling-tool budget;
+the complete repair delta and required266 frontmatter were then read. These are
+operator/path and output-budget errors, not verified Hyalo defects. Independent
+plan review ran once, then fresh scoped review of one consolidated repair batch
+returned explicit zero findings; no product or Firefox experiment was executed.
+
+## 2026-09-19 iteration262 restart
+
+Used Hyalo body/frontmatter/section reads and HYALO005 during checkpoint recovery.
+Append-only Git conflicts retained both chronological histories and reviewed task
+states; general prose edits used the established unsupported-operation allowance.
+Large combined output was truncated by the calling tool; narrower reads recovered
+it. No verified Hyalo defect, version change or ../hyalo edit.

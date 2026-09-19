@@ -446,3 +446,204 @@ timeout classifications and zero profile leaks or unattributed profiles. That
 green sweep is final iteration270 closure evidence; it does not erase the first
 recurrence or satisfy this plan's three-consecutive-sweep requirement. Evidence:
 `.git/ralph-loop/20260919-queue/iter270/logs/final-live-sweep-after-style-repair.log`.
+
+## Restart plan — 2026-09-19
+
+This is preparation for a new session, not another execution result. Follow
+[[ralph-loop-open-iterations-2026-09-19]] for queue, ownership and validation.
+Recover checkpoint `e9c9e88c355782d9f645f4ca7a766b5d827e9be3` on this plan's
+branch, integrate verified current main there, and preserve both sets of dated
+observations plus branch-only plan275. The checkpoint has Locate2/2 and AC1/5;
+main's older unchecked state must not erase that reviewed evidence. Restore only
+evidence-backed tick/status differences, using Hyalo, after inspecting the merge.
+
+**Question to answer.** Which exact Firefox branch prevents the replacement
+window target from reaching this watcher? `target_count` is cumulative discovery,
+not proof that a current live target exists. The daemon observed available →
+destroyed without replacement. Idle direct watchers retained targets6/6 while
+daemons lost5/6; adding legacy `getTarget` could induce direct loss. This supports
+an experiment, not a proved suppression diagnosis or an actor-ID mismatch.
+
+**First experiment (Astra implementation and review).**
+
+1. Verify installed Firefox version, BuildID and source revision. The retained
+   comparison used156.0 / BuildID20260909172920; local Firefox checkout HEAD was
+   different. Use the retained exact-revision modules as locators, then verify
+   against the browser actually running. Reuse the Rust comparison harness and
+   ownership scripts under `iter262/attempt2/` in the previous run store.
+2. Establish a supported way to observe the required Firefox process/module.
+   In an exclusively owned browser/profile, trace each replacement window's
+   browsing-context/window identity, watcher actor ID and connection prefix,
+   watcher-registry membership, `findTargetActor` result and
+   `createdFromJsWindowActor`, the selected suppression/creation branch,
+   `onNewTargetActor` send, and parent acceptance or exception. Join these with
+   the client's target-available/destroyed stream and existing daemon counters.
+   Locate these checkpoints in retained `window-global.sys.mjs`,
+   `target-actor-registry.sys.mjs` and registry/parent modules; verify line locations.
+   Do not assume a parent-console evaluator can inspect a content-process registry.
+3. First prove the probes execute on an ordinary passing replacement. Then use
+   paired idle-watcher / watcher-plus-legacy-lookup controls with identical
+   navigation and fresh owned profiles. Keep daemon and direct connection IDs
+   separate; include a daemon observation. Record full15-second windows when
+   claiming persistent loss. Begin with two paired trials; extend to at most six
+   only if probes are complete but the failure has not recurred. Existing six-arm
+   results are retained evidence, not a required repetition baseline.
+4. Select a scoped correction only after a failing occurrence identifies whether
+   the loss is legacy-target reuse/suppression, registry omission, delivery
+   rejection or client bookkeeping. Verify the other boundaries explicitly before
+   concluding. No global timeout increase, blind reconnect/reset or broad target
+   redesign. Preserve resource subscription and concurrent consumer behavior.
+
+The initial probe-feasibility budget is45minutes. A supported debugger or an
+isolated instrumented Firefox build may be used if available; never replace the
+installed browser or edit the shared Firefox source checkout in place. If a build
+is needed, first record exact prerequisites and an honest bounded build plan; do
+not silently begin an unbounded build. Missing tooling is a concrete blocker.
+Needing instrumentation alone is remaining engineering work, not evidence of an
+external blocker. Stop a repeated unchanged experiment when it adds no distinction.
+
+**Proof and closing decision.** Retain a real-Firefox failing-before/passing-after
+regression for the identified branch, plus focused protocol/ordering coverage.
+Run the original three consecutive full dual-gate sweeps on stable final inputs;
+all three named137/145 tests must be green. Apply the original separate rule for
+`live_network_watcher_source_after_navigate_with_network`. Count every target,
+qualified name and profile summary. A failure breaks the qualifying streak;
+preserve it and diagnose before any new justified sequence. No retry loop merely
+collecting three green samples. Preserve all original AC text and requirements.
+
+The independent ready-target Guardian/Sourcepoint defects remain owned by275.
+If those prevent the named137 criterion, leave it unmet: filing275 does not satisfy
+it, and this five-iteration queue does not authorize implementing275. Record that
+precise prerequisite instead of widening this iteration or weakening consent.
+
+## Restart experiment — 2026-09-19, 22:18–22:27 CEST
+
+Probe feasibility succeeded within the45-minute initial bound, without a native
+Firefox build. An isolated copy of installed Firefox156.0 / BuildID20260909172920 /
+SourceStamp `a80bd15ddee3b4bf3679aeba340e9d2db933c467` loaded three instrumented
+DevTools modules from its own repacked browser `omni.ja`. The installed application
+and shared Firefox checkout were not edited. The four relevant pristine packaged
+modules matched the prior exact-revision source byte-for-byte. The probes record
+content-process/window/browsing-context identity, watcher registry enumeration and
+membership, connection prefix, `findTargetActor` source/result and
+`createdFromJsWindowActor`, suppression/creation, send-before/send-after, and parent
+receive/acceptance/exception. A passing direct control demonstrated every successful
+replacement boundary before the paired experiment. No parent-console inference
+about content registries was used.
+
+The reused Rust comparison helper was temporarily adapted to connect to explicitly
+owned raw browsers and to retain a full15-second post-navigation observation even
+when daemon readiness returned early. It logs final daemon counters separately
+from each direct connection. The first control lacked its home directory; the
+first attempted pair block also mixed localhost and127.0.0.1 and fell back to direct
+navigation. Those setup errors and their logs are retained, excluded from the valid
+daemon comparison, and corrected before the six valid paired trials. The first
+four valid pairs used minimal raw-profile preferences; the last two used the
+product's USER_JS preferences plus dump logging. Each pair used identical profile
+preferences/navigation in its idle and legacy arms. Browsers ran in bounded blocks
+of four with independent homes/profiles; this is not a full sweep.
+
+| Valid arm | Final observation after full15-second window |
+|---|---|
+| Idle direct watcher, pairs1–6 | All six retained3targets. |
+| Direct watcher plus legacy `getTarget` every250ms | Pairs1/3/5 retained0targets;2/4/6 retained3. |
+| Daemon connection in each of the12browsers | All12retained3targets, healthy dispatcher, no frame in flight. |
+
+For the three failed **direct** connections, the Firefox branch is now observed,
+not inferred. In valid-pair1-legacy, replacement innerWindowId17179869185 / BC13
+was present in the content registry for watcher `server1.conn3.watcher3`.
+`findTargetActor` found same-connection legacy actor
+`server1.conn3.child13/windowGlobalTarget2`, with `createdFromJsWindowActor=false`;
+`onWindowGlobalCreated` executed `suppress-legacy`, then the subsequent document
+insertion took `ignoreIfExisting`. No replacement target was created/sent/accepted
+for that watcher. Its client received availability for the old document followed
+by destruction and no replacement during the full observation. On the **separate
+daemon connection**, watcher `server1.conn2.watcher3` for that same replacement
+window found no legacy match, created a target, sent it, and was accepted by the
+parent. Pairs3/5 independently recorded the same direct suppression branch. No
+parent exception or trace-helper error occurred in the valid pair logs.
+
+This attributes the induced direct loss to legacy suppression and excludes registry
+omission/parent rejection for those occurrences. It does **not yet attribute a
+failed daemon occurrence**: that failure did not recur in these12 instrumented
+browsers. The earlier uninstrumented daemon losses and their evidence remain open;
+probe timing can perturb a race. The six-pair limit is exhausted, so no additional
+unchanged sampling or green-chasing was performed. No repair was selected from the
+all-green daemon observations. A shared-connection cached-target substitution would
+still require precise tab identity, destruction-gap/cancellation/reply ownership,
+resource-subscription and concurrent-consumer proof; the induced direct result
+alone does not establish that implementation.
+
+This is a bounded diagnostic stop, **not a missing-tooling/external blocker**.
+Resume with a reviewed, bounded experiment that captures the original daemon loss
+using these now-working probes (or a deterministic equivalent), then select the
+scoped repair. Locate2/2 and AC1/5 remain unchanged. No before/after product proof,
+three qualifying consecutive sweeps, network-source disposition from a fix, or
+iteration completion is claimed;275 remains unexecuted.
+
+Evidence root: primary checkout
+`.git/ralph-loop/20260919-remaining-2211/iter262/`. Retained artifacts include
+`instrument.rs`, `pristine/`, the private instrumented app/modules,
+`comparison-diagnostic.rs`, `diagnostic.patch`, runner scripts, `control*`,
+`pair*` setup-error logs, `valid-pair*/{meta,comparison.log,firefox.log,trace.jsonl,
+final-status.json}`, and per-failure `attribution.json`. Diagnostic sources were
+restored byte-for-byte and rebuilt; all source hashes match verified main's
+`iter258-resume/frozen-source.sha256`, allowing reuse of its ordered passing commit
+gates for this documentation-only recovery. Actual process cleanup retained all
+run-owned profiles as evidence, terminated/reaped only recorded browser PIDs and
+stopped owned daemons; desktop Firefox1112 remained untouched. No full-sweep profile
+summary is asserted. Detailed commands, phase times, checks and stopping decision
+are in the implementation report; actual token usage is unavailable.
+
+## Original managed-path follow-up — 2026-09-19, 22:37–22:44 CEST
+
+Review finding R1's distinct managed sequence was run within its fixed bounds:
+the original `LiveFirefox::headless_on_random_port` launch sequence and tab-ready poll,
+`with_daemon`, immediate Guardian navigation, the existing15-second live-target
+wait, failure-time daemon status, then stop before consent. No direct watcher,
+periodic `getTarget`, synthetic delay, consent call or iteration275 work was added.
+One serial run and the permitted fixed block of three independently-owned
+concurrent runs exhausted the four-run cap. The serial run and concurrent run2
+reproduced the daemon loss; concurrent runs1/3 retained replacement targets.
+
+The two failures have the same bounded wire observation. Daemon watcher
+`server1.conn5.watcher3` received the initial top-level availability for
+innerWindowId8589934593 / BC11 and then its destruction. Network resources prove
+replacement innerWindowId17179869185 / BC11 existed, but no replacement
+top-level `target-available-form` reached that watcher. At the end of15seconds the
+daemon reported target_count1/live_target_count0 with an alive dispatcher, equal
+started/finished frame counters, zero in-flight frame and no RPC-slot owner
+(serial93/93; concurrent run2 94/94). The passing concurrent controls received the
+replacement top-level availability and ended target_count3/live_target_count2.
+
+The requested Firefox-side branch discrimination was not captured. The managed
+launcher selected the private instrumented app and fresh managed profiles, and its
+temporary hook retained both browser stdout and stderr, but each `firefox.log`
+contained only headless/GFX startup lines and no `TRACE262` records. Supervisor
+inspection found a concrete instrumentation error: the patch added the dump
+preference inside `ensure_devtools_prefs`, called only for an explicitly supplied
+profile. These fresh managed launches instead write `USER_JS` directly, which the
+patch did not change. The worker's claim that dump was enabled in these fresh
+profiles is therefore unsupported and corrected here. This is a setup defect,
+not evidence that managed Firefox cannot emit the traces. These failures cannot be
+assigned from this capture to legacy suppression, membership omission or parent
+rejection. No causal product repair is
+selected. The earlier six-pair stop remains in force, the original acceptance
+criteria remain unchanged, and no further unchanged sampling is authorized by
+this result. The four managed captures also exhausted their declared cap, including
+the two failures with incomplete tracing. The precise resume action is to enable
+dump on the actual fresh-profile creation path, retain proof of the effective
+preference and an ordinary replacement's full trace before sampling, and use a
+new explicitly bounded investigation allowance; do not silently reset this cap.
+No further live run was performed to correct the instrumentation in this attempt.
+
+Evidence is in
+`.git/ralph-loop/20260919-remaining-2211/iter262-managed/`, including the exact
+diagnostic patch, original source bytes, redacted client/daemon logs, launch
+PID/profile/endpoints for the three fully-instrumented runs, restoration/rebuild
+proof and the mechanical implementation report. The first serial launch predates
+the launch-metadata print hook, so its browser PID/profile are unavailable; its
+Firefox/daemon endpoints and wire trace are retained. All temporary Rust changes
+were restored byte-for-byte, the relevant product-source diff against
+`origin/main` is empty, owned browsers/daemons/listeners are gone, and desktop
+Firefox PID1112 remained running. Actual token usage is unavailable.
