@@ -53,6 +53,13 @@ pub mod request {
         #[serde(rename = "resourceTypes")]
         pub resource_types: Vec<String>,
     }
+
+    /// Args for `getParentBrowsingContextID`.
+    #[derive(Debug, Clone, Default, Serialize)]
+    pub struct GetParentBrowsingContextId {
+        #[serde(rename = "browsingContextID")]
+        pub browsing_context_id: u64,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -83,25 +90,6 @@ pub mod response {
     #[derive(Debug, Clone, Default, Deserialize)]
     pub struct ClearResources {}
 
-    /// A generic actor reference with a top-level `actor` field.
-    ///
-    /// Retained for the accessor methods that are not yet wired to a live
-    /// consumer. NOTE (iter-103): the real Firefox `watcher.js` spec returns
-    /// these accessors' actors under a *named* key whose value is a typed-actor
-    /// object (`{actor: <id>, …}`), not a top-level `actor` — see
-    /// `ConfigurationActorRef` for the corrected shape used by
-    /// `getTargetConfigurationActor`. The remaining methods
-    /// (`getBlackboxingActor`, `getBreakpointListActor`,
-    /// `getThreadConfigurationActor`) share the same latent mismatch but have no
-    /// live consumer yet; fixing them is out of scope for iter-103.
-    /// `getNetworkParentActor` was corrected to the nested `network` shape in
-    /// iter-110 (iter-109 guessed `networkParent`; the live key is `network`) —
-    /// see `NetworkParentActorRef`.
-    #[derive(Debug, Clone, Deserialize)]
-    pub struct ActorRef {
-        pub actor: ActorId,
-    }
-
     /// Reply for `getTargetConfigurationActor`.
     ///
     /// Firefox returns `{"configuration": {"actor": "<id>", …}, "from": …}` —
@@ -110,6 +98,25 @@ pub mod response {
     /// a live Firefox trace in iter-103).
     #[derive(Debug, Clone, Deserialize)]
     pub struct ConfigurationActorRef {
+        pub configuration: NestedActorId,
+    }
+
+    /// Reply for `getBlackboxingActor`.
+    #[derive(Debug, Clone, Deserialize)]
+    pub struct BlackboxingActorRef {
+        pub blackboxing: NestedActorId,
+    }
+
+    /// Reply for `getBreakpointListActor`.
+    #[derive(Debug, Clone, Deserialize)]
+    pub struct BreakpointListActorRef {
+        #[serde(rename = "breakpointList")]
+        pub breakpoint_list: NestedActorId,
+    }
+
+    /// Reply for `getThreadConfigurationActor`.
+    #[derive(Debug, Clone, Deserialize)]
+    pub struct ThreadConfigurationActorRef {
         pub configuration: NestedActorId,
     }
 
@@ -168,6 +175,7 @@ impl Method for UnwatchResources {
     const NAME: &'static str = "unwatchResources";
     type Args = request::UnwatchResources;
     type Reply = response::UnwatchResources;
+    const ONEWAY: bool = true;
 }
 
 /// `watchTargets` method marker.
@@ -210,7 +218,7 @@ pub struct GetParentBrowsingContextId;
 impl sealed::Sealed for GetParentBrowsingContextId {}
 impl Method for GetParentBrowsingContextId {
     const NAME: &'static str = "getParentBrowsingContextID";
-    type Args = NoArgs;
+    type Args = request::GetParentBrowsingContextId;
     type Reply = response::GetParentBrowsingContextId;
 }
 
@@ -229,7 +237,7 @@ impl sealed::Sealed for GetBlackboxingActor {}
 impl Method for GetBlackboxingActor {
     const NAME: &'static str = "getBlackboxingActor";
     type Args = NoArgs;
-    type Reply = response::ActorRef;
+    type Reply = response::BlackboxingActorRef;
 }
 
 /// `getBreakpointListActor` method marker.
@@ -238,7 +246,7 @@ impl sealed::Sealed for GetBreakpointListActor {}
 impl Method for GetBreakpointListActor {
     const NAME: &'static str = "getBreakpointListActor";
     type Args = NoArgs;
-    type Reply = response::ActorRef;
+    type Reply = response::BreakpointListActorRef;
 }
 
 /// `getTargetConfigurationActor` method marker.
@@ -256,7 +264,7 @@ impl sealed::Sealed for GetThreadConfigurationActor {}
 impl Method for GetThreadConfigurationActor {
     const NAME: &'static str = "getThreadConfigurationActor";
     type Args = NoArgs;
-    type Reply = response::ActorRef;
+    type Reply = response::ThreadConfigurationActorRef;
 }
 
 // ---------------------------------------------------------------------------
@@ -333,6 +341,7 @@ mod tests {
     fn oneway_flags_are_correct() {
         // oneway methods must set ONEWAY = true.
         const { assert!(UnwatchTargets::ONEWAY) };
+        const { assert!(UnwatchResources::ONEWAY) };
         const { assert!(ClearResources::ONEWAY) };
         // Regular methods must NOT be oneway.
         const { assert!(!WatchResources::ONEWAY) };
@@ -342,12 +351,26 @@ mod tests {
     }
 
     #[test]
-    fn actor_ref_response_deserializes() {
-        // Flat shape retained for the accessors (blackboxing/breakpoint-list/
-        // thread-configuration) that still deserialize as `ActorRef`.
-        let v = json!({"from": "server1.conn0.watcher4", "actor": "server1.conn0.blackboxing5"});
-        let r: response::ActorRef = serde_json::from_value(v).unwrap();
-        assert_eq!(r.actor.as_ref(), "server1.conn0.blackboxing5");
+    fn named_actor_responses_deserialize() {
+        let blackboxing = json!({"blackboxing": {"actor": "server1.conn0.blackboxing5"}});
+        let r: response::BlackboxingActorRef = serde_json::from_value(blackboxing).unwrap();
+        assert_eq!(r.blackboxing.actor.as_ref(), "server1.conn0.blackboxing5");
+
+        let breakpoints = json!({"breakpointList": {"actor": "server1.conn0.breakpointList6"}});
+        let r: response::BreakpointListActorRef = serde_json::from_value(breakpoints).unwrap();
+        assert_eq!(
+            r.breakpoint_list.actor.as_ref(),
+            "server1.conn0.breakpointList6"
+        );
+
+        let configuration =
+            json!({"configuration": {"actor": "server1.conn0.threadConfiguration7"}});
+        let r: response::ThreadConfigurationActorRef =
+            serde_json::from_value(configuration).unwrap();
+        assert_eq!(
+            r.configuration.actor.as_ref(),
+            "server1.conn0.threadConfiguration7"
+        );
     }
 
     #[test]
@@ -394,6 +417,15 @@ mod tests {
         let v = json!({"from": "server1.conn0.watcher4", "browsingContextID": 42});
         let r: response::GetParentBrowsingContextId = serde_json::from_value(v).unwrap();
         assert_eq!(r.browsing_context_id, Some(42));
+    }
+
+    #[test]
+    fn get_parent_browsing_context_id_serializes_requested_id() {
+        let args = request::GetParentBrowsingContextId {
+            browsing_context_id: 42,
+        };
+        let v = serde_json::to_value(args).unwrap();
+        assert_eq!(v, json!({"browsingContextID": 42}));
     }
 
     #[test]
