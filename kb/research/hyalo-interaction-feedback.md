@@ -314,3 +314,21 @@ the correct worktree exposed `Restart attribution capture — 2026-09-19`, and t
 exact section read succeeded. These mistakes reinforce the usefulness of compact
 outlines and explicit checkout context; they are separate from the reproduced
 multi-file help/runtime mismatch.
+## September20 RDP foundation spike
+
+Observed from the spike checkout: `hyalo types list --format text` reported no
+configured types, so free-form research-note creation still cannot use `hyalo new`.
+The note was created directly under the existing unsupported-body-operation
+allowance. `hyalo read research/hyalo-interaction-feedback.md --lines 1:45
+--format text` returned the requested compact body. Reading Jev feedback from the
+main-based spike checkout failed because that file existed only on the preserved
+planning branch; repeating in the planning checkout succeeded. This was a checkout
+selection mistake, not a Hyalo defect. `read --frontmatter` returns frontmatter
+only; two supported reads carried frontmatter and body into the new checkout.
+Long `hyalo --help` again exceeded the caller's output budget; short `new -h` was
+sufficient for the capability check. No latency comparison or performance claim.
+
+PR263 publication reused `hyalo read research/rdp-foundation-spike-2026-09-20.md
+--format text` and the feedback-note read successfully. Review-repair body prose
+used the documented direct-edit allowance. No new Hyalo failure or measured
+performance claim in this publication pass.

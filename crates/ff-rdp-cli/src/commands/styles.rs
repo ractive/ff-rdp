@@ -18,7 +18,7 @@ fn setup(cli: &Cli, selector: &str) -> Result<(ConnectedTab, ActorId, ActorId), 
     let mut ctx = connect_and_get_target(cli)?;
 
     let inspector_actor = ctx
-        .target
+        .target()
         .inspector_actor
         .clone()
         .ok_or_else(|| AppError::User("no inspector actor available".to_string()))?;

@@ -379,7 +379,7 @@ fn navigated_after_refresh(
     page_origin: &mut Option<super::page_view::NavigationOrigin>,
 ) -> bool {
     refresh_submission_target(ctx, page_origin);
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
     navigated_away(ctx, &console_actor, url_before, timeout_ms)
 }
 
@@ -501,7 +501,7 @@ pub fn run_core(
     opts: &TypeOptions<'_>,
 ) -> Result<(serde_json::Value, bool), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
-    let mut console_actor = ctx.target.console_actor.clone();
+    let mut console_actor = ctx.target().console_actor.clone();
 
     let wait_timeout_ms = opts.wait_timeout_ms.unwrap_or(cli.timeout);
 
@@ -575,7 +575,7 @@ pub fn run_core(
         // `--with-page`.
         if navigated {
             refresh_submission_target(&mut ctx, &mut page_origin);
-            console_actor = ctx.target.console_actor.clone();
+            console_actor = ctx.target().console_actor.clone();
         }
     }
 

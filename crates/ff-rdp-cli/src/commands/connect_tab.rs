@@ -26,7 +26,7 @@ pub struct ConnectedTab {
     /// without a global read).
     #[allow(dead_code)]
     pub(crate) firefox_version: Option<u32>,
-    pub(crate) target: TargetInfo,
+    target: TargetInfo,
     tab_actor: ActorId,
     /// Whether this connection goes through the daemon proxy.
     pub(crate) via_daemon: bool,
@@ -473,7 +473,7 @@ fn handshake_and_resolve_tab(
 ///
 /// Called once per `handshake_and_resolve_tab` and again after each
 /// `refresh_target` to keep the registry in sync with Firefox's actor state.
-pub(crate) fn register_target_fronts(registry: &Arc<Registry>, target: &TargetInfo) {
+fn register_target_fronts(registry: &Arc<Registry>, target: &TargetInfo) {
     let target_id = target.actor.clone();
     let console_id = target.console_actor.clone();
 
@@ -500,12 +500,22 @@ impl ConnectedTab {
     ///
     /// Callers use this to look up pre-registered fronts or to register
     /// additional fronts (e.g. after acquiring a watcher actor).
-    pub fn registry(&self) -> &Arc<Registry> {
+    #[cfg(test)]
+    fn registry(&self) -> &Arc<Registry> {
         self.session.registry()
     }
 
     pub fn target_tab_actor(&self) -> &ActorId {
         &self.tab_actor
+    }
+
+    /// Return the current target metadata resolved for this tab.
+    ///
+    /// Target replacement is intentionally available only through
+    /// [`refresh_target_result`](Self::refresh_target_result), which keeps the
+    /// registry and cached metadata synchronized.
+    pub fn target(&self) -> &TargetInfo {
+        &self.target
     }
 
     /// Return the attached [`ResourceCommand`] bus, or create-and-attach one
@@ -552,31 +562,53 @@ impl ConnectedTab {
     /// then reads must wait for the navigation first — see
     /// `page_view::collect_settled`.
     ///
-    /// When a refresh succeeds the registry is also updated: the old console
-    /// front is invalidated (via `invalidate_target` on the old target ID) and
-    /// the new target + console fronts are registered.
+    /// When a refresh succeeds the registry and cached metadata are updated as
+    /// one operation. A same-target refresh leaves existing handles alive;
+    /// replacement invalidates the old target tree before registering the new
+    /// target and console fronts.
     ///
     /// Errors are intentionally swallowed: a failed refresh is non-fatal
     /// since the caller will get a `noSuchActor` error on the next eval
     /// (same failure mode as before) and the retry with a fresh target will
     /// succeed.
     pub fn refresh_target(&mut self) {
-        let tab_actor = self.tab_actor.clone();
-        match TabActor::get_target(self.session.transport_mut(), &tab_actor) {
-            Ok(fresh) => {
-                // Invalidate the stale target front and all its owned actors.
-                let old_target_id = self.target.actor.clone();
-                self.session.registry().invalidate_target(&old_target_id);
-                // Register the fresh fronts.
-                register_target_fronts(self.session.registry(), &fresh);
-                self.target = fresh;
-            }
-            Err(e) => {
-                // stderr-ok: (b) warn-and-continue — non-fatal per the doc
-                // comment above; retried with a fresh target on next eval.
-                eprintln!("warning: navigate: could not refresh target actors: {e:#}");
-            }
+        if let Err(e) = self.refresh_target_result() {
+            // stderr-ok: (b) warn-and-continue — non-fatal per the doc
+            // comment above; retried with a fresh target on next eval.
+            eprintln!("warning: navigate: could not refresh target actors: {e:#}");
         }
+    }
+
+    /// Re-resolve and install the current target, returning its console actor.
+    ///
+    /// This is the fallible form used by command paths that cannot continue on
+    /// a stale actor. Keeping the wire round trip and state transition here
+    /// prevents consumers from updating `target` without updating the session
+    /// registry (or vice versa).
+    pub(crate) fn refresh_target_result(&mut self) -> Result<ActorId, AppError> {
+        let tab_actor = self.tab_actor.clone();
+        let fresh = TabActor::get_target(self.session.transport_mut(), &tab_actor)
+            .map_err(AppError::from)?;
+        let console_actor = fresh.console_actor.clone();
+        self.install_target(fresh);
+        Ok(console_actor)
+    }
+
+    fn install_target(&mut self, fresh: TargetInfo) {
+        let old_target = self.target.actor.clone();
+        let old_console = self.target.console_actor.clone();
+
+        if old_target != fresh.actor {
+            self.session.registry().invalidate_target(&old_target);
+        } else if old_console != fresh.console_actor {
+            // Firefox retained the target actor but replaced one of its
+            // dependent fronts. Preserve the target handle while ensuring the
+            // displaced console handle cannot be used as if it were current.
+            self.session.registry().invalidate_target(&old_console);
+        }
+
+        register_target_fronts(self.session.registry(), &fresh);
+        self.target = fresh;
     }
 
     /// Guard the wait loops against the current target being torn down by a
@@ -643,13 +675,25 @@ impl ConnectedTab {
             inner_window_id: None,
             url: None,
         };
+        let session = Session::new(transport);
+        register_target_fronts(session.registry(), &target);
         Self {
-            session: Session::new(transport),
+            session,
             firefox_version: None,
             target,
             tab_actor: ActorId::from("conn0/tab1"),
             via_daemon: false,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_target_metadata_for_test(
+        &mut self,
+        inner_window_id: Option<u64>,
+        url: Option<String>,
+    ) {
+        self.target.inner_window_id = inner_window_id;
+        self.target.url = url;
     }
 }
 
@@ -718,6 +762,13 @@ mod tests {
         /// `list_tabs_ok = false` makes the server answer `listTabs` with an
         /// actor error — the "greeting landed, listTabs did not" branch.
         fn start(list_tabs_ok: bool) -> Self {
+            Self::start_with_get_target_failure(list_tabs_ok, None)
+        }
+
+        fn start_with_get_target_failure(
+            list_tabs_ok: bool,
+            fail_get_target_after: Option<usize>,
+        ) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock");
             let port = listener.local_addr().expect("addr").port();
             listener.set_nonblocking(true).expect("nonblocking");
@@ -733,7 +784,7 @@ mod tests {
                         Ok((stream, _)) => {
                             counter.fetch_add(1, Ordering::SeqCst);
                             stream.set_nonblocking(false).expect("blocking stream");
-                            serve(stream, list_tabs_ok);
+                            serve(stream, list_tabs_ok, fail_get_target_after);
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                             std::thread::sleep(Duration::from_millis(5));
@@ -809,7 +860,7 @@ mod tests {
         let _ = stream.write_all(frame.as_bytes());
     }
 
-    fn serve(mut stream: TcpStream, list_tabs_ok: bool) {
+    fn serve(mut stream: TcpStream, list_tabs_ok: bool, fail_get_target_after: Option<usize>) {
         send(
             &mut stream,
             &json!({
@@ -820,6 +871,7 @@ mod tests {
             }),
         );
 
+        let mut get_target_count = 0;
         while let Some(request) = read_frame(&mut stream) {
             let to = request
                 .get("to")
@@ -835,10 +887,27 @@ mod tests {
                 "listTabs" if list_tabs_ok => {
                     serde_json::from_str(LIST_TABS_REPLY).expect("recorded listTabs")
                 }
+                "getTarget"
+                    if fail_get_target_after.is_some_and(|limit| get_target_count >= limit) =>
+                {
+                    json!({
+                        "from": to,
+                        "error": "noSuchActor",
+                        "message": "mock refresh failure",
+                    })
+                }
                 "getTarget" => {
                     let mut reply: Value =
                         serde_json::from_str(GET_TARGET_REPLY).expect("recorded getTarget");
                     reply["from"] = json!(to);
+                    if get_target_count > 0 {
+                        reply["frame"]["actor"] = json!("server1.conn0.child99/target99");
+                        reply["frame"]["consoleActor"] =
+                            json!("server1.conn0.child99/consoleActor99");
+                        reply["frame"]["innerWindowId"] = json!(99);
+                        reply["frame"]["url"] = json!("https://example.com/refreshed");
+                    }
+                    get_target_count += 1;
                     reply
                 }
                 // Everything else (including `listTabs` in the failure mode)
@@ -881,7 +950,7 @@ mod tests {
             "no --tab flag resolves to the selected tab"
         );
         assert_eq!(
-            ctx.target.console_actor.as_ref(),
+            ctx.target().console_actor.as_ref(),
             "server1.conn0.child2/consoleActor3"
         );
 
@@ -911,6 +980,133 @@ mod tests {
         );
         drop(ctx);
         assert_eq!(mock.connections(), 1);
+    }
+
+    #[test]
+    fn same_target_refresh_keeps_handles_alive_and_updates_metadata() {
+        let mock = MockFirefox::start(true);
+        let cli = mock.cli(&[]);
+        let mut ctx = connect_and_list_tabs(&cli, TabListRouting::Direct)
+            .unwrap_or_else(|e| panic!("connect_and_list_tabs: {}", e.into_app_error()))
+            .attach(&cli)
+            .expect("attach");
+        let target = ctx.target().actor.clone();
+        let console = ctx.target().console_actor.clone();
+        let mut refreshed = ctx.target().clone();
+        refreshed.url = Some("https://example.com/refreshed".to_owned());
+
+        ctx.install_target(refreshed);
+
+        assert!(ctx.registry().assert_alive(&target).is_ok());
+        assert!(ctx.registry().assert_alive(&console).is_ok());
+        assert_eq!(
+            ctx.target().url.as_deref(),
+            Some("https://example.com/refreshed")
+        );
+    }
+
+    #[test]
+    fn target_replacement_invalidates_old_handles_and_registers_new_fronts() {
+        let mock = MockFirefox::start(true);
+        let cli = mock.cli(&[]);
+        let mut ctx = connect_and_list_tabs(&cli, TabListRouting::Direct)
+            .unwrap_or_else(|e| panic!("connect_and_list_tabs: {}", e.into_app_error()))
+            .attach(&cli)
+            .expect("attach");
+        let old_target = ctx.target().actor.clone();
+        let old_console = ctx.target().console_actor.clone();
+        let mut replacement = ctx.target().clone();
+        replacement.actor = ActorId::from("server1.conn0.child9/target9");
+        replacement.console_actor = ActorId::from("server1.conn0.child9/console9");
+        replacement.inner_window_id = Some(99);
+        let new_target = replacement.actor.clone();
+        let new_console = replacement.console_actor.clone();
+
+        ctx.install_target(replacement);
+
+        assert!(ctx.registry().assert_alive(&old_target).is_err());
+        assert!(ctx.registry().assert_alive(&old_console).is_err());
+        assert_eq!(ctx.registry().count_alive_target_fronts_for(&new_target), 1);
+        assert_eq!(ctx.registry().count_alive_fronts_for_target(&new_target), 1);
+        assert!(ctx.registry().assert_alive(&new_console).is_ok());
+        assert_eq!(ctx.target().inner_window_id, Some(99));
+    }
+
+    #[test]
+    fn same_target_console_replacement_only_invalidates_displaced_front() {
+        let mock = MockFirefox::start(true);
+        let cli = mock.cli(&[]);
+        let mut ctx = connect_and_list_tabs(&cli, TabListRouting::Direct)
+            .unwrap_or_else(|e| panic!("connect_and_list_tabs: {}", e.into_app_error()))
+            .attach(&cli)
+            .expect("attach");
+        let target = ctx.target().actor.clone();
+        let old_console = ctx.target().console_actor.clone();
+        let mut refreshed = ctx.target().clone();
+        refreshed.console_actor = ActorId::from("server1.conn0.child2/consoleActor4");
+        let new_console = refreshed.console_actor.clone();
+
+        ctx.install_target(refreshed);
+
+        assert!(ctx.registry().assert_alive(&target).is_ok());
+        assert!(ctx.registry().assert_alive(&old_console).is_err());
+        assert_eq!(ctx.registry().count_alive_target_fronts_for(&target), 1);
+        assert_eq!(ctx.registry().count_alive_fronts_for_target(&target), 1);
+        assert!(ctx.registry().assert_alive(&new_console).is_ok());
+    }
+
+    #[test]
+    fn refresh_target_result_installs_mock_get_target_reply() {
+        let mock = MockFirefox::start(true);
+        let cli = mock.cli(&[]);
+        let mut ctx = connect_and_list_tabs(&cli, TabListRouting::Direct)
+            .unwrap_or_else(|e| panic!("connect_and_list_tabs: {}", e.into_app_error()))
+            .attach(&cli)
+            .expect("attach");
+        let old_target = ctx.target().actor.clone();
+        let old_console = ctx.target().console_actor.clone();
+
+        let console = ctx.refresh_target_result().expect("mock getTarget refresh");
+        let new_target = ctx.target().actor.clone();
+
+        assert_eq!(console.as_ref(), "server1.conn0.child99/consoleActor99");
+        assert_eq!(new_target.as_ref(), "server1.conn0.child99/target99");
+        assert_eq!(ctx.target().inner_window_id, Some(99));
+        assert_eq!(
+            ctx.target().url.as_deref(),
+            Some("https://example.com/refreshed")
+        );
+        assert!(ctx.registry().assert_alive(&old_target).is_err());
+        assert!(ctx.registry().assert_alive(&old_console).is_err());
+        assert_eq!(ctx.registry().count_alive_target_fronts_for(&new_target), 1);
+        assert_eq!(ctx.registry().count_alive_fronts_for_target(&new_target), 1);
+    }
+
+    #[test]
+    fn refresh_target_result_failure_preserves_prior_metadata() {
+        let mock = MockFirefox::start_with_get_target_failure(true, Some(1));
+        let cli = mock.cli(&[]);
+        let mut ctx = connect_and_list_tabs(&cli, TabListRouting::Direct)
+            .unwrap_or_else(|e| panic!("connect_and_list_tabs: {}", e.into_app_error()))
+            .attach(&cli)
+            .expect("initial getTarget succeeds");
+        let before_actor = ctx.target().actor.clone();
+        let before_console = ctx.target().console_actor.clone();
+        let before_url = ctx.target().url.clone();
+
+        assert!(ctx.refresh_target_result().is_err());
+
+        assert_eq!(ctx.target().actor, before_actor);
+        assert_eq!(ctx.target().console_actor, before_console);
+        assert_eq!(ctx.target().url, before_url);
+        assert_eq!(
+            ctx.registry().count_alive_target_fronts_for(&before_actor),
+            1
+        );
+        assert_eq!(
+            ctx.registry().count_alive_fronts_for_target(&before_actor),
+            1
+        );
     }
 
     /// The two failure branches the home view renders differently: a greeting

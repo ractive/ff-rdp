@@ -5,6 +5,7 @@ status: in-progress
 tags: [research, tooling, jev]
 ---
 
+
 # Jev integration experience
 
 Track actual usefulness and friction during the authorized remaining-queue work.
@@ -44,3 +45,26 @@ comparison with actual retained artifacts, not a semantic classifier. No Jev cal
 was made for that review or its record-only repair. The integration remained
 optional without blocking progress, but this continuation supplies no additional
 evidence of semantic usefulness or measured savings beyond reachability.
+
+## 2026-09-20 — additional investigation preflight
+
+No Jev call was made for exact ref/ancestry checks, known restrictions, or the
+mandatory independent capture designs/reviews. Those tasks did not offer a useful
+optional semantic batch. No new latency/token/usefulness measurement or savings
+claim is available; no paid model comparisons or reachability probes were run.
+
+## September20 additional-block closeout
+
+No Jev call was made during this run. Capture limits, exact source/manifest
+identity checks and concrete review findings were deterministic checks or required
+substantive review, without a useful optional semantic batch. Actual Jev usage is
+zero calls; latency is not measured and no model-token or time savings are claimed.
+No paid comparison or benchmark was run.
+
+## September20 RDP foundation spike
+
+No Jev call was made. This work comprised concrete Rust edits, compiler errors,
+exact regression checks and substantive independent review. There was no useful
+optional semantic batch. Usage: zero calls; latency unavailable; no savings
+measurement or paid model comparison. Historical feedback above was carried from
+the preserved planning branch because the spike base main did not yet contain it.

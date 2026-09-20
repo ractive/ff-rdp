@@ -88,7 +88,7 @@ const SNAPSHOT_JS_TEMPLATE: &str = r"(function() {
 
 pub fn run(cli: &Cli, depth: u32, max_chars: u32, query: &QueryFilter) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
 
     let js = SNAPSHOT_JS_TEMPLATE
         .replace("__UNIQUE_SELECTOR_FN__", UNIQUE_SELECTOR_JS_FN)

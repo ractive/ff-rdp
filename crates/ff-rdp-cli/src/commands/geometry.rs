@@ -86,7 +86,7 @@ const GEOMETRY_JS_TEMPLATE: &str = r"(function() {
 
 pub fn run(cli: &Cli, selectors: &[String], include_hidden: bool) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
 
     // By default we skip hidden/zero-sized elements (visible_only=true).
     // --include-hidden opts out of that filter.

@@ -139,7 +139,7 @@ pub fn run(
 ) -> Result<(), AppError> {
     let mut ctx = connect_direct(cli)?;
 
-    let accessibility_actor = ctx.target.accessibility_actor.clone().ok_or_else(|| {
+    let accessibility_actor = ctx.target().accessibility_actor.clone().ok_or_else(|| {
         AppError::User(
             "no accessibility actor available — accessibility may not be enabled in Firefox"
                 .to_string(),
@@ -583,7 +583,7 @@ fn run_selector_mode(
         .replace("__DEPTH__", &depth.to_string())
         .replace("__MAX_CHARS__", &max_chars.to_string());
 
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
     let eval_result = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, &js)
         .map_err(AppError::from)?;
 
@@ -752,7 +752,7 @@ fn strip_actor_ids(value: &mut Value) {
 /// whole document.
 pub fn run_critical(cli: &Cli, root_selector: Option<&str>) -> Result<(), AppError> {
     let mut ctx = connect_direct(cli)?;
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
 
     let root = root_selector.unwrap_or(":root");
     let js = A11Y_CRITICAL_JS_TEMPLATE.replace("__SELECTOR__", &escape_selector(root));

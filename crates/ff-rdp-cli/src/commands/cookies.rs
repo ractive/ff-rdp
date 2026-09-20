@@ -178,7 +178,7 @@ fn attach_storage_degraded_warning(
 /// Errors and empty results are returned as an empty Vec.
 fn fetch_document_cookies(ctx: &mut ConnectedTab) -> Vec<Value> {
     let js = "document.cookie";
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
     let Ok(eval_result) =
         WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, js)
     else {
@@ -239,7 +239,7 @@ fn detect_consent_banner(ctx: &mut ConnectedTab) -> Option<String> {
 }})()"
     );
 
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
     let eval_result =
         WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, &js).ok()?;
 
