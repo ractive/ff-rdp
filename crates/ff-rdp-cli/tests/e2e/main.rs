@@ -1,3 +1,5 @@
+#[path = "../common/mod.rs"]
+mod common;
 mod support;
 
 mod cli_cookies_help;
@@ -22,6 +24,7 @@ mod eval;
 mod exit_codes;
 mod flag_subcommand_hints;
 mod geometry;
+mod harness_session;
 mod hints;
 mod home;
 mod inspect;

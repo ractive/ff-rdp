@@ -94,7 +94,7 @@ pub fn run_to(
     opts: &ScrollOptions<'_>,
 ) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
 
     let wait_timeout_ms = opts.wait_timeout_ms.unwrap_or(cli.timeout);
 
@@ -192,7 +192,7 @@ pub fn run_by(cli: &Cli, dx: i64, dy: Option<i64>, opts: ScrollByOptions) -> Res
     }
 
     let mut ctx = connect_and_get_target(cli)?;
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
 
     let behavior = if smooth { "smooth" } else { "auto" };
     let dy_expr = if page_down {
@@ -245,7 +245,7 @@ fn run_scroll_absolute(
     page_args: &crate::cli::args::PageViewArgs,
 ) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
 
     // iter-129 Theme D: on a page with a CMP/modal overlay that sets
     // `overflow:hidden` on <html>/<body>, `window.scrollTo` silently no-ops —
@@ -300,7 +300,7 @@ pub fn run_container(
     page_args: &crate::cli::args::PageViewArgs,
 ) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
 
     let escaped = escape_selector(selector);
     let selector_lit = js_string_literal(selector);
@@ -358,7 +358,7 @@ pub fn run_until(
     }
 
     let mut ctx = connect_and_get_target(cli)?;
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
 
     let escaped = escape_selector(selector);
     let selector_lit = js_string_literal(selector);
@@ -492,7 +492,7 @@ pub fn run_text(
     page_args: &crate::cli::args::PageViewArgs,
 ) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
 
     let text_json = serde_json::to_string(text)
         .map_err(|e| AppError::from(anyhow::anyhow!("failed to encode text argument: {e}")))?;

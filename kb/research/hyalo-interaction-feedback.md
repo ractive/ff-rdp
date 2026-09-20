@@ -208,3 +208,17 @@ Long instruction/help output was truncated by the calling tool; narrower reads
 recovered it. A guessed historical log path was absent; no passing result was
 inferred. Final plan-only verification repeated once to correct a one-second
 sweep-start transcription against the raw log; no test was repeated for this.
+
+## September20 RDP foundation spike
+
+Observed from the spike checkout: `hyalo types list --format text` reported no
+configured types, so free-form research-note creation still cannot use `hyalo new`.
+The note was created directly under the existing unsupported-body-operation
+allowance. `hyalo read research/hyalo-interaction-feedback.md --lines 1:45
+--format text` returned the requested compact body. Reading Jev feedback from the
+main-based spike checkout failed because that file existed only on the preserved
+planning branch; repeating in the planning checkout succeeded. This was a checkout
+selection mistake, not a Hyalo defect. `read --frontmatter` returns frontmatter
+only; two supported reads carried frontmatter and body into the new checkout.
+Long `hyalo --help` again exceeded the caller's output budget; short `new -h` was
+sufficient for the capability check. No latency comparison or performance claim.

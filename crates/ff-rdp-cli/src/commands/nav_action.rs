@@ -66,7 +66,7 @@ pub fn run(
     page_args: &crate::cli::args::PageViewArgs,
 ) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
-    let target_actor = ctx.target.actor.clone();
+    let target_actor = ctx.target().actor.clone();
 
     let (action_name, force_reload) = match action {
         NavAction::Reload { force, .. } => ("reload", force),
@@ -103,7 +103,7 @@ pub fn run(
         // comment).
         let requested_url = match action {
             NavAction::Reload { .. } => {
-                let console_actor = ctx.target.console_actor.clone();
+                let console_actor = ctx.target().console_actor.clone();
                 eval_location_href(ctx.transport_mut(), &console_actor)
             }
             NavAction::Back { .. } | NavAction::Forward { .. } => String::new(),
@@ -183,7 +183,7 @@ pub fn run_reload_wait_idle(
     page_args: &crate::cli::args::PageViewArgs,
 ) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
-    let target_actor = ctx.target.actor.clone();
+    let target_actor = ctx.target().actor.clone();
 
     if ctx.via_daemon {
         return run_reload_wait_idle_daemon(

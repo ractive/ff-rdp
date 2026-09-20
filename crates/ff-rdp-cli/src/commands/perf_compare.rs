@@ -55,7 +55,7 @@ fn navigate_and_wait(
         .map_err(AppError::from)?;
 
     // Poll readyState until complete.
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
     let timeout = Duration::from_millis(timeout_ms);
     let poll = Duration::from_millis(POLL_INTERVAL_MS);
     let started = Instant::now();
@@ -182,7 +182,7 @@ fn eval_to_json_string(
     script: &str,
     label: &str,
 ) -> Result<String, AppError> {
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
     let eval_result =
         WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, script)
             .map_err(AppError::from)?;
@@ -354,7 +354,7 @@ pub fn run(cli: &Cli, urls: &[String], labels: Option<&[String]>) -> Result<(), 
     }
 
     let mut ctx = connect_and_get_target(cli)?;
-    let target_actor = ctx.target.actor.clone();
+    let target_actor = ctx.target().actor.clone();
 
     let mut results: Vec<Value> = Vec::with_capacity(urls.len());
 

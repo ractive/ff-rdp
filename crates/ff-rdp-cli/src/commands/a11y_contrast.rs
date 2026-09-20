@@ -13,7 +13,7 @@ use super::js_helpers::resolve_result;
 
 pub fn run(cli: &Cli, selector: Option<&str>, fail_only: bool) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
 
     let sel = selector.unwrap_or("*");
     let js = CONTRAST_JS_TEMPLATE.replace("__SELECTOR__", &super::js_helpers::escape_selector(sel));
