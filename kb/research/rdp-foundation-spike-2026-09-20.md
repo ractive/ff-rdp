@@ -95,7 +95,7 @@ were verified and consolidated into one harness repair batch.
 
 The repair passes an explicit product launch timeout and adds outer cleanup
 headroom, derives autostart time from the product override plus command overhead,
-uses a shared40-second daemon-stop bound covering the complete escalation path,
+initially used a shared40-second daemon-stop bound,
 and terminates/reaps the child on polling errors. Product protocol code is unchanged.
 
 Ten focused harness checks passed. These include deterministic polling-error
@@ -115,3 +115,24 @@ match the final test inputs. No full live sweep was run for this standalone spik
 Fresh delta review and exact-head CI are recorded in the PR and the same local
 evidence directory. The initial head's10CIchecks passed; that result does not
 certify the changed repair head. No original iteration was closed.
+
+The first delta review of `2a1e2602..7a80e180` returned two medium findings:
+the stop and autostart sums still omitted independent RPC waits. These reopened
+the same two original deadline findings; they are not new product defects. The
+second repair uses a 60-second stop watchdog over a documented 55.1-second path
+and autostart `registry_wait + 11 × 5s + 5s`, covering acquisition, optional
+version lookup and stale-actor retry. Regression lower bounds name the individual
+stop phases and include all eleven autostart phases. Product locks and push-event
+streams still lack one shared operation deadline; the harness watchdog is not a
+claim that every possible product operation is absolutely bounded.
+
+The earlier successful live run remains applicable: this repair only increases
+outer watchdogs and changes their lower-bound tests, without changing command
+arguments, process ownership or the successful cleanup path. No additional live
+sampling was needed to verify this arithmetic correction. PR review reconciliation
+retains all six finding observations as four unique issues, with the two reopened
+deadline findings explicitly mapped to their original reports.
+
+The second repair passed ordered fmt, strict workspace Clippy and workspace tests
+again: 2,499 passed, 0 failed, 418 ignored. The final source matches the recorded
+test-input manifest; logs are `pr263-batch2-{fmt,clippy,tests}.log`.

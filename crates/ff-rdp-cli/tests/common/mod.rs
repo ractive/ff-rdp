@@ -1147,14 +1147,17 @@ fn terminate_and_reap(child: &mut Child) -> String {
 
 /// Outer bound for the product's complete `daemon stop` path.
 ///
-/// The registry path can spend two default 10-second CLI socket deadlines
-/// (connect and read), 2 seconds on graceful RPC shutdown, 2.3 seconds on the
-/// proxy daemon's TERM/KILL ladder, and 10.8 seconds on Firefox's ladder
-/// (2-second grace + 300 ms kill settle + 8-second port wait + 500 ms tree
-/// repoll). The remaining 4.9 seconds cover process scheduling, capture and
-/// profile removal, for a shared rounded 40-second command deadline.
+/// The registry path can spend three separate default 10-second socket waits
+/// connecting, reading the authenticated greeting and reading the RPC reply.
+/// The reply loop checks its 10-second deadline between frames, so a push frame
+/// received just before that deadline can start one final 10-second socket
+/// read. Add 2 seconds for graceful RPC shutdown, 2.3 seconds for the proxy
+/// daemon's TERM/KILL ladder, and 10.8 seconds for Firefox's ladder (2-second
+/// grace + 300 ms kill settle + 8-second port wait + 500 ms tree repoll). A
+/// rounded 60-second watchdog leaves 4.9 seconds for scheduling, capture,
+/// registry/profile cleanup and polling cadence after that 55.1-second path.
 pub(crate) fn scoped_daemon_stop_timeout() -> Duration {
-    Duration::from_secs(40)
+    Duration::from_secs(60)
 }
 
 pub(crate) fn scoped_daemon_stop(
@@ -1765,8 +1768,9 @@ pub const DAEMON_READY_TIMEOUT_ENV: &str = "FF_RDP_TEST_DAEMON_READY_TIMEOUT_S";
 const PRODUCT_DAEMON_START_TIMEOUT_ENV: &str = "FF_RDP_DAEMON_START_TIMEOUT_MS";
 
 const DEFAULT_PRODUCT_DAEMON_START_TIMEOUT_MS: u64 = 20_000;
-const DAEMON_TRIGGER_EVAL_TIMEOUT: Duration = Duration::from_secs(5);
-const DAEMON_TRIGGER_COMMAND_OVERHEAD: Duration = Duration::from_secs(5);
+const DAEMON_TRIGGER_SOCKET_TIMEOUT: Duration = Duration::from_secs(5);
+const DAEMON_TRIGGER_SOCKET_PHASES: u32 = 11;
+const DAEMON_TRIGGER_RUNNER_HEADROOM: Duration = Duration::from_secs(5);
 
 /// Resolve the product's daemon-start wait without mutating process-global
 /// environment state. Missing, malformed and zero values use the 20-second
@@ -1787,14 +1791,22 @@ fn daemon_start_timeout() -> Duration {
     )
 }
 
-/// Bound the trigger above all work it can perform: the configured registry
-/// wait, the explicit `--timeout 5000` eval fallback, and one additional
-/// socket-timeout-sized allowance for startup/handshake work, JSON
-/// serialization, temporary-file capture and polling cadence.
+/// Bound the trigger above its finite valid slow path after the configured
+/// registry wait. The explicit `--timeout 5000` applies independently to TCP
+/// connect, greeting, `listTabs`, the optional `getRoot`/`getDescription`
+/// version fallback, `getTarget`, and the eval acknowledgement/result. A stale
+/// console actor may add one refresh `getTarget` plus a second eval
+/// acknowledgement/result: eleven socket-sized phases in total. The final
+/// allowance covers scheduling, JSON/output handling and runner polling.
+///
+/// This is a conservative harness watchdog, not an absolute protocol duration:
+/// product locks and push-event streams do not yet share one operation
+/// deadline. Its purpose is to avoid killing a command while every bounded
+/// phase above is still within its own product timeout.
 pub(crate) fn daemon_autostart_trigger_timeout(registry_wait: Duration) -> Duration {
     registry_wait
-        .saturating_add(DAEMON_TRIGGER_EVAL_TIMEOUT)
-        .saturating_add(DAEMON_TRIGGER_COMMAND_OVERHEAD)
+        .saturating_add(DAEMON_TRIGGER_SOCKET_TIMEOUT.saturating_mul(DAEMON_TRIGGER_SOCKET_PHASES))
+        .saturating_add(DAEMON_TRIGGER_RUNNER_HEADROOM)
 }
 
 /// How long [`LiveFirefox::with_daemon`] waits for the autostarted daemon to

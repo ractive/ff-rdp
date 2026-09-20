@@ -283,7 +283,21 @@ fn isolated_harness_timeouts_cover_product_budgets_without_global_env_mutation()
         isolated_launch_command_timeout(Duration::from_secs(45), Duration::from_secs(5));
     assert!(launch_outer > Duration::from_secs(50));
 
-    assert!(scoped_daemon_stop_timeout() > Duration::from_millis(35_100));
+    let daemon_rpc_connect = Duration::from_secs(10);
+    let daemon_rpc_greeting = Duration::from_secs(10);
+    let daemon_rpc_response_deadline = Duration::from_secs(10);
+    let daemon_rpc_final_read = Duration::from_secs(10);
+    let graceful_shutdown = Duration::from_secs(2);
+    let proxy_escalation = Duration::from_millis(2_300);
+    let firefox_escalation = Duration::from_millis(10_800);
+    let stop_product_path = daemon_rpc_connect
+        + daemon_rpc_greeting
+        + daemon_rpc_response_deadline
+        + daemon_rpc_final_read
+        + graceful_shutdown
+        + proxy_escalation
+        + firefox_escalation;
+    assert!(scoped_daemon_stop_timeout() > stop_product_path);
 
     assert_eq!(parse_daemon_start_timeout(None), Duration::from_secs(20));
     assert_eq!(
@@ -294,6 +308,10 @@ fn isolated_harness_timeouts_cover_product_budgets_without_global_env_mutation()
         parse_daemon_start_timeout(Some("0")),
         Duration::from_secs(20)
     );
-    let trigger_outer = daemon_autostart_trigger_timeout(Duration::from_secs(45));
-    assert!(trigger_outer > Duration::from_secs(50));
+    let registry_wait = Duration::from_secs(45);
+    let socket_phase = Duration::from_secs(5);
+    let post_registration_phases = 11;
+    let finite_trigger_path = registry_wait + socket_phase * post_registration_phases;
+    let trigger_outer = daemon_autostart_trigger_timeout(registry_wait);
+    assert!(trigger_outer > finite_trigger_path);
 }
