@@ -1460,6 +1460,77 @@ fn is_readystate_fresh(current_nav_start: f64, pre_epoch: f64) -> bool {
     current_nav_start > pre_epoch
 }
 
+/// Poll a watched document under one deadline. A Pending snapshot is not a
+/// usable console. A console that dies after acquisition is retired until the
+/// watcher supplies a different one; only this read is repeated, never the
+/// navigation action. Other actor/protocol errors remain terminal.
+fn poll_watched_readystate(
+    ctx: &mut super::connect_tab::ConnectedTab,
+    condition: &str,
+    timeout_ms: u64,
+) -> Result<(), AppError> {
+    use ff_rdp_core::{ActorErrorKind, ProtocolError, WebConsoleActor};
+
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let mut retired_console = None;
+    loop {
+        if Instant::now() >= deadline {
+            return Err(AppError::Timeout(
+                "waiting for watched document readiness".into(),
+            ));
+        }
+        let console = ctx.refresh_target_until(deadline).map_err(|error| {
+            if Instant::now() >= deadline
+                && matches!(error, AppError::Timeout(_) | AppError::RdpTimeout { .. })
+            {
+                AppError::Timeout("waiting for watched document readiness".into())
+            } else {
+                error
+            }
+        })?;
+        if retired_console.as_ref() != Some(&console) {
+            let inner_window_id = ctx.target().inner_window_id;
+            let mut guard = ctx.arm_target_guard(inner_window_id);
+            let result = guard.transport_mut().with_read_deadline(deadline, |t| {
+                WebConsoleActor::evaluate_js_async(t, &console, condition)
+            });
+            match result {
+                Ok(result) => {
+                    if let Some(exception) = result.exception {
+                        let message = format!(
+                            "navigate readystate: JS evaluation error{}",
+                            exception
+                                .message
+                                .map_or_else(String::new, |m| format!(": {m}"))
+                        );
+                        return Err(AppError::User(
+                            ff_rdp_core::sanitize_for_terminal(&message).into_owned(),
+                        ));
+                    }
+                    if super::js_helpers::is_truthy(&result.result) {
+                        return Ok(());
+                    }
+                }
+                Err(ProtocolError::EvalTargetDestroyed { .. }) => {
+                    retired_console = Some(console);
+                }
+                Err(ProtocolError::ActorError {
+                    ref actor,
+                    kind: ActorErrorKind::UnknownActor,
+                    ..
+                }) if actor == console.as_ref() => {
+                    retired_console = Some(console);
+                }
+                Err(ProtocolError::Timeout) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        std::thread::sleep(
+            Duration::from_millis(100).min(deadline.saturating_duration_since(Instant::now())),
+        );
+    }
+}
+
 /// Poll `document.readyState == "complete"` until the deadline, returning a
 /// `CommitInfo` when the condition is met.
 ///
@@ -1502,15 +1573,20 @@ fn wait_for_readystate_complete(
     // echoing it under-reported the true wait by ~3x in dogfooding
     // (`--timeout 8000` produced "within 2384ms" against an 8.1s measured
     // wall-clock), leading an agent to under-size a retry.
-    match poll_js_condition(
-        ctx,
-        &console_actor,
-        &condition,
-        timeout_ms,
-        "navigate readystate: JS evaluation error",
-        "navigate: document.readyState did not reach 'complete' (with fresh navigation) \
-         within its sub-budget — use --no-wait to skip or increase --timeout",
-    ) {
+    let readiness = if ctx.target_endpoint.is_some() && timeout_ms > 0 {
+        poll_watched_readystate(ctx, &condition, timeout_ms).map(|()| 0)
+    } else {
+        poll_js_condition(
+            ctx,
+            &console_actor,
+            &condition,
+            timeout_ms,
+            "navigate readystate: JS evaluation error",
+            "navigate: document.readyState did not reach 'complete' (with fresh navigation) \
+             within its sub-budget — use --no-wait to skip or increase --timeout",
+        )
+    };
+    match readiness {
         Ok(_) => {}
         Err(AppError::Timeout(_)) => {
             let total_elapsed_ms =
@@ -2093,8 +2169,11 @@ pub fn run_core(
         let nav_start = Instant::now();
         WindowGlobalTarget::navigate_to(ctx.transport_mut(), &target_actor, url)
             .map_err(AppError::from)?;
-        // Theme K: refresh console actor so eval hits the new document.
-        refresh_console_actor(&mut ctx);
+        // The watched readiness poll acquires under its own existing deadline.
+        // Direct connections retain the legacy best-effort refresh.
+        if ctx.target_endpoint.is_none() {
+            refresh_console_actor(&mut ctx);
+        }
         let rs_result =
             wait_for_readystate_complete(&mut ctx, cli.timeout, pre_nav_epoch, nav_start);
         let ci = reclassify_timeout_as_neterror(&mut ctx, url, rs_result)?;
@@ -2288,7 +2367,9 @@ pub fn run_core(
                 // Events timed out — give readystate the reserved 30% slice,
                 // capped to whatever is actually left of cli.timeout so the
                 // total wall time stays inside the user's budget.
-                refresh_console_actor(&mut ctx);
+                if ctx.target_endpoint.is_none() {
+                    refresh_console_actor(&mut ctx);
+                }
                 let elapsed_ms =
                     u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(cli.timeout);
                 let remaining = cli.timeout.saturating_sub(elapsed_ms);
@@ -5262,6 +5343,195 @@ mod snapshot_probe_tests {
             evaluations.join().unwrap();
         }
     }
+    /// The Both fallback and explicit readystate route share this caller.
+    /// Pending must not strand it on the outgoing console, including when a
+    /// live snapshot becomes invalid between acquisition and evaluation.
+    #[test]
+    fn readystate_fallback_follows_watched_lifecycle() {
+        use super::super::connect_tab::{TabListRouting, connect_and_list_tabs};
+        use clap::Parser;
+        for failure in [
+            "pending",
+            "noSuchActor",
+            "destroyed",
+            "wrongState",
+            "pending_forever",
+            "dead_forever",
+        ] {
+            let side = TcpListener::bind("127.0.0.1:0").unwrap();
+            side.set_nonblocking(true).unwrap();
+            let endpoint = crate::daemon::client::TargetEndpoint::new(
+                side.local_addr().unwrap().port(),
+                "token",
+            );
+            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let done = Arc::clone(&stop);
+            let snapshots = std::thread::spawn(move || {
+                let mut queries = 0;
+                while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                    let Ok((mut stream, _)) = side.accept() else {
+                        std::thread::sleep(Duration::from_millis(1));
+                        continue;
+                    };
+                    stream.set_nonblocking(false).unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    assert_eq!(recv_from(&mut reader).unwrap()["auth"], "token");
+                    send(
+                        &mut stream,
+                        &json!({"protocol_version":crate::daemon::server::DAEMON_PROTOCOL_VERSION}),
+                    );
+                    assert_eq!(
+                        recv_from(&mut reader).unwrap()["type"],
+                        "resolve-tab-target"
+                    );
+                    queries += 1;
+                    // First acquisition can be Pending. In the race cases A
+                    // is returned twice: never retry an eval on known-dead A.
+                    let response = if failure == "pending_forever"
+                        || failure == "pending" && queries == 1
+                    {
+                        json!({"from":"daemon","type":"resolve-tab-target","state":"pending"})
+                    } else {
+                        let actor =
+                            if failure == "dead_forever" || failure != "pending" && queries <= 2 {
+                                "a"
+                            } else {
+                                "b"
+                            };
+                        json!({"from":"daemon","type":"resolve-tab-target","state":"live","target":{
+                            "actor":actor,"consoleActor":format!("{actor}/console"),"innerWindowId":if actor == "a" {1} else {2}}})
+                    };
+                    send(&mut stream, &response);
+                }
+                queries
+            });
+            let main = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = main.local_addr().unwrap().port();
+            let evaluations = std::thread::spawn(move || {
+                let (mut stream, _) = main.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                send(
+                    &mut stream,
+                    &json!({"from":"root","applicationType":"browser","ua":"Firefox/156.0"}),
+                );
+                let mut dead_evals = 0;
+                let mut live_evals = 0;
+                while let Ok(request) = recv_from(&mut reader) {
+                    let actor = request["to"].as_str().unwrap();
+                    match request["type"].as_str().unwrap() {
+                        "listTabs" => send(
+                            &mut stream,
+                            &json!({"from":"root","tabs":[{"actor":"tab","selected":true,"url":"https://old.test/","title":"old"}]}),
+                        ),
+                        "getTarget" => send(
+                            &mut stream,
+                            &json!({"from":"tab","frame":{"actor":"a","consoleActor":"a/console","innerWindowId":1,"url":"https://old.test/"}}),
+                        ),
+                        "listFrames" => send(
+                            &mut stream,
+                            &json!({"from":actor,"frames":[{"isTopLevel":true,"url":"https://new.test/"}]}),
+                        ),
+                        "evaluateJSAsync" if actor == "a/console" => {
+                            dead_evals += 1;
+                            if failure == "destroyed" {
+                                send(&mut stream, &json!({"from":actor,"resultID":"old"}));
+                                send(
+                                    &mut stream,
+                                    &json!({"from":"watcher","type":"target-destroyed-form","target":{"actor":"a","innerWindowId":1,"isTopLevelTarget":true}}),
+                                );
+                                // A real evaluation may still finish after the
+                                // guarded destruction interrupts its caller.
+                                send(
+                                    &mut stream,
+                                    &json!({"from":actor,"type":"evaluationResult","resultID":"old","result":true}),
+                                );
+                            } else {
+                                let error = if failure == "wrongState" {
+                                    "wrongState"
+                                } else {
+                                    "noSuchActor"
+                                };
+                                send(
+                                    &mut stream,
+                                    &json!({"from":actor,"error":error,"message":"outgoing console"}),
+                                );
+                            }
+                        }
+                        "evaluateJSAsync" => {
+                            assert_eq!(actor, "b/console");
+                            live_evals += 1;
+                            let js = request["text"].as_str().unwrap();
+                            let result = if js == "window.location.href" {
+                                json!("https://new.test/")
+                            } else {
+                                assert!(js.contains("navigationStart > 42"));
+                                json!(true)
+                            };
+                            send(&mut stream, &json!({"from":actor,"resultID":"fresh"}));
+                            send(
+                                &mut stream,
+                                &json!({"from":actor,"type":"evaluationResult","resultID":"fresh","result":result}),
+                            );
+                        }
+                        other => panic!("unexpected request: {other}"),
+                    }
+                }
+                (dead_evals, live_evals)
+            });
+            let cli = Cli::parse_from([
+                "ff-rdp",
+                "--port",
+                &port.to_string(),
+                "--no-daemon",
+                "eval",
+                "1",
+            ]);
+            let listing = connect_and_list_tabs(&cli, TabListRouting::Direct)
+                .unwrap_or_else(|e| panic!("connect failed: {}", e.into_app_error()));
+            let mut ctx = listing.attach(&cli).unwrap();
+            ctx.target_endpoint = Some(endpoint);
+            ctx.via_daemon = true;
+            let start = Instant::now();
+            let result = wait_for_readystate_complete(&mut ctx, 600, 42.0, start);
+            drop(ctx);
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            let queries = snapshots.join().unwrap();
+            let (dead_evals, live_evals) = evaluations.join().unwrap();
+            if failure == "wrongState" {
+                assert!(
+                    matches!(result, Err(AppError::User(ref message)) if message.contains("wrongState"))
+                );
+                assert_eq!(dead_evals, 1);
+                assert_eq!(live_evals, 0, "unrelated protocol errors must remain fatal");
+                assert_eq!(queries, 1, "unrelated errors must not start recovery");
+            } else if matches!(failure, "pending_forever" | "dead_forever") {
+                assert!(
+                    matches!(result, Err(AppError::Timeout(_))),
+                    "{failure}: {result:?}"
+                );
+                assert!(
+                    start.elapsed() < Duration::from_secs(1),
+                    "original sub-budget must bound recovery"
+                );
+                assert_eq!(dead_evals, usize::from(failure == "dead_forever"));
+                assert_eq!(live_evals, 0);
+            } else {
+                let ci = result.unwrap_or_else(|e| panic!("{failure}: {e}"));
+                assert_eq!(ci.committed_url, "https://new.test/");
+                assert_eq!(ci.ready_state, "complete");
+                assert!(ci.elapsed_ms < 600);
+                assert_eq!(dead_evals, usize::from(failure != "pending"));
+                assert_eq!(live_evals, 2);
+            }
+        }
+    }
+
     #[test]
     fn history_probe_reacquires_watched_target_after_terminal_refresh_is_pending() {
         let side = TcpListener::bind("127.0.0.1:0").unwrap();

@@ -672,3 +672,25 @@ fallback; the repaired code completed in480ms with the same injected schedule.
 The closing sweep's earlier21139ms back failure had no retained packet trace,
 so that exact occurrence cannot be assigned this internal path retrospectively.
 The failure and attribution limit remain recorded separately from this proof.
+
+### Readystate fallback follows watched document replacement (iteration 262)
+
+The explicit readystate strategy and the Both strategy's final fallback share
+one readiness caller. A single best-effort refresh can return Pending, or return
+a live console which dies during polling. Caching that console for the entire
+wait made `noSuchActor` fatal even though the watcher could supply its replacement.
+The watched route now acquires for each readiness sample under the existing
+sub-budget, guards the sampled inner window, and retires a console on its own
+unknownActor reply or matching target destruction. It waits for a different
+console before another evaluation. Pending and permanently retired targets
+expire under the same deadline; unrelated actor/protocol errors remain fatal.
+The navigation action is never resent, and the fresh navigationStart predicate
+is unchanged. Direct-route polling retains its existing behavior.
+
+The supported readystate option reproduced the outgoing-console error on
+unmodified Firefox156; the repaired caller passed the same live159 network-buffer
+assertion. Offline caller coverage includes Pending, destruction between snapshot
+and evaluation, a late old evaluation result, unchanged retired snapshots,
+deadline exhaustion and a non-lifecycle protocol error. The original default-Both
+sweep failure had no packet trace: its console error matches this caller failure,
+but its precise transition into fallback cannot be reconstructed retrospectively.

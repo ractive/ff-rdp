@@ -894,3 +894,24 @@ AC wording and outstanding boxes remain unchanged pending closing validation.
 Private evidence and separate new-grant expenditure are under the primary checkout's
 `.git/ralph-loop/20260920-startup262/`. Historical ledgers and all other iteration
 restrictions remain intact; no other iteration is being executed.
+
+## Readiness fallback source checkpoint — 2026-09-21
+
+The first qualifying sweep passed 347/347 with zero profile leaks. The next sweep
+used identical source and CLI/live binaries but failed the original live159 plain
+navigate with an outgoing-console `noSuchActor`, before its network assertion;
+346/347 passed, with zero profile leaks and all named 262 acceptance tests green.
+This broke the qualifying sequence. Both complete sweep records remain preserved.
+
+The shared watched-readiness caller retained an outgoing console across replacement.
+A deterministic actual-caller regression and the supported `--wait-strategy readystate`
+CLI invocation fail before the correction and pass afterward. The caller now samples
+the primary target under its existing deadline, retires positively identified stale
+consoles, and keeps unrelated protocol errors fatal. The action is never resent.
+The original default-Both sweep's exact untraced transition remains unproven.
+
+Original live159 passed, original live253 passed 8/8 (1093ms daemon / 847ms direct
+committed submission), and ordered gates passed 2528/0/419. The independently reviewed
+source and actor documentation are recoverable in `implement7/` and `review5/` under
+the current private run. This remains an in-progress checkpoint: three consecutive
+qualifying full sweeps are still owed, and original AC wording/boxes remain intact.
