@@ -222,3 +222,8 @@ selection mistake, not a Hyalo defect. `read --frontmatter` returns frontmatter
 only; two supported reads carried frontmatter and body into the new checkout.
 Long `hyalo --help` again exceeded the caller's output budget; short `new -h` was
 sufficient for the capability check. No latency comparison or performance claim.
+
+PR263 publication reused `hyalo read research/rdp-foundation-spike-2026-09-20.md
+--format text` and the feedback-note read successfully. Review-repair body prose
+used the documented direct-edit allowance. No new Hyalo failure or measured
+performance claim in this publication pass.

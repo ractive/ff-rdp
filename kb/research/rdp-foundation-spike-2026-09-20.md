@@ -40,8 +40,8 @@ Detailed command/environment/version/diff fingerprints, logs, review findings an
 mutation evidence are retained in the main checkout's
 `.git/ralph-loop/20260920-rdp-foundation-spike/`. Targeted development checks precede
 one stable-batch ordered fmt, strict workspace Clippy and workspace test gate.
-The spike is local; no PR, merge, full live-sweep or original iteration acceptance
-completion is implied. Final results will be recorded after integration.
+The initial spike checkpoint was local; no merge, full live-sweep or original
+iteration acceptance completion is implied. Publication is recorded below.
 
 ## Follow-up boundary
 
@@ -83,3 +83,35 @@ This result supports continuing the RDP refactor incrementally. It does not clos
 any original blocked iteration. Remaining work includes the transport-only readiness
 probe, complete document/frame lifetime handling, shared operation deadlines/outcomes,
 and the separately constrained shutdown/reply-ownership/consent work.
+
+## PR263 review repair
+
+Published the initial checkpoint as [PR263](https://github.com/ractive/ff-rdp/pull/263).
+Fresh independent Sol review returned three medium findings: outer launch, daemon
+autostart and daemon-stop deadlines could expire before the corresponding product
+budgets. Copilot review5260452061 on2a1e2602 returned one separate medium finding:
+a subprocess polling error returned without killing/reaping the child. All four
+were verified and consolidated into one harness repair batch.
+
+The repair passes an explicit product launch timeout and adds outer cleanup
+headroom, derives autostart time from the product override plus command overhead,
+uses a shared40-second daemon-stop bound covering the complete escalation path,
+and terminates/reaps the child on polling errors. Product protocol code is unchanged.
+
+Ten focused harness checks passed. These include deterministic polling-error
+injection and the actual isolated-launch caller timeout/cleanup path, closing the
+previous caller-level coverage gap. The first run had9passes/1failure: the100ms
+fake-launch deadline expired before the fixture wrote its receipt evidence. A
+1-second deadline against the same10-second child preserves timeout, reaping,
+explicit-product-bound and scoped-cleanup assertions; all10then passed.
+
+The repaired isolated Firefox156.0 eval contract passed with`finish()==Ok(())`;
+its recorded browser PID36191 exited and its private profile was removed. Final
+ordered fmt, strict Clippy and workspace tests passed:2499passed,0failed,418ignored.
+An earlier Clippy run rejected a test's duration units; the equivalent seconds
+literal was applied before rerunning the complete ordered sequence. Source hashes
+match the final test inputs. No full live sweep was run for this standalone spike.
+
+Fresh delta review and exact-head CI are recorded in the PR and the same local
+evidence directory. The initial head's10CIchecks passed; that result does not
+certify the changed repair head. No original iteration was closed.

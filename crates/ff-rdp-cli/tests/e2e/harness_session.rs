@@ -5,9 +5,13 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use super::common::{
-    IsolatedLiveFirefox, ProfilePreference, bounded_command_output, launch_receipt_from_output,
+    IsolatedLiveFirefox, ProfilePreference, bounded_command_output,
+    daemon_autostart_trigger_timeout, isolated_launch_command_timeout, launch_receipt_from_output,
+    parse_daemon_start_timeout, parse_product_launch_timeout, scoped_daemon_stop_timeout,
     validate_session_binary, write_requested_profile_prefs,
 };
+#[cfg(unix)]
+use super::common::{bounded_command_output_with_poll, pid_alive};
 
 #[test]
 fn isolated_session_rejects_an_empty_ff_rdp_binary_path() {
@@ -96,10 +100,20 @@ fn fake_launch_cli(
 if [ "$1" = "launch" ]; then
   shift
   while [ "$#" -gt 0 ]; do
-    if [ "$1" = "--debug-port" ]; then port="$2"; shift 2; else shift; fi
+    if [ "$1" = "--debug-port" ]; then
+      port="$2"
+      shift 2
+    elif [ "$1" = "--launch-timeout" ]; then
+      launch_timeout="$2"
+      shift 2
+    else
+      shift
+    fi
   done
   printf '%s\n' "$FF_RDP_HOME" > '{home_record}'
   printf '%s\n' "$port" > '{port_record}'
+  printf '%s\n' "$launch_timeout" > '{launch_timeout_record}'
+  printf '%s\n' "$$" > '{launch_pid_record}'
   {launch_result}
 fi
 test -d "$FF_RDP_HOME" || exit 91
@@ -108,6 +122,8 @@ printf '%s\n' "$FF_RDP_HOME|$*" > '{invocation_record}'
 "#,
         home_record = home_record.display(),
         port_record = fixture.join("port").display(),
+        launch_timeout_record = fixture.join("launch-timeout").display(),
+        launch_pid_record = fixture.join("launch-pid").display(),
         invocation_record = invocation_record.display(),
     );
     std::fs::write(&executable, script).expect("write cleanup fixture executable");
@@ -195,4 +211,89 @@ fn bounded_child_output_kills_and_reaps_on_timeout_without_pipe_deadlock() {
     .expect_err("fixture must time out");
     assert!(error.contains("timed out"), "{error}");
     assert!(started.elapsed() < Duration::from_secs(3));
+}
+
+#[cfg(unix)]
+#[test]
+fn bounded_child_output_kills_and_reaps_when_polling_fails() {
+    let mut child_pid = 0;
+    let error = bounded_command_output_with_poll(
+        Command::new("/bin/sh").args(["-c", "exec sleep 10"]),
+        Duration::from_secs(1),
+        "poll-error fixture",
+        |child| {
+            child_pid = child.id();
+            Err(std::io::Error::other("injected poll failure"))
+        },
+    )
+    .expect_err("injected polling failure must be returned");
+    assert!(error.contains("injected poll failure"), "{error}");
+    assert!(error.contains("reap=Ok"), "{error}");
+    assert_ne!(child_pid, 0);
+    assert!(!pid_alive(child_pid), "child {child_pid} was not reaped");
+}
+
+#[cfg(unix)]
+#[test]
+fn isolated_launch_timeout_still_runs_scoped_cleanup_and_passes_product_bound() {
+    let fixture = tempfile::tempdir().expect("fixture tempdir");
+    let executable = fake_launch_cli(fixture.path(), "exec sleep 10", "exit 0");
+    let started = Instant::now();
+    let error = IsolatedLiveFirefox::launch_with_preferences_and_timeouts(
+        &executable,
+        &[],
+        Duration::from_secs(7),
+        Duration::from_secs(1),
+    )
+    .err()
+    .expect("the injected outer deadline must stop the fake launch");
+    assert!(error.contains("isolated launch timed out"), "{error}");
+    assert!(error.contains("scoped cleanup succeeded"), "{error}");
+    assert!(started.elapsed() < Duration::from_secs(3));
+    assert_eq!(
+        std::fs::read_to_string(fixture.path().join("launch-timeout"))
+            .expect("recorded launch timeout")
+            .trim(),
+        "7"
+    );
+    let launch_pid = std::fs::read_to_string(fixture.path().join("launch-pid"))
+        .expect("recorded launch pid")
+        .trim()
+        .parse::<u32>()
+        .expect("numeric launch pid");
+    assert!(
+        !pid_alive(launch_pid),
+        "launch child {launch_pid} was not reaped"
+    );
+    assert_recorded_scoped_cleanup(fixture.path(), false);
+}
+
+#[test]
+fn isolated_harness_timeouts_cover_product_budgets_without_global_env_mutation() {
+    assert_eq!(parse_product_launch_timeout(None), Duration::from_secs(30));
+    assert_eq!(
+        parse_product_launch_timeout(Some("45")),
+        Duration::from_secs(45)
+    );
+    assert_eq!(
+        parse_product_launch_timeout(Some("bad")),
+        Duration::from_secs(30)
+    );
+    let launch_outer =
+        isolated_launch_command_timeout(Duration::from_secs(45), Duration::from_secs(5));
+    assert!(launch_outer > Duration::from_secs(50));
+
+    assert!(scoped_daemon_stop_timeout() > Duration::from_millis(35_100));
+
+    assert_eq!(parse_daemon_start_timeout(None), Duration::from_secs(20));
+    assert_eq!(
+        parse_daemon_start_timeout(Some("45000")),
+        Duration::from_secs(45)
+    );
+    assert_eq!(
+        parse_daemon_start_timeout(Some("0")),
+        Duration::from_secs(20)
+    );
+    let trigger_outer = daemon_autostart_trigger_timeout(Duration::from_secs(45));
+    assert!(trigger_outer > Duration::from_secs(50));
 }
