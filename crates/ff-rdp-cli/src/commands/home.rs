@@ -389,7 +389,7 @@ fn focused_tab(tabs: &[Value]) -> Option<&Value> {
 /// removed.
 fn page_block(cli: &Cli, listing: TabListing, interactive_limit: usize) -> Option<Value> {
     let mut ctx = listing.attach(cli).ok()?;
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
     let page = page_view::collect(
         &mut ctx,
         &console_actor,

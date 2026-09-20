@@ -26,7 +26,9 @@ use std::process::{Command, Output};
 
 use serde_json::Value;
 
-use crate::common::{LiveFirefox, ff_rdp_bin, live_tests_enabled};
+use crate::common::{
+    IsolatedLiveFirefox, LiveFirefox, ProfilePreference, ff_rdp_bin, live_tests_enabled,
+};
 
 fn daemon_args(port: u16) -> Vec<String> {
     vec![
@@ -95,6 +97,24 @@ fn eval_ok(port: u16, script: &str, flags: &[&str]) -> Value {
     parse_json(&out, &args)["results"].clone()
 }
 
+fn eval_ok_in_session(session: &IsolatedLiveFirefox, script: &str, flags: &[&str]) -> Value {
+    let mut args = daemon_args(session.firefox().port());
+    args.push("eval".to_owned());
+    args.extend(flags.iter().map(|flag| (*flag).to_owned()));
+    args.push(script.to_owned());
+    let out = session
+        .command()
+        .args(args)
+        .output()
+        .unwrap_or_else(|e| panic!("spawn isolated ff-rdp eval: {e}"));
+    assert!(
+        out.status.success(),
+        "isolated eval {flags:?} {script:?} must exit 0; got: {}",
+        combined(&out)
+    );
+    parse_json(&out, &["eval", script])["results"].clone()
+}
+
 // ---------------------------------------------------------------------------
 // AC live_165_repeated_const_matches_help
 // ---------------------------------------------------------------------------
@@ -113,11 +133,34 @@ fn live_165_repeated_const_matches_help() {
         eprintln!("live_165_repeated_const_matches_help: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_165_repeated_const_matches_help");
-    let port = ff.port();
+    let requested_pref = (
+        "browser.aboutwelcome.enabled".to_owned(),
+        ProfilePreference::Bool(false),
+    );
+    let mut session = IsolatedLiveFirefox::launch_with_preferences(
+        &ff_rdp_bin(),
+        std::slice::from_ref(&requested_pref),
+    )
+    .unwrap_or_else(|why| panic!("live_165_repeated_const_matches_help: {why}"));
+    let daemon_port = session
+        .with_daemon()
+        .unwrap_or_else(|why| panic!("live_165_repeated_const_matches_help: daemon: {why}"));
+    assert!(daemon_port > 0, "daemon must report a proxy port");
+    assert!(
+        !session.receipt().firefox_version.is_empty(),
+        "receipt must name Firefox version"
+    );
+    assert_eq!(
+        session.receipt().requested_preferences,
+        vec![requested_pref]
+    );
+    eprintln!(
+        "live_165 isolated launch receipt (authentication omitted): {:#?}",
+        session.receipt()
+    );
 
     for attempt in 1..=3 {
-        let results = eval_ok(port, "const x = 1; x", &[]);
+        let results = eval_ok_in_session(&session, "const x = 1; x", &[]);
         assert_eq!(
             results,
             Value::from(1),
@@ -128,7 +171,7 @@ fn live_165_repeated_const_matches_help() {
     // The same must hold for `let` — a separate binding kind in the spec, and
     // the plan explicitly refused to assume the two behave alike.
     for attempt in 1..=3 {
-        let results = eval_ok(port, "let y = 1; y", &[]);
+        let results = eval_ok_in_session(&session, "let y = 1; y", &[]);
         assert_eq!(
             results,
             Value::from(1),
@@ -136,7 +179,9 @@ fn live_165_repeated_const_matches_help() {
         );
     }
 
-    stop_daemon(port);
+    let cleanup = session.finish();
+    eprintln!("live_165 isolated cleanup result: {cleanup:?}");
+    cleanup.unwrap_or_else(|why| panic!("live_165_repeated_const_matches_help cleanup: {why}"));
 }
 
 // ---------------------------------------------------------------------------

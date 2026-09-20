@@ -2,8 +2,8 @@ use std::io::Read;
 
 use anyhow::Context as _;
 use ff_rdp_core::{
-    ActorId, EvaluateScope, Grip, LongStringActor, ObjectActor, ScopedGrip, TabActor,
-    WebConsoleActor, sanitize_for_terminal,
+    ActorId, EvaluateScope, Grip, LongStringActor, ObjectActor, ScopedGrip, WebConsoleActor,
+    sanitize_for_terminal,
 };
 use serde_json::json;
 
@@ -13,7 +13,7 @@ use crate::hints::{HintContext, HintSource};
 use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
-use super::connect_tab::{connect_and_get_target, register_target_fronts};
+use super::connect_tab::connect_and_get_target;
 
 /// Load the JavaScript source from exactly one of the three input modes.
 ///
@@ -1463,7 +1463,7 @@ pub fn run(
     // The console actor ID is taken directly from the target descriptor
     // returned by `get_target`.  The retry path below re-fetches the target
     // if the actor turns out to be stale (noSuchActor / unknownActor).
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
 
     // Evaluate via the DevTools console actor.  Firefox routes this through
     // Debugger.evalInGlobal (eval-with-debugger.js:119-247), which bypasses
@@ -1480,12 +1480,7 @@ pub fn run(
             ..
         }) => {
             // Actor is stale — re-resolve and retry once.
-            let tab_actor = ctx.target_tab_actor().clone();
-            let fresh_target =
-                TabActor::get_target(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;
-            register_target_fronts(ctx.registry(), &fresh_target);
-            let fresh_console = fresh_target.console_actor.clone();
-            ctx.target = fresh_target;
+            let fresh_console = ctx.refresh_target_result()?;
             WebConsoleActor::evaluate_js_async_scoped(
                 ctx.transport_mut(),
                 &fresh_console,

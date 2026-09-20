@@ -969,7 +969,7 @@ fn execute_assert_text(
     };
 
     let mut ctx = connect_and_get_target(cli)?;
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
 
     // Poll.
     let elapsed_ms = poll_js_condition(
@@ -1023,7 +1023,7 @@ fn execute_assert_url(step: &AssertUrlStep, cli: &Cli) -> Result<Value, AppError
     use crate::commands::js_helpers::eval_or_bail;
 
     let mut ctx = connect_and_get_target(cli)?;
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
 
     let actual_url = {
         let result = eval_or_bail(
@@ -1342,7 +1342,7 @@ fn execute_eval(step: &EvalStep, cli: &Cli) -> Result<Value, AppError> {
     let js = build_eval_js(Some(&step.script), None, false, step.stringify, false)
         .map_err(|e| AppError::User(format!("eval: {e}")))?;
     let mut ctx = connect_and_get_target(cli)?;
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
     let result = eval_or_bail(&mut ctx, &console_actor, &js, "eval")?;
     Ok(json!({"eval": result.result.to_json()}))
 }

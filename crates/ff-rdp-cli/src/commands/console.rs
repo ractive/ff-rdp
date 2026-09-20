@@ -15,7 +15,7 @@ use super::connect_tab::{ConnectedTab, connect_and_get_target};
 
 pub fn run(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
 
     // Prime the server-side message cache before reading it. Firefox's
     // WebConsole actor only records messages into the cache that
@@ -213,7 +213,7 @@ fn prime_console_cache(
 /// only messages with `level == "error"`.
 pub fn run_get_errors(cli: &Cli) -> Result<Vec<serde_json::Value>, crate::error::AppError> {
     let mut ctx = connect_and_get_target(cli)?;
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
 
     // Prime the server-side cache — see the note in `run`. Without a prior
     // `startListeners`, `getCachedMessages` returns nothing on a fresh
