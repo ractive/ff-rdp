@@ -701,3 +701,53 @@ and `attempt-2/`, restored-source/build receipts and `fix-proposal.md`. The arch
 diagnostic binary differs from the restored runner alias; do not rerun the old
 capture command without reestablishing its reviewed inputs. This records the
 accepted diagnosis while the authorized selected queue remains active.
+
+## Additional block closeout — 2026-09-20, 03:00 CEST
+
+The accepted capture1 diagnosis and complete ordinary capture2 remain valid. A
+17-file correction was implemented, independently reviewed and repaired in two
+product repair batches. Final source patch
+`118e0fe4abe13fa92020336d283813f398faecc7647c36577eff79500bb08c11`
+passed ordered fmt, strict workspace Clippy and workspace tests (2500 passed,
+0 failed,419 ignored). The final scoped review returned zero findings and approved
+the exact pre/post proof inputs. These checks did not establish live correctness.
+
+Attempt3 launched one owned Firefox successfully, then the proof called unsupported
+`daemon start`. The CLI returned exit2 and the test stopped before navigation or
+the prevention assertion. The outer runner correctly failed for the missing daemon
+receipt and failed command. This is a harness setup failure, not the required
+pre-fix failing regression, and provides no new causal evidence. The original
+review missed this command-contract defect; retain its verdict together with this
+subsequent contrary execution evidence. Attempt4 was not run; no retry or sweep
+was started. The browser/profile/port cleanup succeeded, and desktop Firefox1112
+was preserved. Proof failure and runtime cleanup are separate results.
+
+Both product repair batches are exhausted. The exact17 source files, full patch,
+reviewed runner/manifests and existing frozen binaries are preserved under
+`.git/ralph-loop/20260920-additional/iter262/final-correction-archive/` and
+`repair-correction2/`. The worktree was restored to checkpoint72243fc source; the
+failing live regression was not committed. Restored source matches the retained
+565-file passing baseline manifest. This is a blocked documentation checkpoint,
+not a partial implementation merge.
+
+The new block used3/6 captures and3048/3600 active discovery seconds (3015 before
+proof;33 rounded seconds for its launch, interpretation and stop decision).
+Compilation and subsequent administrative preservation are separate.552 seconds
+and three capture slots remain numerically; the exhausted repair ceiling blocks
+further execution in this run. Earlier exhausted blocks are not reset.
+
+Next entry requires an explicit continuation consistent with that repair ceiling
+and retained discovery limits; recover the archived correction, replace the
+unsupported command with the actual daemon-establishing CLI path, validate command
+contracts before launch, and obtain fresh scoped review/rebuilt frozen identities.
+Do not blindly reuse the old attempt3/4 script or overwrite consumed attempt3.
+Then establish a valid before/after proof before the original real253 navigation
+and same-document checks, three consecutive qualifying full sweeps with137/both145
+green, watcher-source disposition, closing gates, independent review and exact-head
+CI. Original Locate2/2,Fix0/2,Test0/1,AC1/5 remain unchanged.275 stays unexecuted.
+
+Exact proof command/environment/timestamps/exits are in
+`proof-supervisor/attempt-3-command.json`; raw command and runtime receipts are in
+`correction-proof-3/`. Raw logs remain private. The stop/debit, immutable archive
+manifest, restore result and later cleanup verification are retained alongside
+the reviewed design and all earlier failures.
