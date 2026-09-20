@@ -358,3 +358,13 @@ and justifies no consent-adapter or broader contract change. The historical
 242/257 failures and their missing page evidence remain recorded. All original
 tasks and acceptance criteria remain unticked (0/4); this passing capture is not
 partial completion, a retry-based green claim or authorization to merge271.
+
+## Additional investigation block — 2026-09-20
+
+The owner authorized one new 60-minute active investigation block with at most six targeted captures. The previous six passing controls and checkpoint `f044e6791683126b9d45e4444982c918d6648e88` remain preserved. The new proposal tested a concrete site-contract distinction: BBC native/Sourcepoint layer order and readiness, with one immediate and one delayed fresh-profile arm. It did not repeat the old unchanged block.
+
+Two instrumentation repair batches preserved the original native JavaScript and strict native BBC acceptance/post-action absence assertions. The independently reviewed fallback records same-command branch choices and later bounded site-state observations; decision-time selector/geometry state is explicitly unavailable, so later snapshots cannot establish a detection bug. Final independent review approved the exact frozen instrumentation with zero findings. Focused Rust, actual page-JavaScript and actual runner failure-path checks passed.
+
+No BBC capture ran (0/6). Preparation reached the proposal's stated 50-minute cutoff for starting new captures; that stopping condition was preserved rather than moved. Active accounting before closeout is 3230/3600 seconds, including the final measured 187-second review; the review exceeded its requested three-minute phase bound by seven seconds, explicitly reported. This is not a claim that all 60 minutes or six slots were used. The exact diagnostic patch, binaries and runner are archived under `.git/ralph-loop/20260920-additional/iter271/final-instrumentation-archive/`; final source diff SHA256 is `4b38d82204029c2250ceca04150ca264c94eedf209a911e63c5c8786c39fd30e`, with approval in `repair2-review.md`. Source was restored to `f545497184087d0793ae7c0c755e4c785a77e37f`, verified against its passing source manifest, and restored CLI/tests rebuilt successfully.
+
+All original tasks and AC0/4 remain unmet: there is still no attributable new failure or measured site-contract outcome. The reviewed partial test repair is not completed271 and is not mergeable as such. Next entry must preserve this prepared tooling, verify exact source/binary/environment identities, and explicitly reconcile a new capture schedule with the recorded stopping condition and remaining allowance. No fresh-session reset, unchanged six-attempt repetition, weakened dismissal assertion or automatic background continuation is authorized.
