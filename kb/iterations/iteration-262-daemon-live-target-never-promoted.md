@@ -809,3 +809,62 @@ Historical discovery3048s/3captures and old2repair batches remain consumed. This
 ### Documentation checkpoint restoration
 
 At15:48:51CEST the supervisor verified all569 frozen correction inputs against both the worktree and the retained full-byte archive, then restored the checkout's product source and actor documentation to the merged foundation. All567 restored build inputs match each recorded passing PR263 fmt→strictClippy→workspace-test manifest (2499pass/0fail/418ignored). This authorizes reuse only for the restored documentation checkpoint; it does not erase the correction's253/parallel failures or satisfy its remaining ACs. Both correction binaries, source patch, all source bytes and proof evidence remain recoverable. Restored CLI/live/e2e/unit artifacts rebuilt successfully in15.720s, exit0; command and Cargo JSON receipts are in blocked-checkpoint/restored-build-* before the checkpoint commit.
+
+
+## Focused caller repair — 2026-09-20, stopped
+
+The owner adopted a separate 90-active-minute preparation/implementation/review
+grant for 262 with two independently reviewed implementation/repair batches. Both
+were used. The first repaired submission handover and interrupted console replies;
+independent review found outgoing-target loss during metadata acquisition. The
+second repaired typed lifecycle retry and late metadata reply retirement under
+the same absolute deadline. A fresh final review resolved that finding and returned
+zero new actionable findings. Twenty-one actual-caller scenarios cover settle,
+predicates, page output, outgoing/Pending/replacement states, bounded exhaustion,
+interrupted acknowledgments/results, same-document URLs and protocol-error fail-fast.
+Before regressions failed and after regressions passed; no assertion was weakened.
+
+Final candidate ordered stable/fmt/strict workspace Clippy/default-parallel tests
+passed 2519/0/419. The original live253 suite passed 8/8; committed submission was
+1083ms daemon and 738ms direct, within the unchanged <2s bound. The historical
+4.248194792s failure remains preserved without retroactive causal attribution.
+Targeted required137, both145 and watcher-source cases each passed.
+
+One full dual-gate closing sweep then finished 346passed/1failed across all347
+exact compiled names in six tiers. Summary: executed=347, skipped=0, preexisting=0,
+vanished=0, launch_timeout=0, timed_out=0, total=347; profile summary leaked=0,
+unattributed=0. Required137, both145 and watcher-source passed within this sweep.
+The sole failure was live_262_watched_target_prevention_contract at supported
+eval1 daemon-autostart setup, before navigation/prevention assertions: product
+exit124, Timeout waiting for watched tab target, outer timed_out=false. The trace
+records one about:blank top-level availability (inner21), then destruction and no
+replacement before failure; zero shared getTarget and zero listFrames sends.
+Cause is unproven; this does not establish recurrence of legacy suppression.
+
+No second sweep, fresh capture, third repair, product commit, PR or merge ran.
+The required clean consecutive-sweep sequence remains unmet. Original task/AC
+wording and checkbox state remain unchanged (AC2/5); the passing candidate gates
+and live253 results are retained without claiming iteration delivery. Scope was
+not widened to another iteration. The failed setup remains owned by262.
+
+All569 candidate source inputs, four actor docs, full patch and CLI/live/xtask
+binaries are archived under primary .git/ralph-loop/20260920-focused262/batch2/
+and blocked-checkpoint/. Final review2 permits scoped historical proof4/5 reuse
+for the unchanged prevention contract, not exact-function-byte reuse or live
+measurement of the new metadata retry behavior. The source was restored to the
+foundation and rebuilt; all567 restored inputs match each historical ordered
+passing PR263 gate manifest, reused only for this documentation checkpoint.
+No failing product source is committed. Runtime cleanup passed, including the
+sweep's owned raw browser, port6000 and failed-proof cleanup; desktop57827 remained.
+
+Preparation through final review approval was conservatively charged2209/5400s,
+without compile/idle deductions;3191s numerically remain but no repair batch.
+Final acceptance validation and preservation are separately recorded. Historical
+ledgers remain unchanged:282discovery seconds, one unused capture slot (5/6used),
+and the old85s preparation remainder. Actual token totals and a comparable
+supervision baseline are unavailable. Evidence: focused run state.json,
+review1/review.md, review2/review.md, validation/live253/, sweep-1/reconciliation.json,
+sweep-1/exact-name-reconciliation.json, sweep-1/failure-derived.json and private
+failed-proof receipts, plus blocked-checkpoint/restore-recipe.md. Primary handoff:
+research/rdp-262-focused-results-2026-09-20.md. Verify final cleanup/lock-release
+and checkpoint receipts before any authorized resume; no background continuation.
