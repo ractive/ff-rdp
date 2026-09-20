@@ -473,7 +473,7 @@ fn fetch_applied(
     let mut ctx = connect_and_get_target(cli)?;
 
     let inspector_actor = ctx
-        .target
+        .target()
         .inspector_actor
         .clone()
         .ok_or_else(|| AppError::User("no inspector actor available".to_string()))?;
@@ -657,7 +657,7 @@ fn fetch_computed_values(
         return empty;
     }
     let js = build_batch_computed_js(selector, props);
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
     let Ok(result) = eval_or_bail(ctx, &console_actor, &js, "computed style lookup") else {
         return empty;
     };
@@ -729,7 +729,7 @@ fn fetch_media_matches(
         return empty;
     }
     let js = build_media_probe_js(conditions);
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
     let Ok(result) = eval_or_bail(ctx, &console_actor, &js, "media-query probe") else {
         return empty;
     };

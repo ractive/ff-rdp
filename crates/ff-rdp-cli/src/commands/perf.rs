@@ -191,7 +191,7 @@ fn eval_to_json_string(
     script: &str,
     label: &str,
 ) -> Result<String, AppError> {
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
     let eval_result =
         WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, script)
             .map_err(AppError::from)?;

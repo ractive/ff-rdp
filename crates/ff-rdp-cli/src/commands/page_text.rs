@@ -23,7 +23,7 @@ pub fn run(cli: &Cli, args: &PageTextArgs) -> Result<(), AppError> {
     }
 
     let mut ctx = connect_and_get_target(cli)?;
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
 
     let eval_result = eval_or_bail(
         &mut ctx,

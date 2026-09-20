@@ -34,7 +34,7 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
     // Firefox on first access).  Absence means the connected Firefox predates
     // the manifest actor — a genuine capability error, not a "no manifest"
     // result.
-    let manifest_actor = ctx.target.manifest_actor.clone().ok_or_else(|| {
+    let manifest_actor = ctx.target().manifest_actor.clone().ok_or_else(|| {
         AppError::User(
             "no manifest actor available — this Firefox build does not expose the \
              manifest actor (fetchCanonicalManifest). Update Firefox to audit Web \
@@ -43,7 +43,7 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
         )
     })?;
 
-    let target_root = ctx.target.actor.clone();
+    let target_root = ctx.target().actor.clone();
     let front = ManifestFront::new(manifest_actor, Registry::default(), target_root);
 
     let canonical = front

@@ -106,7 +106,7 @@ pub fn run_core(
     };
 
     let wait_timeout_ms = opts.wait_timeout_ms.unwrap_or(cli.timeout);
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
 
     // iter-140 Theme C: `--visible`/`--index` resolve an ambiguous selector to
     // a single, genuinely-unique element selector up front, so every step
@@ -438,7 +438,7 @@ fn do_click(
         return click_in_scanned_frame(ctx, selector, &js, &targets, frame_filter);
     }
 
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
     let eval_result = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, &js)
         .map_err(AppError::from)?;
 

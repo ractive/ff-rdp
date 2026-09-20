@@ -498,7 +498,7 @@ fn eval_js_internal(cli: &Cli, js: &str) -> anyhow::Result<Value> {
     use ff_rdp_core::WebConsoleActor;
 
     let mut ctx = connect_and_get_target(cli).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
 
     let eval_result = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, js)
         .map_err(|e| anyhow::anyhow!("evaluate_js_async: {e}"))?;

@@ -74,7 +74,7 @@ pub fn run(cli: &Cli, filter: Option<&str>, pattern: Option<&str>) -> Result<(),
     let mut ctx = connect_direct(cli)?;
 
     let thread_actor = ctx
-        .target
+        .target()
         .thread_actor
         .clone()
         .ok_or_else(|| AppError::User("target does not expose a thread actor".into()))?;
@@ -200,7 +200,7 @@ pub fn run(cli: &Cli, filter: Option<&str>, pattern: Option<&str>) -> Result<(),
 fn probe_eval_allowed(ctx: &mut super::connect_tab::ConnectedTab) -> bool {
     use ff_rdp_core::WebConsoleActor;
 
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
     // A no-op expression that `eval()` would accept.  We're not calling `eval`
     // directly here; `evaluateJSAsync` goes through the Firefox devtools
     // protocol and is normally unrestricted by CSP.  However some Firefox
@@ -241,7 +241,7 @@ fn list_sources_via_walker(
     use ff_rdp_core::ActorId;
 
     let inspector_actor = ctx
-        .target
+        .target()
         .inspector_actor
         .clone()
         .ok_or_else(|| AppError::User("target does not expose an inspector actor".into()))?;
@@ -321,7 +321,7 @@ fn should_use_js_fallback(err: &ff_rdp_core::ProtocolError) -> bool {
 fn list_sources_via_js(ctx: &mut super::connect_tab::ConnectedTab) -> Result<Vec<Value>, AppError> {
     use super::js_helpers::resolve_result;
 
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
     let eval_result = eval_or_bail(ctx, &console_actor, SOURCES_JS, "sources JS eval failed")?;
 
     let parsed = resolve_result(ctx, &eval_result.result)?;

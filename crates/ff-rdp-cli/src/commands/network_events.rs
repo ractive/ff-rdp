@@ -300,7 +300,7 @@ pub(crate) fn performance_api_fallback(ctx: &mut super::connect_tab::ConnectedTa
     const SCRIPT: &str =
         "JSON.stringify(performance.getEntriesByType('resource').map(e => e.toJSON()))";
 
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
     let eval_result =
         match WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console_actor, SCRIPT) {
             Ok(r) => r,

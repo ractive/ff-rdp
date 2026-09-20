@@ -139,7 +139,7 @@ pub fn run(
     query: &QueryFilter,
 ) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
 
     // Determine effective output mode: --format html overrides to raw HTML.
     let effective_mode = if cli.format == "html" {
@@ -448,7 +448,7 @@ fn strip_ref_field(results: &mut Value) {
 
 pub fn run_count(cli: &Cli, selector: &str) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
 
     let escaped = escape_selector(selector);
     let js = format!("document.querySelectorAll('{escaped}').length");
@@ -610,7 +610,7 @@ fn build_stats_js() -> String {
 
 pub fn run_stats(cli: &Cli) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
 
     let stats_js = build_stats_js();
     let eval_result = eval_or_bail(
