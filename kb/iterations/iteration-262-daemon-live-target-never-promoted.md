@@ -868,3 +868,29 @@ sweep-1/exact-name-reconciliation.json, sweep-1/failure-derived.json and private
 failed-proof receipts, plus blocked-checkpoint/restore-recipe.md. Primary handoff:
 research/rdp-262-focused-results-2026-09-20.md. Verify final cleanup/lock-release
 and checkpoint receipts before any authorized resume; no background continuation.
+
+## Startup execution source checkpoint — 2026-09-21
+
+The owner launched a new 262-only grant beyond the exhausted historical allowances,
+with a 10% weekly remaining floor and no new fixed repair-batch or capture ceiling.
+The reviewed correction was restored by archived hashes from the focused checkpoint.
+New attributable controls demonstrated watched-placeholder suppression during startup,
+and the bounded watcher recovery now handles positively observed initial target loss.
+Independent review also required safe retirement after an ambiguous internal reply.
+A later controlled history-probe failure was repaired within the existing deadlines.
+The prior submission handover, interrupted-reply and metadata repairs remain intact.
+
+Two attempted closing sweeps each finished 346 passed / 1 failed of 347, with zero
+profile leaks. Their exact failures and retrospective attribution limits are retained:
+daemon back's stale-probe path, then a recycled-PID fixture vulnerable to sibling-launch
+pruning. The latter now uses a private command-local home with its assertions intact.
+No failed sweep counts toward the original three-consecutive-sweep requirement.
+
+The final source has independently reviewed corrections, targeted before/after proof,
+original live253 8/8 on unchanged product inputs, and ordered updated-stable/fmt/strict
+Clippy/normal-parallel workspace gates of 2527 passed / 0 failed / 419 ignored.
+This is a recoverable source checkpoint, not completed iteration acceptance. Original
+AC wording and outstanding boxes remain unchanged pending closing validation.
+Private evidence and separate new-grant expenditure are under the primary checkout's
+`.git/ralph-loop/20260920-startup262/`. Historical ledgers and all other iteration
+restrictions remain intact; no other iteration is being executed.

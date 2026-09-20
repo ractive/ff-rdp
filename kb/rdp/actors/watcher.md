@@ -584,3 +584,91 @@ Plain `console` (no `--follow`) was never affected on either route: it primes
 via `startListeners` on the legacy target actor and reads `getCachedMessages`,
 measured working during iter-174 and again during iter-252 (189 matched
 messages on both routes while `--follow` showed zero).
+
+## Iteration262 correction: primary navigation-start compatibility
+
+Eligible daemon consumers use watcher-created WindowGlobal targets, whose
+`ignoreSubFrames=true` / `followWindowGlobalLifeCycle=true` settings suppress the
+legacy target `tabNavigated(start)` signal. The daemon now owns `document-event`
+for its full session, including protection against proxied `unwatchResources`.
+
+Installed Firefox156's `parent-process-document-event.js` emits top-level
+`will-navigate` resources with the outgoing `innerWindowId`, `browsingContextID`,
+`isFrameSwitching=false`, and `newURI`. `watcher.js::notifyResources` flushes this
+resource synchronously and orders it before target destruction. The dispatcher
+accepts only the exact primary watcher and current document/BC, excluding the
+content-process frame-picker event. It forwards a daemon-synthesized `willNavigate`
+packet to the existing RPC client so the transport's start latch and collection
+guard retain the iteration253 outgoing-page contract, including same-URL loads.
+This translation neither claims/releases an RPC slot nor requests Firefox data.
+
+The focused test runs the real dispatcher and transport latch while the outgoing
+snapshot is still live, and rejects other watcher/document/BC/frame-switch starts.
+Validation evidence and remaining acceptance requirements are recorded in the iteration262 plan.
+
+
+## Iteration262 startup placeholder recovery
+
+Firefox156 can suppress a replacement even when no legacy `getTarget` was sent:
+`onWindowGlobalCreated` looks up an existing watcher target by browsing context,
+then `ignoreIfExisting` skips the committed replacement's
+`initial-document-element-inserted` event while that existing actor still refers
+to the initial uncommitted `about:blank` inner window. The old actor's subsequent
+destruction leaves no replacement target. A private instrumented capture joined
+membership, accepted replacement context, old/new inner IDs, `fromJS=true`, the
+suppression branch, destruction and wire absence. A separate private browser
+predicate correction demonstrated the cause. This is distinct from the earlier
+legacy-actor suppression. The historical failed sweep lacked browser internals;
+its matching wire shape alone does not prove that exact branch retrospectively.
+
+The daemon records the first valid top-level about:blank target and its matching
+non-switching destruction. A replacement or a matching document-start resource
+disarms startup recovery; unrelated watchers and ordinary navigation cannot arm
+it. A disposable snapshot may report `startup-recovery`, but that connection
+never sends Firefox requests. The command already owning the primary RPC stream
+requests one recovery on that stream. The daemon rechecks the descriptor/state,
+marks the allowance spent before writing, then issues the spec-declared oneway
+`unwatchTargets(frame)` followed by `watchTargets(frame)`. Repeating watchTargets
+alone would not enumerate targets already registered in the content process.
+
+The dispatcher retains normal resource/lifecycle routing and consumes the
+recovery watcher acknowledgment through a private reply sink. The owning client
+handler does not forward another request during this handshake; other clients
+cannot claim its RPC slot. A raced replacement makes recovery a no-op. The
+caller's existing absolute deadline bounds acquisition, writes and reply waiting;
+no wait is raised. Missing/failed write, missing acknowledgment, or any recovery
+protocol error retires the primary daemon connection and retains the reply sink.
+The oneway marker suppresses only successful unwatchTargets replies: actor
+exceptions can still return an error before the following watchTargets reply.
+Retirement therefore prevents that later reply from reaching a second RPC owner
+and prevents queued requests from forwarding. An unambiguous watchTargets error
+also fails without retry. The command's previous document guard is restored
+after the document-independent recovery handshake. Subsequent snapshots must supply an actual Firefox target;
+no target or liveness count is manufactured.
+
+Live product proof reproduced the unmodified private Firefox suppression branch
+under the same early-subscription diagnostic schedule as the failing baseline.
+One daemon re-subscription created/delivered the replacement and eval1 passed,
+with zero shared legacy getTarget. The shipping350ms startup delay was preserved;
+it is historical mitigation, not a correctness guarantee. Source tests cover
+trigger exclusions, reply ownership, deadline exhaustion, single-use recovery,
+and queued old-document destruction at the actual target-acquisition caller.
+
+### History readiness after a pending target refresh (iteration 262)
+
+The history verbs disable navigate's eager readiness poll, but their scheduled
+complete-and-changed-URL check must still resolve the current watched target.
+If the terminal document event's bounded snapshot refresh returns pending or
+expires, keeping the outgoing console actor strands later checks on a destroyed
+actor even though Firefox delivered dom-complete and the HTTP response. Each
+scheduled history readiness sample now queries the watched snapshot first,
+using the existing deadline and readiness predicate. It never repeats the
+navigation action or sends a shared legacy getTarget.
+
+A controlled Firefox capture stalled only back's second disposable snapshot
+read for120ms against its unchanged100ms deadline. The prior code received the
+new document events and200 response but spent21185ms before the readystate
+fallback; the repaired code completed in480ms with the same injected schedule.
+The closing sweep's earlier21139ms back failure had no retained packet trace,
+so that exact occurrence cannot be assigned this internal path retrospectively.
+The failure and attribution limit remain recorded separately from this proof.

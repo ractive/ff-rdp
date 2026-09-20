@@ -201,9 +201,9 @@ impl WebConsoleActor {
         // actor; push events arriving in the gap are forwarded to the
         // transport's event sink by `recv_reply_from`.
         let immediate = match recv_reply_from(transport, console_actor.as_ref()) {
-            Err(ProtocolError::Timeout) => {
+            Err(error @ (ProtocolError::Timeout | ProtocolError::EvalTargetDestroyed { .. })) => {
                 transport.abandon_reply(console_actor.as_ref());
-                return Err(ProtocolError::Timeout);
+                return Err(error);
             }
             result => result?,
         };
@@ -894,6 +894,66 @@ mod tests {
         let result = WebConsoleActor::evaluate_js_async(&mut transport, &actor, "new").unwrap();
         assert_eq!(result.result, Grip::Value(json!(false)));
         server.join().unwrap();
+    }
+
+    #[test]
+    fn unit_262_interrupted_ack_and_result_do_not_contaminate_next_eval() {
+        for acknowledged in [false, true] {
+            for destroyed in [false, true] {
+                let (mut transport, stream) = make_transport_pair();
+                transport
+                    .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                    .unwrap();
+                let server = std::thread::spawn(move || {
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    transport_recv_from(&mut reader).unwrap();
+                    if acknowledged {
+                        send_frame(&stream, &json!({"from":"console","resultID":"old"}));
+                    }
+                    let interruption = if destroyed {
+                        json!({"from":"watcher","type":"target-destroyed-form","target":{"innerWindowId":7}})
+                    } else {
+                        json!({"from":"target","type":"tabNavigated","state":"start","url":"https://b/"})
+                    };
+                    send_frame(&stream, &interruption);
+                    // Do not release the old reply until a new request exists.
+                    transport_recv_from(&mut reader).unwrap();
+                    if !acknowledged {
+                        send_frame(&stream, &json!({"from":"console","resultID":"old"}));
+                    }
+                    send_frame(
+                        &stream,
+                        &json!({"from":"console","type":"evaluationResult","resultID":"old","result":"WRONG"}),
+                    );
+                    send_frame(&stream, &json!({"from":"console","resultID":"new"}));
+                    send_frame(
+                        &stream,
+                        &json!({"from":"console","type":"evaluationResult","resultID":"old","result":"WRONG"}),
+                    );
+                    send_frame(
+                        &stream,
+                        &json!({"from":"console","type":"evaluationResult","resultID":"new","result":"right"}),
+                    );
+                });
+                transport.set_target_guard(Some(7));
+                let actor = ActorId::from("console");
+                let interrupted =
+                    WebConsoleActor::evaluate_js_async(&mut transport, &actor, "first");
+                transport.set_target_guard(None);
+                assert!(matches!(
+                    interrupted,
+                    Err(ProtocolError::EvalTargetDestroyed { .. })
+                ));
+                let next =
+                    WebConsoleActor::evaluate_js_async(&mut transport, &actor, "second").unwrap();
+                server.join().unwrap();
+                assert_eq!(
+                    next.result,
+                    Grip::Value(json!("right")),
+                    "acknowledged={acknowledged}, destroyed={destroyed}"
+                );
+            }
+        }
     }
 
     fn send_frame(stream: &TcpStream, msg: &serde_json::Value) {

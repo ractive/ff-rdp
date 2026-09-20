@@ -53,10 +53,10 @@ const OWNER_START_MARKER: &str = ".ff-rdp-owner-start";
 ///    (Fails on `main`: the live PID makes it look owned, so the age-gated
 ///    path excludes it outright and it is never reclaimed at any age.)
 ///
-/// Step 5 runs with `--dry-run` deliberately: a real age-gated prune against
-/// the shared per-user profile root would reclaim unrelated directories, and
-/// the property under test is the *selection*, not the `remove_dir_all`. The
-/// directory is removed by this test itself at the end either way.
+/// Step 5 runs with `--dry-run` because the property under test is selection,
+/// not `remove_dir_all`. Both commands use one private profile home so parallel
+/// launches cannot prune the deliberately abandoned fixture before selection.
+/// The directory is removed by this test itself at the end either way.
 #[test]
 #[ignore = "requires Firefox and FF_RDP_LIVE_TESTS=1"]
 fn live_171_recycled_owner_pid_no_longer_reads_as_live() {
@@ -64,8 +64,15 @@ fn live_171_recycled_owner_pid_no_longer_reads_as_live() {
         return;
     }
 
+    // The deliberately dead owner must remain available until the dry-run
+    // assertion. Other live tests launch Firefox in parallel, and each launch
+    // immediately prunes dead-owner siblings from its managed profile root.
+    // Scope both commands to one private home without changing process-global
+    // environment or the age/ownership assertions.
+    let home = tempfile::tempdir().expect("live_171: create isolated profile home");
     let port = 7171;
     let launch = ff_rdp_launch_command()
+        .env("FF_RDP_HOME", home.path())
         .args(["launch", "--headless", "--debug-port", &port.to_string()])
         .output()
         .expect("live_171: could not spawn `ff-rdp launch`");
@@ -139,6 +146,7 @@ fn live_171_recycled_owner_pid_no_longer_reads_as_live() {
 
     // 5. The age-gated prune must still select it.
     let prune = Command::new(ff_rdp_bin())
+        .env("FF_RDP_HOME", home.path())
         .args(["profiles", "prune", "--older-than", "0s", "--dry-run"])
         .output()
         .expect("live_171: could not spawn `ff-rdp profiles prune`");

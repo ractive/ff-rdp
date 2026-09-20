@@ -130,6 +130,14 @@ fn scheme_of(url: &str) -> String {
 /// Operations on a tab descriptor actor.
 pub struct TabActor;
 
+impl TargetInfo {
+    /// Parse a raw watcher target form with the same validation and metadata
+    /// as the descriptor's `getTarget` response.
+    pub fn from_watcher_form(form: &Value) -> Result<Self, ProtocolError> {
+        parse_target_response_inner(form, "target")
+    }
+}
+
 impl TabActor {
     /// Call `getTarget` on a tab descriptor to obtain the WindowGlobalTarget
     /// and associated actor IDs (console, thread, inspector).
@@ -707,5 +715,35 @@ mod tests {
             err.to_string().contains("'consoleActor'"),
             "error should mention 'consoleActor': {err}"
         );
+    }
+}
+
+#[cfg(test)]
+mod watcher_form_tests {
+    use super::*;
+    #[test]
+    fn captured_watcher_event_retains_document_and_actor_metadata() {
+        let event: Value = serde_json::from_str(include_str!(
+            "../../../ff-rdp-cli/tests/fixtures/target_available_262_recorded.json"
+        ))
+        .unwrap();
+        let target = TargetInfo::from_watcher_form(&event["target"]).unwrap();
+        assert_eq!(target.browsing_context_id, Some(11));
+        assert_eq!(target.inner_window_id, Some(8_589_934_593));
+        assert_eq!(target.url.as_deref(), Some("about:blank"));
+        assert!(target.inspector_actor.is_some() && target.accessibility_actor.is_some());
+        let wrapped = parse_target_response(&json!({"frame":event["target"]})).unwrap();
+        assert_eq!(format!("{target:?}"), format!("{wrapped:?}"));
+    }
+    #[test]
+    fn captured_form_preserves_get_target_metadata() {
+        let response: Value = serde_json::from_str(include_str!(
+            "../../../ff-rdp-cli/tests/fixtures/get_target_response.json"
+        ))
+        .unwrap();
+        let raw = TargetInfo::from_watcher_form(&response["frame"]).unwrap();
+        let wrapped = parse_target_response(&response).unwrap();
+        assert_eq!(format!("{raw:?}"), format!("{wrapped:?}"));
+        assert!(TargetInfo::from_watcher_form(&json!({"actor":"a"})).is_err());
     }
 }

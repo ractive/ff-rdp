@@ -357,11 +357,10 @@ const PREEXISTING_MARKERS: &[&str] = &[
 /// `ignored` instead of run — the same false-green shape as iter-155, reached
 /// by a different road.
 ///
-/// These two launcher types are the only ways a live test in this workspace
-/// starts a browser (`common::LiveFirefox`, `common::RawFirefox`); no
-/// `ff-rdp-core` live target mentions either, and 94 of the 97 `tests/live/`
-/// files do.
-const SELF_LAUNCH_MARKERS: &[&str] = &["LiveFirefox", "RawFirefox"];
+/// Managed launches also use `common::FirefoxGuard` directly when a test
+/// requires one attempt with no launcher retries. No core live target names
+/// these owners; the launch-ownership check verifies CLI launch sites use one.
+const SELF_LAUNCH_MARKERS: &[&str] = &["LiveFirefox", "RawFirefox", "FirefoxGuard"];
 
 /// Does this source file's live tests require a Firefox somebody else started?
 ///
@@ -2948,6 +2947,13 @@ fn live_172_published_record_is_complete() {
     fn test_173_self_launch_marker_does_not_weaken_the_preexisting_tier() {
         assert!(source_needs_preexisting_instance(
             "use support::recording::{firefox_port, should_run_live};\nfn t() { firefox_port(); }"
+        ));
+    }
+
+    #[test]
+    fn guarded_single_attempt_launch_is_self_owned() {
+        assert!(!source_needs_preexisting_instance(
+            "let owner: Option<crate::common::FirefoxGuard>; let firefox_port = launched_port;"
         ));
     }
 
