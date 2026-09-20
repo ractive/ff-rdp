@@ -1456,7 +1456,7 @@ fn wait_for_readystate_complete(
 ) -> Result<CommitInfo, AppError> {
     use crate::commands::js_helpers::poll_js_condition;
 
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
 
     // Combine readyState check with navigationStart freshness guard so that a
     // pre-existing "complete" state from the prior page load is rejected.
@@ -1501,7 +1501,7 @@ fn wait_for_readystate_complete(
     }
 
     let url = {
-        let console_actor = ctx.target.console_actor.clone();
+        let console_actor = ctx.target().console_actor.clone();
         match super::js_helpers::eval_or_bail(
             ctx,
             &console_actor,
@@ -1666,7 +1666,7 @@ pub(crate) fn wait_for_navigation_commit(
     // a failed/exceptional eval disables the freshness guard (0.0) rather
     // than blocking the navigation action.
     let pre_nav_epoch: f64 = {
-        let console_actor = ctx.target.console_actor.clone();
+        let console_actor = ctx.target().console_actor.clone();
         match eval_or_bail(
             ctx,
             &console_actor,
@@ -1688,7 +1688,7 @@ pub(crate) fn wait_for_navigation_commit(
     // `pre_nav_epoch`: an empty string just disables that check rather than
     // blocking the navigation action.
     let pre_nav_href: String = {
-        let console_actor = ctx.target.console_actor.clone();
+        let console_actor = ctx.target().console_actor.clone();
         eval_location_href(ctx.transport_mut(), &console_actor)
     };
 
@@ -1750,7 +1750,7 @@ pub(crate) fn wait_for_navigation_commit(
     // unrelated subframe reloads and fires a normal-looking cycle — see
     // `ReadyStateProbe::trust_event_url`'s doc comment for the full story.
     let mut readystate_probe = Some(ReadyStateProbe {
-        console_actor: ctx.target.console_actor.clone(),
+        console_actor: ctx.target().console_actor.clone(),
         tab_actor: &tab_actor,
         pre_epoch: pre_nav_epoch,
         first_probe_at: nav_start + Duration::from_millis(300),
@@ -1851,10 +1851,7 @@ fn run_wait_for_predicates(
         .collect::<Result<_, _>>()?;
 
     // Re-resolve console actor for the new document.
-    let tab_actor = ctx.target_tab_actor().clone();
-    let fresh_target =
-        TabActor::get_target(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;
-    let console_actor = fresh_target.console_actor;
+    let console_actor = ctx.refresh_target_result()?;
 
     let started = Instant::now();
     wait_for_predicates(ctx, &console_actor, &predicates, opts.wait_timeout)?;
@@ -1869,7 +1866,7 @@ fn run_wait_for_predicates(
 
 /// Refresh the console actor in `ctx` after navigation.
 ///
-/// Theme K: the consoleActor ID cached in `ctx.target` is bound to the old
+/// Theme K: the consoleActor ID cached in `ctx.target()` is bound to the old
 /// docshell.  After any navigate (including to about:neterror pages), call this
 /// to fetch a fresh actor so the next `eval` does not get `noSuchActor`.
 ///
@@ -1994,7 +1991,7 @@ pub fn run_core(
 ) -> Result<(serde_json::Value, bool), AppError> {
     validate_url_with_opts(url, cli.allow_file_urls, cli.allow_unsafe_urls)?;
     let mut ctx = connect_and_get_target(cli)?;
-    let target_actor = ctx.target.actor.clone();
+    let target_actor = ctx.target().actor.clone();
     let tab_actor = ctx.target_tab_actor().clone();
 
     // Get the watcher actor and subscribe to document-event resources before
@@ -2018,7 +2015,7 @@ pub fn run_core(
     let pre_nav_epoch: f64 = if wait_opts.no_wait {
         0.0 // freshness guard not needed for --no-wait
     } else {
-        let console_actor = ctx.target.console_actor.clone();
+        let console_actor = ctx.target().console_actor.clone();
         match eval_or_bail(
             &mut ctx,
             &console_actor,
@@ -2054,7 +2051,7 @@ pub fn run_core(
     let pre_nav_href: String = if wait_opts.no_wait {
         String::new()
     } else {
-        let console_actor = ctx.target.console_actor.clone();
+        let console_actor = ctx.target().console_actor.clone();
         eval_location_href(ctx.transport_mut(), &console_actor)
     };
 
@@ -2186,7 +2183,7 @@ pub fn run_core(
         // (the iter-124 fix for the iter-122 Theme A regression).
         let mut readystate_probe = if wait_opts.wait_strategy == WaitStrategy::Both {
             Some(ReadyStateProbe {
-                console_actor: ctx.target.console_actor.clone(),
+                console_actor: ctx.target().console_actor.clone(),
                 tab_actor: &tab_actor,
                 pre_epoch: pre_nav_epoch,
                 // Give dom-complete a 300 ms head start on pages that fire it
@@ -2576,7 +2573,7 @@ pub fn run_with_network(
 ) -> Result<(), AppError> {
     validate_url_with_opts(url, cli.allow_file_urls, cli.allow_unsafe_urls)?;
     let mut ctx = connect_and_get_target(cli)?;
-    let target_actor = ctx.target.actor.clone();
+    let target_actor = ctx.target().actor.clone();
 
     if ctx.via_daemon {
         // Tell the daemon to stream network events in real-time instead of
@@ -2703,14 +2700,14 @@ pub fn run_with_network(
         let doc_tracker = extract_document_status(&all_resources, &all_updates);
 
         // Theme K: refresh consoleActor after navigate — MUST happen before
-        // the eval below: `ctx.target.console_actor` is still bound to the
+        // the eval below: `ctx.target().console_actor` is still bound to the
         // pre-navigation docshell at this point, and evaluating against it
         // would fail with `noSuchActor` on any real cross-document
         // navigation.
         refresh_console_actor(&mut ctx);
 
         let commit_info: Option<CommitInfo> = {
-            let console_actor = ctx.target.console_actor.clone();
+            let console_actor = ctx.target().console_actor.clone();
             let committed_url = eval_location_href(ctx.transport_mut(), &console_actor);
             let ready_state = eval_document_ready_state(ctx.transport_mut(), &console_actor);
             let elapsed_ms = u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -2899,14 +2896,14 @@ pub fn run_with_network(
     // the daemon branch above for the full rationale). Neterror detection
     // still runs via listTabs below.
     //
-    // Theme K: refresh consoleActor before evaluating — `ctx.target
-    // .console_actor` is still bound to the pre-navigation docshell here,
+    // Theme K: refresh consoleActor before evaluating —
+    // `ctx.target().console_actor` is still bound to the pre-navigation docshell here,
     // and evaluating against it would fail with `noSuchActor` on any real
     // cross-document navigation.
     refresh_console_actor(&mut ctx);
 
     let commit_info: Option<CommitInfo> = {
-        let console_actor = ctx.target.console_actor.clone();
+        let console_actor = ctx.target().console_actor.clone();
         let committed_url = eval_location_href(ctx.transport_mut(), &console_actor);
         let ready_state = eval_document_ready_state(ctx.transport_mut(), &console_actor);
         let elapsed_ms = u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -3091,10 +3088,7 @@ fn wait_after_navigate(
     // any `evaluateJSAsync` against the old console actor fails with
     // `noSuchActor`. Calling `getTarget` again on the tab descriptor returns a
     // fresh set of actors bound to the new docshell.
-    let tab_actor = ctx.target_tab_actor().clone();
-    let refreshed =
-        TabActor::get_target(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;
-    let console_actor = refreshed.console_actor;
+    let console_actor = ctx.refresh_target_result()?;
 
     let condition = describe_wait_condition(opts);
     let timeout_msg = format!(

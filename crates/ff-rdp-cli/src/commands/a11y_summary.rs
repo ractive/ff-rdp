@@ -19,7 +19,7 @@ pub fn run(cli: &Cli, query: &QueryFilter) -> Result<(), AppError> {
     // daemon-routing table in `dispatch.rs`), so it takes the normal route
     // now and registers refs exactly as `dom` does.
     let mut ctx = connect_and_get_target(cli)?;
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
 
     // `--all` lifts the cap entirely; an explicit `--limit` overrides the
     // default. Resolved here rather than after collection so refs are minted

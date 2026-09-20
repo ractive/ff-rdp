@@ -198,7 +198,7 @@ pub fn run(
     validate_widths(widths)?;
 
     let mut ctx = connect_and_get_target(cli)?;
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
 
     // --- Step 1: capture original viewport dimensions -----------------------
     let vp_result =

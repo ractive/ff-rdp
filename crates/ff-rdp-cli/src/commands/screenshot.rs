@@ -164,8 +164,8 @@ pub fn run_core(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<serde_json::Valu
     // protocol, causing Firefox-side timeouts.
     let mut ctx = connect_direct(cli)?;
 
-    let sc_actor = ctx.target.screenshot_content_actor.clone();
-    let browsing_ctx_id = ctx.target.browsing_context_id;
+    let sc_actor = ctx.target().screenshot_content_actor.clone();
+    let browsing_ctx_id = ctx.target().browsing_context_id;
 
     // On Firefox 151 the `screenshotContentActor` may be absent from the
     // `getTarget` response (or the `screenshotActor.capture` call fails with
@@ -386,7 +386,7 @@ fn run_batch_window_size(
 /// [`run_batch_window_size`]) can navigate to the same page.
 fn resolve_current_tab_url(cli: &Cli) -> Result<String, AppError> {
     let mut ctx = connect_direct(cli)?;
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
     let result = eval_or_bail(
         &mut ctx,
         &console_actor,
@@ -512,7 +512,7 @@ fn try_two_step_screenshot(
     // This has been the root cause of `--full-page` capturing only the
     // viewport across dogfood sessions 48/49/51/52 (iter-61k A).
     if full_page {
-        let console_actor = ctx.target.console_actor.clone();
+        let console_actor = ctx.target().console_actor.clone();
         let scroll_js = r"(function() {
   var dpr = window.devicePixelRatio || 1;
   var w = Math.max(
@@ -782,7 +782,7 @@ fn screenshot_via_process_drawsnapshot_fallback(
     // dimensions from the content process up-front and pass them through so the
     // parent-process drawSnapshot call constructs an explicit DOMRect.
     let full_page_rect: Option<(f64, f64)> = if full_page {
-        let console_actor = ctx.target.console_actor.clone();
+        let console_actor = ctx.target().console_actor.clone();
         let scroll_js = r"(function() {
   var w = Math.max(
     document.documentElement.scrollWidth,
@@ -840,7 +840,7 @@ fn screenshot_via_process_drawsnapshot_fallback(
     // header can't be frozen/restored should not turn a working screenshot
     // (or a real capture error) into an unrelated JS failure.
     if full_page {
-        let console_actor = ctx.target.console_actor.clone();
+        let console_actor = ctx.target().console_actor.clone();
         let _ = eval_or_bail(
             ctx,
             &console_actor,
@@ -857,7 +857,7 @@ fn screenshot_via_process_drawsnapshot_fallback(
     );
 
     if full_page {
-        let console_actor = ctx.target.console_actor.clone();
+        let console_actor = ctx.target().console_actor.clone();
         let _ = eval_or_bail(
             ctx,
             &console_actor,

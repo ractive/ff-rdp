@@ -141,7 +141,7 @@ fn resolve_json_array(
 pub fn run(cli: &Cli, selector: &str, props: &[String], include_all: bool) -> Result<(), AppError> {
     // One-shot eval wrapper: bypass the daemon per the iter-40 pattern.
     let mut ctx = connect_direct(cli)?;
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
 
     // Also support comma-list style for CSS custom properties that start with `--`
     // and cannot be passed as individual clap arguments with leading dashes.

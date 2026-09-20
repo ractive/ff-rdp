@@ -129,17 +129,17 @@ sweep's parallel execution; no new cause or timeout change is claimed.
 - [x] Identify every write to the live-target bookkeeping in `daemon/server.rs`
 - [x] Explain, in writing, how `target_count: 1` and `live_target_count: 0` coexist
 
-### B. Fix [0/2]
+### B. Fix [1/2]
 - [ ] Land the fix the explanation points at
-- [ ] State whether it is ordering, repair, or both
+- [x] State whether it is ordering, repair, or both
 
-### C. Test [0/1]
-- [ ] A live Firefox test that fails before the fix and passes after — not only a unit test
+### C. Test [1/1]
+- [x] A live Firefox test that fails before the fix and passes after — not only a unit test
 
-## Acceptance Criteria [1/5]
+## Acceptance Criteria [2/5]
 
 - [x] The coexistence of `target_count > 0` and `live_target_count == 0` is explained in writing
-- [ ] A live test fails on the pre-fix build and passes on the post-fix one
+- [x] A live test fails on the pre-fix build and passes on the post-fix one
 - [ ] Three consecutive full live sweeps with `live_137_consent_accept_via_daemon`,
       `live_145_click_frame_scan_js_exception_envelope` and
       `live_145_click_element_not_found_unchanged` green
@@ -751,3 +751,61 @@ Exact proof command/environment/timestamps/exits are in
 `correction-proof-3/`. Raw logs remain private. The stop/debit, immutable archive
 manifest, restore result and later cleanup verification are retained alongside
 the reviewed design and all earlier failures.
+
+
+## Foundation integration preparation — 2026-09-20
+
+The new explicitly authorized repair grant is separate from the preserved exhausted
+historical batches. The archived correction is adapted beneath the foundation's
+private `ConnectedTab` target installation: authenticated disposable primary-watcher
+snapshots acquire metadata, and the existing installation boundary preserves same-
+target handles and invalidates displaced consoles. Pending/errors never fall back
+to shared legacy lookup; direct and explicitly unmanaged descriptors retain legacy
+lookup. Navigation requeries under its existing deadline. Watcher document-start
+translation and fresh same-document URL queries are retained.
+
+The new proof uses supported `eval 1` autostart, retains its setup wire prefix
+separately, and counts prevention only in the subsequent navigation/evaluation
+phase. Fresh product-managed profiles remain mandatory; no explicit-profile helper
+substitution was made. Matched foundation-only/pre and foundation-plus-correction/
+post products share one rebuilt proof executable. New immutable runner inputs and
+offline receipts live in `.git/ralph-loop/20260920-foundation-repair/iter262/`
+of the primary checkout. Historical attempt3 and archived inputs are unchanged.
+
+This is preparation for independent review, not a new live result. No capture or
+sweep was launched in this phase. Original task/AC states remain Locate2/2,
+Fix0/2, Test0/1 and AC1/5. A valid pre/post proof, real253 delayed/same-URL and
+same-document regressions, three qualifying consecutive sweeps, watcher-source
+disposition and final gates/review/CI remain owed.275 and259/266 remain outside
+this correction's execution scope.
+
+
+### Foundation adaptation review repair — 2026-09-20
+
+Independent review found that best-effort refresh polled Pending for the full CLI
+timeout before page-view settlement could inspect its own budget. Final new repair
+batch2 restores one-snapshot best-effort semantics while retaining centralized
+installation. Pending/errors leave metadata untouched and never trigger legacy
+lookup; settlement owns retries. Fallible acquisition retains its explicit deadline.
+Caller regressions cover persistent Pending, Pending then replacement, short/zero
+budgets and missing identity. Initial frozen evidence and the rejected review remain
+under batch1-freeze; new final inputs are under repair2. No new capture, acceptance
+checkbox or live completion claim is made; fresh scoped review remains required.
+
+## Foundation correction proof and blocked regression —2026-09-20
+
+PR263 foundation merged through GitHub at8666a5324905793538c59532e909e0808beee7f3. Two newly authorized repair batches adapted the archived correction beneath central target installation and repaired the independently identified settlement refresh polling issue. This is prevention through acquisition ownership: daemon-managed callers read the primary watcher's retained snapshot over a disposable authenticated connection rather than issuing a shared legacy getTarget that suppresses replacement watching. It is not a counter-promotion repair or timeout increase. Independent final scoped review approved the frozen implementation and exact pre/post attempts with zero new findings.
+
+One identical real-Firefox regression executable ran against matched foundation-only/pre and foundation-plus-correction/post binaries. Attempt4 failed the intended zero-legacy assertion (4 calls after the setup boundary;setup1), with all54 command receipts successful. Navigation/evaluation exited0; readiness was false and no live replacement form remained. Attempt5 passed:zero legacy calls in both phases, readiness true, initial/replacement forms and final evaluation through the replacement's console actor. All8 command receipts and both attempts' inner/outer cleanup passed. The count covers navigation/readiness/evaluation, not exclusively navigation; historical reviewed Firefox-side causal capture supplies branch attribution. Attempts3 and all older evidence remain intact.
+
+Required real253 follow-up ran once, serially:7passed/1failed. live_253_committed_submission_daemon returned the committed destination page but took4.248194792s and failed the original elapsed<2s settlement-time assertion at live_253_outgoing_page.rs:357. No unsupported cause or passing-rerun substitution is claimed. Both new repair batches are exhausted, so no additional repair or closing sweep was started. This failure remains owned by262's required regression validation; filing a carry-over would not discharge it.
+
+Ordered fmt/strictClippy/full workspace tests passed with RUST_TEST_THREADS=1 (2516pass/0fail/419ignored). Default-parallel workspace tests twice failed an unchanged foundation timeout-receipt test; exact isolation passed but did not explain the failures. [[iteration-278-parallel-launch-timeout-missing-receipt]] preserves that distinct issue, outside execution scope. The serial pass does not tick the original default-validation gate.
+
+Current tasks:Locate2/2,Fix1/2,Test1/1,AC2/5. Land-fix task, three qualifying consecutive full sweeps, watcher-source disposition and original ordered clean gate remain unticked. No262PR/merge or product commit occurred. The initial checkpoint retained an uncommitted foundation merge/correction; failing code was not committed. Exact source bytes, staged/unstaged patches and file manifest are recoverable under primary .git/ralph-loop/20260920-foundation-repair/iter262/blocked-checkpoint/. Final frozen inputs/reviews/proof/253 logs are under repair2/. A prepared sweep runner exists but was never executed.
+
+Historical discovery3048s/3captures and old2repair batches remain consumed. This block spent2new repair batches,2additional captures (total5/6) and270s retained discovery (282s numerically remain); no allowance reset. New preparation debit is recorded separately in allowance-ledger.json. DesktopFirefox57827 was preserved by both proof identity guards; the earlier disappearance of desktop1112 has no established cause. Further262 work requires authority consistent with the exhausted new repair cap and must preserve these failed validations and original requirements.
+
+### Documentation checkpoint restoration
+
+At15:48:51CEST the supervisor verified all569 frozen correction inputs against both the worktree and the retained full-byte archive, then restored the checkout's product source and actor documentation to the merged foundation. All567 restored build inputs match each recorded passing PR263 fmt→strictClippy→workspace-test manifest (2499pass/0fail/418ignored). This authorizes reuse only for the restored documentation checkpoint; it does not erase the correction's253/parallel failures or satisfy its remaining ACs. Both correction binaries, source patch, all source bytes and proof evidence remain recoverable. Restored CLI/live/e2e/unit artifacts rebuilt successfully in15.720s, exit0; command and Cargo JSON receipts are in blocked-checkpoint/restored-build-* before the checkpoint commit.

@@ -932,7 +932,7 @@ pub(crate) fn resolve_disambiguated_selector_standalone(
     timeout_ms: u64,
 ) -> Result<String, AppError> {
     let mut ctx = connect_and_get_target(cli)?;
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
     let target =
         resolve_disambiguated_target(&mut ctx, &console_actor, selector, policy, timeout_ms)?;
     Ok(target.selector)

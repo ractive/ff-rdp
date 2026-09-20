@@ -72,7 +72,7 @@ pub fn run_core(
     let js = build_wait_js(opts)?;
 
     let mut ctx = connect_and_get_target(cli)?;
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
     let tab_actor_id = ctx.target_tab_actor().to_string();
 
     let not_found_msg = if let Some(sel) = opts.selector {

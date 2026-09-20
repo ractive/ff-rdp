@@ -920,8 +920,8 @@ pub(crate) struct NavigationOrigin {
 impl NavigationOrigin {
     pub(crate) fn capture(ctx: &ConnectedTab) -> Self {
         Self {
-            inner_window_id: ctx.target.inner_window_id,
-            url: ctx.target.url.clone(),
+            inner_window_id: ctx.target().inner_window_id,
+            url: ctx.target().url.clone(),
             pending: None,
         }
     }
@@ -943,11 +943,11 @@ impl NavigationOrigin {
     }
 
     fn confirms(&self, ctx: &ConnectedTab, destination: &str) -> bool {
-        matches!((self.inner_window_id, ctx.target.inner_window_id),
+        matches!((self.inner_window_id, ctx.target().inner_window_id),
             (Some(old), Some(new)) if old != new)
             || (!destination.is_empty()
                 && self.url.as_deref().is_some_and(|url| url != destination)
-                && ctx.target.url.as_deref() == Some(destination))
+                && ctx.target().url.as_deref() == Some(destination))
     }
 }
 
@@ -1167,14 +1167,15 @@ fn collect_settled(
         }
         let collection_origin = NavigationOrigin::capture(ctx);
 
-        let console_actor = ctx.target.console_actor.clone();
+        let console_actor = ctx.target().console_actor.clone();
         // Arm the guard for the collection only — the returned scope disarms
         // it on drop (end of this block) however the attempt ends (iter-220
         // review finding: no longer a manual arm/clear pair a future call site
         // could unbalance). iter-224 scopes it to a block rather than the loop
         // body so the reconnect arm below can take `ctx` again.
         let (outcome, latched) = {
-            let mut guarded = ctx.arm_target_guard(ctx.target.inner_window_id);
+            let inner_window_id = ctx.target().inner_window_id;
+            let mut guarded = ctx.arm_target_guard(inner_window_id);
             let outcome = collect(&mut guarded, &console_actor, opts);
             // A start can arrive during the unguarded target refresh, or
             // during a successful collection when Firefox omitted its ID and
@@ -1658,8 +1659,7 @@ mod tests {
             RdpTransport::connect_raw("127.0.0.1", port, Duration::from_secs(2)).unwrap();
         transport.recv().unwrap();
         let mut ctx = ConnectedTab::for_test(transport, ActorId::from("conn0/console1"));
-        ctx.target.inner_window_id = Some(7);
-        ctx.target.url = Some("https://a/".into());
+        ctx.set_target_metadata_for_test(Some(7), Some("https://a/".into()));
         let mut origin = NavigationOrigin::capture(&ctx);
         origin.refresh_target(&mut ctx);
         assert_eq!(origin.inner_window_id, Some(7));
@@ -1675,7 +1675,7 @@ mod tests {
             &origin,
             Duration::from_millis(500)
         ));
-        assert_eq!(ctx.target.inner_window_id, Some(9));
+        assert_eq!(ctx.target().inner_window_id, Some(9));
         server.join().unwrap();
     }
 
@@ -1756,8 +1756,10 @@ mod tests {
                 transport.recv().unwrap();
             }
             let mut ctx = ConnectedTab::for_test(transport, ActorId::from("conn0/console1"));
-            ctx.target.inner_window_id = during_refresh.then_some(7);
-            ctx.target.url = Some("https://previous/".to_owned());
+            ctx.set_target_metadata_for_test(
+                during_refresh.then_some(7),
+                Some("https://previous/".to_owned()),
+            );
             let origin = NavigationOrigin::capture(&ctx);
             let page = collect_settled(
                 &test_cli(&["ff-rdp", "tabs"]),
@@ -1823,8 +1825,7 @@ mod tests {
             let transport =
                 RdpTransport::connect_raw("127.0.0.1", port, Duration::from_secs(2)).unwrap();
             let mut ctx = ConnectedTab::for_test(transport, ActorId::from("conn0/console1"));
-            ctx.target.inner_window_id = before;
-            ctx.target.url = Some("https://a/".to_owned());
+            ctx.set_target_metadata_for_test(before, Some("https://a/".to_owned()));
             // A no-signal case must return after one refresh even with a
             // nonzero budget. The mock rejects a second probe, so deleting
             // the fast path fails without relying on a wall-clock assertion.
@@ -1966,8 +1967,7 @@ mod tests {
                 RdpTransport::connect_raw("127.0.0.1", port, Duration::from_secs(5)).unwrap();
             transport.recv().unwrap();
             let mut ctx = ConnectedTab::for_test(transport, ActorId::from("conn0/console1"));
-            ctx.target.inner_window_id = Some(7);
-            ctx.target.url = Some("https://a/".into());
+            ctx.set_target_metadata_for_test(Some(7), Some("https://a/".into()));
             let origin = NavigationOrigin::capture(&ctx);
             if mode == 0 {
                 ctx.refresh_target();

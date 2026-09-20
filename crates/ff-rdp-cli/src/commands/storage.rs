@@ -23,7 +23,7 @@ pub fn run(cli: &Cli, storage_type: &str, key: Option<&str>) -> Result<(), AppEr
     };
 
     let mut ctx = connect_direct(cli)?;
-    let console_actor = ctx.target.console_actor.clone();
+    let console_actor = ctx.target().console_actor.clone();
 
     let mut meta = json!({
         "storage_type": canonical_type,

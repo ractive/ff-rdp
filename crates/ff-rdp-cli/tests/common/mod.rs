@@ -17,10 +17,10 @@
 #![allow(unsafe_code)]
 
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
-use std::process::Command;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -139,6 +139,51 @@ fn wait_for_tcp(port: u16, timeout: Duration) -> bool {
 /// Environment variable that overrides the bounded launch-wait timeout
 /// ([`launch_wait_timeout`]). Value is whole seconds.
 pub const LAUNCH_TIMEOUT_ENV: &str = "FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS";
+
+/// Product-side launch timeout understood by `ff-rdp launch`.
+///
+/// The isolated session reads this separately from [`LAUNCH_TIMEOUT_ENV`]:
+/// the product bound covers the launch command itself, while the live-harness
+/// bound covers the post-receipt debugger-port check.
+const PRODUCT_LAUNCH_TIMEOUT_ENV: &str = "FF_RDP_LAUNCH_TIMEOUT_SECS";
+
+const DEFAULT_PRODUCT_LAUNCH_TIMEOUT_SECS: u64 = 30;
+const PRODUCT_LAUNCH_STARTUP_GRACE: Duration = Duration::from_millis(500);
+
+/// Resolve the product-side `launch --launch-timeout` value without mutating
+/// process-global environment state.
+///
+/// This mirrors the product's flag/env resolver: missing, empty and malformed
+/// values use 30 seconds, while a numeric value (including zero) is accepted.
+pub(crate) fn parse_product_launch_timeout(raw: Option<&str>) -> Duration {
+    match raw.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(value) => value.parse::<u64>().map_or(
+            Duration::from_secs(DEFAULT_PRODUCT_LAUNCH_TIMEOUT_SECS),
+            Duration::from_secs,
+        ),
+        None => Duration::from_secs(DEFAULT_PRODUCT_LAUNCH_TIMEOUT_SECS),
+    }
+}
+
+fn product_launch_timeout() -> Duration {
+    parse_product_launch_timeout(std::env::var(PRODUCT_LAUNCH_TIMEOUT_ENV).ok().as_deref())
+}
+
+/// Bound the outer launch runner above the product's own work.
+///
+/// `ff-rdp launch` first spends 500 ms detecting an immediately-crashing
+/// Firefox, then waits for the configured debugger-port budget. On failure it
+/// kills and reaps that direct child and removes the managed profile. Give that
+/// cleanup at least the harness's measured 5-second process-disappearance
+/// allowance; an explicit larger kill-wait override raises this bound too.
+pub(crate) fn isolated_launch_command_timeout(
+    product_timeout: Duration,
+    cleanup_allowance: Duration,
+) -> Duration {
+    product_timeout
+        .saturating_add(PRODUCT_LAUNCH_STARTUP_GRACE)
+        .saturating_add(cleanup_allowance)
+}
 
 /// The bounded wait a live launcher applies before giving up on the Firefox
 /// debugger port (iter-113 Theme A).
@@ -711,6 +756,552 @@ pub struct LiveFirefox {
     port: u16,
 }
 
+/// One caller-requested Firefox profile preference, serialized as JavaScript
+/// syntax before `ff-rdp launch` starts Firefox. The product itself remains
+/// responsible for its baseline DevTools preferences.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProfilePreference {
+    Bool(bool),
+    String(String),
+    Number(i64),
+}
+
+impl ProfilePreference {
+    fn user_js_value(&self) -> String {
+        match self {
+            Self::Bool(value) => value.to_string(),
+            Self::String(value) => {
+                serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_owned())
+            }
+            Self::Number(value) => value.to_string(),
+        }
+    }
+}
+
+/// Facts recorded from one isolated harness launch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveLaunchReceipt {
+    pub ff_rdp_binary: PathBuf,
+    pub firefox_binary: PathBuf,
+    pub firefox_version: String,
+    pub profile: PathBuf,
+    pub pid: u32,
+    pub port: u16,
+    pub requested_preferences: Vec<(String, ProfilePreference)>,
+}
+
+/// A private ff-rdp home, profile, browser and optional daemon for one test.
+///
+/// This is deliberately adjacent to [`LiveFirefox`] instead of a second
+/// launcher: it uses the product's `launch` and its supported `eval 1`
+/// autostart path.  `finish` is the observable cleanup point; `Drop` only
+/// supplies a non-panicking last resort for assertion-unwind paths.
+pub struct IsolatedLiveFirefox {
+    firefox: Option<LiveFirefox>,
+    ff_rdp_binary: PathBuf,
+    home: Option<tempfile::TempDir>,
+    daemon_started: bool,
+    finished: bool,
+    receipt: LiveLaunchReceipt,
+}
+
+impl IsolatedLiveFirefox {
+    /// Launch through this exact compiled `ff-rdp` binary with an isolated
+    /// `FF_RDP_HOME` and a fresh profile whose required prefs exist before the
+    /// product launches Firefox. Firefox itself has no supported CLI option
+    /// for a binary path, so the receipt records the path the product resolved.
+    pub fn launch(ff_rdp_binary: &Path) -> Result<Self, String> {
+        Self::launch_with_preferences(ff_rdp_binary, &[])
+    }
+
+    /// Like [`launch`](Self::launch), with caller-owned preferences written
+    /// into the private profile before Firefox starts.
+    pub fn launch_with_preferences(
+        ff_rdp_binary: &Path,
+        preferences: &[(String, ProfilePreference)],
+    ) -> Result<Self, String> {
+        let product_timeout = product_launch_timeout();
+        let cleanup_allowance =
+            kill_wait_timeout().max(Duration::from_millis(DEFAULT_KILL_WAIT_MS));
+        let command_timeout = isolated_launch_command_timeout(product_timeout, cleanup_allowance);
+        Self::launch_with_preferences_and_timeouts(
+            ff_rdp_binary,
+            preferences,
+            product_timeout,
+            command_timeout,
+        )
+    }
+
+    /// Injected timeout half of [`launch_with_preferences`](Self::launch_with_preferences).
+    ///
+    /// Kept crate-visible so the Firefox-free harness regression can exercise
+    /// the actual caller timeout and cleanup path in milliseconds.
+    pub(crate) fn launch_with_preferences_and_timeouts(
+        ff_rdp_binary: &Path,
+        preferences: &[(String, ProfilePreference)],
+        product_timeout: Duration,
+        command_timeout: Duration,
+    ) -> Result<Self, String> {
+        let ff_rdp_binary = validate_session_binary(ff_rdp_binary)?;
+        let home = tempfile::tempdir().map_err(|e| format!("create isolated FF_RDP_HOME: {e}"))?;
+        let profile = home.path().join("profile");
+        write_requested_profile_prefs(&profile, preferences)?;
+        let port = free_port().ok_or_else(|| "reserve a random debugger port".to_owned())?;
+        let product_timeout_secs = product_timeout.as_secs().to_string();
+
+        let launch_result = bounded_command_output(
+            Command::new(&ff_rdp_binary)
+                .env("FF_RDP_HOME", home.path())
+                .env(SPAWNING_TEST_ENV, current_test_name())
+                .args([
+                    "launch",
+                    "--headless",
+                    "--debug-port",
+                    &port.to_string(),
+                    "--profile",
+                    &profile.to_string_lossy(),
+                    "--launch-timeout",
+                    &product_timeout_secs,
+                ]),
+            command_timeout,
+            "isolated launch",
+        )
+        .and_then(|output| {
+            if !output.status.success() {
+                return Err(format!(
+                    "isolated launch exited {} (binary {}): stdout={} stderr={}",
+                    output.status,
+                    ff_rdp_binary.display(),
+                    String::from_utf8_lossy(&output.stdout).trim(),
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ));
+            }
+            launch_receipt_from_output(&output.stdout, port, &profile)
+                .map_err(|reason| format!("isolated launch receipt: {reason}"))
+        });
+        let mut receipt = match launch_result {
+            Ok(receipt) => receipt,
+            Err(reason) => {
+                return Err(failed_launch_error(&reason, &ff_rdp_binary, home, port));
+            }
+        };
+        receipt.ff_rdp_binary.clone_from(&ff_rdp_binary);
+        receipt.requested_preferences = preferences.to_vec();
+        // A validated receipt is the single ownership transition. Every
+        // subsequent failure cleans through the fully-owned session.
+        let mut session = Self {
+            firefox: Some(LiveFirefox {
+                firefox_pid: receipt.pid,
+                port,
+            }),
+            ff_rdp_binary,
+            home: Some(home),
+            daemon_started: false,
+            finished: false,
+            receipt,
+        };
+        if !wait_for_tcp(port, launch_wait_timeout()) {
+            let pid = session.receipt.pid;
+            let cleanup = session.cleanup().err().unwrap_or_default();
+            session.finished = true;
+            return Err(format!(
+                "isolated launch reported pid {} but port {port} did not open within {:?}; cleanup: {cleanup}",
+                pid,
+                launch_wait_timeout()
+            ));
+        }
+        session.receipt.firefox_version =
+            match firefox_version_within(&session.receipt.firefox_binary, Duration::from_secs(5)) {
+                Ok(version) => version,
+                Err(reason) => {
+                    let cleanup = session.cleanup().err().unwrap_or_default();
+                    session.finished = true;
+                    return Err(format!("{reason}; cleanup: {cleanup}"));
+                }
+            };
+        Ok(session)
+    }
+
+    pub fn firefox(&self) -> &LiveFirefox {
+        self.firefox
+            .as_ref()
+            .expect("isolated session used after finish")
+    }
+
+    pub fn receipt(&self) -> &LiveLaunchReceipt {
+        &self.receipt
+    }
+
+    /// A command using this session's exact binary and private state root.
+    pub fn command(&self) -> Command {
+        let mut command = Command::new(&self.ff_rdp_binary);
+        if let Some(home) = self.home.as_ref() {
+            command.env("FF_RDP_HOME", home.path());
+        }
+        command
+    }
+
+    /// Trigger the supported `eval 1` daemon autostart path inside this
+    /// session's private home.
+    pub fn with_daemon(&mut self) -> Result<u16, String> {
+        self.daemon_started = true;
+        let port = self.firefox().with_daemon_using(
+            &self.ff_rdp_binary,
+            self.home.as_ref().map(tempfile::TempDir::path),
+        )?;
+        Ok(port)
+    }
+
+    /// Stop only this session's daemon/browser and remove only its temporary
+    /// profile root. Cleanup errors are returned to the caller for assertion.
+    pub fn finish(mut self) -> Result<(), String> {
+        let result = self.cleanup();
+        self.finished = true;
+        result
+    }
+
+    fn cleanup(&mut self) -> Result<(), String> {
+        let mut failures = Vec::new();
+        let cleanup_phase = if self.daemon_started {
+            "after eval 1 autostart"
+        } else {
+            "after launch"
+        };
+        if let Some(ff) = self.firefox.as_ref() {
+            match bounded_command_output(
+                self.command().args([
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    &ff.port.to_string(),
+                    "daemon",
+                    "stop",
+                ]),
+                scoped_daemon_stop_timeout(),
+                "scoped daemon stop",
+            ) {
+                Ok(out) if out.status.success() => {}
+                Ok(out) => failures.push(format!(
+                    "scoped daemon stop {cleanup_phase} exited {}: {}",
+                    out.status,
+                    output_note(&out)
+                )),
+                Err(e) => failures.push(format!("spawn scoped daemon stop {cleanup_phase}: {e}")),
+            }
+        }
+        if let Some(ff) = self.firefox.take() {
+            if pid_alive(ff.firefox_pid) {
+                failures.push(format!(
+                    "Firefox pid {} remains alive after scoped daemon stop; preserving isolated root for inspection",
+                    ff.firefox_pid
+                ));
+            }
+            // Prevent LiveFirefox's Drop from signalling a recycled PID.
+            std::mem::forget(ff);
+        }
+        if let Some(home) = self.home.take() {
+            if failures.is_empty() {
+                if let Err(e) = home.close() {
+                    failures.push(format!("remove isolated FF_RDP_HOME: {e}"));
+                }
+            } else {
+                let preserved = home.path().to_path_buf();
+                std::mem::forget(home);
+                failures.push(format!(
+                    "preserved isolated FF_RDP_HOME at {}",
+                    preserved.display()
+                ));
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(failures.join("; "))
+        }
+    }
+}
+
+impl Drop for IsolatedLiveFirefox {
+    fn drop(&mut self) {
+        if !self.finished
+            && let Err(reason) = self.cleanup()
+        {
+            let _ = writeln!(
+                std::io::stderr(),
+                "IsolatedLiveFirefox cleanup failed: {reason}"
+            );
+        }
+    }
+}
+
+pub(crate) fn validate_session_binary(binary: &Path) -> Result<PathBuf, String> {
+    if binary.as_os_str().is_empty() {
+        return Err("isolated session requires a non-empty exact ff-rdp binary path".to_owned());
+    }
+    let absolute = if binary.is_absolute() {
+        binary.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|e| format!("resolve current directory for ff-rdp binary: {e}"))?
+            .join(binary)
+    };
+    if !absolute.is_file() {
+        return Err(format!(
+            "isolated session ff-rdp binary is not a file: {}",
+            absolute.display()
+        ));
+    }
+    absolute.canonicalize().map_err(|e| {
+        format!(
+            "canonicalize isolated session ff-rdp binary {}: {e}",
+            absolute.display()
+        )
+    })
+}
+
+/// Run a child within a fixed budget without allowing a full stdout/stderr pipe
+/// to block its exit. Output goes to temporary files and is collected only
+/// after the child has exited (or has been killed and reaped).
+pub(crate) fn bounded_command_output(
+    command: &mut Command,
+    timeout: Duration,
+    operation: &str,
+) -> Result<Output, String> {
+    bounded_command_output_with_poll(command, timeout, operation, Child::try_wait)
+}
+
+/// Injected polling half of [`bounded_command_output`].
+///
+/// The injection exists only to force the otherwise rare `try_wait` error in
+/// a deterministic Firefox-free test. Every branch after `spawn` either sees
+/// an already-reaped exit status or calls [`terminate_and_reap`].
+pub(crate) fn bounded_command_output_with_poll(
+    command: &mut Command,
+    timeout: Duration,
+    operation: &str,
+    mut poll: impl FnMut(&mut Child) -> std::io::Result<Option<ExitStatus>>,
+) -> Result<Output, String> {
+    let mut stdout =
+        tempfile::tempfile().map_err(|e| format!("create {operation} stdout capture: {e}"))?;
+    let mut stderr =
+        tempfile::tempfile().map_err(|e| format!("create {operation} stderr capture: {e}"))?;
+    command
+        .stdout(Stdio::from(stdout.try_clone().map_err(|e| {
+            format!("clone {operation} stdout capture: {e}")
+        })?))
+        .stderr(Stdio::from(stderr.try_clone().map_err(|e| {
+            format!("clone {operation} stderr capture: {e}")
+        })?));
+    // Resolve an unrepresentably large caller duration before spawning. Once
+    // the child exists, every fallible polling path must terminate and reap it.
+    let deadline = std::time::Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| format!("{operation} timeout is too large: {timeout:?}"))?;
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("spawn {operation}: {e}"))?;
+    let status = loop {
+        match poll(&mut child) {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                return Err(format!(
+                    "{operation} timed out after {timeout:?}; {}",
+                    terminate_and_reap(&mut child)
+                ));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Err(error) => {
+                return Err(format!(
+                    "poll {operation}: {error}; {}",
+                    terminate_and_reap(&mut child)
+                ));
+            }
+        }
+    };
+    stdout
+        .rewind()
+        .map_err(|e| format!("rewind {operation} stdout: {e}"))?;
+    stderr
+        .rewind()
+        .map_err(|e| format!("rewind {operation} stderr: {e}"))?;
+    let mut stdout_bytes = Vec::new();
+    let mut stderr_bytes = Vec::new();
+    stdout
+        .read_to_end(&mut stdout_bytes)
+        .map_err(|e| format!("read {operation} stdout: {e}"))?;
+    stderr
+        .read_to_end(&mut stderr_bytes)
+        .map_err(|e| format!("read {operation} stderr: {e}"))?;
+    Ok(Output {
+        status,
+        stdout: stdout_bytes,
+        stderr: stderr_bytes,
+    })
+}
+
+fn terminate_and_reap(child: &mut Child) -> String {
+    let kill_error = child.kill().err();
+    let reap = child.wait();
+    format!("kill={kill_error:?}; reap={reap:?}")
+}
+
+/// Outer bound for the product's complete `daemon stop` path.
+///
+/// The registry path can spend three separate default 10-second socket waits
+/// connecting, reading the authenticated greeting and reading the RPC reply.
+/// The reply loop checks its 10-second deadline between frames, so a push frame
+/// received just before that deadline can start one final 10-second socket
+/// read. Add 2 seconds for graceful RPC shutdown, 2.3 seconds for the proxy
+/// daemon's TERM/KILL ladder, and 10.8 seconds for Firefox's ladder (2-second
+/// grace + 300 ms kill settle + 8-second port wait + 500 ms tree repoll). A
+/// rounded 60-second watchdog leaves 4.9 seconds for scheduling, capture,
+/// registry/profile cleanup and polling cadence after that 55.1-second path.
+pub(crate) fn scoped_daemon_stop_timeout() -> Duration {
+    Duration::from_secs(60)
+}
+
+pub(crate) fn scoped_daemon_stop(
+    binary: &Path,
+    home: &Path,
+    port: u16,
+    timeout: Duration,
+) -> Result<String, String> {
+    let output = bounded_command_output(
+        Command::new(binary).env("FF_RDP_HOME", home).args([
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+            "daemon",
+            "stop",
+        ]),
+        timeout,
+        "malformed-receipt scoped daemon stop",
+    )?;
+    if output.status.success() {
+        Ok(output_note(&output))
+    } else {
+        Err(format!(
+            "exited {}: {}",
+            output.status,
+            output_note(&output)
+        ))
+    }
+}
+
+/// Finish every failure after the launch command was invoked through the same
+/// product-owned cleanup path. At this point no receipt field, especially its
+/// PID, is trusted; the private home and requested port are the authority.
+fn failed_launch_error(reason: &str, binary: &Path, home: tempfile::TempDir, port: u16) -> String {
+    match scoped_daemon_stop(binary, home.path(), port, scoped_daemon_stop_timeout()) {
+        Ok(note) => {
+            let removal = home.close().map_or_else(
+                |e| format!("could not remove isolated FF_RDP_HOME: {e}"),
+                |()| "removed isolated FF_RDP_HOME".to_owned(),
+            );
+            format!("{reason}; scoped cleanup succeeded: {note}; {removal}")
+        }
+        Err(cleanup_error) => {
+            let preserved = home.path().to_path_buf();
+            std::mem::forget(home);
+            format!(
+                "{reason}; scoped cleanup failed: {cleanup_error}; preserving {} for inspection",
+                preserved.display()
+            )
+        }
+    }
+}
+
+pub(crate) fn write_requested_profile_prefs(
+    profile: &Path,
+    preferences: &[(String, ProfilePreference)],
+) -> Result<(), String> {
+    std::fs::create_dir_all(profile)
+        .map_err(|e| format!("create isolated profile {}: {e}", profile.display()))?;
+    let mut user_js = std::fs::File::create(profile.join("user.js"))
+        .map_err(|e| format!("create isolated profile preferences: {e}"))?;
+    for (name, value) in preferences {
+        writeln!(user_js, "user_pref({name:?}, {});", value.user_js_value())
+            .map_err(|e| format!("write required Firefox preference {name}: {e}"))?;
+    }
+    Ok(())
+}
+
+pub(crate) fn launch_receipt_from_output(
+    stdout: &[u8],
+    requested_port: u16,
+    requested_profile: &Path,
+) -> Result<LiveLaunchReceipt, String> {
+    if requested_port == 0 || requested_profile.as_os_str().is_empty() {
+        return Err(
+            "isolated launch requires a non-zero requested port and non-empty profile".to_owned(),
+        );
+    }
+    let json: serde_json::Value = serde_json::from_slice(stdout)
+        .map_err(|e| format!("isolated launch did not return JSON: {e}"))?;
+    let get_string = |path: &str| {
+        json.pointer(path)
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| format!("isolated launch receipt lacks {path}"))
+    };
+    let pid = json
+        .pointer("/results/pid")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|p| u32::try_from(p).ok())
+        .filter(|pid| *pid != 0)
+        .ok_or_else(|| "isolated launch receipt lacks non-zero numeric /results/pid".to_owned())?;
+    let port = json
+        .pointer("/results/port")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|p| u16::try_from(p).ok())
+        .filter(|port| *port != 0)
+        .ok_or_else(|| "isolated launch receipt lacks non-zero valid /results/port".to_owned())?;
+    let firefox_binary = PathBuf::from(get_string("/meta/firefox")?);
+    let profile = PathBuf::from(get_string("/results/profile")?);
+    if firefox_binary.as_os_str().is_empty() {
+        return Err("isolated launch receipt has an empty /meta/firefox".to_owned());
+    }
+    if port != requested_port || profile != requested_profile {
+        return Err(format!(
+            "receipt does not match requested port/profile (got port {port}, profile {}; expected port {requested_port}, profile {})",
+            profile.display(),
+            requested_profile.display()
+        ));
+    }
+    Ok(LiveLaunchReceipt {
+        ff_rdp_binary: PathBuf::new(),
+        firefox_binary,
+        firefox_version: String::new(),
+        profile,
+        pid,
+        port,
+        requested_preferences: Vec::new(),
+    })
+}
+
+fn firefox_version_within(binary: &Path, timeout: Duration) -> Result<String, String> {
+    let output = bounded_command_output(
+        Command::new(binary).arg("--version"),
+        timeout,
+        "Firefox version command",
+    )?;
+    if !output.status.success() {
+        return Err(format!(
+            "Firefox version command exited {} for {}: {}",
+            output.status,
+            binary.display(),
+            output_note(&output)
+        ));
+    }
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    (!version.is_empty()).then_some(version).ok_or_else(|| {
+        format!(
+            "Firefox version command returned empty output for {}",
+            binary.display()
+        )
+    })
+}
+
 impl LiveFirefox {
     /// Return the RDP debug port Firefox is listening on.
     pub fn port(&self) -> u16 {
@@ -935,13 +1526,21 @@ impl LiveFirefox {
     /// to the caller. iter-169 fixed the same shape in `live_158`; the
     /// iteration-172 carry-over made it general.
     pub fn with_daemon_or_reason(&self) -> Result<u16, String> {
+        self.with_daemon_using(&ff_rdp_bin(), None)
+    }
+
+    fn with_daemon_using(&self, binary: &Path, home: Option<&Path>) -> Result<u16, String> {
         // Trigger daemon startup: an `eval` call without --no-daemon causes
         // auto-start. `tabs` does NOT work here — `tabs.rs` connects to
         // Firefox directly via `RdpConnection::connect` and never goes
         // through `resolve_connection_target`, so it never actually starts a
         // daemon (see the fix + note in `eval_object_leak_soak.rs`).
-        let out = Command::new(ff_rdp_bin())
-            .args([
+        let mut trigger = Command::new(binary);
+        if let Some(home) = home {
+            trigger.env("FF_RDP_HOME", home);
+        }
+        let out = bounded_command_output(
+            trigger.args([
                 "--host",
                 "127.0.0.1",
                 "--port",
@@ -951,9 +1550,10 @@ impl LiveFirefox {
                 "--verbose",
                 "eval",
                 "1",
-            ])
-            .output()
-            .map_err(|e| format!("could not spawn ff-rdp to trigger autostart: {e}"))?;
+            ]),
+            daemon_autostart_trigger_timeout(daemon_start_timeout()),
+            "ff-rdp eval 1 autostart trigger",
+        )?;
 
         if !out.status.success() {
             return Err(format!(
@@ -974,17 +1574,23 @@ impl LiveFirefox {
         // turned into a hard failure of an unrelated test.
         let port = self.port;
         let daemon_port = poll_for_daemon_port(daemon_ready_timeout(), || {
-            let status = Command::new(ff_rdp_bin())
-                .args([
+            let mut status_command = Command::new(binary);
+            if let Some(home) = home {
+                status_command.env("FF_RDP_HOME", home);
+            }
+            let status = bounded_command_output(
+                status_command.args([
                     "--host",
                     "127.0.0.1",
                     "--port",
                     &port.to_string(),
                     "daemon",
                     "status",
-                ])
-                .output()
-                .ok()?;
+                ]),
+                Duration::from_secs(2),
+                "ff-rdp daemon status probe",
+            )
+            .ok()?;
             let status_json = serde_json::from_slice::<serde_json::Value>(&status.stdout).ok()?;
             daemon_port_from_status(&status_json)
         })
@@ -1157,6 +1763,51 @@ pub fn wait_for_live_targets(port: u16) -> LiveTargetWait {
 
 /// Env var overriding [`daemon_ready_timeout`] (iter-164).
 pub const DAEMON_READY_TIMEOUT_ENV: &str = "FF_RDP_TEST_DAEMON_READY_TIMEOUT_S";
+
+/// Product-side daemon registry wait used by the `eval 1` autostart trigger.
+const PRODUCT_DAEMON_START_TIMEOUT_ENV: &str = "FF_RDP_DAEMON_START_TIMEOUT_MS";
+
+const DEFAULT_PRODUCT_DAEMON_START_TIMEOUT_MS: u64 = 20_000;
+const DAEMON_TRIGGER_SOCKET_TIMEOUT: Duration = Duration::from_secs(5);
+const DAEMON_TRIGGER_SOCKET_PHASES: u32 = 11;
+const DAEMON_TRIGGER_RUNNER_HEADROOM: Duration = Duration::from_secs(5);
+
+/// Resolve the product's daemon-start wait without mutating process-global
+/// environment state. Missing, malformed and zero values use the 20-second
+/// product default.
+pub(crate) fn parse_daemon_start_timeout(raw: Option<&str>) -> Duration {
+    Duration::from_millis(
+        raw.and_then(|value| value.trim().parse::<u64>().ok())
+            .filter(|milliseconds| *milliseconds > 0)
+            .unwrap_or(DEFAULT_PRODUCT_DAEMON_START_TIMEOUT_MS),
+    )
+}
+
+fn daemon_start_timeout() -> Duration {
+    parse_daemon_start_timeout(
+        std::env::var(PRODUCT_DAEMON_START_TIMEOUT_ENV)
+            .ok()
+            .as_deref(),
+    )
+}
+
+/// Bound the trigger above its finite valid slow path after the configured
+/// registry wait. The explicit `--timeout 5000` applies independently to TCP
+/// connect, greeting, `listTabs`, the optional `getRoot`/`getDescription`
+/// version fallback, `getTarget`, and the eval acknowledgement/result. A stale
+/// console actor may add one refresh `getTarget` plus a second eval
+/// acknowledgement/result: eleven socket-sized phases in total. The final
+/// allowance covers scheduling, JSON/output handling and runner polling.
+///
+/// This is a conservative harness watchdog, not an absolute protocol duration:
+/// product locks and push-event streams do not yet share one operation
+/// deadline. Its purpose is to avoid killing a command while every bounded
+/// phase above is still within its own product timeout.
+pub(crate) fn daemon_autostart_trigger_timeout(registry_wait: Duration) -> Duration {
+    registry_wait
+        .saturating_add(DAEMON_TRIGGER_SOCKET_TIMEOUT.saturating_mul(DAEMON_TRIGGER_SOCKET_PHASES))
+        .saturating_add(DAEMON_TRIGGER_RUNNER_HEADROOM)
+}
 
 /// How long [`LiveFirefox::with_daemon`] waits for the autostarted daemon to
 /// register (iter-164). Defaults to 30 s; override with
