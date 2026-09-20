@@ -297,3 +297,11 @@ No universal trace-completeness or uninstrumented absence claim is made.
 Restored bins/tests build passed; unchanged-source ordered gate evidence was
 reused from the independently verified main baseline. Selected-plan validation,
 HYALO005 and diff checks passed.
+
+## Additional investigation block — 2026-09-20
+
+The owner authorized one new 60-minute active investigation block with at most six targeted captures; prior exhausted blocks remain preserved. The reviewed proposal distinguished authentication failure from independently initiated shutdown and required all shutdown initiators plus outcome-aware, ordered, unique joins. Source instrumentation and offline checkers were developed through two repair batches. No diagnostic Rust build or targeted capture ran (0/6).
+
+This block stops with known capture-tooling gaps: the mock control still emits the old process-exit schema and contains an invalid shell environment assignment; the live helper's Firefox version/build fields are executable/command identity rather than actual version/build provenance. The two repair batches are exhausted. Do not run these tools or treat offline checker success as a reproduced failure. The final patch, exact source copies, helper/runner tests, reviews and manifests are preserved under `.git/ralph-loop/20260920-additional/iter268/final-instrumentation-archive/`; source was restored exactly to `057f03026e8a2e3eedf1354cd22e584258d10ab3`, verified against the passing 565-file source manifest.
+
+The recorded source/review/handoff debit is 3148 seconds, plus a conservative 90 seconds for the reported post-freeze audit and 60 seconds for supervisor disposition: 3298/3600 seconds. The latter additions are conservative accounting, not measured latency. Remaining time is not a renewed block. Closeout preservation is recorded separately and introduces no investigation or sampling. All original tasks and AC0/4 remain unmet. Next entry requires resolution of the concrete tooling gaps, measured compilation, fresh independent approval, and an explicitly authorized capture schedule consistent with the retained limits; no fresh-session reset or broadened batch. See `instrumentation/repair2-report.md`, `repair1-review.md`, and the supervisor ledger in the same run directory.
