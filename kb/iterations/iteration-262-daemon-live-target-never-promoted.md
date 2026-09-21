@@ -1064,3 +1064,31 @@ outside execution scope, especially 259's restriction and 266's dependency.
 | Historical ready-target Guardian consent and timeout-receipt issues | Existing plans 275 and 278 remain pending; passing current checks do not diagnose those historical failures. |
 | Historical zero-frame 140 observations without target counters | No new plan: retained as unattributed historical observations, with no recurrence in the final qualifying coverage. A new occurrence with an established distinct cause must be split out as the original plan directs; no shared cause is claimed here. |
 | Historical controlled/setup failures and rejected repairs | Preserved in the iteration plan and private archives; corrected paths have reviewed proof and required validation. They are not counted as passing sweeps. |
+
+## Windows CI fixture correction — 2026-09-21
+
+PR264 headbe3bf7be passed nine CI checks, but Windows reached the unchanged
+ten-minute test-step limit. Only startup_recovery_handshake_owns_reply_and_preserves_lifecycle
+was reported running over60seconds. The original log has no internal stage trace,
+so its exact blocking point remains unproven. This failed head is retained.
+
+The fixture depended on a final20ms socket-silence error and had unbounded positive
+reads. An owned-watchdog control with the reader timeout disabled fails the original
+after successful handshake/lifecycle delivery; the repaired fixture passes. An ordered
+barrier through the same client writer now proves no watcher reply preceded it, while
+positive reads have bounds. Deliberate acknowledgment leakage and omitted lifecycle
+delivery still fail. An invalid --lib mutation invocation is retained but supplies
+no proof; the corrected invocation ran and failed its intended target assertion.
+This control does not establish that Windows lost a socket timeout, and no product
+deadline or CI limit changed.
+
+Only the named cfg(test) function changed. The complete server source outside that
+function, all568 other source inputs, four actor documents and every live fixture
+are byte-identical to the reviewed production candidate. Fresh scoped independent
+review accepted that comparison and preservation of assertion strength. Original
+live253/live174 and the three qualifying sweeps7/8/9 therefore remain applicable
+to unchanged production inputs and contracts. Fresh local focused7/7 and ordered
+updated-stable/fmt/strict Clippy/normal-parallel workspace gates passed2529/0/419.
+Windows CI on the final reviewed head remains mandatory before merge; native
+controls are not represented as a Windows reproduction. Evidence: implement9/
+and review7/ under the current private run, plus ci/windows-failed.log.

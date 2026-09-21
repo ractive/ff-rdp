@@ -3901,14 +3901,20 @@ mod tests {
     #[test]
     fn startup_recovery_handshake_owns_reply_and_preserves_lifecycle() {
         use ff_rdp_core::transport::recv_from;
-        use std::io::{BufReader, Read};
+        use std::io::BufReader;
         let state = Arc::new(startup_state());
         dispatch_firefox_message(&state, &startup_form("old", "about:blank"), None);
         dispatch_firefox_message(&state, &startup_destroy("old"), None);
         let (owner_socket, owner_peer) = loopback_pair();
+        owner_peer
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
         *state.rpc_writer.lock().expect("test state lock") =
             Some((7, ClientWriter::new(owner_socket), Instant::now()));
         let (ff_socket, ff_peer) = loopback_pair();
+        ff_peer
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
         let writer = Arc::new(Mutex::new(FramedWriter::from_stream(ff_socket)));
         let peer_state = Arc::clone(&state);
         let browser = thread::spawn(move || {
@@ -3928,13 +3934,18 @@ mod tests {
         let response = recover_startup_target(&state, &request, 7, &writer);
         assert_eq!(response, json!({"from":"daemon","recovered":true}));
         browser.join().unwrap();
-        let mut reader = BufReader::new(owner_peer.try_clone().unwrap());
+        // All mock Firefox dispatches have completed. A frame sent now must
+        // follow the lifecycle event immediately: a leaked recovery reply
+        // would precede it. This positively proves reply ownership without
+        // depending on an empty-socket timeout. Both peers' positive reads
+        // are bounded so a missing request/event fails instead of hanging.
+        let barrier = json!({"from":"test-barrier","sequence":1});
+        forward_to_rpc_client(&state, &barrier);
+        let mut reader = BufReader::new(owner_peer);
         assert_eq!(recv_from(&mut reader).unwrap()["target"]["actor"], "new");
-        owner_peer
-            .set_read_timeout(Some(Duration::from_millis(20)))
-            .unwrap();
-        assert!(
-            reader.read(&mut [0; 1]).is_err(),
+        assert_eq!(
+            recv_from(&mut reader).expect("bounded recovery ownership barrier"),
+            barrier,
             "recovery acknowledgment leaked to owner"
         );
         assert_eq!(
