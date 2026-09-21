@@ -694,3 +694,23 @@ and evaluation, a late old evaluation result, unchanged retired snapshots,
 deadline exhaustion and a non-lifecycle protocol error. The original default-Both
 sweep failure had no packet trace: its console error matches this caller failure,
 but its precise transition into fallback cannot be reconstructed retrospectively.
+
+### Same-URL reload after an unresolved terminal event (iteration 262)
+
+A watched reload can receive dom-complete and HTTP200 while its terminal
+URL-resolution snapshot expires or remains Pending. Discarding that terminal
+event leaves the scheduled changed-URL check unable to finish: reload preserves
+the URL. The event wait now retains the unresolved terminal evidence. After
+the existing changed-URL check, a successful watched refresh may revalidate
+complete state and a navigationStart newer than the pre-action epoch, then read
+the current top-level URL. This uses the same event deadline and100ms sample
+bound, replays resources captured by the reads, and preserves the collected
+HTTP status. Missing terminal evidence or a stale navigation epoch cannot enable
+this completion path. No navigation action is resent or event URL trusted.
+
+A controlled original live174 reload delayed only its second disposable snapshot
+read120ms across the unchanged100ms deadline. Before the correction it received
+dom-complete and200 but fell back after21323ms with not_observed; with the same
+schedule it finished in1189ms with200. Installed Firefox remained unmodified.
+The separate sweep6 reload failure was21188ms and had no packet trace, so this
+controlled proof does not establish its exact internal scheduling retrospectively.

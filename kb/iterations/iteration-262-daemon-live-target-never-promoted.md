@@ -915,3 +915,23 @@ committed submission), and ordered gates passed 2528/0/419. The independently re
 source and actor documentation are recoverable in `implement7/` and `review5/` under
 the current private run. This remains an in-progress checkpoint: three consecutive
 qualifying full sweeps are still owed, and original AC wording/boxes remain intact.
+
+## Reload terminal-evidence source checkpoint — 2026-09-21
+
+Sweep 5 passed 347/347; sweep 6 failed daemon reload at 21188ms/not_observed,
+with 346/347 passing, zero profile leaks and all named acceptance tests green.
+The qualifying sequence reset. The original occurrence has no retained wire trace.
+A controlled bounded snapshot expiry reproduced 21323ms/not_observed despite
+completion and HTTP200 events. Retaining unresolved terminal evidence permits
+a later bounded fresh-document/readiness check to finish same-URL reload; the
+matched control passed at 1189ms/status200. One reload was sent in each control.
+No deadline or assertion changed; stale epochs and absent terminal evidence remain
+negative cases. Prior startup, submission, reply-ownership and other repairs remain.
+
+Original live174 passed 2/2 and live253 passed 8/8 (1120ms daemon / 727ms direct
+committed submission). Ordered updated-stable/fmt/strict Clippy/normal-parallel
+workspace gates passed 2529/0/419. Fresh scoped independent review returned zero
+new actionable findings. Frozen inputs, proof and cleanup are retained under
+implement8/review6 in the current private run. This is a source checkpoint;
+original AC wording and unfinished boxes remain unchanged. Three consecutive
+qualifying full sweeps, closing gates, exact-head CI and merge remain owed.
