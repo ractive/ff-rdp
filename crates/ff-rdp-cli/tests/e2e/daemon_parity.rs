@@ -14,6 +14,22 @@ use std::time::{Duration, Instant};
 
 use super::support::{self, MockRdpServer, load_fixture};
 
+// Recorded on Firefox 156, 2026-09-19 capture2 at 22:54:42.599367Z.
+// Rebind only actor identities to this mock session's existing fixtures,
+// as MockRdpServer already does for reply `from` fields. The on-disk form is
+// the real captured packet, normalized only from conn5 to conn0.
+fn watched_target_form() -> serde_json::Value {
+    let mut event = load_fixture("target_available_262_recorded.json");
+    let target = load_fixture("get_target_response.json");
+    event["from"] = load_fixture("get_watcher_response.json")["actor"].clone();
+    for (key, value) in target["frame"].as_object().unwrap() {
+        if key == "actor" || key.ends_with("Actor") {
+            event["target"][key] = value.clone();
+        }
+    }
+    event
+}
+
 // Serialize all daemon tests to avoid port/process conflicts.
 fn daemon_test_mutex() -> &'static Mutex<()> {
     static MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
@@ -142,7 +158,7 @@ fn daemon_args(mock_port: u16) -> Vec<String> {
 //
 // Message flow (single TCP connection from daemon):
 //   Daemon startup: listTabs, getWatcher, watchResources (no followups)
-//   CLI via daemon: listTabs (forwarded), getTarget (forwarded)
+//   CLI via daemon: listTabs (forwarded), resolve-tab-target (daemon local)
 //   CLI daemon-local: stream, stop-stream (handled by daemon, not forwarded)
 //   CLI via daemon: navigateTo (forwarded) + followup watcher events streamed to CLI
 // ---------------------------------------------------------------------------
@@ -156,12 +172,21 @@ fn navigate_with_network_daemon_server() -> MockRdpServer {
         // so the mock server can respond if any legacy path still requests them.
         .on("getTarget", load_fixture("get_target_response.json"))
         .on(
+            "listFrames",
+            serde_json::json!({"from":"recorded-target","frames":[{"isTopLevel":true,
+            "url":load_fixture("get_target_response.json")["frame"]["url"]}]}),
+        )
+        .on(
             "startListeners",
             load_fixture("start_listeners_response.json"),
         )
         .on("getWatcher", load_fixture("get_watcher_response.json"))
         // Daemon startup calls watchTargets("frame") before watchResources.
-        .on("watchTargets", load_fixture("watch_targets_response.json"))
+        .on_with_followup(
+            "watchTargets",
+            load_fixture("watch_targets_response.json"),
+            watched_target_form(),
+        )
         // Daemon startup watchResources has no followups; network events arrive
         // as followups to navigateTo because the daemon streams them in real-time.
         .on(
@@ -184,7 +209,7 @@ fn navigate_with_network_daemon_server() -> MockRdpServer {
 // Message flow:
 //   Daemon startup: listTabs, getWatcher, watchResources + followup events
 //   (daemon buffers the network events)
-//   CLI via daemon: listTabs (forwarded), getTarget (forwarded)
+//   CLI via daemon: listTabs (forwarded), resolve-tab-target (daemon local)
 //   CLI daemon-local: drain (handled by daemon, not forwarded)
 // ---------------------------------------------------------------------------
 
@@ -196,12 +221,21 @@ fn network_daemon_server() -> MockRdpServer {
         // so the mock server can respond if any legacy path still requests them.
         .on("getTarget", load_fixture("get_target_response.json"))
         .on(
+            "listFrames",
+            serde_json::json!({"from":"recorded-target","frames":[{"isTopLevel":true,
+            "url":load_fixture("get_target_response.json")["frame"]["url"]}]}),
+        )
+        .on(
             "startListeners",
             load_fixture("start_listeners_response.json"),
         )
         .on("getWatcher", load_fixture("get_watcher_response.json"))
         // Daemon startup calls watchTargets("frame") before watchResources.
-        .on("watchTargets", load_fixture("watch_targets_response.json"))
+        .on_with_followup(
+            "watchTargets",
+            load_fixture("watch_targets_response.json"),
+            watched_target_form(),
+        )
         // watchResources is called at daemon startup. The followups simulate
         // network events that the daemon buffers for later drain by the CLI.
         .on_with_followups(
@@ -624,8 +658,17 @@ fn eval_exception_daemon_server(eval_result_fixture: &str) -> MockRdpServer {
     MockRdpServer::new()
         .on("listTabs", load_fixture("list_tabs_response.json"))
         .on("getTarget", load_fixture("get_target_response.json"))
+        .on(
+            "listFrames",
+            serde_json::json!({"from":"recorded-target","frames":[{"isTopLevel":true,
+            "url":load_fixture("get_target_response.json")["frame"]["url"]}]}),
+        )
         .on("getWatcher", load_fixture("get_watcher_response.json"))
-        .on("watchTargets", load_fixture("watch_targets_response.json"))
+        .on_with_followup(
+            "watchTargets",
+            load_fixture("watch_targets_response.json"),
+            watched_target_form(),
+        )
         .on(
             "watchResources",
             load_fixture("watch_resources_response.json"),

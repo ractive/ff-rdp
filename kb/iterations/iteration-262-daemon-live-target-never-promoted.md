@@ -2,13 +2,11 @@
 title: "Iteration 262: the daemon counts a frame target and never promotes it to live"
 type: iteration
 date: 2026-09-07
-status: planned
-branch: iter-262/daemon-live-target-never-promoted
+status: done
+branch: iter-262/watched-target-recovery
 depends_on:
   - 246
-first_call_sites:
-  - primitive: (to be decided — a repair path on the frame-target subscription)
-    site: crates/ff-rdp-cli/src/daemon/server.rs
+first_call_sites: [{"primitive": "TargetInfo::from_watcher_form", "site": "crates/ff-rdp-cli/src/daemon/server.rs:615"}, {"primitive": "WindowGlobalTarget::current_url", "site": "crates/ff-rdp-cli/src/commands/connect_tab.rs:545"}, {"primitive": "TargetEndpoint and TargetEndpoint::new", "site": "crates/ff-rdp-cli/src/commands/connect_tab.rs:92"}, {"primitive": "TargetEndpoint::snapshot and TargetSnapshot", "site": "crates/ff-rdp-cli/src/commands/connect_tab.rs:520"}, {"primitive": "ConnectedTab::target_endpoint", "site": "crates/ff-rdp-cli/src/commands/navigate.rs:1891"}, {"primitive": "resolve_target_snapshot", "site": "crates/ff-rdp-cli/src/commands/navigate.rs:646"}, {"primitive": "ConnectedTab::refresh_target_until", "site": "crates/ff-rdp-cli/src/commands/navigate.rs:1521"}, {"primitive": "ConnectedTab::refresh_after_submission_until", "site": "crates/ff-rdp-cli/src/commands/type_text.rs:385"}, {"primitive": "NavigationOrigin::observe_refreshed_target", "site": "crates/ff-rdp-cli/src/commands/type_text.rs:387"}, {"primitive": "DAEMON_PROTOCOL_VERSION (version2 protocol)", "site": "crates/ff-rdp-cli/src/daemon/client.rs:104"}]
 dogfood_path: |-
   # Reproduce under sweep contention; isolation also failed in the recorded255 repair.
   firefox -no-remote --start-debugger-server 6000 --headless   # raw browser, NOT ff-rdp launch
@@ -125,27 +123,27 @@ sweep's parallel execution; no new cause or timeout change is claimed.
 
 ## Tasks
 
-### A. Locate [0/2]
-- [ ] Identify every write to the live-target bookkeeping in `daemon/server.rs`
-- [ ] Explain, in writing, how `target_count: 1` and `live_target_count: 0` coexist
+### A. Locate [2/2]
+- [x] Identify every write to the live-target bookkeeping in `daemon/server.rs`
+- [x] Explain, in writing, how `target_count: 1` and `live_target_count: 0` coexist
 
-### B. Fix [0/2]
-- [ ] Land the fix the explanation points at
-- [ ] State whether it is ordering, repair, or both
+### B. Fix [2/2]
+- [x] Land the fix the explanation points at
+- [x] State whether it is ordering, repair, or both
 
-### C. Test [0/1]
-- [ ] A live Firefox test that fails before the fix and passes after — not only a unit test
+### C. Test [1/1]
+- [x] A live Firefox test that fails before the fix and passes after — not only a unit test
 
-## Acceptance Criteria [0/5]
+## Acceptance Criteria [5/5]
 
-- [ ] The coexistence of `target_count > 0` and `live_target_count == 0` is explained in writing
-- [ ] A live test fails on the pre-fix build and passes on the post-fix one
-- [ ] Three consecutive full live sweeps with `live_137_consent_accept_via_daemon`,
+- [x] The coexistence of `target_count > 0` and `live_target_count == 0` is explained in writing
+- [x] A live test fails on the pre-fix build and passes on the post-fix one
+- [x] Three consecutive full live sweeps with `live_137_consent_accept_via_daemon`,
       `live_145_click_frame_scan_js_exception_envelope` and
       `live_145_click_element_not_found_unchanged` green
-- [ ] `live_network_watcher_source_after_navigate_with_network` is either green in those same
+- [x] `live_network_watcher_source_after_navigate_with_network` is either green in those same
       three sweeps or filed as its own plan with the fix's evidence
-- [ ] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean
+- [x] `cargo fmt && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -q` clean
 
 ## Out of scope
 
@@ -265,6 +263,160 @@ failed occurrence to explain, not proof of a promotion phase or a particular cau
 343 other tests passed, all344 names accounted for, zero profile leaks.
 Evidence: `.git/ralph-loop/20260919-queue/iter261/logs/live-sweep-rerun.log`.
 
+## Bounded implementation investigation — 2026-09-19
+
+Source `38add406f711434f520fa06494b2e02ab3f5e0b2`, Firefox156. No product
+repair was selected. Twelve named137 probes (six serial, then six concurrent)
+produced two passes, three target-readiness failures, six ready-target
+Sourcepoint action failures, and one ready-target Guardian `consent_no_cmp`.
+The concurrent probes used separate owned homes/browsers, not a full sweep.
+Probes2–12 added failure-only page diagnostics without changing assertions;
+that temporary test edit was saved as `diagnostic-only.patch` and restored.
+
+The three readiness failures are probes8/11/12, debug52138/52139/52141,
+15206/15211/15241ms, all47polls. Their daemon wire traces capture the missing
+lifecycle directly: one available `about:blank` target, destruction during
+Guardian navigation, and no replacement available event before cleanup.
+In probe8, watcher `server1.conn5.watcher3` received `watchTargets` at
+11:40:45.571107Z; available target
+`server1.conn5.watcher2.process4//windowGlobalTarget2`, innerWindowId8589934593,
+arrived at11:40:45.594172Z. Destruction arrived at11:40:47.635639Z.
+The client's `unwatchTargets` at11:40:48.240798Z was received by the proxy but
+**not sent to Firefox**. The watcher remained daemon-owned; its initial
+`getWatcher` explicitly enabled server target switching.
+
+At failure, `getTarget` still returned the loaded Guardian `/europe` document,
+innerWindowId17179869185, browsingContextID11, via a legacy child target on
+the same connection. The daemon-routed DOM snapshot reported `complete`.
+Thus `target_count=1/live_target_count=0` is concretely one availability plus
+destruction, not a failed promotion phase. The last wait status had453 network
+events,95 dispatcher frames started/finished, no in-flight work/RPC owner and
+no dropped client writes. Later diagnostic requests increased the frame count;
+those later counts must not replace the failure-time status.
+
+All writes are in `daemon/server.rs`: availability increments `target_count`
+and `record_frame_target` inserts/replaces the form; a top-level switch clears
+old forms before insertion; `forget_frame_target` removes a destroyed actor.
+Initialization starts both counters/storage empty. Status snapshots the retained
+forms. The counter coexistence is explained, but **why Firefox delivers no
+replacement on this watcher is not established**. This sequence is later than
+startup: it does not prove the existing350ms placeholder-settling explanation.
+Local Firefox watcher code was inspected at0088392ab4ccab730743ed188ddec62d04e578b7;
+that checkout's provenance is separate from the installed Firefox156 binary.
+
+The bounded investigation stops before speculative retry/re-subscription changes.
+Resume with the retained failing wire sequence and Firefox process/window-global
+watcher instrumentation sufficient to identify why replacement notification is
+missing, then demonstrate a specific live before/after repair. All original
+tasks/AC checkboxes remain unchanged for supervisor review. No closing sweep,
+three-consecutive-sweep claim, repair gate pass or implementation-complete claim
+is made. The original15s bound is unchanged.
+
+Ready-target Sourcepoint action and Guardian-no-CMP outcomes are now filed in
+[[iteration-275-guardian-consent-ready-target-failures]], with failure-time top
+DOM, iframe attributes, document identity and route. CMP-frame DOM remains
+missing; filing does not satisfy this plan's named137 consecutive-sweep AC.
+Zero-frame140 and watcher-network observations were not exercised or resolved;
+they remain separately held here, with their historical evidence intact.
+
+Raw evidence and recovery files:
+`.git/ralph-loop/20260919-queue/iter262/` (`probe-N.log`, `probe-N.meta`,
+`home-N/.ff-rdp/daemon.log`, `derived/`, `diagnostic-only.patch`, implementation
+report and phase result). All probe sessions finished and their owned browsers
+were cleaned up; desktop Firefox PID1112 was preserved and port6000 stayed free.
+Three failed-readiness probes left dead-owner profile directories in their
+private roots after process exit. Scoped `profiles prune --all` subsequently
+removed all three (`owner_liveness=dead`, `failed={}`); cleanup logs preserve
+this anomaly without attributing it to the target lifecycle defect. The
+supervisor must reconcile it with the selected cleanup work; it is not a
+zero-profile-leak claim or a full-sweep profile summary.
+
+## Installed-revision controlled comparison — 2026-09-19
+
+Attempt2 preserved attempt1, fetched narrow official Mozilla source files at
+the installed binary's `a80bd15ddee3b4bf3679aeba340e9d2db933c467` revision
+(Firefox156.0, BuildID20260909172920), and rebuilt restored test inputs first.
+Fetched files, source URLs/commands, hashes and comparison logs are retained in
+`.git/ralph-loop/20260919-queue/iter262/attempt2/`.
+
+The `watcher3`/`watcher2` names are **not a mismatched subscription**:
+`WatcherActor` separately allocates `watcherConnectionPrefix` with `allocID`;
+the managed actor receives its own actor ID. Parent registry session data uses
+the former as `connectionPrefix`; content registry adds `.process<childID>/`
+for target routing. These are two namespaces belonging to the same watcher.
+
+One controlled comparison used two arms, each six concurrent owned browsers,
+with no consent execution. Every browser had its normal daemon watcher plus
+a direct RDP watcher on the same tab, both requesting server target switching
+and the same three resource types. Navigation still ran through the daemon.
+
+| Arm | Observation |
+|---|---|
+| Idle direct watcher, probes1–6 | All six direct connections retained3 targets; five daemon connections timed out at15s with no targets, one reached readiness. |
+| Direct watcher also issues legacy `getTarget` every250ms, probes7–12 | Direct retained0 targets in probes9/10/11,3 in7/8,2 in12. Daemon failed readiness in7/8/9/10 and succeeded in11/12. All navigations succeeded. |
+
+Direct probe10 received one watcher `about:blank` availability, a legacy
+child-target destruction and the watcher-target destruction, then no replacement
+over the daemon's full15s wait. Therefore daemon bookkeeping is **not required**
+to reproduce target loss when legacy and watcher actors share an RDP connection.
+Probe11 ended when daemon readiness succeeded, so its zero direct-target count
+is a shorter observation, not a15s persistence claim. Probe8 had one recorded
+`getTarget` `tabDestroyed` error; its later3-target result does not erase that.
+These diagnostic tests print outcomes and do not assert product success; their
+libtest `ok` verdicts must not be counted as passed acceptance tests.
+
+Installed-source evidence gives a specific candidate mechanism:
+`window-global.sys.mjs` `findTargetActor` first searches watcher-owned actors,
+then queries `TargetActorRegistry` using the same RDP connection prefix and
+browser context. `onWindowGlobalCreated` skips creation when that match is an
+existing non-JSWindowActor legacy target. Daemon traces show `getTarget` creating
+legacy `child*` actors around navigation, including an interim `about:blank`
+document in the destination process. The direct legacy arm changes that
+connection's outcomes without involving daemon bookkeeping.
+
+This still does **not identify the executed server branch** in a failed
+occurrence. The exact diagnostic dependency is to observe, for the replacement
+innerWindowId and watcherActorID, (1) the content-process watcher data and
+`findTargetActor` result/`createdFromJsWindowActor` at `onWindowGlobalCreated`,
+then (2) whether `onNewTargetActor` sends `targetAvailable`, and (3) whether
+`DevToolsProcessParent.#onTargetAvailable` accepts it. The installed parent
+source adds WindowGlobal/process-identity checks absent from the older local
+checkout; an exception there remains a distinct unmeasured alternative.
+Use these checkpoints to distinguish legacy suppression, missing watcher
+registration and parent delivery rejection before choosing a repair.
+
+A naive cached `getTarget` substitution is not yet a safe selected repair:
+it must preserve tab identity, wait/cancellation/reply ownership while the old
+target is destroyed, and existing navigation refresh behavior. This bounded
+pass makes no architecture change, retry/reset or deadline change. Product
+source and original assertions are restored; a final `cargo test -p ff-rdp-cli
+--test live --no-run` succeeded at11:58:08Z, so no diagnostic test binary is left
+as the build corresponding to the restored source. Before/after and all original
+three-sweep obligations remain unmet; plan275 was not executed.
+
+Cleanup attribution is now established from the actual paths: readiness panic
+occurs before137's explicit `stop_daemon`, so only `LiveFirefox::Drop` runs;
+that guard calls `kill_pid_and_wait` and intentionally does not remove profiles.
+The explicit daemon-stop path in `daemon/client.rs` additionally attempts
+managed-profile cleanup. Attempt1's three dead-owner remnants therefore match
+the documented panic/orphan-prune behavior, not evidence of a false daemon-stop
+removal or a new260/261 defect. Attempt2 explicitly stopped each browser;
+the final census found no owner-marker remnants and only preserved desktop
+Firefox PID1112. No full-sweep profile summary is claimed.
+
+## Supervisor checkpoint — 2026-09-19
+
+Independent review returned zero findings on the bounded diagnostic record.
+The two Locate tasks and counter-explanation AC are fulfilled by the retained
+source/trace evidence. All repair, before/after, consecutive-sweep and remaining
+acceptance requirements stay unticked. Status is in-progress; no product repair
+or completed iteration is claimed. New275 is an unselected diagnostic follow-up.
+
+Before checkpoint the branch fast-forwarded to verified260 merge
+`010059c632da4ce1344b0516a05a7c911b4cfe15` (documentation only). Source/test/dependency
+inputs remain identical to verified261 source; its ordered fmt/clippy/workspace-test
+passes and unaffected static checks are reused for this documentation-only recovery
+commit. Both262/275 plan checks, HYALO005 and diff check apply to the final docs.
 ## Iteration265 sweep recurrence — 2026-09-19
 
 The final265 sweep failed `live_137_daemon_mode_parity::live_137_consent_accept_via_daemon`: target_count1/live_target_count0 after the readiness bound; dispatcher95/95, no frame in flight. These counters preserve the observation without proving a promotion mechanism. The separate blocked262 investigation branch retains its watcher-lifecycle diagnosis and unmet requirements. No265 change repairs this finding. Full346=344pass2fail, zero profile leaks. Evidence: `.git/ralph-loop/20260919-queue/iter265/live-sweep.log` and `supervisor-accounting.json`. Original262 ACs remain unchanged.
@@ -292,3 +444,623 @@ timeout classifications and zero profile leaks or unattributed profiles. That
 green sweep is final iteration270 closure evidence; it does not erase the first
 recurrence or satisfy this plan's three-consecutive-sweep requirement. Evidence:
 `.git/ralph-loop/20260919-queue/iter270/logs/final-live-sweep-after-style-repair.log`.
+
+## Restart plan — 2026-09-19
+
+This is preparation for a new session, not another execution result. Follow
+[remaining-queue checkpoint](https://github.com/ractive/ff-rdp/blob/043cb8e3f8932e53a14259459b14f582c54c34f5/kb/research/ralph-loop-open-iterations-2026-09-19.md) for queue, ownership and validation.
+Recover checkpoint `e9c9e88c355782d9f645f4ca7a766b5d827e9be3` on this plan's
+branch, integrate verified current main there, and preserve both sets of dated
+observations plus branch-only plan275. The checkpoint has Locate2/2 and AC1/5;
+main's older unchecked state must not erase that reviewed evidence. Restore only
+evidence-backed tick/status differences, using Hyalo, after inspecting the merge.
+
+**Question to answer.** Which exact Firefox branch prevents the replacement
+window target from reaching this watcher? `target_count` is cumulative discovery,
+not proof that a current live target exists. The daemon observed available →
+destroyed without replacement. Idle direct watchers retained targets6/6 while
+daemons lost5/6; adding legacy `getTarget` could induce direct loss. This supports
+an experiment, not a proved suppression diagnosis or an actor-ID mismatch.
+
+**First experiment (Astra implementation and review).**
+
+1. Verify installed Firefox version, BuildID and source revision. The retained
+   comparison used156.0 / BuildID20260909172920; local Firefox checkout HEAD was
+   different. Use the retained exact-revision modules as locators, then verify
+   against the browser actually running. Reuse the Rust comparison harness and
+   ownership scripts under `iter262/attempt2/` in the previous run store.
+2. Establish a supported way to observe the required Firefox process/module.
+   In an exclusively owned browser/profile, trace each replacement window's
+   browsing-context/window identity, watcher actor ID and connection prefix,
+   watcher-registry membership, `findTargetActor` result and
+   `createdFromJsWindowActor`, the selected suppression/creation branch,
+   `onNewTargetActor` send, and parent acceptance or exception. Join these with
+   the client's target-available/destroyed stream and existing daemon counters.
+   Locate these checkpoints in retained `window-global.sys.mjs`,
+   `target-actor-registry.sys.mjs` and registry/parent modules; verify line locations.
+   Do not assume a parent-console evaluator can inspect a content-process registry.
+3. First prove the probes execute on an ordinary passing replacement. Then use
+   paired idle-watcher / watcher-plus-legacy-lookup controls with identical
+   navigation and fresh owned profiles. Keep daemon and direct connection IDs
+   separate; include a daemon observation. Record full15-second windows when
+   claiming persistent loss. Begin with two paired trials; extend to at most six
+   only if probes are complete but the failure has not recurred. Existing six-arm
+   results are retained evidence, not a required repetition baseline.
+4. Select a scoped correction only after a failing occurrence identifies whether
+   the loss is legacy-target reuse/suppression, registry omission, delivery
+   rejection or client bookkeeping. Verify the other boundaries explicitly before
+   concluding. No global timeout increase, blind reconnect/reset or broad target
+   redesign. Preserve resource subscription and concurrent consumer behavior.
+
+The initial probe-feasibility budget is45minutes. A supported debugger or an
+isolated instrumented Firefox build may be used if available; never replace the
+installed browser or edit the shared Firefox source checkout in place. If a build
+is needed, first record exact prerequisites and an honest bounded build plan; do
+not silently begin an unbounded build. Missing tooling is a concrete blocker.
+Needing instrumentation alone is remaining engineering work, not evidence of an
+external blocker. Stop a repeated unchanged experiment when it adds no distinction.
+
+**Proof and closing decision.** Retain a real-Firefox failing-before/passing-after
+regression for the identified branch, plus focused protocol/ordering coverage.
+Run the original three consecutive full dual-gate sweeps on stable final inputs;
+all three named137/145 tests must be green. Apply the original separate rule for
+`live_network_watcher_source_after_navigate_with_network`. Count every target,
+qualified name and profile summary. A failure breaks the qualifying streak;
+preserve it and diagnose before any new justified sequence. No retry loop merely
+collecting three green samples. Preserve all original AC text and requirements.
+
+The independent ready-target Guardian/Sourcepoint defects remain owned by275.
+If those prevent the named137 criterion, leave it unmet: filing275 does not satisfy
+it, and this five-iteration queue does not authorize implementing275. Record that
+precise prerequisite instead of widening this iteration or weakening consent.
+
+## Restart experiment — 2026-09-19, 22:18–22:27 CEST
+
+Probe feasibility succeeded within the45-minute initial bound, without a native
+Firefox build. An isolated copy of installed Firefox156.0 / BuildID20260909172920 /
+SourceStamp `a80bd15ddee3b4bf3679aeba340e9d2db933c467` loaded three instrumented
+DevTools modules from its own repacked browser `omni.ja`. The installed application
+and shared Firefox checkout were not edited. The four relevant pristine packaged
+modules matched the prior exact-revision source byte-for-byte. The probes record
+content-process/window/browsing-context identity, watcher registry enumeration and
+membership, connection prefix, `findTargetActor` source/result and
+`createdFromJsWindowActor`, suppression/creation, send-before/send-after, and parent
+receive/acceptance/exception. A passing direct control demonstrated every successful
+replacement boundary before the paired experiment. No parent-console inference
+about content registries was used.
+
+The reused Rust comparison helper was temporarily adapted to connect to explicitly
+owned raw browsers and to retain a full15-second post-navigation observation even
+when daemon readiness returned early. It logs final daemon counters separately
+from each direct connection. The first control lacked its home directory; the
+first attempted pair block also mixed localhost and127.0.0.1 and fell back to direct
+navigation. Those setup errors and their logs are retained, excluded from the valid
+daemon comparison, and corrected before the six valid paired trials. The first
+four valid pairs used minimal raw-profile preferences; the last two used the
+product's USER_JS preferences plus dump logging. Each pair used identical profile
+preferences/navigation in its idle and legacy arms. Browsers ran in bounded blocks
+of four with independent homes/profiles; this is not a full sweep.
+
+| Valid arm | Final observation after full15-second window |
+|---|---|
+| Idle direct watcher, pairs1–6 | All six retained3targets. |
+| Direct watcher plus legacy `getTarget` every250ms | Pairs1/3/5 retained0targets;2/4/6 retained3. |
+| Daemon connection in each of the12browsers | All12retained3targets, healthy dispatcher, no frame in flight. |
+
+For the three failed **direct** connections, the Firefox branch is now observed,
+not inferred. In valid-pair1-legacy, replacement innerWindowId17179869185 / BC13
+was present in the content registry for watcher `server1.conn3.watcher3`.
+`findTargetActor` found same-connection legacy actor
+`server1.conn3.child13/windowGlobalTarget2`, with `createdFromJsWindowActor=false`;
+`onWindowGlobalCreated` executed `suppress-legacy`, then the subsequent document
+insertion took `ignoreIfExisting`. No replacement target was created/sent/accepted
+for that watcher. Its client received availability for the old document followed
+by destruction and no replacement during the full observation. On the **separate
+daemon connection**, watcher `server1.conn2.watcher3` for that same replacement
+window found no legacy match, created a target, sent it, and was accepted by the
+parent. Pairs3/5 independently recorded the same direct suppression branch. No
+parent exception or trace-helper error occurred in the valid pair logs.
+
+This attributes the induced direct loss to legacy suppression and excludes registry
+omission/parent rejection for those occurrences. It does **not yet attribute a
+failed daemon occurrence**: that failure did not recur in these12 instrumented
+browsers. The earlier uninstrumented daemon losses and their evidence remain open;
+probe timing can perturb a race. The six-pair limit is exhausted, so no additional
+unchanged sampling or green-chasing was performed. No repair was selected from the
+all-green daemon observations. A shared-connection cached-target substitution would
+still require precise tab identity, destruction-gap/cancellation/reply ownership,
+resource-subscription and concurrent-consumer proof; the induced direct result
+alone does not establish that implementation.
+
+This is a bounded diagnostic stop, **not a missing-tooling/external blocker**.
+Resume with a reviewed, bounded experiment that captures the original daemon loss
+using these now-working probes (or a deterministic equivalent), then select the
+scoped repair. Locate2/2 and AC1/5 remain unchanged. No before/after product proof,
+three qualifying consecutive sweeps, network-source disposition from a fix, or
+iteration completion is claimed;275 remains unexecuted.
+
+Evidence root: primary checkout
+`.git/ralph-loop/20260919-remaining-2211/iter262/`. Retained artifacts include
+`instrument.rs`, `pristine/`, the private instrumented app/modules,
+`comparison-diagnostic.rs`, `diagnostic.patch`, runner scripts, `control*`,
+`pair*` setup-error logs, `valid-pair*/{meta,comparison.log,firefox.log,trace.jsonl,
+final-status.json}`, and per-failure `attribution.json`. Diagnostic sources were
+restored byte-for-byte and rebuilt; all source hashes match verified main's
+`iter258-resume/frozen-source.sha256`, allowing reuse of its ordered passing commit
+gates for this documentation-only recovery. Actual process cleanup retained all
+run-owned profiles as evidence, terminated/reaped only recorded browser PIDs and
+stopped owned daemons; desktop Firefox1112 remained untouched. No full-sweep profile
+summary is asserted. Detailed commands, phase times, checks and stopping decision
+are in the implementation report; actual token usage is unavailable.
+
+## Original managed-path follow-up — 2026-09-19, 22:37–22:44 CEST
+
+Review finding R1's distinct managed sequence was run within its fixed bounds:
+the original `LiveFirefox::headless_on_random_port` launch sequence and tab-ready poll,
+`with_daemon`, immediate Guardian navigation, the existing15-second live-target
+wait, failure-time daemon status, then stop before consent. No direct watcher,
+periodic `getTarget`, synthetic delay, consent call or iteration275 work was added.
+One serial run and the permitted fixed block of three independently-owned
+concurrent runs exhausted the four-run cap. The serial run and concurrent run2
+reproduced the daemon loss; concurrent runs1/3 retained replacement targets.
+
+The two failures have the same bounded wire observation. Daemon watcher
+`server1.conn5.watcher3` received the initial top-level availability for
+innerWindowId8589934593 / BC11 and then its destruction. Network resources prove
+replacement innerWindowId17179869185 / BC11 existed, but no replacement
+top-level `target-available-form` reached that watcher. At the end of15seconds the
+daemon reported target_count1/live_target_count0 with an alive dispatcher, equal
+started/finished frame counters, zero in-flight frame and no RPC-slot owner
+(serial93/93; concurrent run2 94/94). The passing concurrent controls received the
+replacement top-level availability and ended target_count3/live_target_count2.
+
+The requested Firefox-side branch discrimination was not captured. The managed
+launcher selected the private instrumented app and fresh managed profiles, and its
+temporary hook retained both browser stdout and stderr, but each `firefox.log`
+contained only headless/GFX startup lines and no `TRACE262` records. Supervisor
+inspection found a concrete instrumentation error: the patch added the dump
+preference inside `ensure_devtools_prefs`, called only for an explicitly supplied
+profile. These fresh managed launches instead write `USER_JS` directly, which the
+patch did not change. The worker's claim that dump was enabled in these fresh
+profiles is therefore unsupported and corrected here. This is a setup defect,
+not evidence that managed Firefox cannot emit the traces. These failures cannot be
+assigned from this capture to legacy suppression, membership omission or parent
+rejection. No causal product repair is
+selected. The earlier six-pair stop remains in force, the original acceptance
+criteria remain unchanged, and no further unchanged sampling is authorized by
+this result. The four managed captures also exhausted their declared cap, including
+the two failures with incomplete tracing. The precise resume action is to enable
+dump on the actual fresh-profile creation path, retain proof of the effective
+preference and an ordinary replacement's full trace before sampling, and use a
+new explicitly bounded investigation allowance; do not silently reset this cap.
+No further live run was performed to correct the instrumentation in this attempt.
+
+Evidence is in
+`.git/ralph-loop/20260919-remaining-2211/iter262-managed/`, including the exact
+diagnostic patch, original source bytes, redacted client/daemon logs, launch
+PID/profile/endpoints for the three fully-instrumented runs, restoration/rebuild
+proof and the mechanical implementation report. The first serial launch predates
+the launch-metadata print hook, so its browser PID/profile are unavailable; its
+Firefox/daemon endpoints and wire trace are retained. All temporary Rust changes
+were restored byte-for-byte, the relevant product-source diff against
+`origin/main` is empty, owned browsers/daemons/listeners are gone, and desktop
+Firefox PID1112 remained running. Actual token usage is unavailable.
+
+## Additional authorized capture — 2026-09-20
+
+The owner's new allowance preserves the exhausted earlier blocks: at most60minutes
+active discovery and six targeted captures including controls. Independent design
+and completed-instrumentation review preceded this block. Fresh managed USER_JS
+now enabled dump logging in the temporary diagnostic build; saved preference bytes
+and effective parent/content dump=true were observed. Private Firefox156.0 /
+BuildID20260909172920 / SourceStamp a80bd15ddee3b4bf3679aeba340e9d2db933c467
+was used without changing the installed app or shared Firefox source.
+
+Capture stopped after2/6attempts. Attempt1 reproduced the original managed-daemon
+loss: same daemon watcher server1.conn5.watcher3, replacement inner17179869185/BC11,
+legacy actor server1.conn5.child16/windowGlobalTarget2. Explicit watcher membership,
+context=true and fromJS=false lookup preceded suppress-legacy, then
+suppress-ignore-existing. The initial top-level form was destroyed, with no
+replacement top-level creation/send/parent/wire chain; readiness exhausted15.178s
+with target1/live0 and healthy90/90dispatcher. The shared daemon connection's
+getTarget request/reply and that actor's later replacement-window registry identity
+were joined; the older reply's about:blank document was not misidentified as the
+replacement. This attributes this occurrence, not every historical symptom.
+
+Attempt2 supplied the mandatory complete ordinary replacement control before the
+causal verdict: getWatcher(true), ordered watchTargets(frame), initial availability
+and destruction, replacement membership/context, empty legacy lookup, creation,
+send, parent acceptance, identical top-level wire form and live retained state.
+Independent Astra evidence review returned zero findings. External workspace tests
+in another session's Hyalo checkout overlapped attempt1; no uncontended timing or
+host-wide exclusivity claim is made. Explicit actor/branch evidence supports the
+attribution without inferring cause from timing.
+
+All temporary Rust instrumentation was restored byte-identical and CLI/live artifacts
+rebuilt. Both owned browsers/daemons and their four recorded ports were absent at
+cleanup; desktopFirefox1112 was preserved. Generated preference copies, exact argv,
+profile paths, command times/exits, browser metadata and cleanup observations were
+retained contemporaneously. Raw daemon logs contain ephemeral local authentication
+material and remain private; publish only sanitized derived evidence. This is not a
+full-sweep profile verdict.
+
+No product correction or new acceptance checkbox is claimed. Locate2/2, Fix0/2,
+Test0/1 and AC1/5 remain. The precise demonstrated caller is navigation's timer
+refresh, which invokes shared legacygetTarget while the watcher target is absent.
+A proposed daemon-local disposable target-snapshot query is under separate design
+review; it is not implemented or validated. Original live pre/post proof, three
+qualifying full sweeps, watcher-source requirement and ordered gates remain owed.
+Ready-target consent behavior remains275-owned and unexecuted.
+
+Evidence: primary checkout `.git/ralph-loop/20260920-additional/iter262/`, notably
+`capture/report.md`, `capture/phase-result.json`, `capture-review.md`,
+`capture/attempt-ledger.tsv`, `external-cargo-note.md`, private `instrumentation/attempt-1/`
+and `attempt-2/`, restored-source/build receipts and `fix-proposal.md`. The archived
+diagnostic binary differs from the restored runner alias; do not rerun the old
+capture command without reestablishing its reviewed inputs. This records the
+accepted diagnosis while the authorized selected queue remains active.
+
+## Additional block closeout — 2026-09-20, 03:00 CEST
+
+The accepted capture1 diagnosis and complete ordinary capture2 remain valid. A
+17-file correction was implemented, independently reviewed and repaired in two
+product repair batches. Final source patch
+`118e0fe4abe13fa92020336d283813f398faecc7647c36577eff79500bb08c11`
+passed ordered fmt, strict workspace Clippy and workspace tests (2500 passed,
+0 failed,419 ignored). The final scoped review returned zero findings and approved
+the exact pre/post proof inputs. These checks did not establish live correctness.
+
+Attempt3 launched one owned Firefox successfully, then the proof called unsupported
+`daemon start`. The CLI returned exit2 and the test stopped before navigation or
+the prevention assertion. The outer runner correctly failed for the missing daemon
+receipt and failed command. This is a harness setup failure, not the required
+pre-fix failing regression, and provides no new causal evidence. The original
+review missed this command-contract defect; retain its verdict together with this
+subsequent contrary execution evidence. Attempt4 was not run; no retry or sweep
+was started. The browser/profile/port cleanup succeeded, and desktop Firefox1112
+was preserved. Proof failure and runtime cleanup are separate results.
+
+Both product repair batches are exhausted. The exact17 source files, full patch,
+reviewed runner/manifests and existing frozen binaries are preserved under
+`.git/ralph-loop/20260920-additional/iter262/final-correction-archive/` and
+`repair-correction2/`. The worktree was restored to checkpoint72243fc source; the
+failing live regression was not committed. Restored source matches the retained
+565-file passing baseline manifest. This is a blocked documentation checkpoint,
+not a partial implementation merge.
+
+The new block used3/6 captures and3048/3600 active discovery seconds (3015 before
+proof;33 rounded seconds for its launch, interpretation and stop decision).
+Compilation and subsequent administrative preservation are separate.552 seconds
+and three capture slots remain numerically; the exhausted repair ceiling blocks
+further execution in this run. Earlier exhausted blocks are not reset.
+
+Next entry requires an explicit continuation consistent with that repair ceiling
+and retained discovery limits; recover the archived correction, replace the
+unsupported command with the actual daemon-establishing CLI path, validate command
+contracts before launch, and obtain fresh scoped review/rebuilt frozen identities.
+Do not blindly reuse the old attempt3/4 script or overwrite consumed attempt3.
+Then establish a valid before/after proof before the original real253 navigation
+and same-document checks, three consecutive qualifying full sweeps with137/both145
+green, watcher-source disposition, closing gates, independent review and exact-head
+CI. Original Locate2/2,Fix0/2,Test0/1,AC1/5 remain unchanged.275 stays unexecuted.
+
+Exact proof command/environment/timestamps/exits are in
+`proof-supervisor/attempt-3-command.json`; raw command and runtime receipts are in
+`correction-proof-3/`. Raw logs remain private. The stop/debit, immutable archive
+manifest, restore result and later cleanup verification are retained alongside
+the reviewed design and all earlier failures.
+
+
+## Foundation integration preparation — 2026-09-20
+
+The new explicitly authorized repair grant is separate from the preserved exhausted
+historical batches. The archived correction is adapted beneath the foundation's
+private `ConnectedTab` target installation: authenticated disposable primary-watcher
+snapshots acquire metadata, and the existing installation boundary preserves same-
+target handles and invalidates displaced consoles. Pending/errors never fall back
+to shared legacy lookup; direct and explicitly unmanaged descriptors retain legacy
+lookup. Navigation requeries under its existing deadline. Watcher document-start
+translation and fresh same-document URL queries are retained.
+
+The new proof uses supported `eval 1` autostart, retains its setup wire prefix
+separately, and counts prevention only in the subsequent navigation/evaluation
+phase. Fresh product-managed profiles remain mandatory; no explicit-profile helper
+substitution was made. Matched foundation-only/pre and foundation-plus-correction/
+post products share one rebuilt proof executable. New immutable runner inputs and
+offline receipts live in `.git/ralph-loop/20260920-foundation-repair/iter262/`
+of the primary checkout. Historical attempt3 and archived inputs are unchanged.
+
+This is preparation for independent review, not a new live result. No capture or
+sweep was launched in this phase. Original task/AC states remain Locate2/2,
+Fix0/2, Test0/1 and AC1/5. A valid pre/post proof, real253 delayed/same-URL and
+same-document regressions, three qualifying consecutive sweeps, watcher-source
+disposition and final gates/review/CI remain owed.275 and259/266 remain outside
+this correction's execution scope.
+
+
+### Foundation adaptation review repair — 2026-09-20
+
+Independent review found that best-effort refresh polled Pending for the full CLI
+timeout before page-view settlement could inspect its own budget. Final new repair
+batch2 restores one-snapshot best-effort semantics while retaining centralized
+installation. Pending/errors leave metadata untouched and never trigger legacy
+lookup; settlement owns retries. Fallible acquisition retains its explicit deadline.
+Caller regressions cover persistent Pending, Pending then replacement, short/zero
+budgets and missing identity. Initial frozen evidence and the rejected review remain
+under batch1-freeze; new final inputs are under repair2. No new capture, acceptance
+checkbox or live completion claim is made; fresh scoped review remains required.
+
+## Foundation correction proof and blocked regression —2026-09-20
+
+PR263 foundation merged through GitHub at8666a5324905793538c59532e909e0808beee7f3. Two newly authorized repair batches adapted the archived correction beneath central target installation and repaired the independently identified settlement refresh polling issue. This is prevention through acquisition ownership: daemon-managed callers read the primary watcher's retained snapshot over a disposable authenticated connection rather than issuing a shared legacy getTarget that suppresses replacement watching. It is not a counter-promotion repair or timeout increase. Independent final scoped review approved the frozen implementation and exact pre/post attempts with zero new findings.
+
+One identical real-Firefox regression executable ran against matched foundation-only/pre and foundation-plus-correction/post binaries. Attempt4 failed the intended zero-legacy assertion (4 calls after the setup boundary;setup1), with all54 command receipts successful. Navigation/evaluation exited0; readiness was false and no live replacement form remained. Attempt5 passed:zero legacy calls in both phases, readiness true, initial/replacement forms and final evaluation through the replacement's console actor. All8 command receipts and both attempts' inner/outer cleanup passed. The count covers navigation/readiness/evaluation, not exclusively navigation; historical reviewed Firefox-side causal capture supplies branch attribution. Attempts3 and all older evidence remain intact.
+
+Required real253 follow-up ran once, serially:7passed/1failed. live_253_committed_submission_daemon returned the committed destination page but took4.248194792s and failed the original elapsed<2s settlement-time assertion at live_253_outgoing_page.rs:357. No unsupported cause or passing-rerun substitution is claimed. Both new repair batches are exhausted, so no additional repair or closing sweep was started. This failure remains owned by262's required regression validation; filing a carry-over would not discharge it.
+
+Ordered fmt/strictClippy/full workspace tests passed with RUST_TEST_THREADS=1 (2516pass/0fail/419ignored). Default-parallel workspace tests twice failed an unchanged foundation timeout-receipt test; exact isolation passed but did not explain the failures. [[iteration-278-parallel-launch-timeout-missing-receipt]] preserves that distinct issue, outside execution scope. The serial pass does not tick the original default-validation gate.
+
+Current tasks:Locate2/2,Fix1/2,Test1/1,AC2/5. Land-fix task, three qualifying consecutive full sweeps, watcher-source disposition and original ordered clean gate remain unticked. No262PR/merge or product commit occurred. The initial checkpoint retained an uncommitted foundation merge/correction; failing code was not committed. Exact source bytes, staged/unstaged patches and file manifest are recoverable under primary .git/ralph-loop/20260920-foundation-repair/iter262/blocked-checkpoint/. Final frozen inputs/reviews/proof/253 logs are under repair2/. A prepared sweep runner exists but was never executed.
+
+Historical discovery3048s/3captures and old2repair batches remain consumed. This block spent2new repair batches,2additional captures (total5/6) and270s retained discovery (282s numerically remain); no allowance reset. New preparation debit is recorded separately in allowance-ledger.json. DesktopFirefox57827 was preserved by both proof identity guards; the earlier disappearance of desktop1112 has no established cause. Further262 work requires authority consistent with the exhausted new repair cap and must preserve these failed validations and original requirements.
+
+### Documentation checkpoint restoration
+
+At15:48:51CEST the supervisor verified all569 frozen correction inputs against both the worktree and the retained full-byte archive, then restored the checkout's product source and actor documentation to the merged foundation. All567 restored build inputs match each recorded passing PR263 fmt→strictClippy→workspace-test manifest (2499pass/0fail/418ignored). This authorizes reuse only for the restored documentation checkpoint; it does not erase the correction's253/parallel failures or satisfy its remaining ACs. Both correction binaries, source patch, all source bytes and proof evidence remain recoverable. Restored CLI/live/e2e/unit artifacts rebuilt successfully in15.720s, exit0; command and Cargo JSON receipts are in blocked-checkpoint/restored-build-* before the checkpoint commit.
+
+
+## Focused caller repair — 2026-09-20, stopped
+
+The owner adopted a separate 90-active-minute preparation/implementation/review
+grant for 262 with two independently reviewed implementation/repair batches. Both
+were used. The first repaired submission handover and interrupted console replies;
+independent review found outgoing-target loss during metadata acquisition. The
+second repaired typed lifecycle retry and late metadata reply retirement under
+the same absolute deadline. A fresh final review resolved that finding and returned
+zero new actionable findings. Twenty-one actual-caller scenarios cover settle,
+predicates, page output, outgoing/Pending/replacement states, bounded exhaustion,
+interrupted acknowledgments/results, same-document URLs and protocol-error fail-fast.
+Before regressions failed and after regressions passed; no assertion was weakened.
+
+Final candidate ordered stable/fmt/strict workspace Clippy/default-parallel tests
+passed 2519/0/419. The original live253 suite passed 8/8; committed submission was
+1083ms daemon and 738ms direct, within the unchanged <2s bound. The historical
+4.248194792s failure remains preserved without retroactive causal attribution.
+Targeted required137, both145 and watcher-source cases each passed.
+
+One full dual-gate closing sweep then finished 346passed/1failed across all347
+exact compiled names in six tiers. Summary: executed=347, skipped=0, preexisting=0,
+vanished=0, launch_timeout=0, timed_out=0, total=347; profile summary leaked=0,
+unattributed=0. Required137, both145 and watcher-source passed within this sweep.
+The sole failure was live_262_watched_target_prevention_contract at supported
+eval1 daemon-autostart setup, before navigation/prevention assertions: product
+exit124, Timeout waiting for watched tab target, outer timed_out=false. The trace
+records one about:blank top-level availability (inner21), then destruction and no
+replacement before failure; zero shared getTarget and zero listFrames sends.
+Cause is unproven; this does not establish recurrence of legacy suppression.
+
+No second sweep, fresh capture, third repair, product commit, PR or merge ran.
+The required clean consecutive-sweep sequence remains unmet. Original task/AC
+wording and checkbox state remain unchanged (AC2/5); the passing candidate gates
+and live253 results are retained without claiming iteration delivery. Scope was
+not widened to another iteration. The failed setup remains owned by262.
+
+All569 candidate source inputs, four actor docs, full patch and CLI/live/xtask
+binaries are archived under primary .git/ralph-loop/20260920-focused262/batch2/
+and blocked-checkpoint/. Final review2 permits scoped historical proof4/5 reuse
+for the unchanged prevention contract, not exact-function-byte reuse or live
+measurement of the new metadata retry behavior. The source was restored to the
+foundation and rebuilt; all567 restored inputs match each historical ordered
+passing PR263 gate manifest, reused only for this documentation checkpoint.
+No failing product source is committed. Runtime cleanup passed, including the
+sweep's owned raw browser, port6000 and failed-proof cleanup; desktop57827 remained.
+
+Preparation through final review approval was conservatively charged2209/5400s,
+without compile/idle deductions;3191s numerically remain but no repair batch.
+Final acceptance validation and preservation are separately recorded. Historical
+ledgers remain unchanged:282discovery seconds, one unused capture slot (5/6used),
+and the old85s preparation remainder. Actual token totals and a comparable
+supervision baseline are unavailable. Evidence: focused run state.json,
+review1/review.md, review2/review.md, validation/live253/, sweep-1/reconciliation.json,
+sweep-1/exact-name-reconciliation.json, sweep-1/failure-derived.json and private
+failed-proof receipts, plus blocked-checkpoint/restore-recipe.md. Primary handoff:
+research/rdp-262-focused-results-2026-09-20.md. Verify final cleanup/lock-release
+and checkpoint receipts before any authorized resume; no background continuation.
+
+## Startup execution source checkpoint — 2026-09-21
+
+The owner launched a new 262-only grant beyond the exhausted historical allowances,
+with a 10% weekly remaining floor and no new fixed repair-batch or capture ceiling.
+The reviewed correction was restored by archived hashes from the focused checkpoint.
+New attributable controls demonstrated watched-placeholder suppression during startup,
+and the bounded watcher recovery now handles positively observed initial target loss.
+Independent review also required safe retirement after an ambiguous internal reply.
+A later controlled history-probe failure was repaired within the existing deadlines.
+The prior submission handover, interrupted-reply and metadata repairs remain intact.
+
+Two attempted closing sweeps each finished 346 passed / 1 failed of 347, with zero
+profile leaks. Their exact failures and retrospective attribution limits are retained:
+daemon back's stale-probe path, then a recycled-PID fixture vulnerable to sibling-launch
+pruning. The latter now uses a private command-local home with its assertions intact.
+No failed sweep counts toward the original three-consecutive-sweep requirement.
+
+The final source has independently reviewed corrections, targeted before/after proof,
+original live253 8/8 on unchanged product inputs, and ordered updated-stable/fmt/strict
+Clippy/normal-parallel workspace gates of 2527 passed / 0 failed / 419 ignored.
+This is a recoverable source checkpoint, not completed iteration acceptance. Original
+AC wording and outstanding boxes remain unchanged pending closing validation.
+Private evidence and separate new-grant expenditure are under the primary checkout's
+`.git/ralph-loop/20260920-startup262/`. Historical ledgers and all other iteration
+restrictions remain intact; no other iteration is being executed.
+
+## Readiness fallback source checkpoint — 2026-09-21
+
+The first qualifying sweep passed 347/347 with zero profile leaks. The next sweep
+used identical source and CLI/live binaries but failed the original live159 plain
+navigate with an outgoing-console `noSuchActor`, before its network assertion;
+346/347 passed, with zero profile leaks and all named 262 acceptance tests green.
+This broke the qualifying sequence. Both complete sweep records remain preserved.
+
+The shared watched-readiness caller retained an outgoing console across replacement.
+A deterministic actual-caller regression and the supported `--wait-strategy readystate`
+CLI invocation fail before the correction and pass afterward. The caller now samples
+the primary target under its existing deadline, retires positively identified stale
+consoles, and keeps unrelated protocol errors fatal. The action is never resent.
+The original default-Both sweep's exact untraced transition remains unproven.
+
+Original live159 passed, original live253 passed 8/8 (1093ms daemon / 847ms direct
+committed submission), and ordered gates passed 2528/0/419. The independently reviewed
+source and actor documentation are recoverable in `implement7/` and `review5/` under
+the current private run. This remains an in-progress checkpoint: three consecutive
+qualifying full sweeps are still owed, and original AC wording/boxes remain intact.
+
+## Reload terminal-evidence source checkpoint — 2026-09-21
+
+Sweep 5 passed 347/347; sweep 6 failed daemon reload at 21188ms/not_observed,
+with 346/347 passing, zero profile leaks and all named acceptance tests green.
+The qualifying sequence reset. The original occurrence has no retained wire trace.
+A controlled bounded snapshot expiry reproduced 21323ms/not_observed despite
+completion and HTTP200 events. Retaining unresolved terminal evidence permits
+a later bounded fresh-document/readiness check to finish same-URL reload; the
+matched control passed at 1189ms/status200. One reload was sent in each control.
+No deadline or assertion changed; stale epochs and absent terminal evidence remain
+negative cases. Prior startup, submission, reply-ownership and other repairs remain.
+
+Original live174 passed 2/2 and live253 passed 8/8 (1120ms daemon / 727ms direct
+committed submission). Ordered updated-stable/fmt/strict Clippy/normal-parallel
+workspace gates passed 2529/0/419. Fresh scoped independent review returned zero
+new actionable findings. Frozen inputs, proof and cleanup are retained under
+implement8/review6 in the current private run. This is a source checkpoint;
+original AC wording and unfinished boxes remain unchanged. Three consecutive
+qualifying full sweeps, closing gates, exact-head CI and merge remain owed.
+
+## Startup recovery and closure — 2026-09-20/21
+
+The owner explicitly authorized a new 262-only execution grant beyond every earlier
+exhausted allowance, with no two-batch ceiling and a 10% weekly remaining floor.
+Historical ledgers and all failed results remain intact. The clean pushed 043cb8e3
+checkpoint was verified, then the reviewed 569-input correction and four actor docs
+were restored by exact archived hashes; the primary uncommitted handoffs were preserved.
+
+New instrumented startup evidence demonstrated watched-placeholder suppression:
+Firefox accepted replacement inner 8589934593 in BC 11, but its `ignoreIfExisting`
+branch found the watcher-created initial inner 21 and suppressed the replacement.
+Destruction of 21 then left target_count=1/live_target_count=0. This differs from the historical legacy
+suppression branch. A private-browser predicate intervention established causality;
+the shipping correction was subsequently proved against the unchanged Firefox
+predicate. The original focused sweep had no browser-internal trace, so its exact
+branch remains retrospectively unproven despite the consistent wire shape.
+
+The daemon now permits one recovery after positively observed initial about:blank
+loss, while a replacement/document start disarms it. The active RPC owner requests
+the primary watcher's unwatch/watch pair within the existing command deadline.
+Typed resources continue to flow; the daemon consumes the internal acknowledgment.
+Independent review found that a oneway error can precede a later watcher reply;
+the repaired error path retires the connection and retains the reply sink.
+Deterministic before/after regressions cover second-owner leakage and queued writes.
+The reviewed submission handover, interrupted replies and metadata guards are retained.
+
+The first new full closing sweep was 346 passed / 1 failed of 347, with zero profile leaks.
+Required 262/137/both145/watcher-source passed; daemon back took 21139ms and returned
+`not_observed`. Its residual trace cannot establish the exact internal cause.
+A controlled 120ms snapshot stall reproduced 21185ms/not_observed: the terminal event
+arrived, its bounded refresh expired, and history probes kept the outgoing actor.
+Refreshing the watched target during already-scheduled history checks reduced the
+same controlled case to 480ms/status200. The original deadlines, completion predicate,
+live174 assertions and direct route remain unchanged. No navigation is retried.
+This is a repair to the retained 262 integration, with the original failed sweep preserved.
+
+The second closing sweep was 346/347: the recycled-PID fixture's intentionally
+abandoned profile was absent from dry-run selection. A controlled sibling launch
+explicitly deleted that profile before selection; command-local private-home isolation
+preserves the original ownership and age-zero assertions. The failed sweep's profile
+metadata had already been deleted by test cleanup, so its exact deleting sibling remains
+unproven. Only the fixture changed; profile-pruning product behavior did not.
+
+Sweep 3 passed 347/347 with zero profile leaks. Sweep 4 used the exact same source
+and CLI/live binaries, but live159's default-Both navigate failed with an outgoing
+console's `noSuchActor`, before the network-buffer assertion. This broke the sequence.
+The shared watched-readiness caller retained a stale console across replacement.
+The actual-caller regression and the supported `--wait-strategy readystate` CLI path
+fail before and pass after the repair (782ms, complete, buffer 0→194). The latter
+selects a different strategy from the original default invocation; the original
+untraced transition is not retroactively claimed. The caller now reacquires the target
+for each bounded sample, retires only positively identified stale consoles, preserves
+freshness checks, and keeps unrelated protocol errors fatal. Navigation is sent once.
+
+Sweep 5 passed 347/347 with zero profile leaks. Sweep 6 failed live174 on reload,
+21188ms/not_observed, resetting the sequence again; all other 346 names passed.
+A matched control expired only reload's second watched snapshot within the unchanged
+100ms refresh bound. The terminal event and HTTP200 arrived, but the consumed terminal
+reading was lost and changed-URL polling could not finish the same-URL reload.
+Retaining that unresolved terminal evidence allows a later bounded sample to require
+fresh navigationStart, complete readiness and the top-level URL. The control changed
+from 21323ms/not_observed to 1189ms/status200, with one reload and unchanged assertions.
+The diagnostic inputs and delay condition matched; their internal packet ordering
+differed, as the independent review records. Neither control proves the original timing.
+Actual-caller tests include stale-epoch and missing-terminal negative cases. The
+original sweep's precise scheduling remains untraced; its failed record is retained.
+
+Original live253 passed 8/8 on the final production source (committed submission
+1120ms daemon / 727ms direct), and original live159 passed unchanged. Ordered
+updated-stable/fmt/strict Clippy/normal-parallel workspace gates passed 2529/0/419.
+Fresh cause review and six fresh code/repair reviews cover the final candidate;
+R1 is resolved with zero new actionable findings. Historical prevention proof 4/5
+is retained only for its unchanged contract, alongside the new startup proof.
+
+Three consecutive full dual-gate sweeps 7, 8 and 9 qualified on the final reviewed
+569 source inputs: each 347 passed / 0 failed across all six tiers, with zero skipped,
+preexisting, vanished, launch_timeout or timed_out tests and zero leaked/unattributed
+profiles. Original named137, both145, watcher-source and the262 prevention contract
+were green in each. CLI336 plus core1/3/3/2/2 exact compiled names matched every verdict.
+Both gates were set: FF_RDP_LIVE_TESTS=1 and FF_RDP_LIVE_NETWORK_TESTS=1, with default
+worker counts and watchdogs. The complete failed sweeps1/2/4/6 and passed3/5 are preserved.
+
+All nine enumerated xtask checks exited0. Seven performed checks; Firefox-reference
+validation had no firefox_refs field, and dogfood-script validation skipped because
+there is no dogfood_script field. Neither no-op is claimed as live verification.
+The full plan scan checked281 plans with0 failures and93 warnings-only plans.
+Existing source gates and independent review apply to the byte-identical publication
+source; status, evidence references and heading counts are supervisor-verified bookkeeping.
+
+Sweep 7: 347 passed, 0 failed.
+```text
+LIVE_SWEEP_SUMMARY executed=347 skipped=0 preexisting=0 vanished=0 launch_timeout=0 timed_out=0 total=347
+LIVE_SWEEP_PROFILES leaked=0 unattributed=0 root=/Users/james/Library/Application Support/ff-rdp/profiles
+```
+
+Sweep 8: 347 passed, 0 failed.
+```text
+LIVE_SWEEP_SUMMARY executed=347 skipped=0 preexisting=0 vanished=0 launch_timeout=0 timed_out=0 total=347
+LIVE_SWEEP_PROFILES leaked=0 unattributed=0 root=/Users/james/Library/Application Support/ff-rdp/profiles
+```
+
+Sweep 9: 347 passed, 0 failed.
+```text
+LIVE_SWEEP_SUMMARY executed=347 skipped=0 preexisting=0 vanished=0 launch_timeout=0 timed_out=0 total=347
+LIVE_SWEEP_PROFILES leaked=0 unattributed=0 root=/Users/james/Library/Application Support/ff-rdp/profiles
+```
+
+Private evidence: the primary checkout's `.git/ralph-loop/20260920-startup262/{implement1,implement2,
+implement3,implement4,implement5,implement6,implement7,implement8,cause-review,review1,review2,
+review3,review4,review5,review6,sweep-*}/`. Each frozen candidate
+has full-byte archives, hashes, command receipts and cleanup. Raw auth-bearing logs
+remain private. New expenditure so far: fifteen diagnostic capture groups comprising
+eighteen instrumented scenarios, and six implementation/repair batches; the grouping
+and actual launches are recorded in the per-phase ledgers. No historical debit/reset.
+Actual token totals and a
+comparable supervision-overhead baseline are unavailable. All other iterations remain
+outside execution scope, especially 259's restriction and 266's dependency.
+
+## Carry-over
+
+| Observation | Disposition |
+| --- | --- |
+| Historical watched-target suppression and new controlled startup placeholder loss | Closed by snapshot acquisition and bounded watcher recovery, with controlled proof. The old failed occurrence lacks browser-internal evidence, so its exact branch is not retroactively claimed. |
+| First new sweep: daemon back took 21139ms, `not_observed` | Closed for the demonstrated terminal-refresh-expiry/stale-probe path: controlled 21185ms before versus 480ms/status200 after. Original sweep lacks exact packet attribution and remains failed. |
+| Second new sweep: recycled-PID profile omitted from dry-run selection | Closed for demonstrated sibling-launch deletion by private fixture isolation. Original profile metadata was removed before assertion, so the precise original deleting process remains unproven. The sweep remains failed. |
+| Fourth sweep: default navigation returned an outgoing console’s `noSuchActor` | Closed for the demonstrated shared readiness-caller defect, with actual-caller and supported readystate CLI before/after proof. The exact original default-strategy transition remains untraced. Sweep 3’s pass and sweep 4’s failure are both retained. |
+| Sixth sweep: reload took 21188ms and fell back with `not_observed` | Closed for the demonstrated lost-terminal/same-URL path: controlled 21323ms before versus 1189ms/status200 after, with stale-epoch and missing-terminal negative regressions. Original scheduling remains untraced; sweep 5’s pass and sweep 6’s failure are retained. |
+| Historical ready-target Guardian consent and timeout-receipt issues | Existing plans 275 and 278 remain pending; passing current checks do not diagnose those historical failures. |
+| Historical zero-frame 140 observations without target counters | No new plan: retained as unattributed historical observations, with no recurrence in the final qualifying coverage. A new occurrence with an established distinct cause must be split out as the original plan directs; no shared cause is claimed here. |
+| Historical controlled/setup failures and rejected repairs | Preserved in the iteration plan and private archives; corrected paths have reviewed proof and required validation. They are not counted as passing sweeps. |
