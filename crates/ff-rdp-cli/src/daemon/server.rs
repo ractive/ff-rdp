@@ -73,6 +73,7 @@ const DAEMON_RESOURCE_TYPES: &[ResourceType] = &[
     ResourceType::NetworkEvent,
     ResourceType::ConsoleMessage,
     ResourceType::ErrorMessage,
+    ResourceType::DocumentEvent,
 ];
 
 /// String names of resource types that stream subscribers are allowed to watch.
@@ -92,7 +93,7 @@ const WATCHED_RESOURCE_TYPES: &[&str] = &[
 /// Increment this whenever the daemon ↔ CLI handshake format changes in a way
 /// that is NOT backward-compatible.  The CLI checks this on startup and exits
 /// with `error_type: "daemon_version_mismatch"` when the versions disagree.
-pub(crate) const DAEMON_PROTOCOL_VERSION: u32 = 1;
+pub(crate) const DAEMON_PROTOCOL_VERSION: u32 = 2;
 
 /// Per-tab ref store: maps stable `e<N>` handles to JS resolver expressions.
 ///
@@ -214,6 +215,8 @@ struct StreamSubscriber {
 }
 
 struct SharedState {
+    primary_target: Mutex<Option<PrimaryTarget>>,
+    startup_recovery_reply: Mutex<Option<(String, mpsc::Sender<Value>)>>,
     buffer: Mutex<ResourceBuffer>,
     /// Write-half of the current "RPC" CLI client, if any.
     ///
@@ -532,7 +535,114 @@ const WATCHER_SETTLE_DELAY: Duration = Duration::from_millis(350);
 /// A successfully-established resource watcher: the watcher actor ID plus the
 /// `ResourceCommand` bus and typed receiver the dispatcher fans events through
 /// (iter-123 Theme A).
+/// Only the startup watcher belongs to the primary Firefox writer. The lazy
+/// establisher has a different connection and must never publish actors here.
+#[derive(Default)]
+enum StartupRecovery {
+    #[default]
+    Unseen,
+    Blank(ff_rdp_core::ActorId),
+    Needed,
+    Finished,
+}
+
+struct PrimaryTarget {
+    startup_recovery: StartupRecovery,
+    descriptor: ff_rdp_core::ActorId,
+    watcher: ff_rdp_core::ActorId,
+    // Observed startup metadata, not a permanent identity predicate: BC may
+    // legitimately change while the descriptor/watcher binding remains valid.
+    #[allow(dead_code)]
+    initial_browsing_context: Option<u64>,
+    current: Option<Value>,
+}
+
+impl PrimaryTarget {
+    // Firefox 156 parent-process-document-event.js emits this synchronously
+    // through the exact watcher, before target destruction. Content-process
+    // frame-switch resources are deliberately excluded.
+    fn navigation_start(&self, message: &Value) -> Option<Value> {
+        let current = self.current.as_ref()?;
+        if message["from"].as_str() != Some(self.watcher.as_ref())
+            || message["type"] != "resources-available-array"
+        {
+            return None;
+        }
+        for group in message["array"].as_array()? {
+            if group[0] != "document-event" {
+                continue;
+            }
+            for resource in group[1].as_array()? {
+                if resource["name"] == "will-navigate"
+                    && resource["isFrameSwitching"] == false
+                    && resource["innerWindowId"].as_u64().is_some()
+                    && resource["innerWindowId"] == current["innerWindowId"]
+                    && resource["browsingContextID"].as_u64().is_some()
+                    && resource["browsingContextID"] == current["browsingContextID"]
+                {
+                    return Some(json!({"from":current["actor"], "type":"willNavigate",
+                        "url":resource["newURI"].as_str().unwrap_or_default(),
+                        "innerWindowId":current["innerWindowId"]}));
+                }
+            }
+        }
+        None
+    }
+
+    fn observe(&mut self, message: &Value) {
+        if message.get("from").and_then(Value::as_str) != Some(self.watcher.as_ref()) {
+            return;
+        }
+        let form = &message["target"];
+        match message.get("type").and_then(Value::as_str) {
+            Some("target-available-form")
+                if form.get("targetType").and_then(Value::as_str) == Some("frame")
+                    && form.get("isTopLevelTarget").and_then(Value::as_bool) == Some(true)
+                    && form.get("isPopup").and_then(Value::as_bool) == Some(false) =>
+            {
+                self.startup_recovery = match &self.startup_recovery {
+                    StartupRecovery::Unseen if form["url"] == "about:blank" => {
+                        StartupRecovery::Blank(form["actor"].as_str().unwrap_or_default().into())
+                    }
+                    StartupRecovery::Blank(actor)
+                        if form["actor"].as_str() == Some(actor.as_ref()) =>
+                    {
+                        StartupRecovery::Blank(actor.clone())
+                    }
+                    _ => StartupRecovery::Finished,
+                };
+                // A malformed replacement must not leave a stale target live.
+                self.current = ff_rdp_core::TargetInfo::from_watcher_form(form)
+                    .ok()
+                    .filter(|t| {
+                        !t.actor.as_ref().is_empty() && !t.console_actor.as_ref().is_empty()
+                    })
+                    .map(|_| form.clone());
+            }
+            Some("target-destroyed-form")
+                if self
+                    .current
+                    .as_ref()
+                    .is_some_and(|current| current.get("actor") == form.get("actor")) =>
+            {
+                if matches!(&self.startup_recovery, StartupRecovery::Blank(actor)
+                    if form["actor"].as_str() == Some(actor.as_ref()))
+                    && message["options"]["isTargetSwitching"] == false
+                {
+                    self.startup_recovery = StartupRecovery::Needed;
+                } else {
+                    self.startup_recovery = StartupRecovery::Finished;
+                }
+                self.current = None;
+            }
+            _ => {}
+        }
+    }
+}
+
 struct WatcherSetup {
+    descriptor: ff_rdp_core::ActorId,
+    initial_browsing_context: Option<u64>,
     watcher_actor: ff_rdp_core::ActorId,
     resource_bus: ResourceCommand,
     resource_rx: std::sync::mpsc::Receiver<std::sync::Arc<ff_rdp_core::Resource>>,
@@ -576,6 +686,8 @@ fn establish_watcher(transport: &mut RdpTransport) -> Result<Option<WatcherSetup
         .context("subscribing to resources via ResourceCommand")?;
 
     Ok(Some(WatcherSetup {
+        descriptor: tab_actor,
+        initial_browsing_context: tab.browsing_context_id,
         watcher_actor,
         resource_bus,
         resource_rx,
@@ -807,6 +919,13 @@ pub(crate) fn run_daemon(
     transport.set_event_sink(Some(early_tx));
 
     let established = establish_watcher_with_retry(&mut transport, WATCHER_STARTUP_RETRY);
+    let primary_target = established.as_ref().map(|w| PrimaryTarget {
+        startup_recovery: StartupRecovery::default(),
+        descriptor: w.descriptor.clone(),
+        watcher: w.watcher_actor.clone(),
+        initial_browsing_context: w.initial_browsing_context,
+        current: None,
+    });
     let initial_watcher_actor = established
         .as_ref()
         .map(|w| w.watcher_actor.as_ref().to_owned())
@@ -904,6 +1023,8 @@ pub(crate) fn run_daemon(
         next_client_id: AtomicU64::new(1),
         top_level_target: Mutex::new(None),
         frame_targets: Mutex::new(Vec::new()),
+        primary_target: Mutex::new(primary_target),
+        startup_recovery_reply: Mutex::new(None),
         dispatcher: DispatcherHealth::default(),
         clients_dropped_on_write: AtomicU64::new(0),
     });
@@ -1398,6 +1519,27 @@ fn dispatch_firefox_message(
     msg: &Value,
     resources: Option<(&mut ResourceCommand, &ResourceReceiver)>,
 ) {
+    if msg.get("type").is_none()
+        && let Some((watcher, sender)) = lock_or_recover!(state.startup_recovery_reply).as_ref()
+        && msg["from"].as_str() == Some(watcher.as_str())
+    {
+        let _ = sender.send(msg.clone());
+        return;
+    }
+    // Translate only the bound primary document's parent-process start into
+    // the existing transport latch/collection guard contract. Release the
+    // snapshot lock before forwarding; no Firefox request or RPC claim occurs.
+    let navigation_start = lock_or_recover!(state.primary_target)
+        .as_ref()
+        .and_then(|binding| binding.navigation_start(msg));
+    if let Some(start) = navigation_start {
+        if let Some(binding) = lock_or_recover!(state.primary_target).as_mut() {
+            binding.startup_recovery = StartupRecovery::Finished;
+        }
+        state.nav_generation.fetch_add(1, Ordering::Relaxed);
+        lock_or_recover!(state.ref_store).clear();
+        forward_to_rpc_client(state, &start);
+    }
     let watcher_actor = lock_or_recover!(state.watcher_actor).clone();
     if let Some((resource_bus, resource_rx)) = resources
         && is_watcher_event(msg, &watcher_actor)
@@ -1644,6 +1786,11 @@ fn is_target_event(msg: &Value) -> bool {
 /// signals a target going away and invalidates it in the registry (including
 /// all dependent fronts — inspector, walker, console scoped to that target).
 fn handle_target_event(state: &SharedState, msg: &Value) {
+    if let Ok(mut binding) = state.primary_target.lock()
+        && let Some(binding) = binding.as_mut()
+    {
+        binding.observe(msg);
+    }
     let url = msg
         .get("target")
         .and_then(|t| t.get("url"))
@@ -2656,7 +2803,11 @@ fn handle_client(
                     // handle_daemon_message can register a StreamSubscriber
                     // that writes to the correct connection.
                     let writer_for_sub = Some(writer.clone());
-                    let response = handle_daemon_message(state, &msg, client_id, writer_for_sub);
+                    let response = if msg["type"] == "recover-startup-target" {
+                        recover_startup_target(state, &msg, client_id, firefox_writer)
+                    } else {
+                        handle_daemon_message(state, &msg, client_id, writer_for_sub)
+                    };
                     let resp_json = match serde_json::to_string(&response) {
                         Ok(j) => j,
                         Err(e) => {
@@ -2740,6 +2891,9 @@ fn handle_client(
                                 continue;
                             }
                         }
+                    }
+                    if state.shutdown.load(Ordering::Relaxed) || termination_requested() {
+                        break 'client ClientExit::DaemonShuttingDown;
                     }
                     // Forward to Firefox. iter-164: a partially-daemon-owned
                     // `unwatchResources` is forwarded with the daemon-owned
@@ -2861,7 +3015,12 @@ fn is_client_target_teardown(msg: &Value) -> bool {
 ///
 /// The daemon installs these once at startup (see [`DAEMON_RESOURCE_TYPES`])
 /// and keeps them for the whole session. Mirrors that list as wire names.
-const DAEMON_OWNED_RESOURCE_NAMES: &[&str] = &["network-event", "console-message", "error-message"];
+const DAEMON_OWNED_RESOURCE_NAMES: &[&str] = &[
+    "network-event",
+    "console-message",
+    "error-message",
+    "document-event",
+];
 
 /// What to do with a client frame that may be an `unwatchResources` request
 /// (iter-164).
@@ -2907,7 +3066,7 @@ enum ResourceTeardown {
 /// semantically: the client's paired `watchResources` was itself a no-op, the
 /// connection was already watching.
 ///
-/// Types the daemon does **not** own (e.g. `document-event`) are still
+/// Types the daemon does **not** own (e.g. `stylesheet`) are still
 /// forwarded, via [`ResourceTeardown::Forward`], so a client that genuinely
 /// owns a subscription can still release it.
 fn classify_client_resource_teardown(msg: &Value) -> ResourceTeardown {
@@ -2981,6 +3140,110 @@ impl Drop for ClientCleanupGuard<'_> {
 // Daemon-local message handling
 // ---------------------------------------------------------------------------
 
+/// Repair only a positively observed startup placeholder loss. The requesting
+/// command already owns the RPC slot and is between synchronous requests. Its
+/// handler cannot forward another request while this handshake runs. The
+/// dispatcher consumes the watchTargets reply itself, including a late reply
+/// after any recovery failure; it can never become a later client's response.
+fn recover_startup_target(
+    state: &SharedState,
+    msg: &Value,
+    client_id: ClientId,
+    firefox_writer: &Arc<Mutex<FramedWriter>>,
+) -> Value {
+    let error =
+        |message: &str| json!({"from":"daemon", "error":"startup_recovery", "message":message});
+    let budget = Duration::from_millis(msg["remaining_ms"].as_u64().unwrap_or(0).min(5000));
+    if budget.is_zero() {
+        return error("startup recovery deadline exhausted");
+    }
+    let deadline = Instant::now() + budget;
+    // Hold the slot lock through registering/sending: no different owner can
+    // claim the channel while recovery acquires its reply sink.
+    let owner = lock_or_recover!(state.rpc_writer);
+    if owner.as_ref().is_none_or(|(id, ..)| *id != client_id) {
+        return error("startup recovery requires the active RPC owner");
+    }
+    let watcher = {
+        let mut primary = lock_or_recover!(state.primary_target);
+        let Some(binding) = primary.as_mut() else {
+            return error("no primary watcher");
+        };
+        if msg["descriptor"].as_str() != Some(binding.descriptor.as_ref()) {
+            return error("startup recovery descriptor mismatch");
+        }
+        if binding.current.is_some() || !matches!(binding.startup_recovery, StartupRecovery::Needed)
+        {
+            return json!({"from":"daemon", "recovered":false});
+        }
+        binding.startup_recovery = StartupRecovery::Finished;
+        binding.watcher.to_string()
+    };
+    let (tx, rx) = mpsc::channel();
+    *lock_or_recover!(state.startup_recovery_reply) = Some((watcher.clone(), tx));
+    let sent = send_startup_recovery(firefox_writer, &watcher, deadline);
+    drop(owner);
+    let reply = sent.ok().and_then(|()| {
+        rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .ok()
+    });
+    if reply
+        .as_ref()
+        .is_some_and(|reply| reply.get("error").is_none())
+    {
+        *lock_or_recover!(state.startup_recovery_reply) = None;
+        json!({"from":"daemon", "recovered":true})
+    } else {
+        // Missing acknowledgments and errors leave reply ownership ambiguous:
+        // even oneway unwatchTargets can emit an error before watchTargets
+        // replies. Retire on every recovery error rather than releasing an
+        // outstanding reply to another RPC. Keep the sink for a racing reply.
+        state.shutdown.store(true, Ordering::Relaxed);
+        if let Ok(writer) = firefox_writer.try_lock() {
+            let _ = writer.shutdown();
+        }
+        error("startup recovery failed; daemon connection retired")
+    }
+}
+
+fn send_startup_recovery(
+    firefox_writer: &Mutex<FramedWriter>,
+    watcher: &str,
+    deadline: Instant,
+) -> Result<(), ProtocolError> {
+    let mut writer = loop {
+        match firefox_writer.try_lock() {
+            Ok(writer) => break writer,
+            Err(std::sync::TryLockError::Poisoned(error)) => break error.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                if Instant::now() >= deadline {
+                    return Err(ProtocolError::Timeout);
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
+    };
+    let socket = writer
+        .try_clone_stream()
+        .map_err(ProtocolError::ConnectionFailed)?;
+    let previous = socket
+        .write_timeout()
+        .map_err(ProtocolError::ConnectionFailed)?;
+    let sent = (|| {
+        for method in ["unwatchTargets", "watchTargets"] {
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .filter(|d| !d.is_zero())
+                .ok_or(ProtocolError::Timeout)?;
+            writer.set_write_timeout(Some(remaining))?;
+            writer.send(&json!({"to":watcher,"type":method,"targetType":"frame"}))?;
+        }
+        Ok(())
+    })();
+    writer.set_write_timeout(previous)?;
+    sent
+}
+
 /// Handle a message addressed `to: "daemon"`.
 ///
 /// `client_id` is the daemon-issued monotonic identity of the sending client
@@ -3003,6 +3266,30 @@ fn handle_daemon_message(
     let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
 
     match msg_type {
+        "resolve-tab-target" => {
+            let Ok(binding) = state.primary_target.lock() else {
+                return json!({"from":"daemon", "type":"resolve-tab-target", "error":"target state unavailable"});
+            };
+            match binding.as_ref() {
+                Some(b)
+                    if msg.get("descriptor").and_then(Value::as_str)
+                        == Some(b.descriptor.as_ref()) =>
+                {
+                    if let Some(target) = &b.current {
+                        json!({"from":"daemon", "type":"resolve-tab-target", "state":"live", "target":target})
+                    } else {
+                        let snapshot = if matches!(b.startup_recovery, StartupRecovery::Needed) {
+                            "startup-recovery"
+                        } else {
+                            "pending"
+                        };
+                        json!({"from":"daemon", "type":"resolve-tab-target", "state":snapshot})
+                    }
+                }
+                _ => json!({"from":"daemon", "type":"resolve-tab-target", "state":"unmanaged"}),
+            }
+        }
+
         "drain" => {
             let Some(resource_type) = msg
                 .get("resourceType")
@@ -3350,14 +3637,14 @@ mod tests {
         let msg = json!({
             "to": "server1.conn0.watcher4",
             "type": "unwatchResources",
-            "resourceTypes": ["document-event", "network-event"],
+            "resourceTypes": ["stylesheet", "network-event"],
         });
         match classify_client_resource_teardown(&msg) {
             ResourceTeardown::Forward(rewritten) => {
                 assert_eq!(
                     rewritten["resourceTypes"],
-                    json!(["document-event"]),
-                    "the client's own document-event must still be released, \
+                    json!(["stylesheet"]),
+                    "the client's own stylesheet must still be released, \
                      the daemon-owned network-event must not: {rewritten}"
                 );
                 assert_eq!(rewritten["to"], "server1.conn0.watcher4");
@@ -3376,6 +3663,7 @@ mod tests {
             json!(["network-event"]),
             json!(["console-message"]),
             json!(["error-message"]),
+            json!(["document-event"]),
             json!(["network-event", "console-message", "error-message"]),
         ] {
             let msg = json!({
@@ -3396,7 +3684,7 @@ mod tests {
     #[test]
     fn unit_164_daemon_forwards_unrelated_frames_unchanged() {
         for msg in [
-            json!({"to": "w", "type": "unwatchResources", "resourceTypes": ["document-event"]}),
+            json!({"to": "w", "type": "unwatchResources", "resourceTypes": ["stylesheet"]}),
             json!({"to": "w", "type": "watchResources", "resourceTypes": ["network-event"]}),
             json!({"to": "w", "type": "unwatchTargets", "targetType": "frame"}),
             // Malformed: no `resourceTypes` array to inspect.
@@ -3529,7 +3817,458 @@ mod tests {
             next_client_id: AtomicU64::new(1),
             top_level_target: Mutex::new(None),
             frame_targets: Mutex::new(Vec::new()),
+            primary_target: Mutex::new(None),
+            startup_recovery_reply: Mutex::new(None),
         }
+    }
+
+    fn startup_form(actor: &str, url: &str) -> Value {
+        json!({"from":"watcher","type":"target-available-form","target":{
+            "actor":actor,"consoleActor":format!("{actor}/console"),"innerWindowId":21,
+            "browsingContextID":11,"isTopLevelTarget":true,"isPopup":false,
+            "targetType":"frame","url":url}})
+    }
+
+    fn startup_destroy(actor: &str) -> Value {
+        json!({"from":"watcher","type":"target-destroyed-form", "target":{
+            "actor":actor,"innerWindowId":21,"isTopLevelTarget":true},
+            "options":{"isTargetSwitching":false}})
+    }
+
+    fn startup_state() -> SharedState {
+        let state = test_state();
+        *state.primary_target.lock().expect("test state lock") = Some(PrimaryTarget {
+            startup_recovery: StartupRecovery::default(),
+            descriptor: "tab".into(),
+            watcher: "watcher".into(),
+            initial_browsing_context: Some(11),
+            current: None,
+        });
+        state
+    }
+
+    #[test]
+    fn startup_recovery_requires_initial_blank_loss_and_not_navigation() {
+        for scenario in [
+            "loss",
+            "nonblank",
+            "replacement",
+            "other-watcher",
+            "switch",
+            "navigation",
+        ] {
+            let state = startup_state();
+            let url = if scenario == "nonblank" {
+                "https://example.com"
+            } else {
+                "about:blank"
+            };
+            dispatch_firefox_message(&state, &startup_form("old", url), None);
+            if scenario == "replacement" {
+                dispatch_firefox_message(&state, &startup_form("new", "about:blank"), None);
+            }
+            if scenario == "navigation" {
+                dispatch_firefox_message(
+                    &state,
+                    &json!({"from":"watcher","type":"resources-available-array",
+                    "array":[["document-event",[{"name":"will-navigate","isFrameSwitching":false,
+                    "innerWindowId":21,"browsingContextID":11,"newURI":"https://example.com"}]]]}),
+                    None,
+                );
+            }
+            let mut destroyed = startup_destroy("old");
+            if scenario == "other-watcher" {
+                destroyed["from"] = json!("other");
+            }
+            if scenario == "switch" {
+                destroyed["options"]["isTargetSwitching"] = json!(true);
+            }
+            dispatch_firefox_message(&state, &destroyed, None);
+            let result = handle_daemon_message(
+                &state,
+                &json!({"type":"resolve-tab-target","descriptor":"tab"}),
+                1,
+                None,
+            );
+            assert_eq!(
+                result["state"] == "startup-recovery",
+                scenario == "loss",
+                "{scenario}: {result}"
+            );
+        }
+    }
+
+    #[test]
+    fn startup_recovery_handshake_owns_reply_and_preserves_lifecycle() {
+        use ff_rdp_core::transport::recv_from;
+        use std::io::BufReader;
+        let state = Arc::new(startup_state());
+        dispatch_firefox_message(&state, &startup_form("old", "about:blank"), None);
+        dispatch_firefox_message(&state, &startup_destroy("old"), None);
+        let (owner_socket, owner_peer) = loopback_pair();
+        owner_peer
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        *state.rpc_writer.lock().expect("test state lock") =
+            Some((7, ClientWriter::new(owner_socket), Instant::now()));
+        let (ff_socket, ff_peer) = loopback_pair();
+        ff_peer
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let writer = Arc::new(Mutex::new(FramedWriter::from_stream(ff_socket)));
+        let peer_state = Arc::clone(&state);
+        let browser = thread::spawn(move || {
+            let mut reader = BufReader::new(ff_peer);
+            assert_eq!(
+                recv_from(&mut reader).unwrap(),
+                json!({"to":"watcher","type":"unwatchTargets","targetType":"frame"})
+            );
+            assert_eq!(
+                recv_from(&mut reader).unwrap(),
+                json!({"to":"watcher","type":"watchTargets","targetType":"frame"})
+            );
+            dispatch_firefox_message(&peer_state, &startup_form("new", "about:blank"), None);
+            dispatch_firefox_message(&peer_state, &json!({"from":"watcher"}), None);
+        });
+        let request = json!({"descriptor":"tab","remaining_ms":1000});
+        let response = recover_startup_target(&state, &request, 7, &writer);
+        assert_eq!(response, json!({"from":"daemon","recovered":true}));
+        browser.join().unwrap();
+        // All mock Firefox dispatches have completed. A frame sent now must
+        // follow the lifecycle event immediately: a leaked recovery reply
+        // would precede it. This positively proves reply ownership without
+        // depending on an empty-socket timeout. Both peers' positive reads
+        // are bounded so a missing request/event fails instead of hanging.
+        let barrier = json!({"from":"test-barrier","sequence":1});
+        forward_to_rpc_client(&state, &barrier);
+        let mut reader = BufReader::new(owner_peer);
+        assert_eq!(recv_from(&mut reader).unwrap()["target"]["actor"], "new");
+        assert_eq!(
+            recv_from(&mut reader).expect("bounded recovery ownership barrier"),
+            barrier,
+            "recovery acknowledgment leaked to owner"
+        );
+        assert_eq!(
+            state
+                .primary_target
+                .lock()
+                .expect("test state lock")
+                .as_ref()
+                .unwrap()
+                .current
+                .as_ref()
+                .unwrap()["actor"],
+            "new"
+        );
+        assert!(!state.shutdown.load(Ordering::Relaxed));
+        dispatch_firefox_message(&state, &startup_destroy("new"), None);
+        assert_eq!(
+            recover_startup_target(&state, &request, 7, &writer)["recovered"],
+            false,
+            "one recovery maximum"
+        );
+    }
+
+    #[test]
+    fn startup_recovery_write_lock_obeys_deadline_without_sending() {
+        let (socket, mut peer) = loopback_pair();
+        let writer = Arc::new(Mutex::new(FramedWriter::from_stream(socket)));
+        let guard = writer.lock().expect("test state lock");
+        let other = Arc::clone(&writer);
+        let result = thread::spawn(move || {
+            send_startup_recovery(
+                &other,
+                "watcher",
+                Instant::now() + Duration::from_millis(10),
+            )
+        })
+        .join()
+        .unwrap();
+        assert!(matches!(result, Err(ProtocolError::Timeout)));
+        drop(guard);
+        peer.set_read_timeout(Some(Duration::from_millis(10)))
+            .unwrap();
+        assert!(std::io::Read::read(&mut peer, &mut [0; 1]).is_err());
+    }
+
+    #[test]
+    fn startup_recovery_missing_reply_retires_connection_and_swallows_late_ack() {
+        let state = startup_state();
+        dispatch_firefox_message(&state, &startup_form("old", "about:blank"), None);
+        dispatch_firefox_message(&state, &startup_destroy("old"), None);
+        let (owner_socket, _owner_peer) = loopback_pair();
+        *state.rpc_writer.lock().expect("test state lock") =
+            Some((7, ClientWriter::new(owner_socket), Instant::now()));
+        let (ff_socket, _ff_peer) = loopback_pair();
+        let writer = Arc::new(Mutex::new(FramedWriter::from_stream(ff_socket)));
+        assert!(
+            recover_startup_target(
+                &state,
+                &json!({"descriptor":"tab","remaining_ms":10}),
+                8,
+                &writer
+            )
+            .get("error")
+            .is_some()
+        );
+        assert!(!state.shutdown.load(Ordering::Relaxed));
+        assert!(
+            recover_startup_target(
+                &state,
+                &json!({"descriptor":"tab","remaining_ms":10}),
+                7,
+                &writer
+            )
+            .get("error")
+            .is_some()
+        );
+        assert!(state.shutdown.load(Ordering::Relaxed));
+        assert!(
+            state
+                .startup_recovery_reply
+                .lock()
+                .expect("test state lock")
+                .is_some()
+        );
+        dispatch_firefox_message(&state, &json!({"from":"watcher"}), None);
+    }
+
+    #[test]
+    fn startup_recovery_error_keeps_late_ack_from_second_owner() {
+        use ff_rdp_core::transport::recv_from;
+        use std::io::{BufReader, Read};
+        // Both oneway-error + delayed reply and an unambiguous watchTargets
+        // error must retire without retry. The wire cannot distinguish them.
+        for delayed_ack in [true, false] {
+            let state = Arc::new(startup_state());
+            dispatch_firefox_message(&state, &startup_form("old", "about:blank"), None);
+            dispatch_firefox_message(&state, &startup_destroy("old"), None);
+            let (owner_socket, _owner_peer) = loopback_pair();
+            *state.rpc_writer.lock().expect("test state lock") =
+                Some((7, ClientWriter::new(owner_socket), Instant::now()));
+            let (ff_socket, ff_peer) = loopback_pair();
+            ff_peer
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let writer = Arc::new(Mutex::new(FramedWriter::from_stream(ff_socket)));
+            let browser_state = Arc::clone(&state);
+            let browser = thread::spawn(move || {
+                let mut reader = BufReader::new(ff_peer);
+                assert_eq!(recv_from(&mut reader).unwrap()["type"], "unwatchTargets");
+                assert_eq!(recv_from(&mut reader).unwrap()["type"], "watchTargets");
+                dispatch_firefox_message(
+                    &browser_state,
+                    &json!({"from":"watcher",
+                    "error":"unknownError", "message":if delayed_ack {"unwatch failed"} else {"watch failed"}}),
+                    None,
+                );
+                reader
+            });
+            let response = recover_startup_target(
+                &state,
+                &json!({"descriptor":"tab","remaining_ms":1000}),
+                7,
+                &writer,
+            );
+            let mut firefox = browser.join().unwrap();
+            assert!(response.get("error").is_some());
+            // Force the former dangerous handover even though a retired
+            // daemon refuses real clients: the old reply must remain owned.
+            let (next_socket, next_peer) = loopback_pair();
+            next_peer
+                .set_read_timeout(Some(Duration::from_millis(20)))
+                .unwrap();
+            *state.rpc_writer.lock().expect("test state lock") =
+                Some((8, ClientWriter::new(next_socket), Instant::now()));
+            if delayed_ack {
+                dispatch_firefox_message(&state, &json!({"from":"watcher"}), None);
+            }
+            let mut next = BufReader::new(next_peer);
+            assert!(
+                next.read(&mut [0; 1]).is_err(),
+                "late recovery acknowledgment reached second RPC owner"
+            );
+            assert!(
+                state.shutdown.load(Ordering::Relaxed),
+                "every recovery protocol error retires primary connection"
+            );
+            assert!(
+                state
+                    .startup_recovery_reply
+                    .lock()
+                    .expect("test state lock")
+                    .is_some()
+            );
+            assert_eq!(
+                firefox.read(&mut [0; 1]).unwrap(),
+                0,
+                "connection must close without recovery retry"
+            );
+        }
+    }
+
+    #[test]
+    fn startup_recovery_error_prevents_queued_client_forwarding() {
+        use ff_rdp_core::transport::recv_from;
+        use std::io::BufReader;
+        let state = Arc::new(startup_state());
+        dispatch_firefox_message(&state, &startup_form("old", "about:blank"), None);
+        dispatch_firefox_message(&state, &startup_destroy("old"), None);
+        let (owner_socket, _owner_peer) = loopback_pair();
+        *state.rpc_writer.lock().expect("test state lock") =
+            Some((7, ClientWriter::new(owner_socket), Instant::now()));
+        let (ff_socket, ff_peer) = loopback_pair();
+        ff_peer
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let writer = Arc::new(Mutex::new(FramedWriter::from_stream(ff_socket)));
+        let (queued_socket, queued_peer) = loopback_pair();
+        let queued_shutdown = queued_peer.try_clone().unwrap();
+        let mut queued_writer = FramedWriter::from_stream(queued_peer.try_clone().unwrap());
+        let mut queued_reader = FramedReader::from_stream(queued_peer);
+        queued_reader
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let client_state = Arc::clone(&state);
+        let client_writer = Arc::clone(&writer);
+        let client =
+            thread::spawn(move || handle_client(&client_state, queued_socket, &client_writer));
+        queued_writer.send(&json!({"auth":"test-token"})).unwrap();
+        assert_eq!(queued_reader.recv().unwrap()["applicationType"], "browser");
+        queued_writer.send(&json!({"to":"watcher","type":"watchResources","resourceTypes":["console-message"]})).unwrap();
+        // Positive synchronization: this comes only from inside the RPC queue,
+        // rather than assuming a sleep means the second handler was scheduled.
+        assert_eq!(queued_reader.recv().unwrap()["type"], "daemon-queued");
+        let browser_state = Arc::clone(&state);
+        let browser = thread::spawn(move || {
+            let mut reader = BufReader::new(ff_peer);
+            assert_eq!(recv_from(&mut reader).unwrap()["type"], "unwatchTargets");
+            assert_eq!(recv_from(&mut reader).unwrap()["type"], "watchTargets");
+            dispatch_firefox_message(
+                &browser_state,
+                &json!({"from":"watcher","error":"unknownError","message":"unwatch failed"}),
+                None,
+            );
+            reader
+        });
+        assert!(
+            recover_startup_target(
+                &state,
+                &json!({"descriptor":"tab","remaining_ms":1000}),
+                7,
+                &writer
+            )
+            .get("error")
+            .is_some()
+        );
+        let mut firefox = browser.join().unwrap();
+        drop(ClientCleanupGuard {
+            state: &state,
+            client_id: 7,
+        });
+        let forwarded = recv_from(&mut firefox).ok();
+        // Always release the test handler before asserting a regression, so
+        // the failing-before run cannot leave a queued workflow behind.
+        state.shutdown.store(true, Ordering::Relaxed);
+        let _ = queued_shutdown.shutdown(std::net::Shutdown::Both);
+        client.join().unwrap().unwrap();
+        assert!(
+            forwarded.is_none(),
+            "queued request was forwarded after recovery error: {forwarded:?}"
+        );
+        assert!(
+            state
+                .startup_recovery_reply
+                .lock()
+                .expect("test state lock")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn watched_document_start_reaches_transport_before_outgoing_reply() {
+        use ff_rdp_core::transport::encode_frame;
+        use std::io::Write;
+        let state = test_state();
+        *state.primary_target.lock().expect("test state lock") = Some(PrimaryTarget {
+            startup_recovery: StartupRecovery::default(),
+            descriptor: "tab".into(),
+            watcher: "watcher".into(),
+            initial_browsing_context: Some(11),
+            current: Some(json!({"actor":"target-a","consoleActor":"console-a",
+                "innerWindowId":7,"browsingContextID":11,"url":"https://a/"})),
+        });
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut transport = RdpTransport::connect_raw(
+            "127.0.0.1",
+            listener.local_addr().unwrap().port(),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        let (mut stream, _) = listener.accept().unwrap();
+        *state.rpc_writer.lock().expect("test state lock") = Some((
+            99,
+            ClientWriter::new(stream.try_clone().unwrap()),
+            Instant::now(),
+        ));
+        let start = json!({"from":"watcher","type":"resources-available-array",
+            "array":[["document-event",[{"name":"will-navigate","isFrameSwitching":false,
+                "innerWindowId":7,"browsingContextID":11,"newURI":"https://a/"}]]]});
+        for field in ["innerWindowId", "browsingContextID", "isFrameSwitching"] {
+            let mut unrelated = start.clone();
+            unrelated["array"][0][1][0][field] = if field == "isFrameSwitching" {
+                json!(true)
+            } else {
+                json!(99)
+            };
+            assert!(
+                state
+                    .primary_target
+                    .lock()
+                    .expect("test state lock")
+                    .as_ref()
+                    .unwrap()
+                    .navigation_start(&unrelated)
+                    .is_none()
+            );
+        }
+        let mut other = start.clone();
+        other["from"] = json!("other-watcher");
+        assert!(
+            state
+                .primary_target
+                .lock()
+                .expect("test state lock")
+                .as_ref()
+                .unwrap()
+                .navigation_start(&other)
+                .is_none()
+        );
+        dispatch_firefox_message(&state, &start, None);
+        stream
+            .write_all(
+                encode_frame(
+                    &json!({"from":"console-a","result":"outgoing complete DOM"}).to_string(),
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        assert_eq!(transport.recv().unwrap()["type"], "willNavigate");
+        assert_eq!(
+            transport.take_navigation_started().as_deref(),
+            Some("https://a/")
+        );
+        // The outgoing document can still be live; destruction is not required
+        // for the start to latch, including a same-URL replacement.
+        assert_eq!(
+            handle_daemon_message(
+                &state,
+                &json!({"type":"resolve-tab-target","descriptor":"tab"}),
+                99,
+                None
+            )["target"]["innerWindowId"],
+            7
+        );
     }
 
     // Sentinel client_id used in tests that do not exercise subscriber logic.
@@ -6072,6 +6811,82 @@ mod tests {
 
     // ── iter-137 Theme A: recorded frame-target snapshot ─────────────────────
 
+    #[test]
+    fn target_query_preserves_main_rpc_owner_and_subscription() {
+        use std::io::Read;
+        let mut state = test_state();
+        state.auth_token = "token".into();
+        state.primary_target = Mutex::new(Some(PrimaryTarget {
+            startup_recovery: StartupRecovery::default(),
+            descriptor: "tab".into(),
+            watcher: "watcher".into(),
+            initial_browsing_context: Some(1),
+            current: None,
+        }));
+        let owner = TEST_CLIENT_ID + 100;
+        let writer = dummy_client_writer();
+        *state.rpc_writer.lock().expect("test state lock") =
+            Some((owner, writer.clone(), Instant::now()));
+        handle_daemon_message(
+            &state,
+            &json!({"type":"stream","resourceType":"console-message"}),
+            owner,
+            Some(writer),
+        );
+        let subscription_count = state.stream_subs.lock().expect("test state lock").len();
+        assert!(subscription_count > 0);
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = super::super::client::TargetEndpoint::new(
+            listener.local_addr().unwrap().port(),
+            "token",
+        );
+        let state = Arc::new(state);
+        let handler_state = Arc::clone(&state);
+        let (ff_server, mut ff_client) = loopback_pair();
+        ff_client
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .unwrap();
+        let thread = std::thread::spawn(move || {
+            let (socket, _) = listener.accept().unwrap();
+            let writer = Arc::new(Mutex::new(FramedWriter::from_stream(ff_server)));
+            handle_client(&handler_state, socket, &writer).unwrap();
+        });
+        assert!(matches!(
+            endpoint
+                .snapshot(&"tab".into(), Instant::now() + Duration::from_secs(2))
+                .unwrap(),
+            super::super::client::TargetSnapshot::Pending
+        ));
+        thread.join().unwrap();
+        assert_eq!(
+            state
+                .rpc_writer
+                .lock()
+                .expect("test state lock")
+                .as_ref()
+                .unwrap()
+                .0,
+            owner
+        );
+        assert_eq!(
+            state.stream_subs.lock().expect("test state lock").len(),
+            subscription_count
+        );
+        let mut byte = [0];
+        // EOF is also acceptable: the test-owned writer was dropped, without
+        // ever forwarding this daemon-local query to Firefox.
+        assert!(!matches!(ff_client.read(&mut byte), Ok(n) if n > 0));
+        assert_eq!(
+            handle_daemon_message(
+                &state,
+                &json!({"type":"resolve-tab-target","descriptor":"other-tab"}),
+                owner,
+                None
+            )["state"],
+            "unmanaged"
+        );
+    }
+
     fn available_form(actor: &str, url: &str, top: bool) -> Value {
         json!({
             "type": "target-available-form",
@@ -6635,5 +7450,60 @@ mod tests {
 
         // Allow ff_sim_handle to finish cleanly.
         let _ = ff_sim_handle.join();
+    }
+}
+
+#[cfg(test)]
+mod target_snapshot_tests {
+    use super::*;
+
+    fn form(actor: &str, bc: u64) -> Value {
+        json!({"from":"watcher", "type":"target-available-form", "target":{
+            "actor":actor, "consoleActor":format!("{actor}/console"),
+            "targetType":"frame", "isTopLevelTarget":true, "isPopup":false,
+            "browsingContextID":bc, "innerWindowId":bc + 100
+        }})
+    }
+
+    #[test]
+    fn primary_snapshot_lifetime_and_identity() {
+        let mut binding = PrimaryTarget {
+            startup_recovery: StartupRecovery::default(),
+            descriptor: "tab".into(),
+            watcher: "watcher".into(),
+            initial_browsing_context: Some(1),
+            current: None,
+        };
+        assert!(binding.current.is_none());
+        let a = form("a", 1);
+        binding.observe(&a);
+        assert_eq!(binding.current.as_ref().unwrap()["actor"], "a");
+        binding.observe(
+            &json!({"from":"watcher", "type":"target-destroyed-form", "target":{"actor":"a"}}),
+        );
+        assert!(binding.current.is_none());
+        binding.observe(&form("b", 2)); // A new BC is legitimate for this watcher.
+        binding.observe(
+            &json!({"from":"watcher", "type":"target-destroyed-form", "target":{"actor":"a"}}),
+        );
+        assert_eq!(binding.current.as_ref().unwrap()["actor"], "b");
+        for field in ["from", "isTopLevelTarget", "isPopup", "targetType"] {
+            let mut other = form("wrong", 3);
+            match field {
+                "from" => other["from"] = json!("lazy-other-connection/watcher"),
+                "isTopLevelTarget" => other["target"][field] = json!(false),
+                "isPopup" => other["target"][field] = json!(true),
+                _ => other["target"][field] = json!("worker"),
+            }
+            binding.observe(&other);
+            assert_eq!(binding.current.as_ref().unwrap()["actor"], "b");
+        }
+        let mut malformed = form("bad", 2);
+        malformed["target"]
+            .as_object_mut()
+            .unwrap()
+            .remove("consoleActor");
+        binding.observe(&malformed);
+        assert!(binding.current.is_none());
     }
 }

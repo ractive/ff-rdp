@@ -926,17 +926,19 @@ impl NavigationOrigin {
         }
     }
 
-    /// Refresh a caller's actors without carrying a confirmed transition into
-    /// subsequent predicate/settle polling. Take the announcement *before* the
-    /// refresh: an announcement received during it belongs to the next
-    /// observation and must not be retired using the older document's ID.
-    pub(crate) fn refresh_target(&mut self, ctx: &mut ConnectedTab) {
-        self.pending = ctx.take_navigation_started().or(self.pending.take());
-        ctx.refresh_target();
-        if self
-            .pending
-            .as_deref()
-            .is_some_and(|dest| self.confirms(ctx, dest))
+    /// Retire a confirmed submission transition after the caller acquired its
+    /// target. Do not consume the transport's latch here: an announcement
+    /// received during acquisition belongs to the next observation.
+    pub(crate) fn observe_refreshed_target(&mut self, ctx: &ConnectedTab) {
+        let changed = matches!((self.inner_window_id, ctx.target().inner_window_id),
+            (Some(old), Some(new)) if old != new)
+            || matches!((self.url.as_deref(), ctx.target().url.as_deref()),
+                (Some(old), Some(new)) if old != new);
+        if changed
+            || self
+                .pending
+                .as_deref()
+                .is_some_and(|dest| self.confirms(ctx, dest))
         {
             *self = Self::capture(ctx);
         }
@@ -1661,10 +1663,14 @@ mod tests {
         let mut ctx = ConnectedTab::for_test(transport, ActorId::from("conn0/console1"));
         ctx.set_target_metadata_for_test(Some(7), Some("https://a/".into()));
         let mut origin = NavigationOrigin::capture(&ctx);
-        origin.refresh_target(&mut ctx);
+        origin.pending = ctx.take_navigation_started().or(origin.pending.take());
+        ctx.refresh_target();
+        origin.observe_refreshed_target(&ctx);
         assert_eq!(origin.inner_window_id, Some(7));
         assert_eq!(origin.pending.as_deref(), Some("https://b/"));
-        origin.refresh_target(&mut ctx);
+        origin.pending = ctx.take_navigation_started().or(origin.pending.take());
+        ctx.refresh_target();
+        origin.observe_refreshed_target(&ctx);
         assert_eq!(origin.inner_window_id, Some(8));
         assert!(origin.pending.is_none());
         let pending = ctx.take_navigation_started().unwrap();
@@ -1778,6 +1784,198 @@ mod tests {
             incorrect.is_empty(),
             "late starts left outgoing views ready: (during_refresh, previous_navigation)={incorrect:?}"
         );
+    }
+
+    #[test]
+    fn watched_snapshot_settlement_refreshes_same_document_url() {
+        use ff_rdp_core::RdpTransport;
+        use ff_rdp_core::transport::{encode_frame, recv_from};
+        use std::io::{BufReader, Write};
+        use std::net::TcpListener;
+        for (fresh_url, expected) in [("https://a/", false), ("https://a/#here", true)] {
+            let side = TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint = crate::daemon::client::TargetEndpoint::new(
+                side.local_addr().unwrap().port(),
+                "token",
+            );
+            let snapshots = std::thread::spawn(move || {
+                let (mut stream, _) = side.accept().unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                recv_from(&mut reader).unwrap();
+                stream.write_all(encode_frame(&json!({"protocol_version":crate::daemon::server::DAEMON_PROTOCOL_VERSION}).to_string()).as_bytes()).unwrap();
+                assert_eq!(
+                    recv_from(&mut reader).unwrap()["type"],
+                    "resolve-tab-target"
+                );
+                stream.write_all(encode_frame(&json!({"from":"daemon","type":"resolve-tab-target","state":"live",
+                    "target":{"actor":"target-a","consoleActor":"console-a","innerWindowId":7,"url":"https://a/"}}).to_string()).as_bytes()).unwrap();
+            });
+            let main = TcpListener::bind("127.0.0.1:0").unwrap();
+            let mut ctx = ConnectedTab::for_test(
+                RdpTransport::connect_raw(
+                    "127.0.0.1",
+                    main.local_addr().unwrap().port(),
+                    Duration::from_secs(2),
+                )
+                .unwrap(),
+                "console-a".into(),
+            );
+            let (mut stream, _) = main.accept().unwrap();
+            let metadata = std::thread::spawn(move || {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let request = recv_from(&mut reader).unwrap();
+                assert_eq!(request, json!({"to":"target-a","type":"listFrames"}));
+                stream
+                    .write_all(
+                        encode_frame(
+                            &json!({"from":"target-a","frames":[
+                    {"id":2,"parentID":1,"isTopLevel":false,"url":"https://a/#here"},
+                    {"id":1,"isTopLevel":true,"url":fresh_url}]})
+                            .to_string(),
+                        )
+                        .as_bytes(),
+                    )
+                    .unwrap();
+            });
+            ctx.target_endpoint = Some(endpoint);
+            ctx.set_target_metadata_for_test(Some(7), Some("https://a/".to_owned()));
+            let origin = NavigationOrigin::capture(&ctx);
+            assert_eq!(
+                settle_after_navigation(&mut ctx, "https://a/#here", &origin, Duration::ZERO),
+                expected
+            );
+            assert_eq!(ctx.target().inner_window_id, Some(7));
+            snapshots.join().unwrap();
+            metadata.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn watched_settlement_owns_pending_retries_and_preserves_unsuccessful_metadata() {
+        use ff_rdp_core::RdpTransport;
+        use ff_rdp_core::transport::{encode_frame, recv_from};
+        use std::io::{BufReader, Read, Write};
+        use std::net::TcpListener;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        // A replacement queued after Pending must not be consumed inside a
+        // zero-budget or no-identity caller's single best-effort observation.
+        // The nonzero identifiable case instead retries in settlement itself.
+        for (budget, has_identity, replacement, expected) in [
+            (Duration::ZERO, true, false, false),
+            (Duration::from_millis(75), true, false, false),
+            (Duration::ZERO, true, true, false),
+            (Duration::from_millis(200), true, true, true),
+            (Duration::from_millis(200), false, false, false),
+            (Duration::from_millis(200), false, true, false),
+        ] {
+            let side = TcpListener::bind("127.0.0.1:0").unwrap();
+            side.set_nonblocking(true).unwrap();
+            let endpoint = crate::daemon::client::TargetEndpoint::new(
+                side.local_addr().unwrap().port(),
+                "token",
+            );
+            let done = Arc::new(AtomicBool::new(false));
+            let worker_done = Arc::clone(&done);
+            let snapshots = std::thread::spawn(move || {
+                let mut count = 0;
+                while !worker_done.load(Ordering::Acquire) {
+                    let (mut stream, _) = match side.accept() {
+                        Ok(pair) => pair,
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(1));
+                            continue;
+                        }
+                        Err(e) => panic!("snapshot accept: {e}"),
+                    };
+                    // Accepted sockets inherit listener nonblocking mode on macOS.
+                    stream.set_nonblocking(false).unwrap();
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    assert_eq!(recv_from(&mut reader).unwrap()["auth"], "token");
+                    stream.write_all(encode_frame(&json!({"protocol_version":crate::daemon::server::DAEMON_PROTOCOL_VERSION}).to_string()).as_bytes()).unwrap();
+                    let request = recv_from(&mut reader).unwrap();
+                    assert_eq!(request["type"], "resolve-tab-target");
+                    assert_eq!(request["descriptor"], "conn0/tab1");
+                    count += 1;
+                    let response = if replacement && count > 1 {
+                        json!({"from":"daemon","type":"resolve-tab-target","state":"live",
+                            "target":{"actor":"replacement","consoleActor":"new-console","innerWindowId":8,"url":"https://b/"}})
+                    } else {
+                        json!({"from":"daemon","type":"resolve-tab-target","state":"pending"})
+                    };
+                    stream
+                        .write_all(encode_frame(&response.to_string()).as_bytes())
+                        .unwrap();
+                }
+                count
+            });
+            let main = TcpListener::bind("127.0.0.1:0").unwrap();
+            let transport = RdpTransport::connect_raw(
+                "127.0.0.1",
+                main.local_addr().unwrap().port(),
+                Duration::from_secs(2),
+            )
+            .unwrap();
+            let (mut stream, _) = main.accept().unwrap();
+            let metadata = std::thread::spawn(move || {
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                if expected {
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    assert_eq!(
+                        recv_from(&mut reader).unwrap(),
+                        json!({"to":"replacement","type":"listFrames"})
+                    );
+                    stream.write_all(encode_frame(&json!({"from":"replacement","frames":[{"isTopLevel":true,"url":"https://b/"}]}).to_string()).as_bytes()).unwrap();
+                }
+                // No legacy lookup (or any other main-stream request) is
+                // allowed in Pending, even after the settlement budget expires.
+                let mut byte = [0];
+                assert_eq!(stream.read(&mut byte).unwrap(), 0);
+            });
+            let mut ctx = ConnectedTab::for_test(transport, "old-console".into());
+            ctx.target_endpoint = Some(endpoint);
+            ctx.set_target_metadata_for_test(
+                has_identity.then_some(7),
+                has_identity.then(|| "https://a/".to_owned()),
+            );
+            let original_actor = ctx.target().actor.clone();
+            let original_url = ctx.target().url.clone();
+            let origin = NavigationOrigin::capture(&ctx);
+            let start = Instant::now();
+            let settled = settle_after_navigation(&mut ctx, "https://b/", &origin, budget);
+            let elapsed = start.elapsed();
+            done.store(true, Ordering::Release);
+            let count = snapshots.join().unwrap();
+            assert_eq!(settled, expected);
+            assert!(
+                elapsed < Duration::from_secs(2),
+                "responsive Pending must not spend the five-second CLI timeout: {elapsed:?}"
+            );
+            if budget.is_zero() || !has_identity {
+                assert_eq!(count, 1, "one best-effort observation, no inner polling");
+            } else {
+                assert!(count >= 2, "settlement caller must retry Pending");
+            }
+            if expected {
+                assert_eq!(ctx.target().actor.as_ref(), "replacement");
+                assert_eq!(ctx.target().console_actor.as_ref(), "new-console");
+                assert_eq!(ctx.target().inner_window_id, Some(8));
+                assert_eq!(ctx.target().url.as_deref(), Some("https://b/"));
+            } else {
+                assert_eq!(ctx.target().actor, original_actor);
+                assert_eq!(ctx.target().console_actor.as_ref(), "old-console");
+                assert_eq!(ctx.target().inner_window_id, has_identity.then_some(7));
+                assert_eq!(ctx.target().url, original_url);
+            }
+            drop(ctx);
+            metadata.join().unwrap();
+        }
     }
 
     #[test]

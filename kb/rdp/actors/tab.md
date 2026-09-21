@@ -53,12 +53,11 @@ and in turn what `click`'s frame-scan fallback and `ff-rdp consent accept`
 use to reach cross-origin CMP iframes. Empirically verified against live
 Firefox 152/153 in [[frame-targets]] (2026-07-20 research spike).
 
-**CAUTION** — enabling the flag also changes *where* the top-level target is
-delivered (via the watcher, not `getTarget`), which the rest of ff-rdp does
-not expect. `get_watcher_with_options(Some(true))` is therefore used only by
-frame-aware call sites (`enumerate_frame_targets` and its consumers); the
-default target-acquisition path (`get_watcher()` / `get_target()`) is
-untouched.
+**CAUTION** — enabling the flag changes where the top-level target is
+delivered. The daemon startup watcher enables it; protocol 2 clients obtain
+that descriptor's target from its watcher snapshot (see below). Direct and
+unmanaged descriptors retain their existing `getTarget` path. Frame-aware
+call sites also enable the flag for `enumerate_frame_targets`.
 
 ## `getTarget` frame → `TargetInfo`
 
@@ -104,3 +103,49 @@ Both are consumed by `page_view::collect_settled` and
 
 Stub — backfilled in iter-73; `getTarget` frame fields documented in iter-104;
 `innerWindowId`/`url` and the stale-frame finding added in iter-220.
+
+## Daemon-owned watcher targets (iter-262 correction)
+
+`TargetInfo::from_watcher_form` parses the raw watcher form using the same field
+validation as `getTarget`, preserving BC, inner-window and optional actor metadata.
+For the exact descriptor bound to the primary startup watcher, daemon protocol 2
+clients resolve a snapshot over an authenticated disposable local connection.
+They never issue legacy `getTarget` for that descriptor, including during the
+pending destruction gap. The initial BC is metadata, not permanent tab identity;
+matching watcher/descriptor identity owns replacement forms. A lazy watcher on a
+separate Firefox connection is excluded. Direct/unmanaged descriptors retain
+`getTarget`. Raw external proxy consumers are outside this prevention guarantee.
+
+A live snapshot is not a lifetime promise. Navigation re-resolves on subsequent
+probe ticks until completion, retaining epoch and URL freshness checks. Socket
+queries have one absolute per-read/write deadline and cannot consume main-stream
+events or own the main RPC slot. Protocol/auth/query failures never trigger legacy
+fallback. Older daemon versions require restart rather than silent compatibility.
+The correction still awaits real-Firefox pre/post proof and original sweep gates.
+
+### Submission callers and target handover (iteration262)
+
+`type --submit` treats a navigation-start or matching destruction as a reason
+to stop evaluating the outgoing console. It does not treat that event as
+replacement readiness. The submission action, navigation polls and target
+handover share one absolute deadline beginning before Enter. `ConnectedTab`
+polls outgoing/Pending snapshots without installing them and installs a
+replacement only when its inner-window identity or current URL differs from
+the submission origin. Exhaustion returns a submission-handover timeout before
+`--settle`, `--wait-for` or `--with-page` can evaluate the displaced document.
+The later settle/predicate/page operations retain their existing own budgets.
+
+A lifecycle interruption before an evaluation acknowledgement retires its
+late reply using the existing console reply-abandonment mechanism; an
+interruption after acknowledgement retains result-ID matching. This is
+single-connection evaluation handling, not a change to daemon RPC ownership.
+Offline coverage drives the real type caller across outgoing, Pending and
+replacement snapshots, both acknowledgement/result interruptions, and bounded
+exhaustion. Firefox validation of this caller delta remains required.
+
+A Live snapshot whose target disappears during the current-URL query is also
+retryable Pending, but only for a typed lifecycle failure. Submission callers
+keep the original deadline across that race. Offline caller coverage includes
+`noSuchActor`, destruction without a metadata reply, late old metadata replies,
+same-document URL changes, and a non-lifecycle protocol error that must fail
+without retrying.

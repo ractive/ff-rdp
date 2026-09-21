@@ -13,6 +13,125 @@ use crate::error::AppError;
 use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
+/// Captured incarnation of the daemon that owns the main RDP connection.
+#[derive(Clone)]
+pub(crate) struct TargetEndpoint {
+    port: u16,
+    token: String,
+}
+
+pub(crate) enum TargetSnapshot {
+    Live(ff_rdp_core::TargetInfo),
+    Pending,
+    StartupRecovery,
+    Unmanaged,
+}
+
+// Recompute the budget for every underlying read/write, including partial
+// frame progress. An idle socket timeout alone would let trickles run forever.
+struct QuerySocket {
+    stream: TcpStream,
+    deadline: std::time::Instant,
+}
+
+impl QuerySocket {
+    fn remaining(&self) -> std::io::Result<Duration> {
+        self.deadline
+            .checked_duration_since(std::time::Instant::now())
+            .filter(|d| !d.is_zero())
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::TimedOut, "target query deadline")
+            })
+    }
+}
+
+impl std::io::Read for QuerySocket {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.stream.set_read_timeout(Some(self.remaining()?))?;
+        std::io::Read::read(&mut self.stream, buf)
+    }
+}
+
+impl std::io::Write for QuerySocket {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.stream.set_write_timeout(Some(self.remaining()?))?;
+        std::io::Write::write(&mut self.stream, buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl TargetEndpoint {
+    pub(crate) fn new(port: u16, token: &str) -> Self {
+        Self {
+            port,
+            token: token.to_owned(),
+        }
+    }
+
+    /// One local query; never subscribes, writes to Firefox, or reads the
+    /// main stream. All errors abandon this socket, with no legacy fallback.
+    pub(crate) fn snapshot(
+        &self,
+        descriptor: &ff_rdp_core::ActorId,
+        deadline: std::time::Instant,
+    ) -> Result<TargetSnapshot, AppError> {
+        use std::io::Write;
+        let remaining = deadline
+            .checked_duration_since(std::time::Instant::now())
+            .filter(|d| !d.is_zero())
+            .ok_or_else(|| AppError::Timeout("target query deadline".into()))?;
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], self.port));
+        let stream = TcpStream::connect_timeout(&addr, remaining)
+            .map_err(|e| AppError::Connection(format!("target query connect: {e}")))?;
+        let mut reader = std::io::BufReader::new(QuerySocket { stream, deadline });
+        let send =
+            |reader: &mut std::io::BufReader<QuerySocket>, value: Value| -> Result<(), AppError> {
+                let frame = ff_rdp_core::transport::encode_frame(&value.to_string());
+                reader
+                    .get_mut()
+                    .write_all(frame.as_bytes())
+                    .map_err(|e| AppError::Connection(format!("target query write: {e}")))
+            };
+        send(&mut reader, json!({"auth": self.token}))?;
+        let greeting = ff_rdp_core::transport::recv_from(&mut reader)?;
+        let version = greeting
+            .get("protocol_version")
+            .and_then(Value::as_u64)
+            .and_then(|v| u32::try_from(v).ok())
+            .unwrap_or(0);
+        let expected = super::server::DAEMON_PROTOCOL_VERSION;
+        if version != expected {
+            return Err(AppError::DaemonVersionMismatch {
+                daemon: version,
+                cli: expected,
+            });
+        }
+        send(
+            &mut reader,
+            json!({"to":"daemon", "type":"resolve-tab-target", "descriptor":descriptor}),
+        )?;
+        let response = ff_rdp_core::transport::recv_from(&mut reader)?;
+        if response.get("from").and_then(Value::as_str) != Some("daemon")
+            || response.get("type").and_then(Value::as_str) != Some("resolve-tab-target")
+        {
+            return Err(AppError::Connection(
+                "invalid target snapshot response".into(),
+            ));
+        }
+        match response.get("state").and_then(Value::as_str) {
+            Some("live") => Ok(TargetSnapshot::Live(
+                ff_rdp_core::TargetInfo::from_watcher_form(&response["target"])?,
+            )),
+            Some("pending") => Ok(TargetSnapshot::Pending),
+            Some("startup-recovery") => Ok(TargetSnapshot::StartupRecovery),
+            Some("unmanaged") => Ok(TargetSnapshot::Unmanaged),
+            _ => Err(AppError::Connection("invalid target snapshot state".into())),
+        }
+    }
+}
+
 /// Maximum time to wait for a port to become free after killing a Firefox process.
 ///
 /// If the port is still in use after this bound, the escalation sequence
@@ -2618,5 +2737,146 @@ mod tests {
                 .is_none(),
             "the stop must remove the registry entry from the overridden dir"
         );
+    }
+}
+
+#[cfg(test)]
+mod target_query_tests {
+    use super::*;
+    use ff_rdp_core::transport::{encode_frame, recv_from};
+    use std::io::{BufReader, Write};
+    use std::net::TcpListener;
+    use std::time::Instant;
+
+    fn greet(stream: &mut TcpStream) {
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        assert_eq!(recv_from(&mut reader).unwrap()["auth"], "token");
+        stream
+            .write_all(
+                encode_frame(
+                    &json!({"protocol_version":super::super::server::DAEMON_PROTOCOL_VERSION})
+                        .to_string(),
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        assert_eq!(
+            recv_from(&mut reader).unwrap()["type"],
+            "resolve-tab-target"
+        );
+    }
+
+    #[test]
+    fn target_query_expired_budget_never_connects() {
+        let endpoint = TargetEndpoint::new(1, "token");
+        assert!(matches!(
+            endpoint.snapshot(&"tab".into(), Instant::now()),
+            Err(AppError::Timeout(_))
+        ));
+    }
+
+    #[test]
+    fn target_query_trickled_frames_obey_absolute_deadline() {
+        for greeting in [true, false] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint = TargetEndpoint::new(listener.local_addr().unwrap().port(), "token");
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                if !greeting {
+                    greet(&mut stream);
+                }
+                // Each byte is faster than the idle timeout, but the full
+                // declared frame is much slower than the absolute deadline.
+                for byte in b"100:{\"protocol_version\":2,\"padding\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" {
+                    if stream.write_all(&[*byte]).is_err() { break; }
+                    std::thread::sleep(Duration::from_millis(15));
+                }
+            });
+            let start = Instant::now();
+            assert!(
+                endpoint
+                    .snapshot(&"tab".into(), start + Duration::from_millis(120))
+                    .is_err()
+            );
+            assert!(start.elapsed() < Duration::from_millis(600));
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn target_query_late_response_cannot_contaminate_next_socket() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = TargetEndpoint::new(listener.local_addr().unwrap().port(), "token");
+        let server = std::thread::spawn(move || {
+            let (mut first, _) = listener.accept().unwrap();
+            greet(&mut first);
+            std::thread::sleep(Duration::from_millis(100));
+            let _ = first.write_all(
+                encode_frame(
+                    &json!({"from":"daemon","type":"resolve-tab-target","state":"pending"})
+                        .to_string(),
+                )
+                .as_bytes(),
+            );
+            let (mut second, _) = listener.accept().unwrap();
+            greet(&mut second);
+            second
+                .write_all(
+                    encode_frame(
+                        &json!({"from":"daemon","type":"resolve-tab-target","state":"unmanaged"})
+                            .to_string(),
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
+        });
+        assert!(
+            endpoint
+                .snapshot(&"tab".into(), Instant::now() + Duration::from_millis(50))
+                .is_err()
+        );
+        assert!(matches!(
+            endpoint
+                .snapshot(&"tab".into(), Instant::now() + Duration::from_secs(2))
+                .unwrap(),
+            TargetSnapshot::Unmanaged
+        ));
+        server.join().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod target_query_version_tests {
+    use super::*;
+    use std::io::{BufReader, Read, Write};
+    use std::time::Instant;
+    #[test]
+    fn incompatible_incarnation_never_sends_query_or_reuses_registry() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = TargetEndpoint::new(listener.local_addr().unwrap().port(), "captured-token");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let auth = ff_rdp_core::transport::recv_from(&mut reader).unwrap();
+            assert_eq!(auth["auth"], "captured-token");
+            stream
+                .write_all(
+                    ff_rdp_core::transport::encode_frame(r#"{"protocol_version":1}"#).as_bytes(),
+                )
+                .unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            assert_eq!(
+                stream.read(&mut [0]).unwrap(),
+                0,
+                "old daemon socket must be abandoned before query"
+            );
+        });
+        assert!(matches!(
+            endpoint.snapshot(&"tab".into(), Instant::now() + Duration::from_secs(2)),
+            Err(AppError::DaemonVersionMismatch { daemon: 1, .. })
+        ));
+        server.join().unwrap();
     }
 }

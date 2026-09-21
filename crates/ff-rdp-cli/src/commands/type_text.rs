@@ -219,6 +219,39 @@ fn build_request_submit_js(escaped_sel: &str) -> String {
     )
 }
 
+/// Evaluate an action once; lifecycle interruption means the caller must prove
+/// handover before observing the document, never repeat the action.
+fn evaluate_submission(
+    ctx: &mut ConnectedTab,
+    console_actor: &ff_rdp_core::ActorId,
+    js: &str,
+    deadline: std::time::Instant,
+) -> Result<Option<ff_rdp_core::EvalResult>, AppError> {
+    use ff_rdp_core::{ProtocolError, WebConsoleActor};
+    let identity = ctx.target().inner_window_id;
+    let mut guarded = ctx.arm_target_guard(identity);
+    let outcome = guarded.transport_mut().with_read_deadline(deadline, |t| {
+        WebConsoleActor::evaluate_js_async(t, console_actor, js)
+    });
+    match outcome {
+        Err(ProtocolError::EvalTargetDestroyed { .. } | ProtocolError::EvalNavigatedDuringEval) => {
+            Ok(None)
+        }
+        Err(error) => Err(error.into()),
+        Ok(eval) => {
+            if let Some(ref exception) = eval.exception {
+                return Err(AppError::User(
+                    ff_rdp_core::sanitize_for_terminal(
+                        exception.message.as_deref().unwrap_or("submit failed"),
+                    )
+                    .into_owned(),
+                ));
+            }
+            Ok(Some(eval))
+        }
+    }
+}
+
 /// Press Enter on `selector` and, when that did not navigate, submit its form.
 ///
 /// Returns `{submitted, navigated, method}` for `results`.
@@ -236,13 +269,13 @@ fn press_enter_and_submit(
     escaped_sel: &str,
     wait_timeout_ms: u64,
     page_origin: &mut Option<super::page_view::NavigationOrigin>,
+    deadline: std::time::Instant,
 ) -> Result<serde_json::Value, AppError> {
-    let enter = eval_or_bail(
-        ctx,
-        console_actor,
-        &build_enter_js(escaped_sel),
-        "submit failed",
-    )?;
+    let Some(enter) =
+        evaluate_submission(ctx, console_actor, &build_enter_js(escaped_sel), deadline)?
+    else {
+        return Ok(json!({"submitted":true,"navigated":true,"method":"enter"}));
+    };
     let enter_json = resolve_result(ctx, &enter.result)?;
     let url_before = enter_json
         .get("url_before")
@@ -263,7 +296,12 @@ fn press_enter_and_submit(
     // fallback below is needed, so a slow check here is pure added latency on
     // the common (isTrusted-ceiling) no-op page. See
     // `ENTER_NAVIGATION_GRACE_MS` vs `REQUEST_SUBMIT_NAVIGATION_GRACE_MS`.
-    if navigated_away(ctx, console_actor, &url_before, ENTER_NAVIGATION_GRACE_MS) {
+    if navigated_away(
+        ctx,
+        console_actor,
+        &url_before,
+        ENTER_NAVIGATION_GRACE_MS.min(remaining_ms(deadline)),
+    ) {
         return Ok(json!({"submitted": true, "navigated": true, "method": "enter"}));
     }
 
@@ -277,12 +315,15 @@ fn press_enter_and_submit(
         }));
     }
 
-    let req = eval_or_bail(
+    let Some(req) = evaluate_submission(
         ctx,
         console_actor,
         &build_request_submit_js(escaped_sel),
-        "submit failed",
-    )?;
+        deadline,
+    )?
+    else {
+        return Ok(json!({"submitted":true,"navigated":true,"method":"request_submit"}));
+    };
     let req_json = resolve_result(ctx, &req.result)?;
     let requested = req_json
         .get("requested")
@@ -310,21 +351,18 @@ fn press_enter_and_submit(
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
     let load_expected = fired && !cancelled;
-    let started = std::time::Instant::now();
     let mut navigated = navigated_away(
         ctx,
         console_actor,
         &url_before,
-        first_poll_grace_ms(load_expected, wait_timeout_ms),
+        first_poll_grace_ms(load_expected, wait_timeout_ms).min(remaining_ms(deadline)),
     );
     // The grace period is the cheap path, not the answer. When it comes back
     // "no" on a submission that really did start a load, that load is still
     // coming, so ask again where the question can be answered — see
     // `navigated_after_refresh`.
     if !navigated && load_expected {
-        let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let remaining = wait_timeout_ms.saturating_sub(elapsed);
-        navigated = navigated_after_refresh(ctx, &url_before, remaining, page_origin);
+        navigated = navigated_after_refresh(ctx, &url_before, deadline, page_origin)?;
     }
     Ok(json!({
         "submitted": true,
@@ -333,65 +371,31 @@ fn press_enter_and_submit(
     }))
 }
 
-/// The authoritative second opinion after [`navigated_away`] came back "no"
-/// following a `form.requestSubmit()` the page did not cancel.
-///
-/// iter-237 Part A. Two things had to be true at once for `navigated: false`
-/// to ship next to a `results.page` from the destination, and the plan only
-/// named one of them.
-///
-/// 1. **The grace period is not the binding constraint.** While Firefox
-///    commits the new document it stops answering `evaluateJSAsync` on the
-///    pre-submit console actor entirely, so [`navigated_away`]'s *first* poll
-///    iteration blocks on the socket read for the **transport's** deadline
-///    (`--timeout`, 10 s by default). That single read outlives any grace
-///    period shorter than it: the loop wakes with `ProtocolError::Timeout`,
-///    finds its own deadline long past, and returns "no navigation" having
-///    never completed one probe. Widening
-///    [`REQUEST_SUBMIT_NAVIGATION_GRACE_MS`] moved that boundary and not the
-///    outcome — measured against Wikipedia at 3 s, the envelope still said
-///    `navigated: false` beside `heading: "Turing Award"`.
-///
-/// 2. **A single re-read is too early.** A destination that sends its first
-///    byte late (the `/slower` live fixture waits 4.5 s) has not committed
-///    when the grace period expires, so one look at `location.href` sees the
-///    origin URL and is just as wrong.
-///
-/// So: drop the torn-down target, re-resolve the tab's fronts, and poll
-/// `location.href` on the actor that now exists, for whatever is left of the
-/// caller's own `--timeout`. That is the same recovery `--with-page` performs
-/// to collect `results.page`, which is exactly why `results.page` was right
-/// about the destination while `results.navigated` was wrong about reaching
-/// it.
-///
-/// **Why this does not cost every caller the full `--timeout`.** The caller
-/// gates it on the submission not having been cancelled: a `submit` handler
-/// that calls `preventDefault()` — every AJAX form — means no cross-document
-/// load is coming, and those return here immediately rather than waiting out a
-/// navigation that was never going to happen. `build_request_submit_js`
-/// reports that as `cancelled`. The forms that do reach this path have a load
-/// genuinely in flight, and `--timeout` is the budget the caller already
-/// stated for it.
+/// Confirm a slow uncancelled submission through target metadata. Never probe
+/// the outgoing console after its grace period: it may have been destroyed
+/// without replying. Pending/outgoing snapshots retain the original deadline;
+/// exhaustion is an error, not a successful post-action read of the old page.
 fn navigated_after_refresh(
     ctx: &mut ConnectedTab,
     url_before: &str,
-    timeout_ms: u64,
+    deadline: std::time::Instant,
     page_origin: &mut Option<super::page_view::NavigationOrigin>,
-) -> bool {
-    refresh_submission_target(ctx, page_origin);
-    let console_actor = ctx.target().console_actor.clone();
-    navigated_away(ctx, &console_actor, url_before, timeout_ms)
+) -> Result<bool, AppError> {
+    let before = ctx.target().inner_window_id;
+    ctx.refresh_after_submission_until(before, Some(url_before), deadline)?;
+    if let Some(origin) = page_origin {
+        origin.observe_refreshed_target(ctx);
+    }
+    Ok(true)
 }
 
-fn refresh_submission_target(
-    ctx: &mut ConnectedTab,
-    page_origin: &mut Option<super::page_view::NavigationOrigin>,
-) {
-    if let Some(origin) = page_origin {
-        origin.refresh_target(ctx);
-    } else {
-        ctx.refresh_target();
-    }
+fn remaining_ms(deadline: std::time::Instant) -> u64 {
+    u64::try_from(
+        deadline
+            .saturating_duration_since(std::time::Instant::now())
+            .as_millis(),
+    )
+    .unwrap_or(u64::MAX)
 }
 
 /// Poll for `window.location.href` moving away from `url_before`.
@@ -426,11 +430,19 @@ fn navigated_away(
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
 
     loop {
-        match ctx
-            .transport_mut()
-            .with_read_deadline(deadline, |transport| {
-                WebConsoleActor::evaluate_js_async(transport, console_actor, &js)
-            }) {
+        // Watcher-owned consoles can disappear without an evaluation reply.
+        // Observe the current document's lifecycle in both acknowledgement and
+        // result waits, and release the guard before any later target refresh.
+        let outcome = {
+            let inner_window_id = ctx.target().inner_window_id;
+            let mut guarded = ctx.arm_target_guard(inner_window_id);
+            guarded
+                .transport_mut()
+                .with_read_deadline(deadline, |transport| {
+                    WebConsoleActor::evaluate_js_async(transport, console_actor, &js)
+                })
+        };
+        match outcome {
             Ok(result) if result.exception.is_none() => {
                 if super::js_helpers::is_truthy(&result.result) {
                     return true;
@@ -447,6 +459,7 @@ fn navigated_away(
             // no longer exists because that docshell is already gone.
             Err(
                 ProtocolError::EvalNavigatedDuringEval
+                | ProtocolError::EvalTargetDestroyed { .. }
                 | ProtocolError::ActorError {
                     kind: ActorErrorKind::UnknownActor,
                     ..
@@ -501,6 +514,17 @@ pub fn run_core(
     opts: &TypeOptions<'_>,
 ) -> Result<(serde_json::Value, bool), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
+    run_connected(cli, &mut ctx, selector, text, clear, opts)
+}
+
+fn run_connected(
+    cli: &Cli,
+    ctx: &mut ConnectedTab,
+    selector: &str,
+    text: &str,
+    clear: bool,
+    opts: &TypeOptions<'_>,
+) -> Result<(serde_json::Value, bool), AppError> {
     let mut console_actor = ctx.target().console_actor.clone();
 
     let wait_timeout_ms = opts.wait_timeout_ms.unwrap_or(cli.timeout);
@@ -511,13 +535,8 @@ pub fn run_core(
     let resolved_selector;
     let mut disambiguation: Option<(usize, usize)> = None; // (match_count, chosen_index)
     let selector: &str = if let Some(policy) = opts.match_policy {
-        let target = resolve_disambiguated_target(
-            &mut ctx,
-            &console_actor,
-            selector,
-            policy,
-            wait_timeout_ms,
-        )?;
+        let target =
+            resolve_disambiguated_target(ctx, &console_actor, selector, policy, wait_timeout_ms)?;
         disambiguation = Some((target.match_count, target.chosen_index));
         resolved_selector = target.selector;
         &resolved_selector
@@ -527,7 +546,7 @@ pub fn run_core(
 
     // A2: Auto-wait for the element to be focusable (also calls .focus()).
     if !opts.no_wait {
-        autowait_element(&mut ctx, &console_actor, selector, wait_timeout_ms, true)?;
+        autowait_element(ctx, &console_actor, selector, wait_timeout_ms, true)?;
     }
 
     // Submission recovery can refresh the target both inside
@@ -536,26 +555,31 @@ pub fn run_core(
     let mut page_origin = opts
         .page
         .with_page
-        .then(|| super::page_view::NavigationOrigin::capture(&ctx));
+        .then(|| super::page_view::NavigationOrigin::capture(ctx));
 
     let escaped_sel = escape_selector(selector);
     let escaped_text_json = serde_json::to_string(text)
         .map_err(|e| AppError::from(anyhow::anyhow!("failed to encode text argument: {e}")))?;
     let js = build_type_js(&escaped_sel, &escaped_text_json, clear);
 
-    let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, "type failed")?;
+    let eval_result = eval_or_bail(ctx, &console_actor, &js, "type failed")?;
 
-    let mut result_json = resolve_result(&mut ctx, &eval_result.result)?;
+    let mut result_json = resolve_result(ctx, &eval_result.result)?;
 
     // iter-210 Theme C: --submit. Runs before --settle/--wait-for so those
     // observe the page the submission produced.
     if opts.submit {
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_millis(wait_timeout_ms);
+        let before_id = ctx.target().inner_window_id;
+        let before_url = ctx.target().url.clone();
         let submit_json = press_enter_and_submit(
-            &mut ctx,
+            ctx,
             &console_actor,
             &escaped_sel,
             wait_timeout_ms,
             &mut page_origin,
+            deadline,
         )?;
         let navigated = submit_json
             .get("navigated")
@@ -566,22 +590,28 @@ pub fn run_core(
                 dst.insert(k.clone(), v.clone());
             }
         }
-        // `press_enter_and_submit` may have navigated the tab (the "Enter
-        // handled by page JS" case `--submit` targets). The docshell tears
-        // down on a real cross-document navigation, so `console_actor` above
-        // — cached before the submit — is stale: reusing it against
-        // `settle_page`/`wait_for_predicates` below would hit `noSuchActor`.
-        // Refresh before either runs, same as `page_view::attach` does for
-        // `--with-page`.
+        // Navigation start is only a signal to stop using the outgoing
+        // document. Prove handover under the original submission deadline
+        // before any settle, predicate or page-view evaluation.
         if navigated {
-            refresh_submission_target(&mut ctx, &mut page_origin);
-            console_actor = ctx.target().console_actor.clone();
+            let already_replaced = matches!((before_id, ctx.target().inner_window_id),
+                (Some(old), Some(new)) if old != new)
+                || matches!((before_url.as_deref(), ctx.target().url.as_deref()),
+                    (Some(old), Some(new)) if old != new);
+            console_actor = if already_replaced {
+                ctx.target().console_actor.clone()
+            } else {
+                ctx.refresh_after_submission_until(before_id, before_url.as_deref(), deadline)?
+            };
+            if let Some(origin) = &mut page_origin {
+                origin.observe_refreshed_target(ctx);
+            }
         }
     }
 
     // C2: --settle.
     let settle_method = if opts.settle {
-        let sm = settle_page(&mut ctx, &console_actor, wait_timeout_ms)?;
+        let sm = settle_page(ctx, &console_actor, wait_timeout_ms)?;
         Some(sm)
     } else {
         None
@@ -595,7 +625,7 @@ pub fn run_core(
             .iter()
             .map(|s| WaitForPredicate::parse(s))
             .collect::<Result<_, _>>()?;
-        wait_for_predicates(&mut ctx, &console_actor, &predicates, wf_timeout)?;
+        wait_for_predicates(ctx, &console_actor, &predicates, wf_timeout)?;
     }
 
     let mut result = result_json;
@@ -613,7 +643,7 @@ pub fn run_core(
     if let Some(origin) = page_origin {
         super::page_view::attach_from_origin(
             cli,
-            &mut ctx,
+            ctx,
             &mut result,
             Some(wait_timeout_ms),
             &opts.page,
@@ -693,6 +723,283 @@ mod tests {
             help.contains("preventDefault"),
             "type --help must say preventDefault cannot suppress the character; got:\n{help}"
         );
+    }
+
+    /// Exercise the production caller sequence, including post-submit options.
+    /// These are scripted protocol peers, not recorded Firefox fixtures.
+    #[test]
+    fn unit_262_submission_callers_wait_for_replacement() {
+        use clap::Parser;
+        use ff_rdp_core::{
+            RdpTransport,
+            transport::{encode_frame, recv_from},
+        };
+        use std::{
+            io::{BufReader, Write},
+            net::TcpListener,
+            sync::{
+                Arc,
+                atomic::{AtomicUsize, Ordering},
+            },
+            time::{Duration, Instant},
+        };
+        for (option, interruption, metadata) in [
+            ("settle", "poll_ack", "ok"),
+            ("predicate", "poll_result", "ok"),
+            ("page", "enter_ack", "ok"),
+            ("settle", "enter_result", "ok"),
+            ("predicate", "request_ack", "ok"),
+            ("page", "request_result", "ok"),
+            ("settle", "poll_ack", "no_actor"),
+            ("predicate", "poll_ack", "destroyed"),
+            ("page", "poll_ack", "destroyed_late"),
+            ("predicate", "poll_ack", "same_document"),
+            ("settle", "poll_ack", "protocol_error"),
+        ] {
+            for exhausted in [false, true] {
+                if metadata == "protocol_error" && exhausted {
+                    continue;
+                }
+                let snapshots = Arc::new(AtomicUsize::new(0));
+                let side = TcpListener::bind("127.0.0.1:0").unwrap();
+                side.set_nonblocking(true).unwrap();
+                let endpoint = crate::daemon::client::TargetEndpoint::new(
+                    side.local_addr().unwrap().port(),
+                    "token",
+                );
+                let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let side_stop = Arc::clone(&stop);
+                let side_count = Arc::clone(&snapshots);
+                let side_thread = std::thread::spawn(move || {
+                    while !side_stop.load(Ordering::SeqCst) {
+                        let (mut socket, _) = match side.accept() {
+                            Ok(v) => v,
+                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                std::thread::sleep(Duration::from_millis(1));
+                                continue;
+                            }
+                            Err(e) => panic!("{e}"),
+                        };
+                        socket.set_nonblocking(false).unwrap();
+                        socket
+                            .set_read_timeout(Some(Duration::from_secs(2)))
+                            .unwrap();
+                        let mut reader = BufReader::new(socket.try_clone().unwrap());
+                        if recv_from(&mut reader).is_err() {
+                            break;
+                        }
+                        socket.write_all(encode_frame(&json!({"protocol_version":crate::daemon::server::DAEMON_PROTOCOL_VERSION}).to_string()).as_bytes()).unwrap();
+                        let Ok(query) = recv_from(&mut reader) else {
+                            break;
+                        };
+                        assert_eq!(query["type"], "resolve-tab-target");
+                        let n = side_count.fetch_add(1, Ordering::SeqCst);
+                        let response = if n == 0 || (!exhausted && n >= 3) {
+                            let fresh = n >= 3;
+                            json!({"from":"daemon","type":"resolve-tab-target","state":"live","target":{"actor":if fresh && metadata != "same_document" {"new-target"} else {"old-target"},"consoleActor":if fresh && metadata != "same_document" {"new-console"} else {"old-console"},"innerWindowId":if fresh && metadata != "same_document" {8} else {7},"url":if fresh && metadata != "same_document" {"https://b/"} else {"https://a/"}}})
+                        } else {
+                            json!({"from":"daemon","type":"resolve-tab-target","state":"pending"})
+                        };
+                        let _ = socket.write_all(encode_frame(&response.to_string()).as_bytes());
+                    }
+                });
+                let main = TcpListener::bind("127.0.0.1:0").unwrap();
+                let transport = RdpTransport::connect_raw(
+                    "127.0.0.1",
+                    main.local_addr().unwrap().port(),
+                    Duration::from_secs(2),
+                )
+                .unwrap();
+                let (mut socket, _) = main.accept().unwrap();
+                let peer_snapshots = Arc::clone(&snapshots);
+                let peer = std::thread::spawn(move || {
+                    socket
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    let mut reader = BufReader::new(socket.try_clone().unwrap());
+                    let mut eval = 0;
+                    let mut after = 0;
+                    let mut interrupted = false;
+                    let mut late_metadata = false;
+                    while let Ok(request) = recv_from(&mut reader) {
+                        let mut send = |v: serde_json::Value| {
+                            socket
+                                .write_all(encode_frame(&v.to_string()).as_bytes())
+                                .unwrap();
+                        };
+                        if request["type"] == "listFrames" {
+                            if request["to"] == "old-target"
+                                && matches!(
+                                    metadata,
+                                    "no_actor" | "destroyed" | "destroyed_late" | "protocol_error"
+                                )
+                            {
+                                if metadata == "protocol_error" {
+                                    send(
+                                        json!({"from":"old-target","error":"unrecognizedPacketType"}),
+                                    );
+                                } else if metadata == "no_actor" {
+                                    send(json!({"from":"old-target","error":"noSuchActor"}));
+                                } else {
+                                    send(
+                                        json!({"from":"watcher","type":"target-destroyed-form","target":{"innerWindowId":7}}),
+                                    );
+                                    late_metadata = metadata == "destroyed_late";
+                                }
+                                continue;
+                            }
+                            if late_metadata {
+                                // The retired outgoing metadata reply arrives
+                                // only once a replacement request is outstanding.
+                                send(
+                                    json!({"from":"old-target","frames":[{"id":1,"isTopLevel":true,"url":"https://WRONG/"}]}),
+                                );
+                                late_metadata = false;
+                            }
+                            send(
+                                json!({"from":request["to"],"frames":[{"id":1,"isTopLevel":true,"url":if metadata == "same_document" && peer_snapshots.load(Ordering::SeqCst) >= 4 {"https://a/#here"} else if request["to"] == "new-target" {"https://b/"} else {"https://a/"}}]}),
+                            );
+                            continue;
+                        }
+                        assert_eq!(request["type"], "evaluateJSAsync");
+                        eval += 1;
+                        let interrupt_now = if interruption.starts_with("request") {
+                            request["text"].as_str().unwrap().contains("requestSubmit")
+                        } else {
+                            eval == if interruption.starts_with("enter") {
+                                2
+                            } else {
+                                3
+                            }
+                        };
+                        if interrupt_now && !interrupted {
+                            interrupted = true;
+                            // Navigation start precedes outgoing snapshot, Pending,
+                            // and eventual replacement. No old-console reply exists.
+                            if interruption.ends_with("result") {
+                                send(json!({"from":"old-console","resultID":format!("r{eval}")}));
+                            }
+                            send(
+                                json!({"from":"old-target","type":"tabNavigated","state":"start","url":if metadata == "same_document" { "https://a/#here" } else { "https://b/" }}),
+                            );
+                            if metadata == "same_document" {
+                                // Same-document navigation keeps the console;
+                                // its old evaluation may acknowledge after start.
+                                send(json!({"from":"old-console","resultID":format!("r{eval}")}));
+                                send(
+                                    json!({"from":"old-console","type":"evaluationResult","resultID":format!("r{eval}"),"result":false}),
+                                );
+                            }
+                            continue;
+                        }
+                        if interrupted {
+                            assert_eq!(
+                                request["to"],
+                                if metadata == "same_document" {
+                                    "old-console"
+                                } else {
+                                    "new-console"
+                                },
+                                "{option}: evaluated displaced document"
+                            );
+                            after += 1;
+                        }
+                        send(json!({"from":request["to"],"resultID":format!("r{eval}")}));
+                        let result = match (eval, after) {
+                            (1, 0) => json!(format!("{JSON_SENTINEL}{{\"typed\":true}}")),
+                            (2, 0) => json!(format!(
+                                "{JSON_SENTINEL}{{\"url_before\":\"https://a/\",\"has_form\":true}}"
+                            )),
+                            _ if !interrupted => json!(false),
+                            _ if option == "settle" && after == 1 => json!("__ok__"),
+                            _ if option == "page" => {
+                                let fixture: serde_json::Value =
+                                    serde_json::from_str(include_str!(
+                                        "../../tests/fixtures/eval_result_a11y_summary.json"
+                                    ))
+                                    .unwrap();
+                                fixture["result"].clone()
+                            }
+                            _ => json!(true),
+                        };
+                        send(
+                            json!({"from":request["to"],"type":"evaluationResult","resultID":format!("r{eval}"),"result":result}),
+                        );
+                    }
+                    after
+                });
+                let mut ctx = ConnectedTab::for_test(transport, "old-console".into());
+                ctx.target_endpoint = Some(endpoint);
+                ctx.set_target_metadata_for_test(Some(7), Some("https://a/".into()));
+                let cli = Cli::parse_from(["ff-rdp", "type", "input", "x"]);
+                let wait_for = vec!["selector:input".to_owned()];
+                let opts = TypeOptions {
+                    no_wait: true,
+                    submit: true,
+                    settle: option == "settle",
+                    wait_for: if option == "predicate" {
+                        &wait_for
+                    } else {
+                        &[]
+                    },
+                    wait_timeout_ms: Some(if interruption.starts_with("request") {
+                        1000
+                    } else {
+                        400
+                    }),
+                    page: crate::cli::args::PageViewArgs {
+                        with_page: option == "page",
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+                let start = Instant::now();
+                let result = run_connected(&cli, &mut ctx, "input", "x", false, &opts);
+                let elapsed = start.elapsed();
+                assert_eq!(ctx.transport_mut().target_guard(), None);
+                drop(ctx);
+                stop.store(true, Ordering::SeqCst);
+                side_thread.join().unwrap();
+                let post_evals = peer.join().unwrap();
+                if metadata == "protocol_error" {
+                    assert!(matches!(result, Err(AppError::User(_))), "{result:?}");
+                    assert_eq!(
+                        snapshots.load(Ordering::SeqCst),
+                        1,
+                        "protocol errors must not be retried"
+                    );
+                    assert_eq!(post_evals, 0);
+                } else if exhausted {
+                    assert!(
+                        matches!(result, Err(AppError::Timeout(_))),
+                        "{option}/{metadata}: {result:?}"
+                    );
+                    assert_eq!(post_evals, 0);
+                    assert!(
+                        elapsed
+                            >= Duration::from_millis(if interruption.starts_with("request") {
+                                950
+                            } else {
+                                350
+                            }),
+                        "handover ended before its deadline: {elapsed:?}"
+                    );
+                    assert!(
+                        elapsed
+                            < Duration::from_millis(if interruption.starts_with("request") {
+                                1500
+                            } else {
+                                900
+                            }),
+                        "{elapsed:?}"
+                    );
+                } else {
+                    assert!(result.is_ok(), "{option}/{metadata}: {result:?}");
+                    assert!(post_evals > 0);
+                    assert_eq!(result.unwrap().0["navigated"], true);
+                }
+            }
+        }
     }
 
     /// Theme C: every character produces the three-event sequence, and the
@@ -825,7 +1132,16 @@ mod tests {
         use std::net::TcpListener;
         use std::time::{Duration, Instant};
 
-        for mode in ["blocked", "events", "phases", "success", "error"] {
+        for mode in [
+            "blocked",
+            "events",
+            "phases",
+            "success",
+            "error",
+            "destroyed_ack",
+            "destroyed_result",
+            "unrelated_destroyed",
+        ] {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let port = listener.local_addr().unwrap().port();
             let server = std::thread::spawn(move || {
@@ -847,6 +1163,18 @@ mod tests {
                     }
                 } else if mode == "error" {
                     send(json!({"from":"console", "error":"noSuchActor"})).unwrap();
+                } else if matches!(
+                    mode,
+                    "destroyed_ack" | "destroyed_result" | "unrelated_destroyed"
+                ) {
+                    if mode == "destroyed_result" {
+                        send(json!({"from":"console", "resultID":"current"})).unwrap();
+                    }
+                    send(json!({"from":"watcher", "type":"target-destroyed-form",
+                        "target":{"innerWindowId":if mode == "unrelated_destroyed" { 8 } else { 7 }}})).unwrap();
+                    // Keep the old console silent: lifecycle traffic, not EOF,
+                    // must end a poll for the destroyed document promptly.
+                    std::thread::sleep(Duration::from_millis(800));
                 } else {
                     let delay = if mode == "phases" { 400 } else { 40 };
                     std::thread::sleep(Duration::from_millis(delay));
@@ -870,11 +1198,30 @@ mod tests {
             let prior = transport.read_timeout().unwrap();
             let actor = ff_rdp_core::ActorId::from("console");
             let mut ctx = ConnectedTab::for_test(transport, actor.clone());
+            ctx.set_target_metadata_for_test(Some(7), Some("https://example.test".into()));
             let started = Instant::now();
             let result = navigated_away(&mut ctx, &actor, "https://example.test", 600);
             let elapsed = started.elapsed();
             assert_eq!(ctx.transport_mut().read_timeout().unwrap(), prior, "{mode}");
-            assert_eq!(result, matches!(mode, "success" | "error"), "{mode}");
+            assert_eq!(
+                result,
+                matches!(
+                    mode,
+                    "success" | "error" | "destroyed_ack" | "destroyed_result"
+                ),
+                "{mode}"
+            );
+            assert_eq!(
+                ctx.transport_mut().target_guard(),
+                None,
+                "guard leaked: {mode}"
+            );
+            if matches!(mode, "destroyed_ack" | "destroyed_result") {
+                assert!(
+                    elapsed < Duration::from_millis(400),
+                    "ignored destruction: {mode}: {elapsed:?}"
+                );
+            }
             assert!(elapsed < Duration::from_secs(1), "{mode}: {elapsed:?}");
             if !result {
                 assert!(elapsed >= Duration::from_millis(550), "{mode}: {elapsed:?}");
