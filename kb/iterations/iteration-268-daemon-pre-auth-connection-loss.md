@@ -363,3 +363,59 @@ workspace/all-targets Clippy and normal parallel workspace tests passed:
 2529passed/0failed/419ignored. These are restoration/checkpoint gates, not268
 regression or live acceptance evidence. Command receipts and exact hashes are in
 `closeout/`. No completion PR or merge is claimed.
+
+## Continued partial-observation checkpoint — 2026-09-21
+
+The owner resumed268 under the existing grant. Reviewed temporary diagnostics
+added passive worker call-site phases, main exit boundaries and exact product
+stop-RPC/escalation/signal attempts. R6 advisory-reader and strict operation-family
+integration repairs passed independent review; no product lifecycle, timeout or
+retry change was made. One separately admitted100-second mock-only schedule ran
+at18:19:34.570–18:19:46.438CEST (11.867929542s), then stopped. Native1/1 passed,
+outer exit2. The original strict checker failed on a new stop-RPC operation;
+that failure remains preserved. The repaired checker processed the same251records
+in5files: integrity pass, ten successful connection outcomes, path interrupted.
+All three required workers spawned and registered successfully; six actual
+client-handler joins were observed, but the reader, drainer and dispatcher each
+lack body outcome, supervision epilogue and actual worker join records.
+
+The final published phases were reader before_firefox_receive/46, drainer
+before_queue_receive/6 and dispatcher before_queue_receive/94; the optional
+watcher was not entered. These are independently sampled call-site publications,
+not final program counters or return receipts. Authenticated shutdown preceded
+accept-loop exit by103.311667ms and the main-scope drop marker by104.272417ms.
+Four product group-signal calls targeting-79522 (TERM/KILL twice each) returned
+-1/errno3. The intended numeric target joins to the owned daemon child, but no
+process-group identity, existence, signal delivery or termination is proved by
+those failed calls. No cause for a historical224/240 EOF/reset was established.
+
+The new phase/signal questions are answered and this one-shot claim is consumed;
+no unchanged retry, Firefox pair or closing sweep ran. Ownership inventory and
+cleanup completed for all12children, all absent, with zero actual executor
+cleanup signals. The current desktop Firefox census was empty; the historical
+PID57827 is not claimed preserved in this continuation. Missing actual worker
+completion and general Firefox ownership remain separate blockers. All original
+tasks and AC0/4 remain unchanged; status remains in-progress, not complete.
+
+The tested DTrace probes require additional privileges, and noninteractive sudo required a password. No adequate native termination collector has been established in this run; these probes do not prove all native observation approaches impossible.
+
+Independent review approved the strict-checker repair, occurrence interpretation
+with the capability wording above, and exact guarded restoration. Nine tracked
+Rust paths were restored to merged262/PR264 baseline
+`c761c1b1f62b3cd9f6bcf56301e6528b1e70fad2`; only the archived, hash-matched logger
+was removed. All569 restored source/build inputs match the baseline, preserving
+262/267 repairs. Every diagnostic generation, capture failure, raw record,
+consumed claim and historical ledger remains recoverable under the primary
+checkout's `.git/ralph-loop/20260921-continue268/`: `implement1–3/`, `review1–3/`,
+`admission1/`, `observation1/`, `observation1-analysis/` and `closeout/`.
+The capability correction supersedes only the overbroad sentence in the frozen
+worker report; the original is retained. This checkpoint does not reset a grant,
+complete268 or request a completion PR.
+
+Restored active CLI/unit/e2e/live artifacts were rebuilt and identified through
+actual Cargo JSON. Ordered updated-stable, format, strict workspace/all-targets
+Clippy and normal parallel workspace tests passed:2529passed/0failed/419ignored.
+These restoration/checkpoint gates supply no268 live acceptance or regression
+proof. Exact inputs, binaries, command receipts and preservation checks are in
+`closeout/`; the consumed admission cannot be reused. No268 completion, PR or
+merge is claimed.
