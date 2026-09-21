@@ -2,8 +2,8 @@
 title: "Iteration 268: diagnose recurrent daemon pre-auth connection loss"
 type: iteration
 date: 2026-09-13
-status: planned
-branch: iter-268/daemon-pre-auth-connection-loss
+status: in-progress
+branch: iter-268/auth-loss-attribution-20260921
 first_call_sites: []
 dogfood_path: |
   FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo test -p ff-rdp-cli --test live live_224_with_page_connection_reset::live_repeated_hop_never_loses_the_connection -- --include-ignored --exact --nocapture --test-threads=1
@@ -138,3 +138,228 @@ failures. It does not supply missing failed-occurrence traces for this plan's
 historical224/240 EOF/reset observations, and does not close this plan or any of
 its original ACs. Preserve every original observation and await the required
 attributed evidence before assigning those occurrences the same cause.
+
+## Bounded investigation — 2026-09-19
+
+Investigation baseline: `03ba1fd9e2d74193e99b3ff51d4e732b8e7b5337`, containing
+the merged iteration 267 repair. No new product change was justified. Temporary
+diagnostics recorded client and server socket endpoints, PID, monotonic auth
+milestones, shutdown state, dispatcher counters and a nonblocking snapshot of
+whether the RPC slot was empty, occupied or locked. No auth token or request
+payload was logged. These snapshots were observation only; this did not investigate
+iteration 259's request/reply handover or iteration 262's target lifecycle.
+
+The two named repeated-hop tests passed with the merged repair and diagnostics
+intact: 2 passed, 0 failed, 43.17 s, with all 12 and 40 hops completed. Removing
+only iteration 267's `set_nonblocking(false)` repair, retaining the same diagnostics
+and test assertions, also passed the serial pair: 2 passed, 0 failed, 43.84 s.
+One six-worker diagnostic batch then ran those modules alongside the established
+160/161/164/165/219 load controls: 36 passed, 1 failed, 62.40 s. Both named
+224/240 repeated-hop tests passed again. No EOF or reset in either named scenario
+was captured. These were targeted investigations, not a closing live sweep.
+
+The mutant batch's failure was
+`live_165_eval_call_scope::live_165_wrap_trigger_is_confined_to_declaring_scripts`,
+whose greeting-wait Timeout envelope contained an underlying reset 54. The trace
+joins client 1170/local 53521 to daemon 853/proxy 53400: handler entry at monotonic
+45366.878300916, auth-read error at 45366.879477916 (about 1.177 ms later), intentional
+auth rejection at 45366.879522083, and client reset at 45366.893829250. At rejection,
+shutdown was false, the dispatcher was alive with 41 frames started and finished,
+and the RPC slot was empty. Client auth-send completion was recorded after
+rejection. This is an additional controlled observation consistent with 267's
+already-demonstrated mechanism, not a newly attributed 224/240 failure. It does
+not explain any historical EOF, nor establish that all historical resets shared
+that cause. The removed repair was restored; no retry or timeout bound changed.
+
+Evidence and exact command/env/start/end/exit metadata are retained under
+`.git/ralph-loop/20260919-queue/iter268/`: `fixed-pair.log`, `fixed-trace.log`,
+`mutant-pair.log`, `mutant-trace.log`, `mutant-loaded.log`,
+`mutant-loaded-trace.log`, their launch logs and `.meta` sidecars. The temporary
+patches are retained there for a reproducible diagnostic setup; product sources
+were restored to the baseline and rebuilt (`restored-build.log`).
+
+**Blocked, not complete:** no attributed failing 224/240 occurrence was obtained,
+and the missing historical auth/dispatcher traces cannot be recovered from passing
+controls. Every original task and AC remains unticked. A new regression or second
+fix would be speculative; 267 already supplies its own failing-before/passing-after
+regression. A closing 268 dual-gate sweep has not run. Resume on a new attributable
+224/240 failure or a concrete new diagnostic hypothesis, preserving the original
+EOF/reset observations and acceptance strength. This investigation adds no new
+carry-over plan and requests no completion PR.
+
+## Restart plan — 2026-09-19
+
+Follow [[ralph-loop-open-iterations-2026-09-19]]. Recover the docs-only checkpoint
+`f5fed086c0a3992b165e7f231856a8990ccd3661`, integrate verified current main on
+its branch, and preserve every historical EOF/reset row. The original four tasks
+and four ACs remain unmet. Merged267's socket-mode repair is a verified input;
+its historical failure cannot be substituted for this plan's named occurrences.
+
+**New work must improve attribution before adding runs (Astra).**
+
+1. Restore/adapt only the retained temporary tracing patch from `iter268/` after
+   comparing it to current `daemon/server.rs` and the client auth path. Record
+   connection identity on accept, client/server endpoints and process IDs,
+   monotonic auth-read/write milestones, greeting-write outcome, close initiator
+   and reason, dispatcher state and RPC-slot state. Assign a trace-only identity
+   before authentication (and before fallible socket setup); the current normal
+   client ID is allocated only after auth succeeds and misses rejected clients.
+   Record auth read error/category and decision separately without token content.
+   The logger must preserve
+   complete records under concurrency; validate that first. Do not log tokens,
+   page payloads or unrelated traffic. Keep this scoped to connection setup,
+   without retrying259's rejected request/reply investigation.
+2. State a differentiating hypothesis before testing. Trace the causal path:
+   auth-read failure followed by explicit rejection, independent shutdown/early
+   handler exit, or greeting-write failure after successful auth. A failed auth
+   read can itself cause an intentional close; those are not competing causes.
+   Record the peer-close observation and preceding milestones so an EOF can be
+   located within the sequence instead of classified by its error string alone.
+   Existing fixed/reverted controls and the incidental165 failure are already
+   recorded; do not repeat the267 mutation to manufacture new268 evidence.
+3. With instrumentation active, run one exact named224/240 pair on current source.
+   If neither fails, one bounded reproduction block may run the same pair with
+   the existing six-worker160/161/164/165/219 contention set, at most three batches.
+   Preserve all results. Do not change assertions, timeout defaults, ports or
+   browser ownership to manufacture a failure. Stop early on an attributable
+   named failure and inspect its joined trace before another invocation.
+4. If a named failure is captured, distinguish auth rejection, daemon shutdown,
+   greeting delivery and later transport framing before changing code. Preserve
+   EOF versus reset as separate observations until evidence relates them. Build
+   a deterministic regression from the demonstrated cause; prove it fails before
+   and passes after the scoped repair, then run both named tests and this
+   iteration's own closing dual-gate sweep and ordered gates.
+
+A complete trace with no failure yields a bounded negative result and a preserved
+checkpoint, not a completed iteration. A missing trace field yields a precise
+instrumentation repair task, not another blind batch. The three-batch allowance is
+an investigation ceiling, not a new acceptance requirement. An unresolved failure
+outside the two named cases receives its own existing owner or newly filed plan,
+without expanding execution scope. All four original ACs remain binding.
+
+## Resumed bounded capture and owner pause — 2026-09-19
+
+Recovered the preserved checkpoint and integrated main
+`07e736e9b8567c40f60f819ac4de78cbf106038b`, retaining267's blocking-socket
+repair. Astra identified that the old diagnostics omitted
+`dispatch::resolve_ref_via_daemon`, the actual source of the historical named
+errors. Sol implemented temporary tracing of all three authentication entrypoints,
+pre-fallible-setup server identities, auth/greeting/terminal milestones and copied
+nonblocking dispatcher/RPC-state observations. No259 investigation, socket-mode
+mutation, timeout change or product repair was performed.
+
+Control attempt5 passed:135 records in5 process files with all three routes joined.
+Concurrent logging produced exact515+67+67 records, and copied missing-auth-read,
+missing-terminal and truncated-record mutations were rejected. Earlier control
+attempts and their corrections are retained; attempt4 also passed before the
+final refinement. Scope-exit records identify a close decision before destructors,
+not a kernel FIN. Cross-process ordering uses socket joins and causal milestones,
+not a shared monotonic clock.
+
+The complete allowance was consumed: one exact224/240 pair passed2/2 in37.08s,
+then three six-worker batches with the existing160/161/164/165/219 contention
+controls passed35/35 each in57.04s,57.10s and56.76s. Both named scenarios passed
+in every invocation; no attributed named failure was obtained. These are targeted
+diagnostics, not a closing live sweep. General record validators passed with
+5256/14289/14297/14293 records respectively. A later stricter all-route check
+passed the serial pair and batch1 but rejected batch2 and batch3 because daemon_rpc
+connections16251-1 and19452-1 recorded greeting_read_error/reset54 rather than
+greeting_read_ok. Preserve these anomalies and their raw traces; neither is
+evidence that the named tests failed, nor may every connection be called a
+complete successful handshake. Independent review found both resets associated with recorded daemon shutdown
+lifecycles, with no accepted-server endpoint join. A listener-destruction reset
+is consistent with the records but unproved; exact shutdown initiator and cause
+remain unresolved. They use different proxies from the named224/240 scenarios.
+
+Evidence: primary checkout `.git/ralph-loop/20260919-remaining-2211/iter268/`,
+including `control-manifest.md`, `logs/` command/env/time/exit metadata, all
+`traces/`, final temporary source patch and standalone `trace268.rs`. The
+seven pretrace snapshots and tracked baseline preserve restoration inputs; the
+temporary test change is preserved in the final patch. Temporary source was
+restored exactly to main. The supervisor took over checkpoint cleanup after the
+owner requested a safe stop; no further live experiment is authorized by that stop.
+
+**Blocked, not complete:** original tasks and ACs remain0/4. No cause, repair,
+regression or closing dual-gate sweep is claimed. Do not reset this consumed
+allowance in another session. Resume requires a new attributable named failure
+or a concrete new diagnostic hypothesis with a newly bounded investigation.
+
+Independent Astra review (`iter268-review/report.md` beside the evidence root)
+returned zero actionable findings against this blocked documentation checkpoint.
+Read-only joins verified unique endpoints and required milestones for every
+connect_tab/resolve_ref connection, including12/40 named hop refs per invocation.
+Before any newly authorized capture, add the omitted worker-return/panic,
+Firefox-reader shutdown-reason and explicit shutdown-request hooks; improve the
+checker to accept error alternatives, verify causal order and reject ambiguous
+process-qualified endpoint joins. Those are precise diagnostic repairs, not
+permission to repeat the exhausted batches. Synchronous tracing may perturb timing.
+No universal trace-completeness or uninstrumented absence claim is made.
+Restored bins/tests build passed; unchanged-source ordered gate evidence was
+reused from the independently verified main baseline. Selected-plan validation,
+HYALO005 and diff checks passed.
+
+## Additional investigation block — 2026-09-20
+
+The owner authorized one new 60-minute active investigation block with at most six targeted captures; prior exhausted blocks remain preserved. The reviewed proposal distinguished authentication failure from independently initiated shutdown and required all shutdown initiators plus outcome-aware, ordered, unique joins. Source instrumentation and offline checkers were developed through two repair batches. No diagnostic Rust build or targeted capture ran (0/6).
+
+This block stops with known capture-tooling gaps: the mock control still emits the old process-exit schema and contains an invalid shell environment assignment; the live helper's Firefox version/build fields are executable/command identity rather than actual version/build provenance. The two repair batches are exhausted. Do not run these tools or treat offline checker success as a reproduced failure. The final patch, exact source copies, helper/runner tests, reviews and manifests are preserved under `.git/ralph-loop/20260920-additional/iter268/final-instrumentation-archive/`; source was restored exactly to `057f03026e8a2e3eedf1354cd22e584258d10ab3`, verified against the passing 565-file source manifest.
+
+The recorded source/review/handoff debit is 3148 seconds, plus a conservative 90 seconds for the reported post-freeze audit and 60 seconds for supervisor disposition: 3298/3600 seconds. The latter additions are conservative accounting, not measured latency. Remaining time is not a renewed block. Closeout preservation is recorded separately and introduces no investigation or sampling. All original tasks and AC0/4 remain unmet. Next entry requires resolution of the concrete tooling gaps, measured compilation, fresh independent approval, and an explicitly authorized capture schedule consistent with the retained limits; no fresh-session reset or broadened batch. See `instrumentation/repair2-report.md`, `repair1-review.md`, and the supervisor ledger in the same run directory.
+
+## Foundation repair checkpoint — 2026-09-20
+
+The owner explicitly authorized two additional preparation/repair batches and a separate3600-second preparation allowance, retaining the historical3298/3600 discovery debit, six unused capture slots and302 remaining discovery seconds. Verified foundation merge8666a5324905793538c59532e909e0808beee7f3 was integrated above this branch's preserved e111071e checkpoint. No262 correction was imported.
+
+Both new batches are consumed. The first repaired the three known tooling defects: invalid shell environment assignment, obsolete mock-control process-exit schema, and Firefox command identity used in place of actual Version/BuildID/package provenance. It compiled and passed20 offline test methods. Independent review rejected capture readiness for source/checker transition mismatches, incorrect aggregate interruption success, lifecycle gaps, unbounded execution/cleanup, incomplete worker lifetime, and deferred writer timestamps presented as operation timing.
+
+The final batch substantially repaired route-specific chains, aggregate interruption propagation, startup/refusal/spawn outcomes, worker-qualified ordering and explicit deferred emission labels. It passed strict local Clippy, CLI/live/e2e/unit compilation and15 offline methods. These synthetic checker/mock-process tests are not actual Firefox captures, workspace-test completion or regression acceptance evidence. All failed preparation logs and both source/helper/binary freezes remain preserved.
+
+The capture prerequisite is still unmet. The daemon discards worker JoinHandles and can exit while its existing one-second drainer wait is pending. Externally observed process exit can establish interruption; it cannot establish that the worker returned or that all shutdown transitions were observed. No joins, sleeps, timing changes, widened deadlines or weaker original assertions were added to manufacture completeness. A partial auth/shutdown control cannot unlock the reviewed complete-capture schedule. All current capture wrappers and the observer now refuse before launch; the compiled control is ignored and guarded before child creation. No attempt was spent merely to rediscover this known limitation.
+
+Fresh independent review approved only an honest blocked checkpoint and restoration, retaining two additional defects in the archived tooling. First, a worker_outcome can be accepted without requiring its subsequent mandatory shutdown swap; deleting both swap records or process exit between outcome/swap can still produce a false completeness result when another initiator exists. Second, the generic unwired watchdog invokes observe synchronously and gives each PID a new cleanup interval, so it does not enforce one aggregate deadline. It remains explicitly unqualified for capture. These findings do not authorize a third repair batch.
+
+The supervisor restored the eight temporary tracked files and removed only the archived untracked logger using the reviewed guarded restoration. All567 restored source/build inputs match the verified foundation. The original source and every diagnostic generation remain recoverable. Ordered foundation fmt/strictClippy/workspace-test evidence (2499passed/0failed/418ignored) is reusable only for this identical restored documentation checkpoint; it is not new268 acceptance evidence. Restored CLI/live/e2e/unit artifacts rebuilt successfully in7.370s, exit0; actual Cargo JSON and command receipts are retained before commit.
+
+Current tasks and original AC0/4 remain unchanged: no attributable failing occurrence, demonstrated EOF/reset relationship, before/after regression or qualifying closing sweep. No268PR, product repair or main merge occurred. New active preparation debit3058/3600 includes conservative review accounting; compilation mixed with implementation was not subtracted. All302 discovery seconds and six slots remain numerically untouched, but both new repair batches are exhausted and there is no approved capture executor. A new session does not remove these gates or259's restriction.
+
+Evidence lives in the primary checkout's .git/ralph-loop/20260920-foundation-repair/iter268/: repair1/, review1.md, repair2/, review2.md and blocked-checkpoint/. Final review verified568 diagnostic source,76 artifact and4 executable identities, preserved repair1 artifacts, and the exact guarded restoration. The actual restoration manifest is freeze.json; a delegated reference to restore-files.json was stale. Desktop Firefox57827 was preserved; original1112 is not claimed preserved. Actual token usage is unavailable.
+
+## Reviewed attribution checkpoint — 2026-09-21
+
+Under the owner's new268-only investigation grant, four independently reviewed
+diagnostic repair phases produced a passive worker-completion observer and a
+mock-only executor. One separately admitted mock ran at10:02:50.829–10:03:02.647CEST
+(11.817780166s). Native1/1 passed, but the strict occurrence checker rejected
+236records across5processes as interrupted. All three worker spawns and observer
+registrations succeeded and all six client handlers joined. No body outcome,
+supervision epilogue or actual join was recorded for the Firefox reader, grip
+drainer or event dispatcher. Authenticated shutdown preceded the main-scope
+process-end marker by103.844625ms; that marker is not a kernel-exit or worker-return
+timestamp. Worker final positions remain unknown.
+
+Ownership inventory and cleanup completed for all12children; no executor cleanup
+signal was delivered and desktop Firefox57827 was preserved. The one-shot claim
+is consumed. No retry, named224/240 pair or closing sweep ran in this grant.
+No ordinary tooling defect explaining the missing worker evidence was established.
+Do not change lifecycle or timing merely to make observation complete. General
+Firefox ownership remains unresolved independently of this mock-only executor.
+This passing native mock establishes no cause for the original224/240 EOF/reset
+occurrences. All original tasks and acceptance criteria remain0/4, unchanged.
+
+Independent evidence review approved the blocked interpretation and exact source
+restoration with zero findings. The nine tracked diagnostic Rust files were
+restored to merged262/PR264 baseline `c761c1b1f62b3cd9f6bcf56301e6528b1e70fad2`;
+only the archived, hash-matched diagnostic logger was removed. The reviewed
+source/helper/binary generations and every failed occurrence remain preserved
+under the primary checkout's `.git/ralph-loop/20260921-resume268/`, particularly
+`implement1–4/`, `review1–4/`, `admission1/`, `mock1/`, `mock1-analysis/`,
+`mock1-review/` and `closeout/`. Historical allowances and ledgers are unchanged;
+this checkpoint does not reset any grant or complete268.
+
+All569 restored source/build inputs match that baseline. The active CLI/unit/e2e/live
+artifacts were rebuilt and identified through actual Cargo JSON; archived admitted
+and refused binaries remain recoverable. Ordered updated-stable, format, strict
+workspace/all-targets Clippy and normal parallel workspace tests passed:
+2529passed/0failed/419ignored. These are restoration/checkpoint gates, not268
+regression or live acceptance evidence. Command receipts and exact hashes are in
+`closeout/`. No completion PR or merge is claimed.
