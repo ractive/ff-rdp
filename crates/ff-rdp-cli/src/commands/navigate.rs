@@ -5523,6 +5523,163 @@ mod snapshot_probe_tests {
         }
     }
 
+    // A query write that crosses the existing absolute deadline must retain
+    // the caller's Timeout contract, without accepting other connection errors.
+    #[test]
+    fn snapshot_query_deadline_expiry_is_timeout() {
+        assert_snapshot_query_deadline(true);
+    }
+
+    #[test]
+    fn snapshot_pending_queries_keep_absolute_deadline() {
+        assert_snapshot_query_deadline(false);
+    }
+
+    fn assert_snapshot_query_deadline(pause_at_boundary: bool) {
+        use std::cell::RefCell;
+        use std::io::{BufRead, Read};
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+        use std::rc::Rc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        // Establish the unused main channel before acquiring any worker.
+        let main = TcpListener::bind("127.0.0.1:0").unwrap();
+        main.set_nonblocking(true).unwrap();
+        let port = main.local_addr().unwrap().port();
+        let transport =
+            RdpTransport::connect_raw("127.0.0.1", port, Duration::from_secs(2)).unwrap();
+        let admission = Instant::now() + Duration::from_secs(2);
+        let mut main_peer = loop {
+            assert!(Instant::now() < admission, "main fixture admission");
+            match main.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("main fixture accept: {error}"),
+            }
+        };
+        main_peer.set_nonblocking(false).unwrap();
+        main_peer
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let side = TcpListener::bind("127.0.0.1:0").unwrap();
+        side.set_nonblocking(true).unwrap();
+        let endpoint_port = side.local_addr().unwrap().port();
+        let mut ctx =
+            super::super::connect_tab::ConnectedTab::for_test(transport, "a/console".into());
+        ctx.target_endpoint = Some(crate::daemon::client::TargetEndpoint::new(
+            endpoint_port,
+            "token",
+        ));
+        ctx.via_daemon = true;
+        let stop = Arc::new(AtomicBool::new(false));
+        let done = Arc::clone(&stop);
+        let observations = Rc::new(RefCell::new(Vec::new()));
+        let observed = Rc::clone(&observations);
+        let start = Instant::now();
+        let fixture_end = start + Duration::from_secs(2);
+        let snapshots = std::thread::spawn(move || {
+            let mut queries = 0;
+            let mut terminal_eof = false;
+            while !done.load(Ordering::Relaxed) && Instant::now() < fixture_end {
+                let mut stream = match side.accept() {
+                    Ok((stream, _)) => stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(1));
+                        continue;
+                    }
+                    Err(error) => panic!("snapshot fixture accept: {error}"),
+                };
+                stream.set_nonblocking(false).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                assert_eq!(recv_from(&mut reader).unwrap()["auth"], "token");
+                send(
+                    &mut stream,
+                    &json!({"protocol_version":crate::daemon::server::DAEMON_PROTOCOL_VERSION}),
+                );
+                if reader.fill_buf().unwrap().is_empty() {
+                    assert!(start.elapsed() >= Duration::from_millis(600));
+                    terminal_eof = true;
+                    break;
+                }
+                let query = recv_from(&mut reader).unwrap();
+                assert_eq!(query["to"], "daemon");
+                assert_eq!(query["type"], "resolve-tab-target");
+                assert_eq!(query["descriptor"], "conn0/tab1");
+                queries += 1;
+                send(
+                    &mut stream,
+                    &json!({"from":"daemon","type":"resolve-tab-target","state":"pending"}),
+                );
+            }
+            (queries, terminal_eof)
+        });
+        let caller = catch_unwind(AssertUnwindSafe(|| {
+            crate::daemon::client::snapshot_query_boundary::with(
+                endpoint_port,
+                move |deadline| {
+                    let entered = Instant::now();
+                    if pause_at_boundary {
+                        assert!(observed.borrow().is_empty(), "one deliberate boundary only");
+                        assert!(entered < deadline, "must decode greeting before expiry");
+                        // Deliberate fault schedule: expire the real remaining
+                        // budget here, without replacing or extending it.
+                        while let Some(remaining) = deadline.checked_duration_since(Instant::now())
+                        {
+                            std::thread::sleep(remaining);
+                        }
+                    }
+                    observed
+                        .borrow_mut()
+                        .push((deadline, entered, Instant::now()));
+                },
+                || wait_for_readystate_complete(&mut ctx, 600, 42.0, start),
+            )
+        }));
+        let returned = Instant::now();
+        drop(ctx);
+        stop.store(true, Ordering::Relaxed);
+        let joined = snapshots.join();
+        let joined_at = Instant::now();
+        let main_eof = main_peer.read(&mut [0_u8; 1]);
+        eprintln!(
+            "boundary-control pause={pause_at_boundary} start={start:?} returned={returned:?} \
+             elapsed={:?} caller={caller:?} first_boundary={:?} joined_at={joined_at:?} \
+             snapshot_join={joined:?} main_eof={main_eof:?}",
+            returned.duration_since(start),
+            observations.borrow().first(),
+        );
+        let (queries, terminal_eof) = joined.unwrap();
+        assert_eq!(main_eof.unwrap(), 0, "no shared RPC/evaluation is allowed");
+        let records = observations.borrow();
+        assert!(
+            !records.is_empty(),
+            "at least one decoded greeting required"
+        );
+        assert!(records.iter().all(|record| record.0 == records[0].0));
+        if pause_at_boundary {
+            assert_eq!(records.len(), 1);
+            assert_eq!(queries, 0);
+            assert!(terminal_eof);
+            assert!(records[0].1 < records[0].0 && records[0].2 >= records[0].0);
+        } else {
+            assert!(queries > 0, "ordinary control must send complete queries");
+        }
+        let result = caller.unwrap();
+        assert!(
+            matches!(result, Err(AppError::Timeout(_))),
+            "strict watched-readiness result must remain Timeout: {result:?}"
+        );
+        assert!(returned.duration_since(start) < Duration::from_secs(1));
+    }
+
     /// The Both fallback and explicit readystate route share this caller.
     /// Pending must not strand it on the outgoing console, including when a
     /// live snapshot becomes invalid between acquisition and evaluation.
@@ -5689,12 +5846,14 @@ mod snapshot_probe_tests {
             let result = wait_for_readystate_complete(&mut ctx, 600, 42.0, start);
             drop(ctx);
             stop.store(true, std::sync::atomic::Ordering::Relaxed);
-            let (queries, deadline_closed) = snapshots.join().unwrap();
-            let (dead_evals, live_evals) = evaluations.join().unwrap();
+            let snapshot_join = snapshots.join();
+            let evaluation_join = evaluations.join();
+            let (queries, deadline_closed) = snapshot_join.unwrap();
+            let (dead_evals, live_evals) = evaluation_join.unwrap();
             if deadline_closed {
                 assert!(
                     matches!(&result, Err(AppError::Timeout(_))),
-                    "{failure}: terminal snapshot closure requires actual caller Timeout"
+                    "{failure}: terminal snapshot closure requires actual caller Timeout; result={result:?}"
                 );
             }
             if failure == "wrongState" {

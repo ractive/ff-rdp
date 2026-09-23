@@ -62,6 +62,15 @@ impl std::io::Write for QuerySocket {
     }
 }
 
+fn snapshot_write_error(error: &std::io::Error) -> AppError {
+    let message = format!("target query write: {error}");
+    if error.kind() == std::io::ErrorKind::TimedOut {
+        AppError::Timeout(message)
+    } else {
+        AppError::Connection(message)
+    }
+}
+
 impl TargetEndpoint {
     pub(crate) fn new(port: u16, token: &str) -> Self {
         Self {
@@ -92,7 +101,7 @@ impl TargetEndpoint {
                 reader
                     .get_mut()
                     .write_all(frame.as_bytes())
-                    .map_err(|e| AppError::Connection(format!("target query write: {e}")))
+                    .map_err(|error| snapshot_write_error(&error))
             };
         send(&mut reader, json!({"auth": self.token}))?;
         let greeting = ff_rdp_core::transport::recv_from(&mut reader)?;
@@ -108,6 +117,8 @@ impl TargetEndpoint {
                 cli: expected,
             });
         }
+        #[cfg(test)]
+        snapshot_query_boundary::observe(self.port, deadline);
         send(
             &mut reader,
             json!({"to":"daemon", "type":"resolve-tab-target", "descriptor":descriptor}),
@@ -2083,9 +2094,10 @@ mod tests {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/daemon/client.rs");
         let src = std::fs::read_to_string(&path).expect("read client.rs");
 
-        // Everything before the first `#[cfg(test)]` is the non-test source.
+        // Bound the runtime region by the main tests module: individual
+        // cfg(test) probes inside runtime functions do not end that region.
         let non_test = src
-            .split_once("#[cfg(test)]")
+            .split_once("#[cfg(test)]\nmod tests {")
             .map_or(src.as_str(), |(before, _)| before);
 
         let code_lines = || {
@@ -2743,6 +2755,23 @@ mod tests {
 #[cfg(test)]
 mod target_query_tests {
     use super::*;
+
+    #[test]
+    fn snapshot_write_classification_preserves_other_io_failures() {
+        for kind in [
+            std::io::ErrorKind::TimedOut,
+            std::io::ErrorKind::BrokenPipe,
+            std::io::ErrorKind::WouldBlock,
+        ] {
+            let result = snapshot_write_error(&std::io::Error::new(kind, "write fixture"));
+            if kind == std::io::ErrorKind::TimedOut {
+                assert!(matches!(result, AppError::Timeout(_)), "{result:?}");
+            } else {
+                assert!(matches!(result, AppError::Connection(_)), "{result:?}");
+            }
+        }
+    }
+
     use ff_rdp_core::transport::{encode_frame, recv_from};
     use std::io::{BufReader, Write};
     use std::net::TcpListener;
@@ -2878,5 +2907,53 @@ mod target_query_version_tests {
             Err(AppError::DaemonVersionMismatch { daemon: 1, .. })
         ));
         server.join().unwrap();
+    }
+}
+
+// Deadline regression support, absent from the shipped binary. Each installation
+// belongs to this thread and one endpoint; no process-global timing switch.
+#[cfg(test)]
+pub(crate) mod snapshot_query_boundary {
+    use std::cell::RefCell;
+    use std::time::Instant;
+
+    struct Probe {
+        port: u16,
+        callback: Box<dyn FnMut(Instant)>,
+    }
+    thread_local! {
+        static PROBE: RefCell<Option<Probe>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) fn with<T>(
+        port: u16,
+        callback: impl FnMut(Instant) + 'static,
+        operation: impl FnOnce() -> T,
+    ) -> T {
+        struct Clear;
+        impl Drop for Clear {
+            fn drop(&mut self) {
+                PROBE.with(|slot| *slot.borrow_mut() = None);
+            }
+        }
+        PROBE.with(|slot| {
+            assert!(slot.borrow().is_none(), "nested snapshot boundary probe");
+            *slot.borrow_mut() = Some(Probe {
+                port,
+                callback: Box::new(callback),
+            });
+        });
+        let _clear = Clear;
+        operation()
+    }
+
+    pub(super) fn observe(port: u16, deadline: Instant) {
+        PROBE.with(|slot| {
+            if let Some(probe) = slot.borrow_mut().as_mut()
+                && probe.port == port
+            {
+                (probe.callback)(deadline);
+            }
+        });
     }
 }

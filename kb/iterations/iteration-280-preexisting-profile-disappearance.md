@@ -73,6 +73,58 @@ Evidence root in the primary checkout:
   what was preserved, removed, present or unavailable at the recorded times.
 - `review-final/report.md`: why this measured anomaly requires a tracked plan.
 
+## Additional retained observation — 2026-09-23 runtime closing sweep
+
+This is factual carry-over from the separately authorized 273 CI runtime repair's
+one required closing sweep, not execution of the 280 audit. The same planning-only
+boundary and finite future record-audit budget remain. The original four PID74584
+paths and failed post-check above are retained as a distinct occurrence.
+
+The new sweep baseline contained these four different directories, all with
+owner-PID marker `35214` and no readable owner-test marker:
+
+| Exact additional baseline path | Owner PID | Owner-test marker |
+| --- | --- | --- |
+| `/Users/james/Library/Application Support/ff-rdp/profiles/ff-rdp-profile-6GxEaE6ZKvgp56rv` | 35214 | absent |
+| `/Users/james/Library/Application Support/ff-rdp/profiles/ff-rdp-profile-IMEhqgFIeqVpBaJf` | 35214 | absent |
+| `/Users/james/Library/Application Support/ff-rdp/profiles/ff-rdp-profile-daDffCTs3ghge5yC` | 35214 | absent |
+| `/Users/james/Library/Application Support/ff-rdp/profiles/ff-rdp-profile-gRoSle8pNlfWqoE3` | 35214 | absent |
+
+All four were absent in the after-census. The closing wrapper's explicit deletion
+was only its newly created unmanaged `/tmp/ff-rdp273-sweep-j8b5305f`, archived
+after the raw browser's actual wait and empty group census. That path is disjoint
+from this baseline. The exact actor and time of these four disappearances remain
+unknown; no product pruning cause or ownership follows from PID35214 alone.
+
+The sweep itself reported347 passing live verdicts and zero live-owned leaks or
+unattributed profiles. Those metrics do not assert preservation of preexisting
+inactive directories. Its after-census retained six newly created test-marked
+profile directories; their exact paths and markers are recorded, with no broader
+removal attempted. Include this additional record set in the future bounded
+existing-record audit, without replacing the original occurrence or authorizing
+new capture/cleanup now.
+
+New evidence under the same private root:
+`product-repair1/closing1/profiles-before.json`, `profiles-after.json`,
+`reconciliation.json`, `run-sweep.py`, `cleanup.json`, `raw-owned.json`,
+`raw-profile.tar`, native/process snapshots, `sweep.log` and command/wait receipts.
+
+### Subsequent gate census, same date
+
+After the ordered workspace gates, the six test-marked paths recorded immediately
+after the sweep were also absent; their exact names/markers remain in
+`product-repair1/closing1/profiles-after.json`. The final census instead recorded
+four new unmarked paths with PID93555 markers: `ff-rdp-profile-4zQMTbEHyAyOoTem`,
+`ff-rdp-profile-Sl2GvwLu9LZqwcM7`, `ff-rdp-profile-W595D8P1cPgfRdPz` and
+`ff-rdp-profile-WCrujHjyk1r86RdQ`, all beneath the same exact managed-profile root.
+See `product-repair1/post-gates-profiles.json` for full paths, inode/birth metadata
+and marker reads. No explicit managed-profile cleanup was performed by273's
+closing wrapper. These are additional bounded presence/absence observations;
+file-removal actor and exact time are still unavailable. Retain them as comparison
+inputs for the same future record audit, not a new execution grant or a claimed
+explanation. The four final paths are retained, without broader cleanup. No recovery of the
+additional missing managed paths is claimed from the different raw-profile archive.
+
 ## Tasks [0/3]
 
 - [ ] After a future explicit 280 launch, perform one finite audit of the retained
