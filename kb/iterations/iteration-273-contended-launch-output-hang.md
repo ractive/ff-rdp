@@ -1,6 +1,6 @@
 ---
 type: iteration
-status: planned
+status: done
 date: 2026-09-19
 branch: iter-273/contended-launch-output-hang
 title: "Iteration 273: contended launch waits reading subprocess output"
@@ -35,20 +35,20 @@ and `iter261/watchdog/live_158_launch_survives_contended_bind-1789815577-pid8928
 plus companion `pid88604.txt` in the same run directory. Corrected control is
 `iter261/logs/live-sweep-rerun.log`. Independent review R261-1 preserved the finding.
 
-## Tasks [0/3]
+## Tasks [2/3]
 
-- [ ] During a bounded reproduction or recurrence, capture child identities, process tree,
+- [x] During a bounded reproduction or recurrence, capture child identities, process tree,
       pipe ownership and command outputs before teardown; distinguish a running command
       from a child inheriting an output pipe.
-- [ ] Name the mechanism from failed-occurrence evidence, or record a bounded unreproduced
+- [x] Name the mechanism from failed-occurrence evidence, or record a bounded unreproduced
       outcome without calling the later pass a repair.
 - [ ] Apply a scoped repair only if evidence supports one, with a regression that fails
       for that mechanism and preserves launch lifecycle and ownership guarantees.
 
-## Acceptance Criteria [0/3]
+## Acceptance Criteria [2/3]
 
-- [ ] The original hang and its unknown cause remain traceable to retained stacks and logs.
-- [ ] An attributable failed occurrence explains the subprocess-output wait, or the bounded
+- [x] The original hang and its unknown cause remain traceable to retained stacks and logs.
+- [x] An attributable failed occurrence explains the subprocess-output wait, or the bounded
       investigation explicitly reports the remaining evidence gap without claiming resolution.
 - [ ] Any landed repair has a meaningful regression and the required own closing sweep;
       no launch or watchdog bound is widened without measured justification.
@@ -58,3 +58,180 @@ plus companion `pid88604.txt` in the same run directory. Corrected control is
 Filed as iteration 261 carry-over, not selected for the authorized September 19 queue.
 Do not execute as part of that queue. This is distinct from iteration 264's three timing
 bounds and iteration 260's profile-removal investigation.
+
+## Execution clarification — 2026-09-23
+
+The owner authorized the 272–278 queue after parking 268. Earlier dated unselected-run
+boundaries are historical; 271 remains excluded and 259/266 constraints remain binding.
+Original tasks and acceptance criteria above are unchanged.
+
+Current merged main c761c1b1 retains four Command::output workers joined before cleanup
+guards. Distinguish outer test-to-CLI output pipes from separately piped Firefox stderr:
+an immediate browser exit can lead to an unbounded stderr read in launch.rs. This is a
+hypothesis, not historical attribution. Qualify observers with one long-running direct-
+child control and one exited-child/inherited-writer control; add one inner-stderr
+surrogate only if testing that hypothesis. Then allow one exact four-launch live attempt
+and at most one observation in an otherwise-required closing sweep. Preserve actual
+waits, stream completion, process birth identities, pipe writer ownership and scoped
+cleanup. Stop answered experiments; passing controls do not establish historical cause.
+The original bounded-unreproduced disposition remains available. Prefer 278 first
+operationally, without inventing a correctness dependency.
+
+## Bounded outcome — 2026-09-23
+
+The bounded investigation is **done as of 2026-09-23**, using the original
+bounded-unreproduced route. Its initial closure was documentation-only. This completes the permitted investigation;
+it does not certify a resolved launch defect. No launch mechanism or repair is claimed. The original 261 hang above and
+272's separate second-closing-sweep recurrence remain unexplained: 272 timed out
+this same outer Command::output worker at 300 seconds, with 347 executed/1 timed_out
+of 348 and zero profile leaks. Its stacks, process snapshots and lsof do not join
+an actual CLI wait to a surviving writer or establish worker returns. Launch and
+contended-test source remained byte-identical to c761c1b1. Iteration 272 remains
+blocked; this disposition does not convert its failed sweep into a pass.
+
+One independently admitted diagnostic four-launch attempt passed in 2.868802 seconds:
+four CLI exit-zero waits, eight EOFs, eight actual reader joins and four actual worker
+joins; four distinct live Firefox identities on 7101–7104; original 30-second product
+limit and 300+30-second diagnostic bound unchanged. Initial native discovery matched
+each CLI's stdout/stderr writer endpoints before Firefox birth; scanned 580,
+unavailable 281, 8 matches, non-atomic. No failed wait or later inherited-writer
+mechanism was captured. All four proven browser roots/groups subsequently became
+absent; that nonchild cleanup is separate from the recorded waits and joins.
+Desktop Firefox remained unchanged. The one attempt is consumed; no retry ran.
+
+This is explicitly a variant of Command::output: independent reaping,
+nonblocking readers, identity persistence and observations alter timing. Passing
+controls distinguish a running command from an exited command with a surviving
+writer, but neither those controls nor this pass attribute either historical
+failure. No inner-stderr surrogate was selected. The initial documentation-only
+closure at eceafb33 required no own live sweep; none was claimed passed, reused
+or deferred. The subsequent CI correction below is assessed separately.
+The optional273 observation creates no new capture or discovery-sweep authority.
+
+Tasks 1–2 and AC 1–2 are supported by the bounded capture and explicit remaining
+gap. Task 3 and AC 3 stay unticked: their conditional product-repair branch was not
+triggered, so no repair of the launch mechanism, regression for that mechanism
+or closing sweep for such a repair is asserted. This is a bounded investigation outcome, not a resolved launch defect.
+
+Detailed private history, every failed observer version/control, the two admission
+reviews, frozen binaries, raw output and cleanup are retained under
+`.git/ralph-loop/20260923-remaining272-278/iter273/`: `live1-outcome-report.md`,
+`live1-evidence-manifest.sha256`, `adapter-repair-review-report.md` and
+`closure/closure-report.md` and the reviewed carry-over correction in
+`closure-repair1/report.md`. New 272 evidence remains under `iter272/closing2/`.
+The four live1 profiles were archived with verified recoverable contents and
+metadata, then only those exact owned paths were removed after fresh root/group
+absence checks. Four older baseline profiles were absent at the final check;
+this scoped cleanup did not target them, and their disappearance is not attributed.
+
+## Carry-over
+
+| Observation | Disposition |
+| --- | --- |
+| Original 261 outer-output hang, cause unknown | **No plan now:** original bounded-outcome route is exhausted without an evidenced repair. Reopen 273 on a new failed occurrence with preserved child birth/actual-wait/stream-writer/worker-return evidence, or newly recovered historical evidence that selects a mechanism; obtain a fresh finite capture schedule before execution. |
+| Separate 272 300-second recurrence | **No plan now for 273:** same explicit reopening condition. 272 retains its existing blocked closing work and failed sweep; no criteria or evidence were transferred into a passing result. |
+| Unticked conditional task 3/AC 3 | **No plan:** no repair of the launch mechanism is justified; its conditional regression/sweep obligations apply only if such a mechanism-supported repair is later proposed. |
+| Native census unavailable/non-atomic rows and changed diagnostic timing | **No plan:** explicit attribution limits, with all required successful-run waits/EOFs/joins present. A recurrence whose needed identity/holder is unavailable reopens diagnostic admission, not a completeness assumption. |
+| Observer 1 allowed 20s plus 5s cleanup | **Closed in this iteration's diagnostic work:** observer2 reserved cleanup inside 20s; both targeted controls passed. |
+| Adapter3 transient EPERM cleanup failure | **Closed in diagnostic work:** adapter4 retained unknown until ESRCH; adapter5 also qualified the real 12s deadline within 20s. Original failure retained. |
+| Capture1 F1 omitted launched-browser accounting | **Closed in diagnostic work:** adapter8 expected-identity reconciliation; missing-marker owned mock and fresh capture2 zero-findings review. |
+| Capture1 F2 observation errors skipped finalization/later profiles | **Closed in diagnostic work:** accumulated errors/all-resource finalization; injected-error and malformed-first-profile mocks, reviewed. |
+| Capture1 F3 one unknown group exhausted cleanup time | **Closed in diagnostic work:** simultaneous category cleanup under unchanged total; persistent-unknown-group mock, reviewed. |
+| Capture1 F4 cancellation only after WouldBlock; first continuous control nondiscriminating | **Closed in diagnostic work:** every-loop cancellation; one declared successful-read-triggered retest with partial bytes and real joins, reviewed. |
+| Profile archive extraction changed quarantine metadata | **Closed in diagnostic work:** original metadata bytes retained; private recovery restored exact metadata/content before owned removal. Earlier failed verification remains recorded. |
+| Four preexisting unmarked baseline profiles absent at final check | **Filed:** [[iteration-280-preexisting-profile-disappearance]] tracks the exact four paths, PID74584/no owner-test markers, failed broader post-check and disjoint four-path removal. Timing/actor remain unknown. Planning only, outside272–278; existing-record audit first, with an explicit bounded unattributed route and fresh authorization required for any future live work. |
+| Windows CI authenticated snapshot socket closed before query | **Closed in this candidate’s test fixture:** the unsupported unconditional-query assumption is corrected in `navigate.rs` with controlled positive/negative and mutation proof. The original Windows failure, unknown active case and unknown precise schedule remain recorded; fresh scoped reviews approved the correction; exact-head Windows CI remains required before merge. |
+| CI repair review F1: positive control could block forever accepting no client | **Closed in this candidate’s test fixture:** listener admission ends at its original 600ms deadline; parent observes release errors/assertions only after actual server join. One declared no-client/pre-connect deadline control and the affected authenticated positive control qualify both outcomes. Review evidence is retained in `iter273/ci-repair2/`; `review-ci-repair2/report.md` returned zero findings. |
+| Distinct macOS d34e1f76 dead_forever terminal-EOF assertion failure | **CI follow-up in this PR:** a separately controlled actual-caller proof selects the write-timeout classification repair below. Before failure and repaired strict regression are retained; the historical macOS variant remains unknown and exact-head CI remains required. |
+| Four further PID35214/unmarked baseline profiles absent after own runtime sweep | **Folded into** [[iteration-280-preexisting-profile-disappearance]] as a distinct dated existing-record observation; actor/timing unknown, original PID74584 occurrence preserved, no280 execution. The after-sweep six test-marked directories and later four PID93555 paths have separate retained census records; leak0 does not imply baseline preservation. |
+
+## Closing validation
+
+Final documentation gates and ordered fmt → strict workspace clippy → normal
+parallel workspace tests are recorded with actual commands/exits in the private
+`closure/closure-report.md`; affected documentation checks are retained in
+`closure-repair1/`. Live dogfood/sweep coverage is not claimed. The authorized
+bounded-completion status retains tasks/ACs at2/3 with the conditional third items
+unticked. Filing280 closes the carry-over bookkeeping gap without executing its
+investigation. Root retains final scoped review and checkpoint/remote actions;
+no merge is claimed here. The separately authorized CI runtime repair and its
+own closing evidence are recorded below.
+
+## CI repair and own runtime closing evidence — 2026-09-23
+
+This PR's scope now includes a separately authorized runtime correction and its
+regressions. Earlier documentation-only and test-only sweep applicability were
+historical scope conclusions; they do not apply to this runtime delta. The
+original bounded launch investigation remains done, with original tasks/ACs at
+2/3 and conditional launch-repair items unticked. No launch cause is asserted.
+
+Two CI occurrences remain distinct. Windows at eceafb33349db892db54b4672e66d5f53372432e
+failed the lifecycle mock's unconditional query read after authentication and a
+written greeting (UnexpectedEof, then join panic;1271/1/1 in33.62s). The reviewed
+fixture correction admits only clean terminal EOF in expected timeout cases,
+after its600ms lower bound and with actual caller Timeout; early EOF, partial
+frames and wrong protocol still fail. The control-finalization review finding
+was corrected with bounded admission and actual joining. At d34e1f765b0959badaa89c1dbcfa31a3ba1bf89e,
+macOS instead failed dead_forever's strict actual-Timeout assertion after terminal
+EOF (1280/1/2 in42.03s); its precise result variant remains unknown. That head's
+final CI was nine successful checks, including Windows, and macOS failed. A
+single instrumented local six-case pass did not reproduce the macOS occurrence.
+
+Independently admitted boundary4 then demonstrated a concrete mechanism through
+the actual readiness caller: a decoded greeting followed by expiry of the same
+absolute600ms deadline before query write produced Connection("target query
+write: target query deadline") at607.566ms, zero query bytes, terminal EOF and an
+actual worker join. The unchanged strict Timeout assertion failed. Its separately
+declared ordinary control returned Timeout at600.504ms with44 queries and an
+actual join. These are controlled observations, not attribution of either CI
+schedule or either historical contended-launch hang.
+
+The correction preserves actual io::ErrorKind::TimedOut as AppError::Timeout in
+TargetEndpoint's snapshot write mapping. Other write errors remain Connection;
+connect/read/version/actor behavior and all budgets are unchanged. The deliberate
+and ordinary controls are now normally executed regressions, with the same strict
+caller/protocol/join requirements. The repaired deliberate case returned Timeout
+at607.964ms with zero queries, terminal EOF and actual join. BrokenPipe/WouldBlock
+classification, original six-case lifecycle, daemon-version rejection and the
+existing stop-ladder guard all passed their declared focused checks. The guard's
+source delimiter now recognizes its actual tests module despite the new test-only
+hook; its original signal-count assertions remain. Verbose diagnostic tracing was
+removed, while all observed/failed source and binary versions remain archived.
+
+The candidate's own final dual-gate live sweep ran exactly once with both env
+gates1, default6 jobs and default300s/900s watchdogs. Actual verdicts reconcile
+across all six targets: CLI336, core1+3+3+2+2, all347 passed; none skipped or
+reclassified. The contended-bind row passed as one bounded observation only.
+
+```text
+LIVE_SWEEP_SUMMARY executed=347 skipped=0 preexisting=0 vanished=0 launch_timeout=0 timed_out=0 total=347
+LIVE_SWEEP_PROFILES leaked=0 unattributed=0 root=/Users/james/Library/Application Support/ff-rdp/profiles
+```
+
+The owned raw Firefox was actually waited on (TERM status-15); its group was empty,
+its exact temporary profile archived/removed, and protected desktop Firefox14298
+and helper14301 retained their native identities. No raw cleanup targeted managed
+profiles. Broader before/after census found four different PID35214/no-owner-test
+baseline directories absent and six new test-marked directories retained; this
+new unknown-actor occurrence is folded into [[iteration-280-preexisting-profile-disappearance]]
+without executing its audit or claiming preexisting preservation from leak0.
+After the ordered workspace gates, those six test-marked paths were absent and
+four different PID93555/unmarked paths were present; that separate comparison is
+retained in280 as existing-record input, with no removal actor inferred.
+
+Full evidence is retained under `iter273/`: both raw CI logs; `ci-repair1/`,
+`ci-repair2/`, `ci-diagnostic3/`, `ci-boundary4/execution1/`, and
+`product-repair1/` (focused proofs, frozen candidate, own closing receipts,
+profile comparisons, final gates and implementation report). No failed occurrence is
+superseded by a passing result. Fresh independent runtime review returned zero findings in
+`review-product-repair1/report.md`; exact-head CI remains root's gate. No merge
+is claimed.272's blocked closing work remains separate.
+
+Final ordered fmt → strict workspace/all-target clippy → normal parallel workspace
+tests passed on the unchanged swept source (2535 passed,0 failed,419 ignored).
+All nine enumerated xtask checks and HYALO005 passed or reported applicable
+no-reference/no-dogfood-script skips; those skips are not live evidence. Affected
+plan checks cover both273 and planning-only280. The old stable update is retained
+with unchanged rustc1.98.1. Fresh independent runtime review returned zero findings (report SHA256
+608fddc8afa4742c395951a8e6c3e8f76552df7a3a294d5c42ac03950d04d09b).
+Exact-head CI remains required before root merges this reviewed candidate.
