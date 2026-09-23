@@ -96,7 +96,7 @@ The test now separates two independent obligations through the same launch calle
   kill/reap, child absence, exact cleanup invocation, home removal and absence
   of all four launch receipts. There is no handshake, retry or synthetic receipt.
 
-Only `tests/common/mod.rs` and `tests/e2e/harness_session.rs` change. Temporary
+The original repair changed only `tests/common/mod.rs` and `tests/e2e/harness_session.rs`. Temporary
 observers were archived and removed; private collector code is not shipped.
 No product runtime changed, so this iteration has no applicable live-Firefox
 sweep. Both live gates stayed unset for tests; ordinary workspace passes are not
@@ -187,6 +187,62 @@ Review records are `review-implementation/report.md` and
 The supervisor verified completion-only bookkeeping; exact-head CI and merge
 remain publication gates.
 
+## Exact-head CI follow-up — 2026-09-24, in review
+
+The previously approved278 receipt/cleanup correction remains unchanged. Its
+controlled cause and focused/mutation/non-UTF-8 evidence above are reused only
+for those unchanged inputs. Exact-head CI ondd32a3b failed a separate unit262
+submission-handover fixture: macOS run35918983412/job107377755017 reported
+1283passed/1failed/2ignored, with `predicate/ok: Err(Timeout("waiting for submission target handover"))`.
+The label cannot distinguish non-exhausted poll_result400ms from request_ack1000ms.
+No relationship to278 or a262 caller defect is established.
+
+One isolated diagnostic passed21 cases/42 actual joins. Parallel1 stoppedINVALID125
+with zero named-case evidence on a native collector gap. A reviewed and finitely
+qualified collector allowed parallel2 to reach all21 named cases/42 joins, which
+passed, but that full-target occurrence stoppedINVALID125 on EPERM:1155observed
+ok/2ignored/129without verdict, no target summary. Both invalid occurrences and
+all qualification/setup failures are preserved; they are not successful gates.
+The original CI cause remains unknown and is carried to planning-only
+[[iteration-281-ci-submission-handover-timeout-attribution]]. No281 execution,
+additional local parallel capture or native collector repair is authorized.
+
+This accumulated delta adds durable diagnostics solely under test compilation in
+`commands/type_text.rs`: complete case identity, the caller’s actual deadline,
+request/snapshot/write progression, caller return or panic, normal peer-return
+observations and both actual joins. Activation is scoped to the fixture’s caller
+thread and reset on unwind; no process environment flag or mutation is required.
+Large generated JavaScript is omitted from request logs; actor/type/result identity
+is retained. Acquired peers join before outcome assertions, including caller panic
+and early unwind; absent normal returns remain explicit. Existing2s read limits
+are retained and peer writes also receive2s limits so diagnostic-error cleanup
+cannot block indefinitely in a socket write. No readiness handshake, retry,
+400/1000ms increase or original assertion relaxation is introduced. Runtime builds
+contain no observer; no native collector ships. A live-Firefox sweep is inapplicable
+to this compiled-out test-only delta.
+
+The finite local verification is one focused21-case invocation, then required
+ordered fmt/strictclippy/default-parallel workspace gates. Each test invocation
+uses an exclusively owned private FF_RDP_HOME, with HOME unchanged and private
+state retained. Results and commands are in `durable-ci-diagnostics/` under the
+private iteration evidence root. Focused validation passed21 cases; this is not
+CI causality. Final ordered fmt/strictclippy/default-parallel workspace gates passed on the
+durable candidate:2538passed/0failed/419ignored across37 summaries. All nine
+xtask checks were accounted for; this plan and new281 passed, the directory
+reported283 plans with0failures/93warnings, and HYALO005 checked477 files with
+zero violations. No-script/no-Firefox-reference checks remain non-runtime skips.
+The first strict clippy101 (unused import, two join closures and a needless
+borrow) is preserved; only those equivalent idioms were corrected before the
+final ordered gates. The focused21-case evidence remains applicable and was
+not repeated. Fresh independent review approved the entire accumulated diagnostic delta and
+the planning-only281 disposition with zero actionable findings. Original278
+AC3/3 is restored without changing its wording; the controlled AC1/2 interpretation
+is unchanged. Review: `review-durable-ci/report.md`, SHA256
+`baa5e1578ac30e9450c5ac087ef832ab7ff69da3d1c120df270659d29fecf637`.
+The supervisor verified completion-only bookkeeping and admits one exact new-head
+CI observation. Every required check must be green on that head before merge.
+Green CI will not explain the old failure or close281.
+
 ## Carry-over
 
 | Result or finding | Disposition |
@@ -203,3 +259,5 @@ remain publication gates.
 | Directory plan gate reports93 plans with warnings, zero failures | No plan: unchanged other-plan warning inventory retained in `final-gates/all-plans.stdout`; this plan passes without warnings. No changes to other plans or expansion of the authorized queue. Supervisor retains batch inventory reconciliation. |
 | P2 diagnostic panic before cleanup | Repaired in this PR, independently approved with zero actionable findings: optional exact UTF-8 home and explicitly marked lossy display; original path unchanged for cleanup. Exact helper before101/after0, real cleanup success/failure outcomes and final2538/0/419 ordered gates passed. |
 | Non-UTF-8 regression before-case setup failure101 | No plan: preserved separately in `repair-nonutf8/before/`, not reproduction. Supervisor-approved split diagnostic/real-cleanup validation passed without resetting this spent case; actual non-UTF-8 filesystem integration was not measured on APFS. |
+| dd32 exact-head macOS unit262 Timeout | Planning-only [[iteration-281-ci-submission-handover-timeout-attribution]]; durable diagnostics address missing evidence, not the unknown cause. Final2538/0/419 ordered gates passed; fresh independent review approved this disposition with zero actionable findings. |
+| Local CI diagnostic controls | Isolated21/42 passed; parallel1 and parallel2 remain INVALID125 with their distinct native errors. Parallel2’s complete named21/42 evidence is retained separately from the incomplete target. No further local capture/collector repair. |
