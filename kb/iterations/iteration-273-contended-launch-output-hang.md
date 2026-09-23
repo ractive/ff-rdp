@@ -79,8 +79,8 @@ operationally, without inventing a correctness dependency.
 
 ## Bounded outcome — 2026-09-23
 
-The documentation-only investigation is **done as of 2026-09-23**, using the
-original bounded-unreproduced route. This completes the permitted investigation;
+The bounded investigation is **done as of 2026-09-23**, using the original
+bounded-unreproduced route. Its initial closure was documentation-only. This completes the permitted investigation;
 it does not certify a resolved launch defect. No product mechanism or repair is claimed. The original 261 hang above and
 272's separate second-closing-sweep recurrence remain unexplained: 272 timed out
 this same outer Command::output worker at 300 seconds, with 347 executed/1 timed_out
@@ -103,10 +103,10 @@ This is explicitly a variant of Command::output: independent reaping,
 nonblocking readers, identity persistence and observations alter timing. Passing
 controls distinguish a running command from an exited command with a surviving
 writer, but neither those controls nor this pass attribute either historical
-failure. No inner-stderr surrogate was selected. No product source changed, so
-an own live sweep is **not applicable to this documentation-only closure**; none
-is claimed passed, reused or deferred. The optional observation in an otherwise
-required own sweep has no applicable sweep here.
+failure. No inner-stderr surrogate was selected. The initial documentation-only
+closure at eceafb33 required no own live sweep; none was claimed passed, reused
+or deferred. The subsequent test-fixture CI correction below is assessed separately.
+The optional273 observation creates no new capture or discovery-sweep authority.
 
 Tasks 1–2 and AC 1–2 are supported by the bounded capture and explicit remaining
 gap. Task 3 and AC 3 stay unticked: their conditional product-repair branch was not
@@ -140,6 +140,8 @@ this scoped cleanup did not target them, and their disappearance is not attribut
 | Capture1 F4 cancellation only after WouldBlock; first continuous control nondiscriminating | **Closed in diagnostic work:** every-loop cancellation; one declared successful-read-triggered retest with partial bytes and real joins, reviewed. |
 | Profile archive extraction changed quarantine metadata | **Closed in diagnostic work:** original metadata bytes retained; private recovery restored exact metadata/content before owned removal. Earlier failed verification remains recorded. |
 | Four preexisting unmarked baseline profiles absent at final check | **Filed:** [[iteration-280-preexisting-profile-disappearance]] tracks the exact four paths, PID74584/no owner-test markers, failed broader post-check and disjoint four-path removal. Timing/actor remain unknown. Planning only, outside272–278; existing-record audit first, with an explicit bounded unattributed route and fresh authorization required for any future live work. |
+| Windows CI authenticated snapshot socket closed before query | **Closed in this candidate’s test fixture:** the unsupported unconditional-query assumption is corrected in `navigate.rs` with controlled positive/negative and mutation proof. The original Windows failure, unknown active case and unknown precise schedule remain recorded; fresh scoped reviews approved the correction; exact-head Windows CI remains required before merge. |
+| CI repair review F1: positive control could block forever accepting no client | **Closed in this candidate’s test fixture:** listener admission ends at its original 600ms deadline; parent observes release errors/assertions only after actual server join. One declared no-client/pre-connect deadline control and the affected authenticated positive control qualify both outcomes. Review evidence is retained in `iter273/ci-repair2/`; `review-ci-repair2/report.md` returned zero findings. |
 
 ## Closing validation
 
@@ -151,3 +153,53 @@ bounded-completion status retains tasks/ACs at2/3 with the conditional third ite
 unticked. Filing280 closes the carry-over bookkeeping gap without executing its
 investigation. Root retains final scoped review and checkpoint/remote actions;
 no commit, merge or product repair is claimed here.
+
+## Windows CI fixture follow-up — 2026-09-23
+
+PR265 at eceafb33349db892db54b4672e66d5f53372432e failed Windows unit test
+`readystate_fallback_follows_watched_lifecycle`: the mock received authentication,
+wrote the daemon greeting, then encountered UnexpectedEof before the snapshot
+query. The parent failed joining that mock. CI records 1271 passed/1 failed/1 ignored
+in 33.62s; the active lifecycle case and client's precise expiry point are unknown.
+This failure remains preserved under `iter273/ci-windows1-job-raw.log`.
+
+The candidate correction is confined to the `#[cfg(test)]` snapshot fixture in
+navigate.rs. Clean pre-query closure is accepted only for expected timeout cases
+after the original 600ms caller sub-budget, paired with actual caller Timeout.
+Early closure, partial frames and wrong protocol/descriptor still fail. Existing
+actor counts, lifecycle outcomes and elapsed assertions remain unchanged; no
+product lifecycle, deadline or watchdog behavior changed. Controlled loopback
+proof establishes authenticated-session deadline-before-query closure while the
+greeting is withheld; it does not retroactively prove the Windows schedule.
+Positive/negative controls and the original lifecycle test pass; restoring the
+unconditional query assumption fails the new regression. Exact evidence, failed
+mutation and ordered/affected gates are in `iter273/ci-repair1/`. Updated stable,
+fmt, strict workspace clippy and normal parallel workspace tests passed in order
+(2531 passed, 0 failed, 419 ignored). All nine enumerated xtask gates passed or
+reported their applicable no-script skip; HYALO005 passed. The original Windows
+run has not been retried, and local success does not assert Windows CI success.
+
+The PR now includes documentation and a test-fixture correction; the earlier
+“documentation-only” scope is historical. Production code outside the test module
+is byte-identical. No new live capture or sweep ran. Under the iteration-close
+product-source trigger, fresh scoped review and root confirm no own live sweep
+is applicable to this compiled-out test-only delta. This is a scope conclusion,
+not a waived required sweep; any runtime change requires reassessment. No old
+sweep is reused or called passing. Fresh scoped review approved the final candidate; exact-head CI remains the
+root closing gate. The original launch cause remains unknown and tasks/ACs remain 2/3, with
+the conditional product-repair items unticked. This CI correction does not repair
+the launch hang, discharge 272's failure or execute 280.
+
+Fresh CI repair review retained the EOF correction but found that blocking
+listener admission could hang the new control if its client deadline elapsed
+before connect. The follow-up bounds admission at the existing 600ms instant,
+shares the same server worker between connected and no-client controls, and
+actually joins before parent release/error assertions. It preserves the positive
+auth-before-deadline and strict EOF/protocol requirements. The original review,
+all prior controls/mutation and Windows failure remain intact; this finite
+finalization repair is recorded separately in `iter273/ci-repair2/`.
+Both declared follow-up controls passed once (0.60s each). Strict clippy first
+rejected two needless by-value helper arguments; the diagnosed borrow-only
+correction and failure remain preserved. Final ordered fmt → strict clippy →
+normal parallel workspace tests then passed (2532/0/419). Prior unchanged EOF
+negative/mutation evidence is retained; no focused repetition or CI retry ran.

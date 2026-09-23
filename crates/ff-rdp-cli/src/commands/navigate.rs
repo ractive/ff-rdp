@@ -5382,6 +5382,147 @@ mod snapshot_probe_tests {
             evaluations.join().unwrap();
         }
     }
+    // An authenticated query socket can end at its absolute deadline before
+    // sending any query bytes. Only the expected timeout cases admit that
+    // terminal boundary; partial frames and other protocol errors still fail.
+    fn snapshot_fixture_query(
+        reader: &mut impl std::io::BufRead,
+        terminal_deadline: Option<Instant>,
+        case: &str,
+    ) -> Option<Value> {
+        if reader.fill_buf().unwrap().is_empty() {
+            assert!(
+                terminal_deadline.is_some_and(|deadline| Instant::now() >= deadline),
+                "{case}: pre-query EOF without an expired expected-timeout budget"
+            );
+            return None;
+        }
+        let request = recv_from(reader)
+            .unwrap_or_else(|error| panic!("{case}: incomplete/invalid snapshot query: {error}"));
+        assert_eq!(request["type"], "resolve-tab-target", "{case}");
+        assert_eq!(request["to"], "daemon", "{case}");
+        assert_eq!(request["descriptor"], "tab", "{case}");
+        Some(request)
+    }
+
+    fn terminal_snapshot_fixture(
+        side: &TcpListener,
+        deadline: Instant,
+        terminal_rx: &std::sync::mpsc::Receiver<()>,
+    ) -> Option<(Instant, Option<Value>)> {
+        side.set_nonblocking(true).unwrap();
+        let stream = loop {
+            if Instant::now() >= deadline {
+                return None;
+            }
+            match side.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("snapshot fixture accept: {error}"),
+            }
+        };
+        stream.set_nonblocking(false).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut reader = BufReader::new(stream);
+        assert_eq!(recv_from(&mut reader).unwrap()["auth"], "token");
+        let authenticated_at = Instant::now();
+        // Withhold the greeting until the real client's deadline returns.
+        // This controls auth→deadline→EOF order, not Windows scheduling.
+        terminal_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let query = snapshot_fixture_query(&mut reader, Some(deadline), "terminal auth");
+        Some((authenticated_at, query))
+    }
+
+    #[test]
+    fn snapshot_fixture_observes_terminal_auth_deadline_before_query() {
+        let side = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint =
+            crate::daemon::client::TargetEndpoint::new(side.local_addr().unwrap().port(), "token");
+        let deadline = Instant::now() + Duration::from_millis(600);
+        let (terminal_tx, terminal_rx) = std::sync::mpsc::channel();
+        let server =
+            std::thread::spawn(move || terminal_snapshot_fixture(&side, deadline, &terminal_rx));
+        let result = endpoint.snapshot(&"tab".into(), deadline);
+        let returned_at = Instant::now();
+        let release = terminal_tx.send(());
+        // Join even if admission/authentication failed and release disconnected.
+        let joined = server.join();
+        release.unwrap();
+        let (authenticated_at, query) = joined.unwrap().expect("client must authenticate");
+        assert!(authenticated_at < deadline);
+        assert!(returned_at >= deadline);
+        assert!(matches!(result, Err(AppError::RdpTimeout { .. })));
+        assert!(query.is_none(), "a deadline-closed handshake has no query");
+    }
+
+    #[test]
+    fn snapshot_fixture_joins_when_client_deadline_precedes_connect() {
+        let side = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint =
+            crate::daemon::client::TargetEndpoint::new(side.local_addr().unwrap().port(), "token");
+        let start = Instant::now();
+        let admission_deadline = start + Duration::from_millis(600);
+        let (terminal_tx, terminal_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            terminal_snapshot_fixture(&side, admission_deadline, &terminal_rx)
+        });
+        // A real pre-connect timeout leaves the same server without a client.
+        let result = endpoint.snapshot(&"tab".into(), start);
+        let release = terminal_tx.send(());
+        let joined = server.join();
+        assert!(matches!(result, Err(AppError::Timeout(_))));
+        assert!(joined.unwrap().is_none(), "no client may be admitted");
+        assert!(start.elapsed() < Duration::from_secs(2));
+        // If admission already ended before this thread ran, send can fail;
+        // either outcome is observed only after the real server join above.
+        let _ = release;
+    }
+
+    #[test]
+    fn snapshot_fixture_rejects_early_partial_and_wrong_queries() {
+        use std::io::Cursor;
+        let expired = Some(Instant::now());
+        let valid = json!({"to":"daemon", "type":"resolve-tab-target", "descriptor":"tab"});
+        let mut reader = Cursor::new(encode_frame(&valid.to_string()).into_bytes());
+        assert_eq!(
+            snapshot_fixture_query(&mut reader, expired, "valid"),
+            Some(valid)
+        );
+        for (case, bytes, deadline) in [
+            (
+                "early EOF",
+                vec![],
+                Some(Instant::now() + Duration::from_millis(600)),
+            ),
+            ("non-timeout EOF", vec![], None),
+            ("partial frame", b"10:{".to_vec(), expired),
+            (
+                "wrong type",
+                encode_frame(r#"{"to":"daemon","type":"getTarget","descriptor":"tab"}"#)
+                    .into_bytes(),
+                expired,
+            ),
+            (
+                "wrong descriptor",
+                encode_frame(r#"{"to":"daemon","type":"resolve-tab-target","descriptor":"other"}"#)
+                    .into_bytes(),
+                expired,
+            ),
+        ] {
+            assert!(
+                std::panic::catch_unwind(move || {
+                    snapshot_fixture_query(&mut Cursor::new(bytes), deadline, case)
+                })
+                .is_err(),
+                "{case} must remain a fixture failure"
+            );
+        }
+    }
+
     /// The Both fallback and explicit readystate route share this caller.
     /// Pending must not strand it on the outgoing console, including when a
     /// live snapshot becomes invalid between acquisition and evaluation.
@@ -5403,10 +5544,15 @@ mod snapshot_probe_tests {
                 side.local_addr().unwrap().port(),
                 "token",
             );
+            let (deadline_tx, deadline_rx) = std::sync::mpsc::channel();
             let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let done = Arc::clone(&stop);
             let snapshots = std::thread::spawn(move || {
+                let deadline = deadline_rx.recv().unwrap();
+                let terminal_deadline =
+                    matches!(failure, "pending_forever" | "dead_forever").then_some(deadline);
                 let mut queries = 0;
+                let mut deadline_closed = false;
                 while !done.load(std::sync::atomic::Ordering::Relaxed) {
                     let Ok((mut stream, _)) = side.accept() else {
                         std::thread::sleep(Duration::from_millis(1));
@@ -5422,10 +5568,10 @@ mod snapshot_probe_tests {
                         &mut stream,
                         &json!({"protocol_version":crate::daemon::server::DAEMON_PROTOCOL_VERSION}),
                     );
-                    assert_eq!(
-                        recv_from(&mut reader).unwrap()["type"],
-                        "resolve-tab-target"
-                    );
+                    if snapshot_fixture_query(&mut reader, terminal_deadline, failure).is_none() {
+                        deadline_closed = true;
+                        break;
+                    }
                     queries += 1;
                     // First acquisition can be Pending. In the race cases A
                     // is returned twice: never retry an eval on known-dead A.
@@ -5445,7 +5591,7 @@ mod snapshot_probe_tests {
                     };
                     send(&mut stream, &response);
                 }
-                queries
+                (queries, deadline_closed)
             });
             let main = TcpListener::bind("127.0.0.1:0").unwrap();
             let port = main.local_addr().unwrap().port();
@@ -5537,11 +5683,20 @@ mod snapshot_probe_tests {
             ctx.target_endpoint = Some(endpoint);
             ctx.via_daemon = true;
             let start = Instant::now();
+            deadline_tx
+                .send(start + Duration::from_millis(600))
+                .unwrap();
             let result = wait_for_readystate_complete(&mut ctx, 600, 42.0, start);
             drop(ctx);
             stop.store(true, std::sync::atomic::Ordering::Relaxed);
-            let queries = snapshots.join().unwrap();
+            let (queries, deadline_closed) = snapshots.join().unwrap();
             let (dead_evals, live_evals) = evaluations.join().unwrap();
+            if deadline_closed {
+                assert!(
+                    matches!(&result, Err(AppError::Timeout(_))),
+                    "{failure}: terminal snapshot closure requires actual caller Timeout"
+                );
+            }
             if failure == "wrongState" {
                 assert!(
                     matches!(result, Err(AppError::User(ref message)) if message.contains("wrongState"))
