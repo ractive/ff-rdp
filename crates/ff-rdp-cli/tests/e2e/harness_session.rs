@@ -11,7 +11,9 @@ use super::common::{
     validate_session_binary, write_requested_profile_prefs,
 };
 #[cfg(unix)]
-use super::common::{bounded_command_output_with_poll, pid_alive};
+use super::common::{
+    bounded_command_output_with_poll, failed_launch_error, launch_request_context, pid_alive,
+};
 
 #[test]
 fn isolated_session_rejects_an_empty_ff_rdp_binary_path() {
@@ -90,6 +92,16 @@ fn fake_launch_cli(
     launch_result: &str,
     cleanup_result: &str,
 ) -> std::path::PathBuf {
+    fake_launch_cli_before_receipts(fixture, "", launch_result, cleanup_result)
+}
+
+#[cfg(unix)]
+fn fake_launch_cli_before_receipts(
+    fixture: &Path,
+    before_receipts: &str,
+    launch_result: &str,
+    cleanup_result: &str,
+) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
 
     let home_record = fixture.join("home");
@@ -98,6 +110,7 @@ fn fake_launch_cli(
     let script = format!(
         r#"#!/bin/sh
 if [ "$1" = "launch" ]; then
+  {before_receipts}
   shift
   while [ "$#" -gt 0 ]; do
     if [ "$1" = "--debug-port" ]; then
@@ -160,6 +173,90 @@ fn assert_recorded_scoped_cleanup(fixture: &Path, home_must_exist: bool) -> std:
         home.display()
     );
     home
+}
+
+#[cfg(unix)]
+#[test]
+fn launch_request_context_handles_non_utf8_path_without_panicking() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    // Diagnostic serialization accepts arbitrary Unix paths independently of
+    // whether this host filesystem permits creating their component bytes.
+    let home = std::path::PathBuf::from(OsString::from_vec(b"/owned/non-utf8-\xff".to_vec()));
+    let request = launch_request_context(&home, 60123);
+    assert!(request["home"].is_null());
+    assert_eq!(request["home_display_is_lossy"], true);
+    assert_eq!(
+        request["home_display"].as_str(),
+        Some(home.to_string_lossy().as_ref())
+    );
+    assert_eq!(request["port"], 60123);
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_launch_request_context_keeps_exact_cleanup_and_home_disposition() {
+    use std::os::unix::ffi::OsStrExt;
+
+    for cleanup_status in [0, 9] {
+        let fixture = tempfile::tempdir().expect("owned fixture");
+        let home = tempfile::tempdir_in(fixture.path()).expect("owned private home");
+        let requested_home = home.path().to_owned();
+        assert!(requested_home.to_str().is_some());
+        let executable = fake_launch_cli(
+            fixture.path(),
+            "exit 99",
+            &format!(
+                "printf '%s\\n' \"$$\" > '{}'; exit {cleanup_status}",
+                fixture.path().join("cleanup-pid").display()
+            ),
+        );
+        let error = failed_launch_error("regression launch failure", &executable, home, 60123);
+        let request: serde_json::Value = serde_json::from_str(
+            error
+                .lines()
+                .next()
+                .expect("request context")
+                .strip_prefix("isolated launch request: ")
+                .expect("parent launch request"),
+        )
+        .expect("non-panicking structured diagnostic");
+        assert_eq!(request["home"].as_str(), requested_home.to_str());
+        assert_eq!(request["home_display_is_lossy"], false, "{error}");
+        assert_eq!(
+            request["home_display"].as_str(),
+            Some(requested_home.to_string_lossy().as_ref())
+        );
+        assert_eq!(request["port"], 60123);
+        let mut exact_invocation = requested_home.as_os_str().as_bytes().to_vec();
+        exact_invocation.extend_from_slice(b"|--host 127.0.0.1 --port 60123 daemon stop\n");
+        assert_eq!(
+            std::fs::read(fixture.path().join("cleanup-invocation"))
+                .expect("actual cleanup invocation bytes"),
+            exact_invocation
+        );
+        let cleanup_pid = std::fs::read_to_string(fixture.path().join("cleanup-pid"))
+            .expect("actual cleanup child PID")
+            .trim()
+            .parse::<u32>()
+            .expect("numeric cleanup child PID");
+        assert!(!pid_alive(cleanup_pid), "cleanup child was not reaped");
+        assert!(error.contains("regression launch failure"), "{error}");
+        if cleanup_status == 0 {
+            assert!(error.contains("scoped cleanup succeeded"), "{error}");
+            assert!(error.contains("status=Some(0)"), "{error}");
+            assert!(!requested_home.exists(), "successful cleanup removes home");
+        } else {
+            assert!(error.contains("scoped cleanup failed"), "{error}");
+            assert!(error.contains("status=Some(9)"), "{error}");
+            assert!(requested_home.exists(), "failed cleanup preserves home");
+            std::fs::remove_dir(&requested_home).expect("remove exact owned preserved home");
+        }
+        println!(
+            "owned_cleanup status={cleanup_status} pid={cleanup_pid} exact_bytes=true home_removed=true result={error}"
+        );
+    }
 }
 
 #[cfg(unix)]
@@ -235,9 +332,40 @@ fn bounded_child_output_kills_and_reaps_when_polling_fails() {
 
 #[cfg(unix)]
 #[test]
-fn isolated_launch_timeout_still_runs_scoped_cleanup_and_passes_product_bound() {
+fn isolated_launch_forwards_product_bound_to_child() {
     let fixture = tempfile::tempdir().expect("fixture tempdir");
-    let executable = fake_launch_cli(fixture.path(), "exec sleep 10", "exit 0");
+    let executable = fake_launch_cli(fixture.path(), "exit 42", "exit 0");
+    let product_timeout = Duration::from_secs(7);
+    // This prompt child proves argument receipt, not a deliberate timeout.
+    // Use the ordinary harness allowance so scheduling before its first write
+    // does not compete with the separate one-second timeout regression.
+    let error = IsolatedLiveFirefox::launch_with_preferences_and_timeouts(
+        &executable,
+        &[],
+        product_timeout,
+        isolated_launch_command_timeout(product_timeout, Duration::from_secs(5)),
+    )
+    .err()
+    .expect("the child deliberately exits unsuccessfully after recording arguments");
+    assert!(error.contains("isolated launch exited"), "{error}");
+    assert!(!error.contains("isolated launch timed out"), "{error}");
+    assert_eq!(
+        std::fs::read_to_string(fixture.path().join("launch-timeout"))
+            .expect("child-recorded product timeout")
+            .trim(),
+        "7"
+    );
+    assert_recorded_scoped_cleanup(fixture.path(), false);
+}
+
+#[cfg(unix)]
+#[test]
+fn isolated_launch_timeout_without_child_receipts_reaps_and_runs_scoped_cleanup() {
+    let fixture = tempfile::tempdir().expect("fixture tempdir");
+    // The same finite sleeper runs before parsing/writing receipts. exec keeps
+    // the parent's direct child PID; no descendant or indefinite stop is added.
+    let executable =
+        fake_launch_cli_before_receipts(fixture.path(), "exec sleep 10", "exit 99", "exit 0");
     let started = Instant::now();
     let error = IsolatedLiveFirefox::launch_with_preferences_and_timeouts(
         &executable,
@@ -250,22 +378,46 @@ fn isolated_launch_timeout_still_runs_scoped_cleanup_and_passes_product_bound() 
     assert!(error.contains("isolated launch timed out"), "{error}");
     assert!(error.contains("scoped cleanup succeeded"), "{error}");
     assert!(started.elapsed() < Duration::from_secs(3));
-    assert_eq!(
-        std::fs::read_to_string(fixture.path().join("launch-timeout"))
-            .expect("recorded launch timeout")
-            .trim(),
-        "7"
-    );
-    let launch_pid = std::fs::read_to_string(fixture.path().join("launch-pid"))
-        .expect("recorded launch pid")
-        .trim()
+    // PID and scope come from the parent that spawned the command, never a
+    // receipt whose creation the tested deadline is allowed to prevent.
+    let launch_pid = error
+        .split_once("child_pid=")
+        .expect("parent-owned child PID")
+        .1
+        .split(';')
+        .next()
+        .expect("PID field")
         .parse::<u32>()
-        .expect("numeric launch pid");
+        .expect("numeric parent-owned PID");
+    assert!(error.contains("kill=None; reap=Ok("), "{error}");
     assert!(
         !pid_alive(launch_pid),
         "launch child {launch_pid} was not reaped"
     );
-    assert_recorded_scoped_cleanup(fixture.path(), false);
+    let request: serde_json::Value = serde_json::from_str(
+        error
+            .lines()
+            .next()
+            .expect("request context")
+            .strip_prefix("isolated launch request: ")
+            .expect("parent launch request"),
+    )
+    .expect("structured parent launch request");
+    let home = request["home"].as_str().expect("requested home");
+    let port = request["port"].as_u64().expect("requested port");
+    assert_eq!(
+        std::fs::read_to_string(fixture.path().join("cleanup-invocation"))
+            .expect("child-recorded cleanup request")
+            .trim(),
+        format!("{home}|--host 127.0.0.1 --port {port} daemon stop")
+    );
+    assert!(!Path::new(home).exists(), "private home must be removed");
+    for receipt in ["home", "port", "launch-timeout", "launch-pid"] {
+        assert!(
+            !fixture.path().join(receipt).exists(),
+            "no launch receipt {receipt}"
+        );
+    }
 }
 
 #[test]

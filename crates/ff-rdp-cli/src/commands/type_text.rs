@@ -571,6 +571,8 @@ fn run_connected(
     if opts.submit {
         let deadline =
             std::time::Instant::now() + std::time::Duration::from_millis(wait_timeout_ms);
+        #[cfg(test)]
+        tests::trace_submission_deadline(deadline, wait_timeout_ms);
         let before_id = ctx.target().inner_window_id;
         let before_url = ctx.target().url.clone();
         let submit_json = press_enter_and_submit(
@@ -693,6 +695,74 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{
+        cell::RefCell,
+        sync::{Arc, Mutex, atomic::AtomicBool},
+        time::Instant,
+    };
+
+    // Only the current fixture's caller thread records the production deadline.
+    // Other parallel tests do not enable tracing or mutate process environment.
+    thread_local! {
+        static SUBMISSION_TRACE: RefCell<Option<Arc<SubmissionTrace>>> = const { RefCell::new(None) };
+    }
+
+    struct SubmissionTrace {
+        label: String,
+        origin: Instant,
+        rows: Mutex<Vec<String>>,
+        side_returned: AtomicBool,
+        peer_returned: AtomicBool,
+    }
+
+    impl SubmissionTrace {
+        fn row(&self, phase: &str, detail: impl std::fmt::Debug) {
+            let now = Instant::now();
+            self.rows
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(format!(
+                    "submission-handover {} us={} instant={now:?} {phase} {detail:?}",
+                    self.label,
+                    now.duration_since(self.origin).as_micros()
+                ));
+        }
+
+        fn flush(&self) {
+            for row in self
+                .rows
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .drain(..)
+            {
+                eprintln!("{row}");
+            }
+        }
+    }
+
+    struct SubmissionTraceScope(Option<Arc<SubmissionTrace>>);
+
+    impl SubmissionTraceScope {
+        fn enter(trace: Arc<SubmissionTrace>) -> Self {
+            Self(SUBMISSION_TRACE.with(|slot| slot.replace(Some(trace))))
+        }
+    }
+
+    impl Drop for SubmissionTraceScope {
+        fn drop(&mut self) {
+            if let Some(trace) = SUBMISSION_TRACE.with(|slot| slot.replace(self.0.take())) {
+                trace.flush();
+            }
+        }
+    }
+
+    pub(super) fn trace_submission_deadline(deadline: Instant, wait_timeout_ms: u64) {
+        SUBMISSION_TRACE.with(|slot| {
+            if let Some(trace) = slot.borrow().as_ref() {
+                trace.row("actual_submission_deadline", (deadline, wait_timeout_ms));
+            }
+        });
+    }
 
     /// AC `unit_160_type_help_states_synthetic_ceiling` (JS half): the result
     /// the command reports carries the `synthetic` qualifier, so a caller who
@@ -743,6 +813,48 @@ mod tests {
             },
             time::{Duration, Instant},
         };
+        struct Peers {
+            stop: Arc<std::sync::atomic::AtomicBool>,
+            side: Option<std::thread::JoinHandle<()>>,
+            peer: Option<std::thread::JoinHandle<usize>>,
+            trace: Arc<SubmissionTrace>,
+        }
+        impl Peers {
+            fn join(
+                &mut self,
+            ) -> (
+                Option<std::thread::Result<()>>,
+                Option<std::thread::Result<usize>>,
+            ) {
+                self.stop.store(true, Ordering::SeqCst);
+                let side = self.side.take().map(std::thread::JoinHandle::join);
+                self.trace
+                    .row("actual_side_join", side.as_ref().map(Result::is_ok));
+                let peer = self.peer.take().map(std::thread::JoinHandle::join);
+                self.trace.row(
+                    "actual_peer_join",
+                    peer.as_ref()
+                        .map(|r| r.as_ref().map(|v| *v).map_err(|_| "panic")),
+                );
+                self.trace.row(
+                    "normal_body_return_observed",
+                    (
+                        self.trace.side_returned.load(Ordering::SeqCst),
+                        self.trace.peer_returned.load(Ordering::SeqCst),
+                    ),
+                );
+                // Flush only after both actual joins, including panic results.
+                self.trace.flush();
+                (side, peer)
+            }
+        }
+        impl Drop for Peers {
+            fn drop(&mut self) {
+                if self.side.is_some() || self.peer.is_some() {
+                    let _ = self.join();
+                }
+            }
+        }
         for (option, interruption, metadata) in [
             ("settle", "poll_ack", "ok"),
             ("predicate", "poll_result", "ok"),
@@ -760,6 +872,22 @@ mod tests {
                 if metadata == "protocol_error" && exhausted {
                     continue;
                 }
+                let trace = Arc::new(SubmissionTrace {
+                    label: format!(
+                        "option={option} interruption={interruption} metadata={metadata} exhausted={exhausted}"
+                    ),
+                    origin: Instant::now(),
+                    rows: Mutex::new(Vec::new()),
+                    side_returned: AtomicBool::new(false),
+                    peer_returned: AtomicBool::new(false),
+                });
+                let _trace_scope = SubmissionTraceScope::enter(Arc::clone(&trace));
+                eprintln!(
+                    "submission-handover CASE_BEGIN thread={:?} {} origin={:?}",
+                    std::thread::current().id(),
+                    trace.label,
+                    trace.origin
+                );
                 let snapshots = Arc::new(AtomicUsize::new(0));
                 let side = TcpListener::bind("127.0.0.1:0").unwrap();
                 side.set_nonblocking(true).unwrap();
@@ -770,7 +898,14 @@ mod tests {
                 let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let side_stop = Arc::clone(&stop);
                 let side_count = Arc::clone(&snapshots);
-                let side_thread = std::thread::spawn(move || {
+                let mut peers = Peers {
+                    stop: Arc::clone(&stop),
+                    side: None,
+                    peer: None,
+                    trace: Arc::clone(&trace),
+                };
+                let side_trace = Arc::clone(&trace);
+                peers.side = Some(std::thread::spawn(move || {
                     while !side_stop.load(Ordering::SeqCst) {
                         let (mut socket, _) = match side.accept() {
                             Ok(v) => v,
@@ -780,16 +915,24 @@ mod tests {
                             }
                             Err(e) => panic!("{e}"),
                         };
+                        side_trace.row("side_accept", "accepted");
                         socket.set_nonblocking(false).unwrap();
+                        socket
+                            .set_write_timeout(Some(Duration::from_secs(2)))
+                            .unwrap();
                         socket
                             .set_read_timeout(Some(Duration::from_secs(2)))
                             .unwrap();
                         let mut reader = BufReader::new(socket.try_clone().unwrap());
-                        if recv_from(&mut reader).is_err() {
+                        let greeting = recv_from(&mut reader);
+                        side_trace.row("side_greeting", &greeting);
+                        if greeting.is_err() {
                             break;
                         }
                         socket.write_all(encode_frame(&json!({"protocol_version":crate::daemon::server::DAEMON_PROTOCOL_VERSION}).to_string()).as_bytes()).unwrap();
-                        let Ok(query) = recv_from(&mut reader) else {
+                        let query = recv_from(&mut reader);
+                        side_trace.row("side_query", &query);
+                        let Ok(query) = query else {
                             break;
                         };
                         assert_eq!(query["type"], "resolve-tab-target");
@@ -800,9 +943,14 @@ mod tests {
                         } else {
                             json!({"from":"daemon","type":"resolve-tab-target","state":"pending"})
                         };
-                        let _ = socket.write_all(encode_frame(&response.to_string()).as_bytes());
+                        side_trace.row("snapshot_selected", (&n, &response));
+                        let written =
+                            socket.write_all(encode_frame(&response.to_string()).as_bytes());
+                        side_trace.row("snapshot_write", &written);
                     }
-                });
+                    side_trace.row("side_body_return", ());
+                    side_trace.side_returned.store(true, Ordering::SeqCst);
+                }));
                 let main = TcpListener::bind("127.0.0.1:0").unwrap();
                 let transport = RdpTransport::connect_raw(
                     "127.0.0.1",
@@ -812,7 +960,11 @@ mod tests {
                 .unwrap();
                 let (mut socket, _) = main.accept().unwrap();
                 let peer_snapshots = Arc::clone(&snapshots);
-                let peer = std::thread::spawn(move || {
+                let peer_trace = Arc::clone(&trace);
+                peers.peer = Some(std::thread::spawn(move || {
+                    socket
+                        .set_write_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
                     socket
                         .set_read_timeout(Some(Duration::from_secs(2)))
                         .unwrap();
@@ -821,11 +973,24 @@ mod tests {
                     let mut after = 0;
                     let mut interrupted = false;
                     let mut late_metadata = false;
-                    while let Ok(request) = recv_from(&mut reader) {
+                    loop {
+                        let request = recv_from(&mut reader);
+                        // Actor/type/result identity describes progression without
+                        // copying the large generated JavaScript into CI output.
+                        peer_trace.row(
+                            "main_request",
+                            request
+                                .as_ref()
+                                .map(|value| (&value["to"], &value["type"], &value["resultID"])),
+                        );
+                        let Ok(request) = request else {
+                            break;
+                        };
                         let mut send = |v: serde_json::Value| {
-                            socket
-                                .write_all(encode_frame(&v.to_string()).as_bytes())
-                                .unwrap();
+                            peer_trace.row("main_response", &v);
+                            let written = socket.write_all(encode_frame(&v.to_string()).as_bytes());
+                            peer_trace.row("main_response_write", &written);
+                            written.unwrap();
                         };
                         if request["type"] == "listFrames" {
                             if request["to"] == "old-target"
@@ -874,6 +1039,7 @@ mod tests {
                         };
                         if interrupt_now && !interrupted {
                             interrupted = true;
+                            peer_trace.row("interrupt_selected", (&eval, &interruption));
                             // Navigation start precedes outgoing snapshot, Pending,
                             // and eventual replacement. No old-console reply exists.
                             if interruption.ends_with("result") {
@@ -926,8 +1092,10 @@ mod tests {
                             json!({"from":request["to"],"type":"evaluationResult","resultID":format!("r{eval}"),"result":result}),
                         );
                     }
+                    peer_trace.row("peer_body_return", after);
+                    peer_trace.peer_returned.store(true, Ordering::SeqCst);
                     after
-                });
+                }));
                 let mut ctx = ConnectedTab::for_test(transport, "old-console".into());
                 ctx.target_endpoint = Some(endpoint);
                 ctx.set_target_metadata_for_test(Some(7), Some("https://a/".into()));
@@ -954,27 +1122,42 @@ mod tests {
                     ..Default::default()
                 };
                 let start = Instant::now();
-                let result = run_connected(&cli, &mut ctx, "input", "x", false, &opts);
+                trace.row("caller_enter", (&opts.wait_timeout_ms, start));
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    run_connected(&cli, &mut ctx, "input", "x", false, &opts)
+                }));
                 let elapsed = start.elapsed();
-                assert_eq!(ctx.transport_mut().target_guard(), None);
+                match &result {
+                    Ok(result) => trace.row("actual_caller_return", (&elapsed, result)),
+                    Err(_) => trace.row("caller_panicked", "normal caller return missing"),
+                }
+                let guard = ctx.transport_mut().target_guard();
+                trace.row("guard_after_caller", guard);
                 drop(ctx);
-                stop.store(true, Ordering::SeqCst);
-                side_thread.join().unwrap();
-                let post_evals = peer.join().unwrap();
+                let (side_join, peer_join) = peers.join();
+                side_join.expect("side spawned").expect("actual side join");
+                let post_evals = peer_join.expect("peer spawned").expect("actual peer join");
+                let result = result.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+                assert_eq!(guard, None, "{}", trace.label);
                 if metadata == "protocol_error" {
-                    assert!(matches!(result, Err(AppError::User(_))), "{result:?}");
+                    assert!(
+                        matches!(result, Err(AppError::User(_))),
+                        "{}: {result:?}",
+                        trace.label
+                    );
                     assert_eq!(
                         snapshots.load(Ordering::SeqCst),
                         1,
-                        "protocol errors must not be retried"
+                        "{}: protocol errors must not be retried",
+                        trace.label
                     );
-                    assert_eq!(post_evals, 0);
+                    assert_eq!(post_evals, 0, "{}", trace.label);
                 } else if exhausted {
                     assert!(
                         matches!(result, Err(AppError::Timeout(_))),
-                        "{option}/{metadata}: {result:?}"
+                        "{option}/{interruption}/{metadata}/exhausted={exhausted}: {result:?}"
                     );
-                    assert_eq!(post_evals, 0);
+                    assert_eq!(post_evals, 0, "{}", trace.label);
                     assert!(
                         elapsed
                             >= Duration::from_millis(if interruption.starts_with("request") {
@@ -982,7 +1165,8 @@ mod tests {
                             } else {
                                 350
                             }),
-                        "handover ended before its deadline: {elapsed:?}"
+                        "{}: handover ended before its deadline: {elapsed:?}",
+                        trace.label
                     );
                     assert!(
                         elapsed
@@ -991,13 +1175,22 @@ mod tests {
                             } else {
                                 900
                             }),
-                        "{elapsed:?}"
+                        "{}: {elapsed:?}",
+                        trace.label
                     );
                 } else {
-                    assert!(result.is_ok(), "{option}/{metadata}: {result:?}");
-                    assert!(post_evals > 0);
-                    assert_eq!(result.unwrap().0["navigated"], true);
+                    assert!(
+                        result.is_ok(),
+                        "{option}/{interruption}/{metadata}/exhausted={exhausted}: {result:?}"
+                    );
+                    assert!(post_evals > 0, "{}", trace.label);
+                    assert_eq!(result.unwrap().0["navigated"], true, "{}", trace.label);
                 }
+                eprintln!(
+                    "submission-handover CASE_VERIFIED {} elapsed={elapsed:?} snapshots={} post_evals={post_evals}",
+                    trace.label,
+                    snapshots.load(Ordering::SeqCst)
+                );
             }
         }
     }

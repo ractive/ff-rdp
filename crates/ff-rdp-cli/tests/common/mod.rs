@@ -1140,9 +1140,10 @@ pub(crate) fn bounded_command_output_with_poll(
 }
 
 fn terminate_and_reap(child: &mut Child) -> String {
+    let child_pid = child.id();
     let kill_error = child.kill().err();
     let reap = child.wait();
-    format!("kill={kill_error:?}; reap={reap:?}")
+    format!("child_pid={child_pid}; kill={kill_error:?}; reap={reap:?}")
 }
 
 /// Outer bound for the product's complete `daemon stop` path.
@@ -1189,10 +1190,30 @@ pub(crate) fn scoped_daemon_stop(
     }
 }
 
+/// Diagnostic display only: null means no exact UTF-8 representation exists.
+/// Cleanup must continue to use the original Path, never this display value.
+pub(crate) fn launch_request_context(home: &Path, port: u16) -> serde_json::Value {
+    serde_json::json!({
+        "home": home.to_str(),
+        "home_display": home.to_string_lossy(),
+        "home_display_is_lossy": home.to_str().is_none(),
+        "port": port,
+    })
+}
+
 /// Finish every failure after the launch command was invoked through the same
 /// product-owned cleanup path. At this point no receipt field, especially its
 /// PID, is trusted; the private home and requested port are the authority.
-fn failed_launch_error(reason: &str, binary: &Path, home: tempfile::TempDir, port: u16) -> String {
+pub(crate) fn failed_launch_error(
+    reason: &str,
+    binary: &Path,
+    home: tempfile::TempDir,
+    port: u16,
+) -> String {
+    // Parent-selected authority survives even when the launch child never
+    // executes or writes a receipt. Keep it separate from cleanup's response.
+    let request = launch_request_context(home.path(), port);
+    let reason = format!("isolated launch request: {request}\n{reason}");
     match scoped_daemon_stop(binary, home.path(), port, scoped_daemon_stop_timeout()) {
         Ok(note) => {
             let removal = home.close().map_or_else(
