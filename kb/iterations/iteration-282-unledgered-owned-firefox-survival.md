@@ -611,3 +611,89 @@ phases remain failed or limited in the dated records above.
 
 No unfulfilled original 282 criterion is deferred into another plan. Publication,
 exact-head CI and GitHub merge are recorded separately after this local closure.
+
+
+## Windows CI fixture correction — 2026-09-24
+
+PR269 head b1525c87c7b88578e9981d9612904b5e2ef30c9d received nine successful
+checks and a failed Windows job:1276 passed,3 failed,1 ignored. The immutable
+job107810933471 log is retained in the primary private evidence directory at
+`ci-windows-failure1/failed.log`. All three failures are browser-free navigation
+snapshot fixtures; they are not new Firefox occurrences or failures of closing2.
+
+The ordinary600ms deadline control returned Timeout in600.6281ms and actually
+joined its50-query worker. The deliberate expiry control returned Timeout in
+600.5117ms and actually joined its0-query/terminal-EOF worker. Both subsequently
+failed because the unused main socket returned Windows ConnectionReset10054
+instead of EOF. Reset is not EOF or worker-return evidence. The fixture had
+relied on implicit socket close completing a graceful disconnect. It now sends
+FIN from its own peer after the actual caller returns, requires the client to
+observe strict UnexpectedEof, then closes the client and retains the original
+zero-main-byte assertion. It accepts no reset or generic I/O-error substitute.
+
+The reload fixture's separate failure was the original elapsed<1s assertion,
+measured after socket teardown and both worker joins. The old log contains no
+caller-return timestamp, so caller overrun versus teardown cost remains unknown.
+Its request stream now initiates explicit send shutdown after caller return and
+keeps the framed halves until the evaluator actually joins. New diagnostics
+retain caller and joined elapsed times, both join results and shutdown outcome.
+The original post-join1s bound, successful<500ms bound,700ms product budget,
+readiness assertions and all command/socket timeouts remain unchanged. This
+corrects the fixture's implicit-close assumption; it does not retrospectively
+establish the exact Windows TCP cause or declare that reload occurrence fixed.
+
+All changes are inside navigate.rs's cfg(test) snapshot module. Production and
+live-test source inputs are unchanged. Three exact retained-binary controls pass
+locally; the corrected snapshot module passes9/9. Removing only the fixture FIN
+makes the positive EOF check fail with Timeout after the actual worker join.
+Injecting a real shared-channel request instead fails the original zero-byte
+assertion with1 byte after the actual join. Both mutations, two compile-failed
+API/variant drafts, original failed logs and all commands/homes are preserved in
+`ci-repair1/`. Neither local success nor prior262/272 evidence proves the new
+Windows outcome. Fresh independent scoped review and exact-head Windows CI are
+still required; root owns publication and any closing-reuse decision. Closing2's
+348/348 and its actual source/evidence limits remain historical measured facts.
+
+The required final ordered local gates for this fixture candidate are recorded
+in `ci-repair1/`; their completion/status must be reconciled before publication.
+Original task and acceptance-criterion wording and historical completed evidence
+remain unchanged. No new native occurrence, sweep, retry or merge is claimed.
+
+
+### Supervisor adoption of the CI fixture repair
+
+Fresh independent scoped review accepted this delta with zero actionable
+findings. Final ordered stable update, fmt, strict workspace/all-target Clippy
+and normal parallel workspace tests passed: 2551/0/420 across 37 outer summaries
+(the nested child fixture's single pass is not counted twice). Corrected plan
+validation and HYALO005 also passed. The original Windows failure, both compile
+drafts and both expected mutation failures remain preserved.
+
+The supervisor adopts scoped reuse of closing2's 348/348 and the reviewed native
+158/153 evidence under the unchanged relevant-input rule. Only the cfg(test)
+snapshot fixture and this evidence note changed; no production or live-test
+behavior changed. The immediately-before/current live and e2e executables match.
+The CLI and unit executable hashes changed; the CLI's 14 file-backed Mach-O
+sections match, while other bytes were not compared. These are not the original
+closing binary hashes, and the newly hashed CLI is not claimed to have run that
+sweep. No new capture or sweep was required for this fixture-only correction.
+
+A fresh complete v2 boundary conserved all 69 preexisting private profile rows,
+with four new retained directories inside the isolated non-live workspace home,
+73 total. All four real profiles and protected native births remain identical;
+no unexpected process was found. Individual creating tests for these four gate
+directories were not recorded; their presence is not Firefox-launch or
+worker-return proof. The reload evaluator's old receive loop also does not
+retain its terminal receive error: its actual join establishes fixture return,
+not a specific FIN observation or graceful product-worker return.
+
+Evidence: `ci-repair1/{final-gates,root-freeze-verification,root-conservation}.json`
+and `review-ci-repair1/review.md` (SHA256
+`2f19bc501faf41e8ae2d1ae7c5d1a48566966fa954225323eab78a7ee5871260`).
+Fresh CI on the actual repaired PR head remains the publication/merge gate.
+
+| Additional carry-over | Disposition |
+| --- | --- |
+| Two Windows main-channel resets after successful caller timeout/actual snapshot joins | **Closed in this PR:** explicit fixture FIN, strict client EOF and retained zero-byte/actual-join assertions; focused controls and both sensitive mutations pass their intended contracts. Fresh Windows CI must validate the repaired fixture before merge. The old resets remain distinct and are not reclassified as EOF. |
+| Windows reload post-join timing failure | **Closed in this PR:** portable fixture send shutdown and separate caller/joined diagnostics preserve all original bounds. **No plan** for reconstructing the old missing timing/variant: no retained observation identifies its cause. A fresh attributable overrun reopens repair before merge; a later pass cannot supply the old cause. |
+| New compile drafts and mistaken check-plan invocation | **Closed in this PR's evidence record:** corrected API/variant and gate invocation; both original failures retained, final ordered gates and review passed. |
