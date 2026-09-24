@@ -737,6 +737,117 @@ fn record_live_launch(pid: u32, port: u16) {
     }
 }
 
+/// Retain every launch command, including failures that have no success PID.
+/// The start row is written before spawning; an unmatched start is incomplete
+/// evidence, never a successful cleanup assertion. Raw output bytes are kept.
+pub(crate) fn recorded_launch_output(
+    command: &mut Command,
+    path: &Path,
+    attempt: u8,
+    port: u16,
+) -> Result<Output, String> {
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|e| format!("cannot open launch-attempt ledger {}: {e}", path.display()))?;
+    let identity = serde_json::json!({
+        "test_process": std::process::id(), "test": current_test_name(),
+        "attempt": attempt, "port": port, "started": chrono_now_rfc3339(),
+    });
+    let append = |file: &mut std::fs::File, row: serde_json::Value| {
+        let mut bytes = serde_json::to_vec(&row).map_err(std::io::Error::other)?;
+        bytes.push(b'\n');
+        file.write_all(&bytes)
+    };
+    append(
+        &mut file,
+        serde_json::json!({
+            "phase": "start", "identity": identity,
+            "program": command.get_program().to_string_lossy(),
+            "args": command.get_args().map(|s| s.to_string_lossy()).collect::<Vec<_>>(),
+        "home": command.get_envs()
+            .find(|(key, _)| *key == "FF_RDP_HOME")
+            .map_or_else(|| std::env::var_os("FF_RDP_HOME"), |(_, value)| value.map(std::ffi::OsStr::to_os_string)),
+        }),
+    )
+    .map_err(|e| format!("cannot record launch start {}: {e}", path.display()))?;
+    let output = command.output();
+    let row = match &output {
+        Ok(output) => serde_json::json!({
+            "phase": "output", "identity": identity, "ended": chrono_now_rfc3339(),
+            "status": output.status.to_string(), "success": output.status.success(),
+            "stdout": output.stdout, "stderr": output.stderr,
+        }),
+        Err(error) => serde_json::json!({
+            "phase": "error", "identity": identity, "ended": chrono_now_rfc3339(),
+            "error": error.to_string(),
+        }),
+    };
+    if let Err(error) = append(&mut file, row) {
+        // Preserve the captured bytes in the failing diagnostic and clean any
+        // valid success receipt. A failed ledger never causes another launch.
+        let _guard = output.as_ref().ok().and_then(guard_launched_firefox);
+        return Err(format!(
+            "cannot record launch outcome {}: {error}; captured output: {output:?}",
+            path.display()
+        ));
+    }
+    output.map_err(|e| format!("launch command failed: {e}"))
+}
+
+/// A failed-launch probe must retain its actual home even while unwinding.
+/// With a capture ledger, put it beside that ledger so the occurrence census
+/// can discover every profile. This path deliberately has no deleting Drop.
+pub(crate) fn retained_failed_launch_home(ledger: Option<&Path>) -> std::io::Result<PathBuf> {
+    let mut builder = tempfile::Builder::new();
+    builder.prefix("ff-rdp-failed-launch-");
+    let home = match ledger {
+        Some(path) => builder.tempdir_in(
+            path.parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or(Path::new(".")),
+        )?,
+        None => builder.tempdir()?,
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(home.path(), std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(home.keep())
+}
+
+/// In a fresh exclusive failed-launch home every surviving managed profile is
+/// unexpected, even if its marker still names a live process. Never delete the
+/// evidence here; a failed assertion must leave it for the owning supervisor.
+pub(crate) fn assert_no_managed_profiles(root: &Path) {
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(error) => panic!(
+            "cannot inspect failed-launch profiles {}: {error}",
+            root.display()
+        ),
+    };
+    let mut survivors: Vec<_> = entries
+        .map(|entry| {
+            entry
+                .unwrap_or_else(|error| panic!("cannot inspect profile entry: {error}"))
+                .path()
+        })
+        .filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("ff-rdp-profile-"))
+        })
+        .collect();
+    survivors.sort();
+    assert!(
+        survivors.is_empty(),
+        "failed launch left managed profiles (evidence retained): {survivors:?}"
+    );
+}
+
 /// RFC-3339-ish timestamp without pulling `chrono` into the test binaries.
 fn chrono_now_rfc3339() -> String {
     let secs = std::time::SystemTime::now()
@@ -1394,25 +1505,13 @@ impl LiveFirefox {
             .map(|(ff, _)| ff)
     }
 
-    /// Retry loop shared by the panicking and fallible entry points. Tries up
-    /// to 3 ports to handle rare port-allocation collisions (common in CI with
-    /// parallel test jobs).
+    /// One attempt shared by the panicking and fallible entry points. A failed
+    /// launch is evidence to inspect, not permission to hide it behind a later
+    /// success (which may coexist with an unaccounted first browser).
     fn try_headless_on_random_port_with_args(
         extra_args: &[&str],
     ) -> Result<(Self, serde_json::Value), Vec<String>> {
-        let mut failures = Vec::new();
-        for attempt in 0..3u8 {
-            match Self::try_launch(extra_args, attempt) {
-                Ok(result) => return Ok(result),
-                Err(diagnostic) => {
-                    failures.push(diagnostic);
-                    if attempt < 2 {
-                        std::thread::sleep(Duration::from_millis(200));
-                    }
-                }
-            }
-        }
-        Err(failures)
+        Self::try_launch(extra_args, 0).map_err(|diagnostic| vec![diagnostic])
     }
 
     /// One launch attempt. `Err` carries everything the failure path knows:
@@ -1429,20 +1528,26 @@ impl LiveFirefox {
             ));
         };
 
-        let output = Command::new(ff_rdp_bin())
+        let ledger = std::env::var_os(LIVE_LAUNCH_LOG_ENV)
+            .map_or_else(
+                || ff_rdp_bin().parent().unwrap().join("../live-launches.log"),
+                PathBuf::from,
+            )
+            .with_extension("attempts.jsonl");
+        let mut command = Command::new(ff_rdp_bin());
+        command
             .args(["launch", "--headless", "--debug-port", &port.to_string()])
             .args(extra_args)
             // iter-151 Theme A: identify the spawning test so a leaked
             // profile is traceable from the artifact alone — see
             // `SPAWNING_TEST_ENV`'s doc comment.
-            .env(SPAWNING_TEST_ENV, current_test_name())
-            .output()
-            .map_err(|e| {
-                format!(
-                    "attempt {attempt} (port {port}): could not spawn `{} launch`: {e}",
-                    ff_rdp_bin().display()
-                )
-            })?;
+            .env(SPAWNING_TEST_ENV, current_test_name());
+        let output = recorded_launch_output(&mut command, &ledger, attempt, port).map_err(|e| {
+            format!(
+                "attempt {attempt} (port {port}): could not spawn `{} launch`: {e}",
+                ff_rdp_bin().display()
+            )
+        })?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();

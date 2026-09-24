@@ -23,8 +23,9 @@ use std::process::Command;
 use std::time::Duration;
 
 use crate::common::{
-    FirefoxGuard, LiveFirefox, base_args, current_test_name, ff_rdp_bin, ff_rdp_launch_command,
-    ff_rdp_launch_command_for, kill_pid, live_tests_enabled, pid_alive,
+    FirefoxGuard, LIVE_LAUNCH_LOG_ENV, LiveFirefox, base_args, current_test_name, ff_rdp_bin,
+    ff_rdp_launch_command, ff_rdp_launch_command_for, kill_pid, live_tests_enabled, pid_alive,
+    recorded_launch_output,
 };
 
 /// Parse a `ff-rdp` stdout buffer into JSON, with the raw text in the panic
@@ -75,25 +76,42 @@ fn live_158_launch_survives_contended_bind() {
     // parallel threads so they genuinely compete rather than queue.
     //
     // iter-171: the owner-test name is captured *here*, on the test's own
-    // thread — the worker threads below are unnamed, so tagging from inside
-    // them would stamp every profile `unknown`. This test is the one whose
-    // four abandoned profiles the iteration-168 postmortem could not attribute.
+    // thread. Historically the unnamed workers stamped profiles `unknown`;
+    // iteration 282 also gives each worker this name for its outcome ledger.
+    // The iteration-168 postmortem could not attribute four abandoned profiles.
     let owner = current_test_name();
-    let handles: Vec<_> = (0..4)
+    let ledger = std::env::var_os(LIVE_LAUNCH_LOG_ENV).map_or_else(
+        || ff_rdp_bin().parent().unwrap().join("../live-launches.log"),
+        std::path::PathBuf::from,
+    );
+    let handles: Vec<_> = (0..4u8)
         .map(|i| {
             let owner = owner.clone();
-            std::thread::spawn(move || {
-                let out = ff_rdp_launch_command_for(&owner)
-                    .args(["launch", "--headless"])
-                    .args(["--debug-port", &(7101 + i).to_string()])
-                    .output()
-                    .expect("spawn `ff-rdp launch`");
-                (
-                    out.status.success(),
-                    String::from_utf8_lossy(&out.stdout).into_owned(),
-                    String::from_utf8_lossy(&out.stderr).into_owned(),
-                )
-            })
+            // One writer per sibling ledger: even a partial append cannot
+            // interleave with another worker. Never lock across piped output.
+            let ledger = ledger.with_extension(format!("158-{i}.attempts.jsonl"));
+            std::thread::Builder::new()
+                .name(owner.clone())
+                .spawn(move || {
+                    let port = 7101 + u16::from(i);
+                    let out = recorded_launch_output(
+                        ff_rdp_launch_command_for(&owner)
+                            .args(["launch", "--headless"])
+                            .args(["--debug-port", &port.to_string()]),
+                        &ledger,
+                        0,
+                        port,
+                    )
+                    .expect("spawn and record `ff-rdp launch`");
+                    // Exact status/bytes are durable before this reduction and
+                    // before any collective join, including on a nominal pass.
+                    (
+                        out.status.success(),
+                        String::from_utf8_lossy(&out.stdout).into_owned(),
+                        String::from_utf8_lossy(&out.stderr).into_owned(),
+                    )
+                })
+                .expect("spawn launch worker")
         })
         .collect();
 

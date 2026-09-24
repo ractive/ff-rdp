@@ -416,6 +416,8 @@ pub(crate) fn build_command(
         use std::os::unix::process::CommandExt as _;
         cmd.process_group(0);
     }
+    #[cfg(target_os = "macos")]
+    crate::util::child_fds::exclude_inherited(&mut cmd);
 
     // Nothing below can fail: hand the directory to the caller intact.
     managed_guard.disarm();
@@ -436,6 +438,75 @@ fn report_failed_profile_cleanup(
             reason.as_str()
         )),
         None => error,
+    }
+}
+
+/// A spawned browser remains this command's responsibility until its launch
+/// result has been delivered. Never remove its profile while it may still run.
+fn stop_failed_launch(
+    error: AppError,
+    child: &mut std::process::Child,
+    profile_guard: &mut crate::util::profile_dir::ManagedProfileGuard,
+) -> AppError {
+    // `try_wait` may already have collected an immediately-exited child. Never
+    // turn its now-reusable numeric PID into authority to signal a new process.
+    if matches!(child.try_wait(), Ok(Some(_))) {
+        return report_failed_profile_cleanup(error, profile_guard);
+    }
+    let pid = child.id();
+    // build_command puts Firefox in a new group. Validate that fact before
+    // touching descendants; injected spawners may use the caller's group.
+    let group = crate::daemon::process::get_process_group_id(pid)
+        .filter(|group| i64::from(*group) == i64::from(pid));
+    crate::daemon::process::kill_process_tree(pid, group);
+    let kill_result = child.kill();
+    if let Err(e) = kill_result {
+        // The process may have exited between the failed operation and kill.
+        // Only a collected status authorizes profile removal in that case.
+        if !matches!(child.try_wait(), Ok(Some(_))) {
+            profile_guard.disarm();
+            return error.with_warning(format!(
+                "could not stop failed Firefox launch (pid {pid}): {e}; profile retained"
+            ));
+        }
+    }
+    match child.wait() {
+        Ok(_) => report_failed_profile_cleanup(error, profile_guard),
+        Err(e) => {
+            profile_guard.disarm();
+            error.with_warning(format!(
+                "could not wait for failed Firefox launch (pid {pid}): {e}; profile retained"
+            ))
+        }
+    }
+}
+
+struct PendingLaunch {
+    child: std::process::Child,
+    profile: crate::util::profile_dir::ManagedProfileGuard,
+    armed: bool,
+}
+
+impl PendingLaunch {
+    fn fail(&mut self, error: AppError) -> AppError {
+        self.armed = false;
+        stop_failed_launch(error, &mut self.child, &mut self.profile)
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+        self.profile.disarm();
+    }
+}
+
+impl Drop for PendingLaunch {
+    fn drop(&mut self) {
+        if self.armed {
+            // Output uses stdout's printing macros, which can unwind on a
+            // broken pipe. Keep the child alive only after successful delivery.
+            let error = self.fail(AppError::User("Firefox launch unwound".to_owned()));
+            tracing::warn!("{error}");
+        }
     }
 }
 
@@ -542,6 +613,9 @@ pub(crate) struct LaunchHooks {
     pub(crate) probe_port: fn(&str, u16, Duration) -> PortWaitOutcome,
     /// Spawn the prepared Firefox command.
     pub(crate) spawn: fn(&mut std::process::Command) -> std::io::Result<std::process::Child>,
+    /// Read the owned child's status; injectable for the OS error branch.
+    pub(crate) try_wait:
+        fn(&mut std::process::Child) -> std::io::Result<Option<std::process::ExitStatus>>,
     /// Locate the Firefox binary (iter-175).
     ///
     /// Injected so the failure paths *past* this point — the ones that create
@@ -572,6 +646,7 @@ impl LaunchHooks {
             find_listener: |port| port_owner::find_listener(port).ok().flatten(),
             probe_port: wait_for_port,
             spawn: std::process::Command::spawn,
+            try_wait: std::process::Child::try_wait,
             locate_firefox: find_firefox,
             read_launch_record: |port| crate::daemon_record::read(port).ok().flatten(),
             is_pid_alive: crate::daemon::process::is_process_alive,
@@ -897,13 +972,19 @@ pub(crate) fn run_with_hooks(
         _ => crate::util::profile_dir::ManagedProfileGuard::disarmed(),
     };
 
-    let mut child = (hooks.spawn)(&mut cmd).map_err(|e| {
+    let child = (hooks.spawn)(&mut cmd).map_err(|e| {
         let error = AppError::User(format!(
             "failed to start Firefox at {}: {e}",
             firefox.display()
         ));
         report_failed_profile_cleanup(error, &mut profile_guard)
     })?;
+    let mut pending = PendingLaunch {
+        child,
+        profile: profile_guard,
+        armed: true,
+    };
+    let child = &mut pending.child;
 
     // iter-171: mark ownership *here*, the instant the PID exists — not after
     // the port probe below, which can legitimately spend tens of seconds under
@@ -939,7 +1020,7 @@ pub(crate) fn run_with_hooks(
     // libraries, etc.).
     std::thread::sleep(Duration::from_millis(500));
 
-    match child.try_wait() {
+    match (hooks.try_wait)(child) {
         Ok(Some(status)) => {
             // Process already exited — try to capture stderr for diagnostics.
             let mut stderr_text = String::new();
@@ -953,7 +1034,7 @@ pub(crate) fn run_with_hooks(
                 format!(": {stderr_text}")
             };
             let error = AppError::User(format!("Firefox exited immediately with {status}{detail}"));
-            Err(report_failed_profile_cleanup(error, &mut profile_guard))
+            Err(pending.fail(error))
         }
         Ok(None) => {
             // Still running — verify the debug port is actually reachable
@@ -962,31 +1043,13 @@ pub(crate) fn run_with_hooks(
             let pid = child.id();
             let outcome = (hooks.probe_port)("localhost", port, port_wait_bound);
             if let Some(e) = outcome.into_error(pid, port, port_wait_bound) {
-                let _ = child.kill();
-                // iter-246 Part A Theme D: `kill` only *sends* the signal. The
-                // `ManagedProfileGuard` that `return` drops immediately walks
-                // this profile directory with `remove_dir_all`, and until the
-                // child is actually gone it is still creating files in there —
-                // so on a loaded machine the walk can race new entries and
-                // fail, leaving the directory behind. That is the shape
-                // `live_175_failed_launch_leaves_no_profile_dir` reported in
-                // iteration 211's second sweep and never in an idle run.
-                // Reaping first also stops the process being left a zombie for
-                // the lifetime of this command.
-                let _ = child.wait();
-                return Err(report_failed_profile_cleanup(e, &mut profile_guard));
+                return Err(pending.fail(e));
             }
 
             // iter-97 Theme A wrote the owner markers here, after the port
             // probe; iter-171 moved them up to immediately after the spawn so
             // an interrupted launch still leaves an attributable profile —
             // see the write site above `try_wait`. Nothing to do here.
-
-            // iter-175: the launch is now known-good — Firefox is running and
-            // its debug port is reachable — so the profile directory belongs to
-            // that Firefox, not to this command. This is the single place the
-            // guard is released; every other exit from `run` removes it.
-            profile_guard.disarm();
 
             // Write the shared daemon record so `daemon stop` and
             // `launch --replace` can find and terminate this instance.
@@ -1010,12 +1073,6 @@ pub(crate) fn run_with_hooks(
                 // pre-iter-191 fallback.
                 start_token: crate::daemon::process::process_start_token(pid),
             };
-            if let Err(e) = crate::daemon_record::write(&daemon_rec) {
-                // stderr-ok: (b) warn-and-continue — launch still succeeds,
-                // just without a `daemon stop` handle for this instance.
-                eprintln!("warning: could not write daemon record: {e:#}");
-            }
-
             // `temp_profile` is true when the caller requested --temp-profile
             // OR when we auto-created one because no profile flag was given.
             let effective_temp_profile = temp_profile || profile.is_none();
@@ -1111,11 +1168,23 @@ pub(crate) fn run_with_hooks(
             );
             let envelope = output::envelope(&result, 1, &meta);
             let hint_ctx = HintContext::new(HintSource::Launch);
-            OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
+            let emitted = OutputPipeline::from_cli(cli)
+                .and_then(|pipeline| pipeline.finalize_with_hints(&envelope, Some(&hint_ctx)));
+            if let Err(error) = emitted {
+                return Err(pending.fail(error));
+            }
+            // Only successful output transfers ownership. A bad jq filter or
+            // rendering failure must not leave a browser behind an error result.
+            if let Err(e) = crate::daemon_record::write(&daemon_rec) {
+                // stderr-ok: (b) warn-and-continue — launch still succeeds.
+                eprintln!("warning: could not write daemon record: {e:#}");
+            }
+            pending.disarm();
+            Ok(())
         }
         Err(e) => {
             let error = AppError::Internal(anyhow::anyhow!("failed to check Firefox status: {e}"));
-            Err(report_failed_profile_cleanup(error, &mut profile_guard))
+            Err(pending.fail(error))
         }
     }
 }
@@ -1838,6 +1907,126 @@ mod iter_175_tests {
             window_size: None,
             launch_timeout: Some(0),
         }
+    }
+
+    #[cfg(unix)]
+    #[allow(unsafe_code)]
+    fn assert_failed_launch_reaps_child(status_failure: bool, managed: bool, unwind: bool) {
+        // A real direct child, not a pid-aliveness surrogate. The waitpid
+        // observation proves whether launch actually collected its status.
+        use std::cell::RefCell;
+        thread_local! {
+            static SPAWNED: RefCell<Option<(u32, PathBuf)>> = const { RefCell::new(None) };
+        }
+        fn spawn(cmd: &mut std::process::Command) -> std::io::Result<std::process::Child> {
+            use std::os::unix::process::CommandExt;
+            let child = std::process::Command::new("/bin/sleep")
+                .arg("30")
+                .process_group(0)
+                .spawn()?;
+            SPAWNED.with(|slot| {
+                *slot.borrow_mut() = Some((child.id(), profile_arg_of(cmd).unwrap()));
+            });
+            Ok(child)
+        }
+        {
+            let mut sibling = std::process::Command::new("/bin/sleep")
+                .arg("30")
+                .spawn()
+                .unwrap();
+            let user_profile = tempfile::tempdir().unwrap();
+            std::fs::write(user_profile.path().join("retain-me"), b"user data").unwrap();
+            let mut opts = managed_opts(7628);
+            if !managed {
+                opts.profile = Some(user_profile.path().to_str().unwrap());
+            }
+            let hooks = LaunchHooks {
+                locate_firefox: || Ok(PathBuf::from("/unused/firefox")),
+                is_port_in_use: |_| false,
+                spawn,
+                probe_port: |_, _, _| PortWaitOutcome::Opened,
+                try_wait: if unwind {
+                    |_| panic!("injected launch unwind")
+                } else if status_failure {
+                    |_| Err(std::io::Error::other("injected status failure"))
+                } else {
+                    std::process::Child::try_wait
+                },
+                ..LaunchHooks::none_running()
+            };
+            let mut cli = bare_launch_cli();
+            if !status_failure {
+                cli.jq = Some("this is not valid %%%".to_owned());
+            }
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                run_with_hooks(&cli, &opts, &hooks)
+            }));
+            let sibling_status = sibling.try_wait().unwrap();
+            sibling.kill().unwrap();
+            sibling.wait().unwrap();
+            let (pid, profile) = SPAWNED.with(|slot| slot.borrow_mut().take().unwrap());
+            let native_pid = i32::try_from(pid).unwrap();
+            let mut status = 0;
+            // SAFETY: pid is the direct child just spawned by this test. WNOHANG
+            // never waits on another test's child and does not signal anything.
+            let waited = unsafe { libc::waitpid(native_pid, &raw mut status, libc::WNOHANG) };
+            let wait_error = std::io::Error::last_os_error().raw_os_error();
+            if waited == 0 {
+                // Regression/before arm: clean up our still-owned, unreaped
+                // child before failing the assertion (no detached test child).
+                unsafe {
+                    libc::kill(native_pid, libc::SIGKILL);
+                    libc::waitpid(native_pid, &raw mut status, 0);
+                }
+            }
+            if unwind {
+                assert!(result.is_err(), "injected launch must unwind");
+            } else {
+                assert!(result.unwrap().is_err(), "injected launch must fail");
+            }
+            assert_eq!(waited, -1, "launch left child uncollected");
+            assert_eq!(
+                wait_error,
+                Some(libc::ECHILD),
+                "actual launch wait required"
+            );
+            assert!(
+                sibling_status.is_none(),
+                "unrelated owned control was killed"
+            );
+            if managed {
+                assert!(!profile.exists(), "managed failed-launch profile survives");
+            } else {
+                assert_eq!(
+                    std::fs::read(profile.join("retain-me")).unwrap(),
+                    b"user data"
+                );
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unit_282_failed_status_reaps_the_owned_child() {
+        assert_failed_launch_reaps_child(true, true, false);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unit_282_failed_output_reaps_the_owned_child() {
+        assert_failed_launch_reaps_child(false, true, false);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unit_282_failed_output_preserves_user_profile_and_unrelated_child() {
+        assert_failed_launch_reaps_child(false, false, false);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unit_282_unwinding_launch_reaps_the_owned_child() {
+        assert_failed_launch_reaps_child(false, true, true);
     }
 
     /// AC 2 (`unit_175_failed_spawn_leaves_no_profile_dir`): `build_command`

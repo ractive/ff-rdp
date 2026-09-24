@@ -259,3 +259,27 @@ applies. A tick records that somebody looked — never that a condition was reso
 - [[iteration-194-toolchain-watch-carryover-conditions]] — folded in here 2026-08-23 as conditions 10 and 11; that plan is now obsolete
 - [[iteration-188-live-sweep-cost-and-parallelism]] — if it lands, conditions 6 and 7 get their
   load exposure from the real sweep rather than a synthetic one
+
+## Replacement ownership clarification — 2026-09-24 (iteration282)
+
+This dated addition preserves every historical criterion, result and statement
+above. A proxy registry PID/start token proves the proxy identity; an authenticated
+eval does not grant termination authority over its connected Firefox. Firefox
+replacement still needs its own launch-record identity proof or a live matching
+marker/start token in a trusted supported root. The supported read-only scan
+includes the configured and default roots (iteration188/commit1798f119); it is
+not a scan of arbitrary other FF_RDP_HOME overrides. Legacy or confirmed proxy
+identity permits the existing proxy-only shutdown, never substitution of that
+PID into Firefox's port/tree escalation. Recycled-PID refusals remain binding.
+
+Root explicitly adopted prospective paired153 coverage in iteration282: keep
+the three original success assertions on a genuinely owned registry path using
+one fresh configured home, archive/remove only the fixture-generated active
+launch-record lookup while retaining its real profile markers, and separately
+require refusal plus same-incarnation/profile/listener survival for the exact
+two-override topology. No marker or ownership authority is transferred. These
+are new fixture arrangements and coverage; they do not turn the retained
+closing1 three153 failures or native1 diagnostic failure into passes. Native
+validation and successful closing remain pending. See
+[[iteration-282-unledgered-owned-firefox-survival]] for the active test mapping
+and evidence boundary. No unrelated unmet criterion is changed by this note.

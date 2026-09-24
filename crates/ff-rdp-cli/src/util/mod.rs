@@ -1,3 +1,5 @@
+#[cfg(target_os = "macos")]
+pub(crate) mod child_fds;
 pub mod profile_dir;
 pub mod safe_io;
 pub mod window_size;

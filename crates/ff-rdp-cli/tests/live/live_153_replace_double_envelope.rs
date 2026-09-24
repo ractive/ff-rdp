@@ -3,39 +3,28 @@
 //! launched instance — never the prior instance that was stopped to make
 //! room for it.
 //!
-//! ## The topology that reproduces the defect
+//! ## Prospective paired contract (2026-09-24, iteration282)
 //!
-//! `launch --replace`'s internal stop-before-relaunch step
-//! (`stop_prior_instance`) has three fallback paths (iter-90): a
-//! `DaemonRecord` match, a proxy-daemon registry match, and a raw
-//! port-owner kill. The double-envelope defect lived specifically in the
-//! *registry* path: `stop_prior_instance` used to call `run_daemon_stop`
-//! there, and `run_daemon_stop` prints its own top-level envelope — from
-//! *inside* `launch`'s own command run.
+//! The three positive cases retain every original153 success assertion. They
+//! now use one fresh private configured home, archive and remove only their
+//! own real launch-record lookup, and retain the real owner marker/start token.
+//! A real eval/daemon and positive browser ownership make registry fallback
+//! eligible. This explicitly models a missing launch record.
 //!
-//! [`LiveFirefox`] launches Firefox via `ff-rdp launch` against the REAL
-//! `$HOME`, so no `DaemonRecord` exists for its port under the isolated
-//! `FF_RDP_HOME` these tests use — the `DaemonRecord` path is a guaranteed
-//! miss. An `eval` call inside that isolated home then auto-starts a
-//! registry-tracked proxy daemon for the port, so `launch --replace` is
-//! forced into the registry path — reproduced against real Firefox and
-//! confirmed against a pre-fix build during iter-153 development (see
-//! [[iteration-153-launch-replace-double-envelope]]): stdout was
-//! `{"results":{"stopped":true,"pid":<prior>},"total":1}` immediately
-//! followed by the launch envelope, and `serde_json` parsing of the full
-//! buffer failed with "trailing characters".
-//!
-//! Run with:
-//!   FF_RDP_LIVE_TESTS=1 cargo test-live -p ff-rdp-cli \
-//!       --test live live_153 -- --nocapture
+//! Historical default-root browser plus override registry is supported by188.
+//! Two different override roots do not supply the same ownership proof. The
+//! retained closing1 and native1 failures stay failed; the separate negative
+//! case preserves that topology and requires refusal plus browser survival.
+//! Neither fixture expands production ownership or transfers a marker.
 
-use crate::common::{
-    FirefoxGuard, LiveFirefox, ff_rdp_launch_command, live_tests_enabled, pid_alive,
-};
+use crate::common::{ff_rdp_launch_command, live_tests_enabled, pid_alive, recorded_launch_output};
+#[path = "support/replace_fixture.rs"]
+mod fixture;
+use fixture::ProcessGuard as FirefoxGuard;
 
 /// Run `ff-rdp --host 127.0.0.1 --port <port> <args...>` inside an isolated
 /// `FF_RDP_HOME` and return `(exit_success, raw_stdout_bytes)`.
-fn run_raw(home: &std::path::Path, port: u16, args: &[&str]) -> (bool, Vec<u8>) {
+fn run_raw(home: &std::path::Path, port: u16, attempt: u8, args: &[&str]) -> (bool, Vec<u8>) {
     let mut full: Vec<String> = vec![
         "--host".into(),
         "127.0.0.1".into(),
@@ -45,37 +34,32 @@ fn run_raw(home: &std::path::Path, port: u16, args: &[&str]) -> (bool, Vec<u8>) 
         "10000".into(),
     ];
     full.extend(args.iter().map(|s| (*s).to_owned()));
-    let out = ff_rdp_launch_command()
-        .env("FF_RDP_HOME", home)
-        .args(&full)
-        .output()
-        .expect("live_153: failed to spawn ff-rdp");
+    // One writer per retained home; preserve exact piped output before any
+    // assertion, including stderr and nonzero status on failed replacement.
+    let out = recorded_launch_output(
+        ff_rdp_launch_command().env("FF_RDP_HOME", home).args(&full),
+        &home.join("commands.attempts.jsonl"),
+        attempt,
+        port,
+    )
+    .expect("live_153: failed to run and record ff-rdp");
     (out.status.success(), out.stdout)
 }
 
-/// Build the topology described in the module doc: a `LiveFirefox` with no
-/// `DaemonRecord` under the isolated `home`, plus a registry-tracked proxy
-/// daemon autostarted inside that `home` — forcing `stop_prior_instance`
-/// into the registry fallback path where the double-envelope defect lived.
-///
-/// Panics (never returns a skip) when Firefox or the autostart is
-/// unavailable — iter-158 Theme D. This suite is the reason: on 2026-08-13
-/// `live_153_replace_emits_single_envelope` was the one real product defect a
-/// full sweep found, and it only surfaced because it happened to fail loudly.
-/// Every sibling that skipped instead reported `ok`.
-fn setup_registry_topology() -> (LiveFirefox, tempfile::TempDir) {
-    let ff = LiveFirefox::headless_on_random_port();
-    let home = tempfile::tempdir().expect("live_153: tempdir for FF_RDP_HOME");
-    // `eval` routes through `resolve_connection_target`, which auto-starts a
-    // registry-tracked proxy daemon inside `home` for `ff.port()` when none
-    // is already running there.
-    let (ok, stdout) = run_raw(home.path(), ff.port(), &["eval", "1"]);
+/// Real owned registry fallback, with hard setup failures. Archive only this
+/// fixture's launch-record lookup after eval, leaving its ownership markers
+/// untouched. This is the explicitly adopted missing-record arrangement.
+fn setup_registry_topology() -> (fixture::Browser, std::path::PathBuf) {
+    let home = fixture::home();
+    let mut ff = fixture::launch(&home);
+    let (ok, stdout) = run_raw(home.as_path(), ff.port(), 0, &["eval", "1"]);
     assert!(
         ok,
         "setup_registry_topology: the `eval` daemon autostart failed for port {}\nstdout={}",
         ff.port(),
         String::from_utf8_lossy(&stdout)
     );
+    fixture::establish_registry(&mut ff, &home, &stdout, true);
     (ff, home)
 }
 
@@ -94,8 +78,9 @@ fn live_153_replace_emits_single_envelope() {
     let port = ff.port();
 
     let (ok, stdout) = run_raw(
-        home.path(),
+        home.as_path(),
         port,
+        1,
         &[
             "launch",
             "--headless",
@@ -112,7 +97,7 @@ fn live_153_replace_emits_single_envelope() {
         .ok()
         .and_then(|j| j["results"]["pid"].as_u64())
         .and_then(|p| u32::try_from(p).ok())
-        .map(FirefoxGuard::new);
+        .map(|pid| FirefoxGuard::new(pid, &home));
 
     assert!(
         ok,
@@ -142,6 +127,7 @@ fn live_153_replace_emits_single_envelope() {
         )
     });
 
+    ff.assert_stopped();
     eprintln!(
         "live_153_replace_emits_single_envelope: PASS — stdout parses as exactly one JSON \
          document, replacement pid={:?}",
@@ -164,8 +150,9 @@ fn live_153_replace_reports_launched_pid() {
     let prior_pid = ff.pid();
 
     let (ok, stdout) = run_raw(
-        home.path(),
+        home.as_path(),
         port,
+        1,
         &[
             "launch",
             "--headless",
@@ -188,7 +175,7 @@ fn live_153_replace_reports_launched_pid() {
         .and_then(|p| u32::try_from(p).ok());
     // Bind the guard before any assertion so a panic still unwinds through
     // the kill.
-    let guard = launched_pid.map(FirefoxGuard::new);
+    let guard = launched_pid.map(|pid| FirefoxGuard::new(pid, &home));
 
     assert!(
         ok,
@@ -209,6 +196,7 @@ fn live_153_replace_reports_launched_pid() {
          alive immediately after launch --replace reported success"
     );
 
+    ff.assert_stopped();
     eprintln!(
         "live_153_replace_reports_launched_pid: PASS — results.pid={launched_pid} is alive and \
          distinct from the stopped prior instance (pid {prior_pid}), guard={:?}",
@@ -231,8 +219,9 @@ fn live_153_replace_reports_stopped_instance() {
     let prior_pid = ff.pid();
 
     let (ok, stdout) = run_raw(
-        home.path(),
+        home.as_path(),
         port,
+        1,
         &[
             "launch",
             "--headless",
@@ -252,7 +241,7 @@ fn live_153_replace_reports_stopped_instance() {
     let guard = json["results"]["pid"]
         .as_u64()
         .and_then(|p| u32::try_from(p).ok())
-        .map(FirefoxGuard::new);
+        .map(|pid| FirefoxGuard::new(pid, &home));
 
     assert!(
         ok,
@@ -280,9 +269,66 @@ fn live_153_replace_reports_stopped_instance() {
          instance's pid ({prior_pid}), got {reported_stopped_pid:?}: {json}"
     );
 
+    ff.assert_stopped();
     eprintln!(
         "live_153_replace_reports_stopped_instance: PASS — meta.replaced={{stopped: true, pid: \
          {prior_pid}}}, guard={:?}",
         guard.map(|g| g.pid())
     );
+}
+
+/// Exact two-override topology: proxy authority is not Firefox ownership.
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_153_replace_refuses_unproven_outer_override() {
+    if !live_tests_enabled() {
+        eprintln!(
+            "live_153_replace_refuses_unproven_outer_override: set FF_RDP_LIVE_TESTS=1 to run"
+        );
+        return;
+    }
+    let outer = fixture::home();
+    let mut ff = fixture::launch(&outer);
+    let home = fixture::home();
+    let port = ff.port();
+    let (ok, stdout) = run_raw(&home, port, 0, &["eval", "1"]);
+    assert!(
+        ok,
+        "negative setup eval must really succeed: {}",
+        String::from_utf8_lossy(&stdout)
+    );
+    fixture::establish_registry(&mut ff, &home, &stdout, false);
+    let (ok, stdout) = run_raw(
+        &home,
+        port,
+        1,
+        &[
+            "launch",
+            "--headless",
+            "--debug-port",
+            &port.to_string(),
+            "--replace",
+        ],
+    );
+    let _unexpected = fixture::guard_launched_firefox(&stdout, &home);
+    let error: serde_json::Value = serde_json::from_slice(&stdout)
+        .expect("refusal must be one complete JSON envelope, without trailing data");
+    assert!(
+        !ok,
+        "unproven outer override must refuse replacement: {error}"
+    );
+    assert_eq!(
+        error["error_type"], "User",
+        "complete ownership error: {error}"
+    );
+    let message = error["error"].as_str().expect("ownership error message");
+    assert!(
+        message.contains("ownership")
+            && message.contains("Refusing to stop")
+            && !message.contains("stopped Firefox"),
+        "truthful browser-ownership refusal: {error}"
+    );
+    // Assert survival and untouched evidence before the fixture owner's
+    // separately birth-validated cleanup. Proxy shutdown is a distinct action.
+    ff.assert_survives("after-refusal");
 }

@@ -2429,3 +2429,27 @@ sets that row's `links_truncated: true`, even when no links fit, and text output
 says that some fact links were omitted. The key/value strings and row caps remain
 unchanged. Exact-limit links remain actionable. Query filtering runs afterward,
 so it cannot recover links omitted by the bounded collection.
+
+## Replacement ownership clarification — 2026-09-24 (iteration282)
+
+This dated addition preserves every historical criterion, result and statement
+above. A proxy registry PID/start token proves the proxy identity; an authenticated
+eval does not grant termination authority over its connected Firefox. Firefox
+replacement still needs its own launch-record identity proof or a live matching
+marker/start token in a trusted supported root. The supported read-only scan
+includes the configured and default roots (iteration188/commit1798f119); it is
+not a scan of arbitrary other FF_RDP_HOME overrides. Legacy or confirmed proxy
+identity permits the existing proxy-only shutdown, never substitution of that
+PID into Firefox's port/tree escalation. Recycled-PID refusals remain binding.
+
+Root explicitly adopted prospective paired153 coverage in iteration282: keep
+the three original success assertions on a genuinely owned registry path using
+one fresh configured home, archive/remove only the fixture-generated active
+launch-record lookup while retaining its real profile markers, and separately
+require refusal plus same-incarnation/profile/listener survival for the exact
+two-override topology. No marker or ownership authority is transferred. These
+are new fixture arrangements and coverage; they do not turn the retained
+closing1 three153 failures or native1 diagnostic failure into passes. Native
+validation and successful closing remain pending. See
+[[iteration-282-unledgered-owned-firefox-survival]] for the active test mapping
+and evidence boundary. No unrelated unmet criterion is changed by this note.
