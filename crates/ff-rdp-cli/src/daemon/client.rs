@@ -1391,36 +1391,34 @@ fn stop_daemon_and_build_result_with(
     //    the tree kill. Escalate against the real Firefox PID when known;
     //    escalating against the daemon PID (the pre-iter-142 behaviour) can
     //    never free the port, since the daemon never held it.
-    // iter-191: the `unwrap_or` fallback is the one place a *recycled* daemon
-    // PID would reach the full ladder (port wait + tree kill). When the
-    // registry PID is disproven there is nothing here ff-rdp may signal, so
-    // fall through to the port check alone.
-    let escalation_target = match (firefox_pid, daemon_pid_recycled) {
-        (Some(pid), _) => Some(pid),
-        (None, false) => Some(info.pid),
-        (None, true) => None,
-    };
-    let (port_free, escalation_msg) = match escalation_target {
-        Some(target) => {
-            let (_, port_free, msg) =
-                stop_pid_with_full_escalation(target, Some(firefox_port), &deps.hooks, None);
-            (port_free, msg)
-        }
-        None => (
-            (deps.hooks.wait_port_closed)(firefox_port, PORT_FREE_WAIT_BOUND),
-            // Not `port_still_listening_msg`: that one opens with "stopped
-            // Firefox (pid N)", and nothing was stopped here. Saying so is
-            // the whole point — the pre-iter-191 defect was a message that
-            // claimed a stop had happened on a path where ff-rdp had only
-            // signalled a stranger.
+    // The registry identifies only the proxy. Even a confirmed daemon PID
+    // cannot substitute for an unverified Firefox listener (iter-282). The
+    // proxy-only stop above has already run; never send it through the Firefox
+    // port/tree escalation ladder merely because ownership lookup failed.
+    let (port_free, escalation_msg) = if let Some(target) = firefox_pid {
+        let (_, port_free, msg) =
+            stop_pid_with_full_escalation(target, Some(firefox_port), &deps.hooks, None);
+        (port_free, msg)
+    } else {
+        let reason = if daemon_pid_recycled {
             format!(
-                "port {firefox_port} is still in use, and ff-rdp did not launch the process \
-                 holding it: the daemon registry names pid {} but that PID has since been \
-                 reused. Refusing to stop a process ff-rdp does not own — run \
-                 `lsof -i :{firefox_port}` to see what is there.",
+                "the daemon registry names pid {} but that PID has since been reused",
                 info.pid
+            )
+        } else {
+            format!(
+                "the daemon registry names proxy pid {}, not an owned Firefox listener",
+                info.pid
+            )
+        };
+        (
+            (deps.hooks.wait_port_closed)(firefox_port, PORT_FREE_WAIT_BOUND),
+            format!(
+                "port {firefox_port} is still in use, and ownership of the process holding it \
+                 could not be verified: {reason}. Refusing to stop a process ff-rdp does \
+                 not own — run `lsof -i :{firefox_port}` to see what is there."
             ),
-        ),
+        )
     };
 
     // 4. Clean up the daemon registry regardless of process state.
@@ -2659,6 +2657,49 @@ mod tests {
             matches!(&err, AppError::User(m) if !m.contains("stopped Firefox")),
             "the message must not claim a stop happened — nothing was stopped; got: {err:?}"
         );
+    }
+
+    /// A live, positively identified registry PID is still only the proxy.
+    /// Missing Firefox ownership must not route it into port/tree escalation.
+    /// Real typed records and start-token comparison exercise the observed path;
+    /// all signal hooks are recording stubs, never signals to this test process.
+    #[test]
+    fn unit_282_registry_pid_is_never_a_firefox_escalation_fallback() {
+        let _serialized = begin_call_log();
+        for token in [None, process::process_start_token(std::process::id())] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let port = 64_404;
+            plant_registry(dir.path(), port, token.as_deref());
+            if let Ok(mut log) = CALL_LOG.lock() {
+                log.clear();
+            }
+            let mut deps = registry_stop_deps(dir.path());
+            // Model the proxy exiting after shutdown while an unowned listener
+            // keeps the Firefox port occupied. This does not assert a worker return.
+            deps.hooks = recording_hooks_dead_parent();
+            let cli = <Cli as clap::Parser>::try_parse_from(["ff-rdp", "daemon", "stop"])
+                .expect("parse cli");
+
+            let err = stop_daemon_and_build_result_with(&cli, port, &deps)
+                .expect_err("an unowned held port must refuse replacement");
+            let log = take_call_log();
+            assert!(
+                !log.contains(&"kill_process_tree"),
+                "the proxy PID must never receive Firefox tree escalation: {log:?}"
+            );
+            assert_eq!(
+                log.iter().filter(|c| **c == "wait_port_closed").count(),
+                1,
+                "only the existing bounded port check may run: {log:?}"
+            );
+            assert!(
+                matches!(&err, AppError::User(m)
+                if m.contains("not an owned Firefox listener")
+                    && m.contains("Refusing to stop")
+                    && !m.contains("stopped Firefox")),
+                "missing browser ownership must not be reported as a browser stop: {err:?}"
+            );
+        }
     }
 
     /// The permissive side, arm 1: a registry written by a pre-iter-191 daemon

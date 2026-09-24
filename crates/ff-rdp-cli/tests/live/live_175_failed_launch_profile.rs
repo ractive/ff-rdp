@@ -24,7 +24,8 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crate::common::{
-    LiveFirefox, ff_rdp_bin, ff_rdp_launch_command, live_tests_enabled, pid_alive,
+    LIVE_LAUNCH_LOG_ENV, LiveFirefox, assert_no_managed_profiles, ff_rdp_bin,
+    ff_rdp_launch_command, live_tests_enabled, recorded_launch_output, retained_failed_launch_home,
 };
 
 // iter-242 Theme E: the marker name comes from `common` now — one copy
@@ -72,20 +73,6 @@ fn managed_profiles(root: &Path) -> BTreeSet<String> {
         .collect()
 }
 
-/// Whether `dir` names an owner process that is still alive.
-///
-/// A directory left by another live test running concurrently is owned by a
-/// running Firefox; the directory this test is hunting is owned by a process
-/// that is already dead (or carries no marker at all, pre-iter-171). That is
-/// the distinction that makes the assertion below robust in a shared profile
-/// root instead of a flake generator.
-fn has_live_owner(dir: &Path) -> bool {
-    std::fs::read_to_string(dir.join(OWNER_PID_MARKER))
-        .ok()
-        .and_then(|s| s.trim().parse::<u32>().ok())
-        .is_some_and(pid_alive)
-}
-
 /// AC 2, live: `--launch-timeout 0` makes the debug-port wait fail on the very
 /// first poll. `launch` kills the Firefox it started and returns an error —
 /// and must take the profile directory it created with it.
@@ -100,36 +87,42 @@ fn live_175_failed_launch_leaves_no_profile_dir() {
         return;
     }
 
-    // iter-188 Theme C: this assertion is about the *whole root* — "no
-    // directory appeared that nobody owns" — which is a global property, and
-    // the sweep now runs the tier concurrently. `has_live_owner` below was
-    // written to survive that, but it cannot: a sibling test's `launch` that
-    // has created its profile and not yet written the owner-PID marker (the
-    // marker is written after the spawn) is indistinguishable from the leak
-    // this test hunts, and iteration 188's first parallel sweep failed here
-    // for exactly that reason. Giving the launch its own `$FF_RDP_HOME`
-    // removes the ambiguity instead of loosening the assertion: in this root
-    // the only process that can create a profile is this test's own launch,
-    // so *any* survivor is the defect.
-    let home = tempfile::tempdir().expect("tempdir for FF_RDP_HOME");
-    let root = profile_root(Some(home.path()));
-    let before = managed_profiles(&root);
+    // Still isolate this test from sibling live tests, but retain its actual
+    // home on every path. With a capture ledger it lives inside that occurrence's
+    // evidence directory rather than outside the supervisor's profile census.
+    let capture_ledger = std::env::var_os(LIVE_LAUNCH_LOG_ENV).map(PathBuf::from);
+    let home = retained_failed_launch_home(capture_ledger.as_deref())
+        .expect("retained private home for failed launch");
+    let ledger = capture_ledger.map_or_else(
+        || home.join("launch.attempts.jsonl"),
+        |path| path.with_extension("attempts.jsonl"),
+    );
+    eprintln!(
+        "failed-launch evidence home={} ledger={}",
+        home.display(),
+        ledger.display()
+    );
+    let root = profile_root(Some(&home));
 
     // A port nothing is listening on, so the pre-spawn occupancy check passes
     // and the launch gets far enough to create a profile.
     let port = 7900 + (std::process::id() % 90) as u16;
-    let out = ff_rdp_launch_command()
-        .args([
-            "launch",
-            "--headless",
-            "--debug-port",
-            &port.to_string(),
-            "--launch-timeout",
-            "0",
-        ])
-        .env("FF_RDP_HOME", home.path())
-        .output()
-        .expect("`ff-rdp launch` must run");
+    let out = recorded_launch_output(
+        ff_rdp_launch_command()
+            .args([
+                "launch",
+                "--headless",
+                "--debug-port",
+                &port.to_string(),
+                "--launch-timeout",
+                "0",
+            ])
+            .env("FF_RDP_HOME", &home),
+        &ledger,
+        0,
+        port,
+    )
+    .expect("`ff-rdp launch` must run");
     // iter-242 Part B: `--launch-timeout 0` is supposed to fail before Firefox
     // ever opens the port, so this is `None` on every expected path. It is not
     // `None` if the deadline logic regresses and the launch succeeds — and
@@ -151,31 +144,7 @@ fn live_175_failed_launch_leaves_no_profile_dir() {
         "expected the port-deadline error; stdout: {stdout}; stderr: {stderr}"
     );
 
-    let after = managed_profiles(&root);
-    let leaked: Vec<String> = after
-        .difference(&before)
-        .filter(|name| !has_live_owner(&root.join(name)))
-        .cloned()
-        .collect();
-
-    if !leaked.is_empty() {
-        // `home` is a `TempDir` whose `Drop` deletes the isolated
-        // `$FF_RDP_HOME` — including whatever this test just proved leaked
-        // under it — as part of unwinding the panic below. Leak it
-        // deliberately on this path so the evidence survives the test
-        // process for diagnosis; the happy path above still cleans up
-        // normally when `home` goes out of scope at the end of the function.
-        let kept = home.keep();
-        panic!(
-            "iter-175: a launch that failed waiting for the debug port left {} profile \
-             director{} behind under {}: {:?} (evidence preserved at {})",
-            leaked.len(),
-            if leaked.len() == 1 { "y" } else { "ies" },
-            root.display(),
-            leaked,
-            kept.display()
-        );
-    }
+    assert_no_managed_profiles(&root);
 }
 
 /// The other direction, and the reason the guard is disarmed rather than

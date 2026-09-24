@@ -5644,6 +5644,12 @@ mod snapshot_probe_tests {
             )
         }));
         let returned = Instant::now();
+        // Finish the fixture-owned idle channel after the caller returns.
+        // Consume the peer's explicit FIN before closing the client; an
+        // implicit closesocket alone need not complete gracefully on Windows.
+        // The reverse-direction zero-byte assertion below still rejects RPCs.
+        let main_shutdown = main_peer.shutdown(std::net::Shutdown::Write);
+        let client_eof = ctx.transport_mut().recv();
         drop(ctx);
         stop.store(true, Ordering::Relaxed);
         let joined = snapshots.join();
@@ -5652,11 +5658,17 @@ mod snapshot_probe_tests {
         eprintln!(
             "boundary-control pause={pause_at_boundary} start={start:?} returned={returned:?} \
              elapsed={:?} caller={caller:?} first_boundary={:?} joined_at={joined_at:?} \
-             snapshot_join={joined:?} main_eof={main_eof:?}",
+             snapshot_join={joined:?} main_shutdown={main_shutdown:?} \
+             client_eof={client_eof:?} main_eof={main_eof:?}",
             returned.duration_since(start),
             observations.borrow().first(),
         );
         let (queries, terminal_eof) = joined.unwrap();
+        main_shutdown.expect("fixture main-channel send shutdown");
+        assert!(
+            matches!(client_eof, Err(ff_rdp_core::ProtocolError::RecvFailed(ref e)) if e.kind() == std::io::ErrorKind::UnexpectedEof),
+            "fixture client must observe peer FIN: {client_eof:?}"
+        );
         assert_eq!(main_eof.unwrap(), 0, "no shared RPC/evaluation is allowed");
         let records = observations.borrow();
         assert!(
@@ -6045,10 +6057,29 @@ mod snapshot_probe_tests {
                 "",
                 true,
             );
-            drop(transport);
+            let returned = Instant::now();
+            // End the fixture's request stream explicitly, retaining a socket
+            // until the evaluator actually returns. The original elapsed bound
+            // below still includes teardown and both real worker joins.
+            let (teardown_reader, teardown_writer) = transport.split();
+            let shutdown = teardown_writer
+                .try_clone_stream()
+                .and_then(|stream| stream.shutdown(std::net::Shutdown::Write));
             stop.store(true, std::sync::atomic::Ordering::Relaxed);
-            let queries = snapshots.join().unwrap();
-            let fresh = evaluations.join().unwrap();
+            let snapshot_join = snapshots.join();
+            let evaluation_join = evaluations.join();
+            let joined_at = Instant::now();
+            drop((teardown_reader, teardown_writer));
+            eprintln!(
+                "reload-boundary always_stale={always_stale} terminal_event={terminal_event} \
+                 caller_elapsed={:?} joined_elapsed={:?} caller={result:?} \
+                 shutdown={shutdown:?} snapshots={snapshot_join:?} evaluations={evaluation_join:?}",
+                returned.duration_since(start),
+                joined_at.duration_since(start),
+            );
+            let queries = snapshot_join.unwrap();
+            let fresh = evaluation_join.unwrap();
+            shutdown.expect("fixture evaluator send shutdown");
             if always_stale || !terminal_event {
                 if !terminal_event {
                     assert_eq!(

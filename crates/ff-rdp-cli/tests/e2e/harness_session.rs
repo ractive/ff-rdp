@@ -467,3 +467,136 @@ fn isolated_harness_timeouts_cover_product_budgets_without_global_env_mutation()
     let trigger_outer = daemon_autostart_trigger_timeout(registry_wait);
     assert!(trigger_outer > finite_trigger_path);
 }
+#[cfg(unix)]
+#[test]
+fn unit_282_launch_ledger_keeps_failed_and_successful_attempts() {
+    let temp = tempfile::tempdir().unwrap();
+    let ledger = temp.path().join("attempts.jsonl");
+    for (attempt, script) in [
+        (0, "printf 'failed stdout'; printf 'bad\\377' >&2; exit 9"),
+        (1, "printf 'success'; exit 0"),
+    ] {
+        let output = crate::common::recorded_launch_output(
+            std::process::Command::new("/bin/sh").args(["-c", script]),
+            &ledger,
+            attempt,
+            7628,
+        )
+        .unwrap();
+        assert_eq!(output.status.success(), attempt == 1);
+    }
+    let text = std::fs::read_to_string(ledger).unwrap();
+    let rows: Vec<serde_json::Value> = text
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(rows.len(), 4);
+    assert_eq!(rows[0]["phase"], "start");
+    assert_eq!(rows[1]["phase"], "output");
+    assert_eq!(rows[1]["identity"], rows[0]["identity"]);
+    assert_eq!(rows[1]["success"], false);
+    assert_eq!(rows[1]["stdout"], serde_json::json!(b"failed stdout"));
+    assert_eq!(
+        rows[1]["stderr"],
+        serde_json::json!([98, 97, 100, 255]),
+        "stdout and stderr row: {:?}",
+        rows[1]
+    );
+    assert_eq!(rows[3]["success"], true);
+    assert_eq!(rows[3]["identity"]["attempt"], 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn unit_282_unwritable_launch_ledger_prevents_spawn() {
+    let temp = tempfile::tempdir().unwrap();
+    let marker = temp.path().join("should-not-exist");
+    let error = crate::common::recorded_launch_output(
+        std::process::Command::new("/usr/bin/touch").arg(&marker),
+        temp.path(),
+        0,
+        7628,
+    )
+    .unwrap_err();
+    assert!(error.contains("cannot open launch-attempt ledger"));
+    assert!(!marker.exists());
+}
+
+#[test]
+fn unit_282_failed_launch_rejects_live_dead_and_unmarked_profiles() {
+    let occurrence = tempfile::tempdir().unwrap();
+    let ledger = occurrence.path().join("launches.log");
+    for marker in [
+        Some(std::process::id().to_string()),
+        Some("4294967295".to_owned()),
+        None,
+    ] {
+        let home = crate::common::retained_failed_launch_home(Some(&ledger)).unwrap();
+        assert_eq!(home.parent(), Some(occurrence.path()));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&home).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+        let root = home.join("ff-rdp/profiles");
+        std::fs::create_dir_all(&root).unwrap();
+        crate::common::assert_no_managed_profiles(&root);
+        let profile = root.join("ff-rdp-profile-survivor");
+        std::fs::create_dir(&profile).unwrap();
+        if let Some(marker) = marker {
+            std::fs::write(profile.join(crate::common::OWNER_PID_MARKER), marker).unwrap();
+        }
+        std::fs::write(profile.join("evidence"), b"retain through unwind").unwrap();
+        let failure = std::panic::catch_unwind(|| crate::common::assert_no_managed_profiles(&root));
+        assert!(
+            failure.is_err(),
+            "every unexpected managed profile must fail, including a live owner"
+        );
+        drop(home);
+        assert_eq!(
+            std::fs::read(profile.join("evidence")).unwrap(),
+            b"retain through unwind"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn unit_282_direct_failed_launch_retains_raw_outcome_and_actual_home() {
+    let occurrence = tempfile::tempdir().unwrap();
+    let ledger = occurrence.path().join("launches.attempts.jsonl");
+    let home = crate::common::retained_failed_launch_home(Some(&ledger)).unwrap();
+    let output = crate::common::recorded_launch_output(
+        Command::new("/bin/sh")
+            .args([
+                "-c",
+                "printf 'did not open debug port'; printf 'diagnostic' >&2; exit 1",
+            ])
+            .env("FF_RDP_HOME", &home),
+        &ledger,
+        0,
+        7628,
+    )
+    .unwrap();
+    assert!(!output.status.success());
+    let text = std::fs::read_to_string(&ledger).unwrap();
+    let rows: Vec<serde_json::Value> = text
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(rows[0]["home"], serde_json::json!(home.as_os_str()));
+    assert_eq!(rows[1]["stdout"], serde_json::json!(output.stdout));
+    assert_eq!(
+        rows[1]["stderr"],
+        serde_json::json!(output.stderr),
+        "stdout/stderr bytes must both survive: {rows:?}"
+    );
+    assert_eq!(rows[1]["status"], output.status.to_string());
+    assert_eq!(rows[1]["success"], false);
+    let _ = std::panic::catch_unwind(|| panic!("subsequent test assertion"));
+    assert!(home.is_dir());
+    assert!(ledger.is_file());
+}
