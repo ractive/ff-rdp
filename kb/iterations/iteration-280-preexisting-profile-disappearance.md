@@ -2,7 +2,7 @@
 title: "Iteration 280: Attribute the disappearance of four preexisting profiles"
 type: iteration
 date: 2026-09-23
-status: planned
+status: done
 branch: iter-280/preexisting-profile-disappearance
 # NN must be free: `ls kb/iterations/` before filing. check-iteration-plan fails when
 # another plan already claims it. Letter suffixes (61b, 162a) are distinct numbers.
@@ -125,29 +125,29 @@ inputs for the same future record audit, not a new execution grant or a claimed
 explanation. The four final paths are retained, without broader cleanup. No recovery of the
 additional missing managed paths is claimed from the different raw-profile archive.
 
-## Tasks [0/3]
+## Tasks [3/3]
 
-- [ ] After a future explicit 280 launch, perform one finite audit of the retained
+- [x] After a future explicit 280 launch, perform one finite audit of the retained
       records above, with at most 30 active minutes. Freeze the input list and
       hashes first; include any already-retained ownership/cleanup receipts for
       these exact paths, without broad historical discovery. Build an interval
       ledger of observed presence/absence and actual actions. Stop once the
       explanation is evidenced or the declared records are exhausted.
-- [ ] For each baseline path, record an evidenced expected/owned-removal
+- [x] For each baseline path, record an evidenced expected/owned-removal
       explanation, or an explicit bounded unattributed outcome with the missing
       observation needed to distinguish ownership and removal actors. Do not
       infer deletion from PID absence, a marker alone, a later pass or static code.
-- [ ] If the audit selects a concrete product or cleanup defect, propose a scoped
+- [x] If the audit selects a concrete product or cleanup defect, propose a scoped
       repair and meaningful regression for independent review; otherwise close
       the bounded audit honestly without claiming resolution. Any further live
       work requires a fresh finite schedule and explicit authorization first.
 
-## Acceptance Criteria [0/3]
+## Acceptance Criteria [2/3]
 
-- [ ] Every exact baseline path is traceable through the retained marker/presence
+- [x] Every exact baseline path is traceable through the retained marker/presence
       records, failed broader post-check and disjoint scoped deletion list;
       unavailable timestamps, ownership and actor evidence remain explicit.
-- [ ] The finite record audit either attributes these exact removals to evidenced
+- [x] The finite record audit either attributes these exact removals to evidenced
       actions/ownership or records a bounded unattributed outcome and the precise
       evidence gap, without asserting a product deletion or resolved anomaly.
 - [ ] Any proposed repair follows the established mechanism with a regression
@@ -172,3 +172,27 @@ from 273, and no original 273/272 criteria or statuses are weakened.
 
 - [[iteration-273-contended-launch-output-hang]] — original bounded hang outcome
   remains complete without attributing this separate profile observation.
+
+## Dated bounded audit outcome — 2026-09-24
+
+The owner's 2026-09-24 all-open execution grant authorized this plan's single finite existing-record audit; the planning-only paragraphs above remain the historical filing boundary. The audit verified and exhausted all 49 frozen inputs (manifest SHA256 `e6fbb73df6877404260a1b850a57c11c53db0b578869825a908b8f7b46d03c57`) without new capture, profile action, source change or remote action.
+
+All 14 missing paths have a bounded unattributed outcome: the four original PID74584 paths, four different PID35214 closing-sweep baseline paths and six later test-marked paths remain separate. The final four PID93555 paths were present comparison records. The original broader preservation assertion failed and remains failed. The four explicitly removed owned live1paths and the separately archived raw `/tmp/ff-rdp273-sweep-j8b5305f` are disjoint from all missing/comparison paths. Neither archive supplies recovery for those 14 missing managed paths.
+
+Census arrays lack embedded exact observation times. Associated receipts/script order bound the observations; individual deletion times and actors remain unavailable. Inodes/directory birthtimes recorded for the latter sets are filesystem identities, not process birth-qualified ownership. PID marker/process absence, test names, passing verdicts and static stale-pruning/`build_command(None)` possibilities do not select a historical deletion mechanism.
+
+The missing evidence is an exact path+inode filesystem action/result joined to its actor's process/executable birth identity and contemporaneous ownership decision (marker read, owner birth/liveness), with before/after observations that exclude path replacement. Group A also lacks inode/directory-birth metadata. No concrete product/cleanup defect is selected, so no repair, mechanism regression or new live validation is claimed. The anomaly is unresolved; the explicitly allowed finite record audit may close as bounded unattributed.
+
+Private evidence: `.git/ralph-loop/20260924-all-open/iter280/audit/report.md`, `interval-action-ledger.json`, `initial-verification.json`, `final-verification.json`, `input-disposition.json`, `archive-coverage.json`, `original-dispositions.json`, `command-receipts.json` and `session.json`. Conservative wall charge was 562.329244/1800 seconds, from 2026-09-24T21:00:50.617049+02:00 through 2026-09-24T21:10:12.946293+02:00, including guidance/dispatch overhead; the 49 input hashes/sizes and manifest still matched at exit. Actual active-time/token measurements are unavailable. No allowance resets/transfers or background work.
+
+Independent review returned ZERO actionable findings; root adopts this bounded closure. Accordingly, tasks 1–2 are satisfied; task 3's express otherwise-close branch is satisfied, so tasks 3/3. AC1–2 are satisfied; conditional AC3 stays unticked at 2/3 because no repair is justified. Original words are preserved. `done` denotes the bounded audit only. Reopening requires newly available relevant records or a separately authorized finite recurrence filling the named gap, with no effect on 273's original outcomes or another iteration's caps.
+
+## Carry-over
+
+| Item | Disposition |
+| --- | --- |
+| Fourteen missing paths; removal actor and exact action unknown | No new plan: this plan closes its expressly bounded audit with the precise missing observation above. Reopen 280 on newly available relevant records or an authorized finite recurrence filling that gap. |
+| Conditional repair AC3 | Unticked: no mechanism selected, no repair or live validation claimed. |
+| Original 273 preservation failures and failed archive attempts | Retained historical results; no retroactive preservation or recovery claim. |
+
+Validation: fresh nine xtask checks and HYALO005 passed; Firefox-reference and dogfood checks had no configured references/script and supplied no live coverage. No product source changed. The unchanged 569 source/build/test inputs match the recorded ordered fmt/strict workspace Clippy/workspace validation (2538 pass, 0 fail, 419 ignored); no new Firefox run was required or claimed for this record-only audit. Independent audit review returned ZERO actionable findings.
