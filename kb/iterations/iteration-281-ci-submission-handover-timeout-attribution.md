@@ -5,7 +5,11 @@ date: 2026-09-24
 branch: iter-281/ci-submission-handover-timeout-attribution
 depends_on: []
 first_call_sites: []
-dogfood_path: "Planning only: retained failed CI and one supervisor-admitted reviewed diagnostic-head observation; no live script or execution authorized by this plan."
+dogfood_path: >-
+  Inspect retained failed CI and reviewed diagnostic-head evidence; then execute
+  a finite, supervisor-scheduled local socket-fixture schedule distinguishing
+  side-response consumption, main-channel metadata and caller decision under the
+  original400/1000ms deadlines. No native collector or live-Firefox script is required.
 tags:
   - iteration
   - carry-over
@@ -75,3 +79,15 @@ finite inputs, ownership, actual-wait/cleanup evidence, stop condition and admis
 | Original ambiguous CI Timeout | Open here; cause unknown. |
 | Two local INVALID125 captures | Preserved; no additional local collector/capture work planned. Their errors do not explain CI. |
 | Existing278 receipt/cleanup correction | Separate controlled mechanism with its own evidence; do not weaken or undo it to fit this failure. |
+
+## Current-main adaptation — 2026-09-25
+The reviewed diagnostic head 9de0ecdcc5743eaa295527ba313f074263d1484e passed the named fixture in macOS job 107407292892; the retained summary records 2538 passed/0 failed/419 ignored across 37 target summaries. This is validation only; the original dd32 timeout remains unattributed. The old single-head observation is consumed, not a pending invitation to retry it.
+
+Reuse 278's actual peer joins and thread-scoped diagnostics. Extend observations through parsed side-snapshot consumption, main-channel metadata acquisition, replacement decision and timeout conversion. Side write completion alone cannot prove consumption before the deadline.
+
+Declare one finite controlled schedule distinguishing timely replacement and metadata, delayed side delivery, and timely side delivery with delayed metadata. Preserve the original 400/1000ms bounds, success/exhaustion/protocol assertions and real-socket deadline case. A synthetic timeout control establishes classification only. Select a correction only from demonstrated evidence; do not resume native collector work or claim that a passing retry explains the historical CI failure.
+
+This prospective finite local schedule follows the owner’s September25
+all-open request and supersedes the planning-only wording above for that
+work alone. The old native captures and single-head CI observation remain
+consumed; no new native collector schedule or unchanged CI retry is implied.

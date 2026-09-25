@@ -7,28 +7,13 @@ branch: iter-203/live-sweep-watch-conditions-third-holder
 depends_on:
   - iteration-192-live-sweep-watch-conditions-carried-forward
 first_call_sites: []
-dogfood_path: |
-  # No code to run. This plan holds trigger conditions until one fires; the
-  # dogfood step is reading a sweep's output for the signals below.
-  # Start the port-6000 browser FIRST — a raw browser, never `ff-rdp launch`
-  # (see .claude/skills/iteration-close/SKILL.md; four agents got this wrong):
-  #   firefox -no-remote -profile /tmp/ff-rdp-p6000 --start-debugger-server 6000 --headless
-  #   (with devtools.debugger.remote-enabled / prompt-connection / chrome.enabled
-  #    in that profile's user.js, or the debug port never opens)
-  # Without one, `vanished` can never be non-zero and conditions 3 and 4 are
-  # unobservable.
-  FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 cargo run -p xtask -- live-sweep
-  # Read the LIVE_SWEEP_SUMMARY line's `vanished` and `launch_timeout` counts,
-  # check `passed + failed == executed`, then grep the log for these five names:
-  #   live_160_envelope_honesty::live_160_ref_click_asserts_handler_effect
-  #   live_104_security_pwa::live_manifest_fetch_canonical
-  #   live_145_error_envelope_completeness::live_145_click_element_not_found_unchanged
-  #   live_109_throttle_block::live_throttle_slow3g_slows_fetch
-  #   live_137_daemon_mode_parity::live_137_consent_accept_via_daemon
-  # Sample the port-6000 pid every 10 s across the sweep (condition 4) and record
-  # the 1-minute load range, which is what makes conditions 5-8 readable.
-  gh run list --workflow=toolchain-watch.yml --limit=10 \
-    --json conclusion,createdAt,event   # conditions 10, 11, 13
+dogfood_path: >-
+  Reconcile preserved qualified sweep logs and the final selected iterations’
+  required closing sweeps by exact test name, all-tier verdict counts and profile
+  summaries. Reuse existing raw-browser identity/listener observations only at their
+  recorded scope. Inspect scheduled toolchain-watch conclusions through the stated
+  cutoff. This holder requires no additional discovery sweep, induced failure or
+  future calendar wait.
 tags: [iteration, testing, live-tests, tooling, carry-over]
 iteration_252_additional_watch: "2026-09-09: fold post-auth daemon Timeout observations into this watch holder as distinct observations, without claiming condition 5 fired. The diagnostic sweep failed live_109_throttle_block::live_block_url_pattern and live_160_envelope_honesty::live_160_click_reachable_fires_handler; both passed the unpaused final sweep and isolated reruns. The final sweep failed live_160_envelope_honesty::live_160_consent_allow_no_cmp_exits_zero with the same post-auth Timeout envelope; its isolated rerun passed. No source change was made for these rows and no common cause is proved. On recurrence in another unpaused sweep or isolation, capture daemon auth/request/dispatcher timing and file a scoped follow-up rather than changing bounds. The diagnostic tabless-launch failure overlapped the brief paused test phase; that test passed both the final sweep and its independent rerun. Preserve its no-tabs error as a failure, not a launch_timeout reclassification. All original watch ACs remain untouched."
 takeover_reconciliation_252: "2026-09-09: scheduled toolchain-watch runs now exist and succeeded on Aug24, Aug31 and Sep7 (latest head9937bf8f94903cccd5d346fcdc1080feb9b95cfc); historical no-scheduled-run premise of conditions11/13 is stale. Migrated iteration-close explicitly requires raw-browser ownership check and stop/wait, satisfying the implementation premise of condition14. Keep holder open and original ACs unticked in this maintenance pass; do not execute its wider backlog. Actual current sweep329/329 names, no leaks/reclassifications; existing repeated-failure conditions and new distinct timeout observations remain recorded."
@@ -253,3 +238,26 @@ panic/URL/document/DOM/route evidence rather than resetting the trigger. The new
 is outside the selected execution queue; this holder remains parked.
 Evidence: `.git/ralph-loop/20260919-queue/iter261/logs/live-sweep.log` and
 `live-sweep-rerun.log`; exact-name counts are in `iter261-review/report.md`.
+
+## Terminal reconciliation — 2026-09-25
+
+Close this holder after the selected execution queue is reconciled. Record a
+dated evidence cutoff and one explicit disposition for every original row and
+additional frontmatter/body watch. Ticks record the original observed/forked
+or deliberate code-change arm, not proof that an intermittent cause vanished.
+
+No fourth holder is created. Conditions already assigned to iteration plans
+remain with those owners. Remaining nonactionable historical watches are
+retired with their evidence limits and concrete reopening triggers recorded
+here. Existing per-iteration closing review handles a new occurrence; this
+decision creates no timer, periodic task or extra sweep.
+
+Reconcile conditions 6/8 with completed 262, 7 with 267, 13 with the recorded
+scheduled runs and 14 with the installed ownership-first stop/wait guidance.
+Use exact names and all-tier/profile summaries for 1/2/3/5; limit condition 4
+claims to retained identity/listener samples. Conditions 10/11 can use recorded
+scheduled conclusions, without claiming notification delivery or future health.
+Preserve additional owners 274/267/268/271/275 and explicitly disposition the
+unlocalized 254 dogfood 124 and 169 reload/null-status watches. No row silently
+disappears; no new calendar wait, induced load or deliberate process death
+is required.
