@@ -227,7 +227,7 @@ fn live_navigate_elapsed_matches_wall() {
     assert!(
         delta <= 750,
         "elapsed_ms ({elapsed_ms}) must be within ±750ms of measured wall ({measured_wall_ms}); \
-         delta {delta}ms — honest-timing fix (iter-122 Theme B) regressed; {load}"
+         delta {delta}ms exceeds the wall/report gap bound; inspect NAV_TIMING regions for attribution; {load}"
     );
     assert!(
         elapsed_ms > 5,

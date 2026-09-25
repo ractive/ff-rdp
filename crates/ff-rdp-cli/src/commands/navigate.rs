@@ -2359,6 +2359,7 @@ pub fn run_core(
     validate_url_with_opts(url, cli.allow_file_urls, cli.allow_unsafe_urls)?;
     let mut ctx = connect_and_get_target(cli)?;
     trace_navigation_timing("core", "connected", timing_origin, Instant::now());
+    trace_navigation_timing("setup", "connected", timing_origin, Instant::now());
     let target_actor = ctx.target().actor.clone();
     let tab_actor = ctx.target_tab_actor().clone();
 
@@ -2372,6 +2373,7 @@ pub fn run_core(
     // `--wait-strategy events --no-daemon` timed out unconditionally. See
     // `get_navigation_watcher`.
     let watcher_actor = get_navigation_watcher(&mut ctx, &tab_actor)?;
+    trace_navigation_timing("setup", "watcher_ready", timing_origin, Instant::now());
 
     // Missing baseline evidence stays absent, never a synthetic epoch zero.
     let pre_nav_epoch = if wait_opts.no_wait {
@@ -2380,6 +2382,7 @@ pub fn run_core(
         capture_pre_nav_epoch(&mut ctx, "navigate: pre-nav epoch eval")
     };
 
+    trace_navigation_timing("setup", "epoch_sampled", timing_origin, Instant::now());
     // `window.location.href` captured before dispatch (iter-138 Themes B/C)
     // — see `wait_for_navigation_commit`'s identical capture for why: it's
     // the baseline `probe_same_document_commit` needs to detect a same-page
@@ -2391,6 +2394,7 @@ pub fn run_core(
         let console_actor = ctx.target().console_actor.clone();
         eval_location_href(ctx.transport_mut(), &console_actor)
     };
+    trace_navigation_timing("setup", "href_sampled", timing_origin, Instant::now());
     tracing::debug!(requested_url = url, pre_href = %pre_nav_href, pre_epoch = ?pre_nav_epoch, target = ?ctx.target(), "navigate: baseline captured");
 
     let commit_info = if wait_opts.no_wait {
@@ -2438,6 +2442,7 @@ pub fn run_core(
         WatcherActor::watch_targets(ctx.transport_mut(), &watcher_actor, "frame")
             .map_err(AppError::from)?;
 
+        trace_navigation_timing("setup", "targets_watched", timing_origin, Instant::now());
         // Obtain (or create) the ResourceCommand bus via the session so it can
         // be reused by other command helpers without constructing a new bus each
         // time.  The Arc clone detaches ownership from `ctx` so we can still
@@ -2460,6 +2465,7 @@ pub fn run_core(
                 &[ResourceType::DocumentEvent, ResourceType::NetworkEvent],
             )
             .map_err(|e| AppError::from(anyhow::anyhow!("document-event subscribe: {e:#}")))?;
+        trace_navigation_timing("setup", "subscribed", timing_origin, Instant::now());
 
         // iter-138 Theme A, daemon-mode correction: the daemon manages
         // `network-event` watching centrally and does NOT forward it to a
@@ -2477,6 +2483,7 @@ pub fn run_core(
                 .map_err(AppError::from)?;
         }
 
+        trace_navigation_timing("setup", "ready_to_dispatch", timing_origin, Instant::now());
         // Record the wall-clock instant before sending navigateTo so we can
         // compute the remaining budget for the Both readystate fallback.
         let nav_start = Instant::now();
@@ -2888,12 +2895,24 @@ pub fn run(
     }
     let mut meta = json!({});
     let page_text = super::page_view::lift_meta(cli, &mut result, &mut meta);
+    trace_navigation_timing(
+        "postcore",
+        "connection_meta_begin",
+        timing_origin,
+        Instant::now(),
+    );
     crate::connection_meta::merge_into_if_verbose(
         &mut meta,
         &cli.host,
         cli.port,
         None,
         cli.is_verbose(),
+    );
+    trace_navigation_timing(
+        "postcore",
+        "connection_meta_end",
+        timing_origin,
+        Instant::now(),
     );
     // iter-134: always present, not gated by --verbose — matches the
     // `--with-network` variant below, which already got this in iter-128.

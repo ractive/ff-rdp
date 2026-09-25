@@ -13,6 +13,15 @@ use crate::daemon::client::{
 };
 use crate::error::AppError;
 
+// Debug-only observations have one origin per scope and add no protocol traffic.
+// Missing terminal stages on an error are not evidence of normal return.
+fn trace_connection_timing(scope: &str, stage: &str, origin: Option<Instant>) {
+    if let Some(origin) = origin {
+        tracing::debug!(target: "ff_rdp_cli::navigation_timing", "NAV_TIMING pid={} scope={} stage={} elapsed_ns={}",
+            std::process::id(), scope, stage, origin.elapsed().as_nanos());
+    }
+}
+
 /// Shared state after connecting to Firefox and resolving a tab target.
 ///
 /// Owns a [`Session`] (transport + actor registry) and the resolved tab
@@ -43,6 +52,10 @@ pub struct ConnectedTab {
 /// localhost.  The daemon transparently forwards RDP frames, so the rest of
 /// the protocol handshake is identical.
 pub fn connect_and_get_target(cli: &Cli) -> Result<ConnectedTab, AppError> {
+    let timing_origin =
+        tracing::enabled!(target: "ff_rdp_cli::navigation_timing", tracing::Level::DEBUG)
+            .then(Instant::now);
+    trace_connection_timing("connect", "entry", timing_origin);
     let target = resolve_connection_target(&cli.host, cli.port, cli.daemon_timeout, cli.no_daemon);
 
     let (connect_host, connect_port, via_daemon, auth_token, deferred_warning) = match target {
@@ -64,6 +77,7 @@ pub fn connect_and_get_target(cli: &Cli) -> Result<ConnectedTab, AppError> {
         crate::connection_meta::remember_daemon_fallback(w.clone());
     }
 
+    trace_connection_timing("connect", "route_resolved", timing_origin);
     let connection = connect_to_firefox(
         &connect_host,
         connect_port,
@@ -82,6 +96,7 @@ pub fn connect_and_get_target(cli: &Cli) -> Result<ConnectedTab, AppError> {
         }
     })
     .map_err(ConnectFailure::into_app_error)?;
+    trace_connection_timing("connect", "greeted", timing_origin);
 
     handshake_and_resolve_tab(
         connection,
@@ -91,6 +106,7 @@ pub fn connect_and_get_target(cli: &Cli) -> Result<ConnectedTab, AppError> {
             .as_deref()
             .map(|token| TargetEndpoint::new(connect_port, token)),
     )
+    .inspect(|_| trace_connection_timing("connect", "attached", timing_origin))
 }
 
 /// Like [`connect_and_get_target`] but always bypasses the daemon and
@@ -356,6 +372,10 @@ impl TabListing {
     /// it, yielding the same [`ConnectedTab`] a plain
     /// [`connect_and_get_target`] would have produced.
     pub fn attach(self, cli: &Cli) -> Result<ConnectedTab, AppError> {
+        let timing_origin =
+            tracing::enabled!(target: "ff_rdp_cli::navigation_timing", tracing::Level::DEBUG)
+                .then(Instant::now);
+        trace_connection_timing("attach", "entry", timing_origin);
         let Self {
             mut connection,
             greeting_version,
@@ -379,6 +399,7 @@ impl TabListing {
             connection.set_firefox_version(effective_version);
         }
         crate::connection_meta::remember_version(effective_version);
+        trace_connection_timing("attach", "version_resolved", timing_origin);
 
         let tab = crate::tab_target::resolve_tab_with_context(
             &tabs,
@@ -388,6 +409,7 @@ impl TabListing {
             cli.port,
         )?;
         let tab_actor = tab.actor.clone();
+        trace_connection_timing("attach", "tab_selected", timing_origin);
 
         let target_timeout = Duration::from_millis(cli.timeout);
         let target_info = resolve_target_until(
@@ -396,6 +418,8 @@ impl TabListing {
             &tab_actor,
             Instant::now() + target_timeout,
         )?;
+
+        trace_connection_timing("attach", "target_acquired", timing_origin);
 
         // Consume the RdpConnection and build a Session so all subsequent
         // actor interactions use the registry for front resolution.
@@ -406,6 +430,7 @@ impl TabListing {
         // Register the target front (WindowGlobalTarget) and its console front.
         // These two are always present after getTarget.
         register_target_fronts(session.registry(), &target_info);
+        trace_connection_timing("attach", "registered", timing_origin);
 
         Ok(ConnectedTab {
             target_endpoint,
@@ -455,6 +480,10 @@ fn handshake_and_list_tabs(
     via_daemon: bool,
     target_endpoint: Option<TargetEndpoint>,
 ) -> Result<TabListing, TabListError> {
+    let timing_origin =
+        tracing::enabled!(target: "ff_rdp_cli::navigation_timing", tracing::Level::DEBUG)
+            .then(Instant::now);
+    trace_connection_timing("list_tabs", "entry", timing_origin);
     let greeting_version = connection.firefox_version();
     // Remember the greeting version *before* `listTabs`, so a `listTabs`
     // failure still leaves downstream error paths able to name the version.
@@ -474,6 +503,7 @@ fn handshake_and_list_tabs(
         }
     };
 
+    trace_connection_timing("list_tabs", "parsed", timing_origin);
     Ok(TabListing {
         target_endpoint,
         connection,
@@ -517,7 +547,28 @@ pub(crate) fn resolve_target_snapshot(
     deadline: Instant,
 ) -> Result<Option<TargetInfo>, AppError> {
     if let Some(endpoint) = endpoint {
-        match endpoint.snapshot(descriptor, deadline)? {
+        let snapshot = endpoint.snapshot(descriptor, deadline);
+        #[cfg(test)]
+        match &snapshot {
+            Ok(TargetSnapshot::Live(target)) => {
+                super::type_text::trace_submission("side_snapshot_consumed", deadline, target);
+            }
+            Ok(TargetSnapshot::Pending) => {
+                super::type_text::trace_submission("side_snapshot_consumed", deadline, "pending");
+            }
+            Ok(TargetSnapshot::StartupRecovery) => super::type_text::trace_submission(
+                "side_snapshot_consumed",
+                deadline,
+                "startup_recovery",
+            ),
+            Ok(TargetSnapshot::Unmanaged) => {
+                super::type_text::trace_submission("side_snapshot_consumed", deadline, "unmanaged");
+            }
+            Err(error) => {
+                super::type_text::trace_submission("side_snapshot_error", deadline, error);
+            }
+        }
+        match snapshot? {
             TargetSnapshot::Live(mut target) => {
                 // The immutable WindowGlobal actor identifies this document;
                 // its availability-time URL does not track pushState/hash.
@@ -541,10 +592,18 @@ pub(crate) fn resolve_target_snapshot(
                         transport,
                         previous,
                     };
+                    #[cfg(test)]
+                    super::type_text::trace_submission("metadata_begin", deadline, &target.actor);
                     guard.transport.with_read_deadline(deadline, |t| {
                         ff_rdp_core::WindowGlobalTarget::current_url(t, &target.actor)
                     })
                 };
+                #[cfg(test)]
+                super::type_text::trace_submission(
+                    "metadata_outcome",
+                    deadline,
+                    (&target.actor, &metadata),
+                );
                 target.url = match metadata {
                     Ok(url) => url,
                     // Classify before AppError erases the typed actor error.
@@ -748,6 +807,8 @@ impl ConnectedTab {
     ) -> Result<ActorId, AppError> {
         loop {
             if Instant::now() >= deadline {
+                #[cfg(test)]
+                super::type_text::trace_submission("handover_deadline_exhausted", deadline, ());
                 return Err(AppError::Timeout(
                     "waiting for submission target handover".into(),
                 ));
@@ -760,7 +821,15 @@ impl ConnectedTab {
                 deadline,
             )
             .map_err(|error| {
-                if Instant::now() >= deadline || matches!(error, AppError::RdpTimeout { .. }) {
+                let timed_out =
+                    Instant::now() >= deadline || matches!(error, AppError::RdpTimeout { .. });
+                #[cfg(test)]
+                super::type_text::trace_submission(
+                    "handover_timeout_conversion",
+                    deadline,
+                    (&error, timed_out),
+                );
+                if timed_out {
                     AppError::Timeout("waiting for submission target handover".into())
                 } else {
                     error
@@ -771,6 +840,12 @@ impl ConnectedTab {
                     (Some(old), Some(new)) if old != new);
                 let moved = matches!((url, fresh.url.as_deref()),
                     (Some(old), Some(new)) if old != new);
+                #[cfg(test)]
+                super::type_text::trace_submission(
+                    "replacement_decision",
+                    deadline,
+                    (&fresh.actor, replaced, moved),
+                );
                 if replaced || moved {
                     let console = fresh.console_actor.clone();
                     self.install_target(fresh);

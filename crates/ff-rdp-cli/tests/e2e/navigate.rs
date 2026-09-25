@@ -537,23 +537,54 @@ fn e2e_279_navigation_timing_records_same_command() {
     for (scope, stages) in [
         (
             "core",
-            [
+            &[
                 "entry",
                 "connected",
                 "dispatch",
                 "commit_resolved",
                 "return_before_drop",
-            ],
+            ][..],
         ),
         (
             "run",
-            [
+            &[
                 "entry",
                 "core_call",
                 "core_return_after_drop",
                 "output_begin",
                 "output_end",
-            ],
+            ][..],
+        ),
+        (
+            "connect",
+            &["entry", "route_resolved", "greeted", "attached"][..],
+        ),
+        ("list_tabs", &["entry", "parsed"][..]),
+        (
+            "attach",
+            &[
+                "entry",
+                "version_resolved",
+                "tab_selected",
+                "target_acquired",
+                "registered",
+            ][..],
+        ),
+        (
+            "setup",
+            &[
+                "connected",
+                "watcher_ready",
+                "epoch_sampled",
+                "href_sampled",
+                "targets_watched",
+                "subscribed",
+                "ready_to_dispatch",
+            ][..],
+        ),
+        (
+            "postcore",
+            &["connection_meta_begin", "connection_meta_end"][..],
         ),
     ] {
         let prefix = format!("NAV_TIMING pid={pid} scope={scope} stage=");
@@ -570,7 +601,7 @@ fn e2e_279_navigation_timing_records_same_command() {
         let mut previous = 0;
         for (row, stage) in rows.iter().zip(stages) {
             let (actual, ns) = row.split_once(" elapsed_ns=").expect("timing fields");
-            assert_eq!(actual, stage);
+            assert_eq!(actual, *stage);
             let ns: u128 = ns.trim().parse().expect("monotonic nanoseconds");
             assert!(ns >= previous);
             previous = ns;
