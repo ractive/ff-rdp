@@ -192,11 +192,14 @@ fn live_navigate_elapsed_matches_wall() {
     args.push("--timeout".to_owned());
     args.push("8000".to_owned());
     let out = Command::new(ff_rdp_bin())
+        .env("RUST_LOG", "ff_rdp_cli::navigation_timing=debug")
         .args(args)
         .args(["navigate", &url])
         .output()
         .expect("ff-rdp navigate failed");
     let measured_wall_ms = i128::try_from(start.elapsed().as_millis()).unwrap_or(i128::MAX);
+
+    eprintln!("NAV_TIMING_OUTPUT {}", crate::common::output_note(&out));
 
     assert!(
         out.status.success(),
