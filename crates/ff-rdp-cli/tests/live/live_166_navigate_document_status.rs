@@ -96,6 +96,13 @@ fn navigate_ok(global: &[String], args: &[&str], label: &str) -> Value {
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("{label}: spawn ff-rdp navigate {args:?}: {e}"));
+    if std::env::var_os("FF_RDP_277_CAPTURE").is_some() {
+        eprintln!(
+            "277 capture global={global:?} navigate={args:?} status={}\n{}",
+            out.status,
+            combined(&out)
+        );
+    }
     assert!(
         out.status.success(),
         "{label}: `navigate {args:?}` must exit 0; got: {}",

@@ -2,8 +2,8 @@
 title: "Iteration 277: Reject ambiguous blank navigation commits"
 type: iteration
 date: 2026-09-19
-status: in-progress
-branch: iter-277/direct-navigate-committed-about-blank
+status: done
+branch: iter-277/navigation-guard-final-20260925
 # NN must be free: `ls kb/iterations/` before filing. check-iteration-plan fails when
 # another plan already claims it. Letter suffixes (61b, 162a) are distinct numbers.
 depends_on:
@@ -271,13 +271,13 @@ unfulfilled; the withdrawn warm control remains withdrawn. Reopen historical
 attribution only on recovered contemporaneous evidence or a new attributable
 occurrence, not another unchanged passing sample.
 
-### Delivery acceptance [0/3]
+### Delivery acceptance [3/3]
 
-- [ ] The reviewed actual-caller regression fails without the guard and passes
+- [x] The reviewed actual-caller regression fails without the guard and passes
       with it, including its eight existing boundary controls.
-- [ ] Final-source Firefox verification preserves the original canonical
+- [x] Final-source Firefox verification preserves the original canonical
       committed destination and HTTP-status assertions.
-- [ ] Current ordered gates and this iteration's own dual-gate closing sweep
+- [x] Current ordered gates and this iteration's own dual-gate closing sweep
       pass, retaining 279's refresh-consumer behavior and 282's launch ownership.
 
 The owner’s September25 all-open adaptation request supplies the prospective
@@ -286,3 +286,64 @@ retain every unfulfilled historical AC; it must not report the original
 attribution criterion as passed. Earlier investigation schedules and restrictions
 remain historical records, not renewable capture allowances. Use only the
 finite controls needed for the new contract and the required closing validation.
+
+
+## Current prospective candidate — 2026-09-25
+
+The recovered product patch is adapted onto main
+`c25a80c5c0011e6b895d81137c848422e16b9512`, retaining 279's watched-history
+refresh consumer, 272's deadlines/frame handling and 282's launch ownership.
+The patch applied without removing or rewriting those changes. The original
+166 test ordering, canonical destination and HTTP-status assertions are unchanged;
+its only addition is the previously reviewed opt-in output diagnostic.
+
+Current-input proof was repeated because the caller's refresh behavior changed
+since the old evidence. One guard-only mutation failed with actual committed
+`about:blank` versus the expected destination, while reporting HTTP200.
+The restored actual-wait test passed all eight cases with one navigation action
+per case. Earlier proof remains historical supporting evidence, not a substitute
+for this current-input run. No Firefox, warm observation or native discovery was
+executed by the implementer. The withdrawn warm control remains withdrawn.
+
+Private commands, raw outputs, actual exits, source and binary attestations are in
+primary `.git/ralph-loop/20260924-all-open/iter277/current/`.
+Independent review, final-source Firefox verification, this iteration's own
+closing dual-gate sweep and closing dispositions are still required. Original
+AC0/3 and delivery0/3 remain unticked at this implementation checkpoint.
+The historical failure remains unattributed; this candidate makes only the
+prospective delivery claim above.
+
+## Prospective delivery completed — 2026-09-25
+
+The reviewed guard was integrated onto main `c25a80c5`, preserving279’s
+refresh-consumer behavior and272/282’s repairs. On these current inputs, removing
+only the guard failed the actual wait caller with blank/HTTP200; exact restoration
+passed all eight boundary controls. The ordered formatting, strict all-targets
+workspace Clippy and normal parallel workspace tests passed once:2567/0/421
+(282’s separately emitted nested child is excluded). Independent local review
+accepted the frozen candidate with zero findings.
+
+This iteration’s own final-source dual-gate sweep passed349/349 across all six
+exact tiers (CLI338; core1/3/3/2/2), including original166’s canonical destination
+and HTTP-status assertions. It reported zero leaked or unattributed profiles.
+All343 launch attempts paired; all192 pre-existing profile directories/markers
+were conserved and10 new retained profiles were attributed. The owned raw browser
+had an actual child wait; protected desktop identities remained unchanged. No
+worker-return inference is made from other process absence. Source574 inputs,
+five binaries, Firefox156.0.1 package110 pins and four real profiles matched
+before and after.
+
+Private evidence: `.git/ralph-loop/20260924-all-open/iter277/current/`
+(frozen candidate, failed mutation, restored control and ordered gates),
+`iter277/review-final/report.json`, and `iter277/closing1/` (raw results,
+exact-tier and launch/profile reconciliation). Sweep log SHA256
+`0d0cceba801fbffe835632907850ae88f40931ca2a825f0839666340371ecb4e`.
+An earlier reviewer refused filesystem isolation and returned no verdict; that
+record remains separate from the completed instruction-enforced read-only review.
+
+Completion is under the prospective delivery scope above. Original historical
+tasks/AC0/3 and the withdrawn warm observation remain unchanged; neither this
+sweep nor the scripted repair assigns the untraced historical failure’s cause.
+Separate281 frame, initial-navigation timeout and timing failures remain preserved
+and are not attributed to277.276 remains the next dependent readiness-sampling
+repair; it must retain this guard and its supported navigation boundaries.

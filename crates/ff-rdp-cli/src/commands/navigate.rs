@@ -729,7 +729,12 @@ pub(crate) fn eval_document_ready_state(
 ///   A caller trusting a literal `"about:blank"` here would wrongly
 ///   conclude the navigation failed.
 fn needs_href_fallback(candidate: &str, requested_url: &str) -> bool {
-    candidate.is_empty() || (candidate == "about:blank" && requested_url != "about:blank")
+    // URL schemes are case-insensitive, but the scheme-specific content is
+    // not: ABOUT:blank explicitly requests blank, whereas about:Blank does not.
+    let requested_blank = requested_url
+        .split_once(':')
+        .is_some_and(|(scheme, path)| scheme.eq_ignore_ascii_case("about") && path == "blank");
+    candidate.is_empty() || (candidate == "about:blank" && !requested_blank)
 }
 
 /// Wait for a document-event on the bus (level determined by `wait_level`),
@@ -1163,6 +1168,7 @@ fn wait_for_doc_complete(
                                 // the next real dom-loading is tracked cleanly.
                                 continue;
                             }
+                            tracing::debug!(branch = "dom-complete-href", committed_url = %href, "navigate: completion selected");
                             break 'wait CommitInfo {
                                 committed_url: href,
                                 ready_state: "complete".to_owned(),
@@ -1173,6 +1179,7 @@ fn wait_for_doc_complete(
                                 status_reason: None,
                             };
                         }
+                        tracing::debug!(branch = "dom-complete", committed_url = %committed, "navigate: completion selected");
                         break 'wait CommitInfo {
                             committed_url: committed,
                             ready_state: "complete".to_owned(),
@@ -1219,7 +1226,14 @@ fn wait_for_doc_complete(
             };
             if let Some(href) =
                 probe_same_document_commit_safe(transport, bus_arc, &p.console_actor, &p.pre_href)
+                // A changed URL is not necessarily a same-document commit:
+                // a cross-process transition can expose a complete blank
+                // document. For a known destination, apply the same ambiguity
+                // guard as the event and fresh-epoch paths. History traversal
+                // has no requested URL and may legitimately return to blank.
+                && (requested_url.is_empty() || !needs_href_fallback(&href, requested_url))
             {
+                tracing::debug!(branch = "same-document", %href, pre_href = %p.pre_href, console_actor = %p.console_actor, "navigate: completion selected");
                 let elapsed_ms = u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(u64::MAX);
                 break 'wait CommitInfo {
                     committed_url: href,
@@ -1332,6 +1346,7 @@ fn wait_for_doc_complete(
                 // tick or the events path will observe the real commit)
                 // rather than returning a lie.
                 if !needs_href_fallback(&committed, requested_url) {
+                    tracing::debug!(branch = "fresh-epoch", committed_url = %committed, console_actor = %p.console_actor, "navigate: completion selected");
                     let elapsed_ms =
                         u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(u64::MAX);
                     break 'wait CommitInfo {
@@ -1454,6 +1469,8 @@ fn wait_for_doc_complete(
         status_updates = tracker.statuses.len(),
         reason = reason.map_or("none", StatusUnknown::as_str),
         committed_url = %commit_info.committed_url,
+        requested_url,
+        selected_resource = ?tracker.pick_document(requested_url, &commit_info.committed_url),
         docs = ?tracker.docs,
         statuses = ?tracker.statuses,
         "navigate: document status resolved"
@@ -2209,6 +2226,7 @@ pub fn run_core(
         let console_actor = ctx.target().console_actor.clone();
         eval_location_href(ctx.transport_mut(), &console_actor)
     };
+    tracing::debug!(requested_url = url, pre_href = %pre_nav_href, pre_epoch = pre_nav_epoch, target = ?ctx.target(), "navigate: baseline captured");
 
     let commit_info = if wait_opts.no_wait {
         // --no-wait: send navigateTo via the standard actor_request (response
@@ -6293,5 +6311,208 @@ mod snapshot_probe_tests {
         assert_eq!(queries, 2);
         assert_eq!(fresh, 1);
         assert_ne!(result.status_reason, Some(StatusUnknown::NotObserved));
+    }
+}
+
+#[cfg(test)]
+mod blank_shortcut_tests {
+    use super::*;
+    use ff_rdp_core::transport::{encode_frame, recv_from};
+    use std::io::{BufReader, Write};
+    use std::net::{TcpListener, TcpStream};
+
+    fn send(stream: &mut TcpStream, value: &Value) {
+        stream
+            .write_all(encode_frame(&value.to_string()).as_bytes())
+            .unwrap();
+    }
+
+    #[test]
+    fn unit_277_actual_wait_shortcut_matrix() {
+        for (baseline, sampled, expected, requested) in [
+            (
+                "https://old.test/",
+                "about:blank",
+                "https://destination.test/",
+                "https://destination.test/",
+            ),
+            (
+                "about:blank",
+                "about:blank",
+                "https://destination.test/",
+                "https://destination.test/",
+            ),
+            (
+                "https://destination.test/",
+                "https://destination.test/#fragment",
+                "https://destination.test/#fragment",
+                "https://destination.test/",
+            ),
+            (
+                "https://destination.test/old",
+                "https://destination.test/route",
+                "https://destination.test/route",
+                "https://destination.test/",
+            ),
+            (
+                "https://old.test/",
+                "about:blank",
+                "about:blank",
+                "about:blank",
+            ),
+            ("https://old.test/", "about:blank", "about:blank", ""),
+            (
+                "https://old.test/",
+                "about:blank",
+                "about:blank",
+                "ABOUT:blank",
+            ),
+            (
+                "https://old.test/",
+                "about:blank",
+                "https://destination.test/",
+                "ABOUT:Blank",
+            ),
+        ] {
+            let observing = requested.starts_with("https:");
+            let (tx, rx) = std::sync::mpsc::channel();
+            tx.send(Arc::new(Resource::NetworkEvent(
+                ff_rdp_core::NetworkResource {
+                    actor: "network".into(),
+                    method: "GET".into(),
+                    url: "https://destination.test/".into(),
+                    is_xhr: false,
+                    cause_type: "document".into(),
+                    started_date_time: String::new(),
+                    timestamp: 0.0,
+                    resource_id: 7,
+                },
+            )))
+            .unwrap();
+            tx.send(Arc::new(Resource::NetworkUpdate(
+                ff_rdp_core::NetworkResourceUpdate {
+                    resource_id: 7,
+                    status: Some("200".into()),
+                    ..Default::default()
+                },
+            )))
+            .unwrap();
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                send(
+                    &mut stream,
+                    &json!({"from":"root", "applicationType":"browser"}),
+                );
+                let mut actions = 0;
+                let mut shortcut_samples = 0;
+                while let Ok(request) = recv_from(&mut reader) {
+                    match request["type"].as_str().unwrap() {
+                        "navigateTo" => {
+                            actions += 1;
+                            assert_eq!(actions, 1, "navigation must never be repeated");
+                            assert_eq!(request["url"], "https://destination.test/");
+                            send(&mut stream, &json!({"from":"target"}));
+                        }
+                        "getTarget" => {
+                            assert_eq!(request["to"], "tab");
+                            send(
+                                &mut stream,
+                                &json!({"from":"tab", "frame":{"actor":"target", "consoleActor":"console"}}),
+                            );
+                        }
+                        "evaluateJSAsync" => {
+                            assert_eq!(request["to"], "console");
+                            let text = request["text"].as_str().unwrap();
+                            let value = if text.contains("var h = window.location.href") {
+                                shortcut_samples += 1;
+                                assert_eq!(shortcut_samples, 1);
+                                assert!(text.contains(&serde_json::to_string(baseline).unwrap()));
+                                // Script the result of the complete-and-changed JS condition.
+                                // This discriminates the caller, not Firefox's JS implementation.
+                                if sampled == baseline {
+                                    Value::Null
+                                } else {
+                                    json!(sampled)
+                                }
+                            } else {
+                                assert!(
+                                    text.contains("navigationStart > 42"),
+                                    "unexpected eval: {text}"
+                                );
+                                json!(false)
+                            };
+                            send(&mut stream, &json!({"from":"console", "resultID":"r"}));
+                            send(
+                                &mut stream,
+                                &json!({"from":"console", "type":"evaluationResult", "resultID":"r", "result":value}),
+                            );
+                            if text.contains("var h = window.location.href") {
+                                for name in ["dom-loading", "dom-complete"] {
+                                    tx.send(Arc::new(Resource::DocumentEvent(
+                                        json!({"name":name,"url":"https://destination.test/"}),
+                                    )))
+                                    .unwrap();
+                                }
+                            }
+                        }
+                        other => panic!("unexpected request: {other}"),
+                    }
+                }
+                (actions, shortcut_samples)
+            });
+            let mut transport =
+                RdpTransport::connect("127.0.0.1", port, Duration::from_secs(2)).unwrap();
+            WindowGlobalTarget::navigate_to(
+                &mut transport,
+                &"target".into(),
+                "https://destination.test/",
+            )
+            .unwrap();
+            let tab = "tab".into();
+            let start = Instant::now();
+            let mut probe = ReadyStateProbe {
+                target_endpoint: None,
+                console_actor: "console".into(),
+                tab_actor: &tab,
+                pre_epoch: 42.0,
+                first_probe_at: start,
+                probe_interval: Duration::from_secs(1),
+                poll_enabled: true,
+                pre_href: baseline.into(),
+                trust_event_url: true,
+            };
+            let bus = Arc::new(Mutex::new(ResourceCommand::new("watcher".into())));
+            let result = wait_for_doc_complete(
+                &mut transport,
+                &bus,
+                &rx,
+                1500,
+                WaitLevel::Complete,
+                start,
+                Some(&mut probe),
+                requested,
+                observing,
+            );
+            drop(transport);
+            assert_eq!(server.join().unwrap(), (1, 1));
+            let result = result.unwrap();
+            eprintln!(
+                "277 scripted baseline={baseline} sample={sampled} commit={} status={:?}",
+                result.committed_url, result.http_status
+            );
+            assert_eq!(result.committed_url, expected);
+            assert_eq!(result.ready_state, "complete");
+            assert_eq!(result.http_status, observing.then_some(200));
+            assert_eq!(
+                result.status_reason,
+                (!observing).then_some(StatusUnknown::NotObserved)
+            );
+        }
     }
 }
