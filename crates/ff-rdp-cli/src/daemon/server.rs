@@ -5,11 +5,10 @@
 // rest of the crate still denies unsafe.
 #![allow(unsafe_code)]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{TcpListener, TcpStream};
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, SyncSender};
+use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -25,7 +24,57 @@ use ff_rdp_core::{
 
 use super::buffer::ResourceBuffer;
 use super::client_writer::{CLIENT_WRITE_DEADLINE, ClientWriter};
+use super::lifecycle::{
+    BoundedQueue, Cancellation, LeaseError, Registration, StopReason, WakePhase, WorkerOwner,
+    WorkerPolicy, WriterSlot, connect_cancellable,
+};
 use super::registry::{self, DaemonInfo};
+
+type FirefoxWriter = Arc<WriterSlot<FramedWriter>>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EventSource {
+    Primary,
+    Lazy(u64),
+}
+
+#[derive(Debug)]
+enum DaemonEvent {
+    Packet(EventSource, Value),
+    SubscriptionReady,
+}
+
+struct LazySubscription {
+    generation: u64,
+    watcher: String,
+    bus: ResourceCommand,
+    rx: ResourceReceiver,
+}
+
+#[derive(Default)]
+struct SourceTargets {
+    // Once primary target traffic is observed, an empty primary snapshot stays
+    // authoritative (for example between destruction and replacement).
+    observed: bool,
+    // Keep the last top identity for genuine same-source switch detection even
+    // after its destroyed form has left the current snapshot.
+    top: Option<ff_rdp_core::ActorId>,
+    forms: Vec<Value>,
+}
+
+#[derive(Default)]
+struct LazyState {
+    next_generation: u64,
+    active: Option<u64>,
+    published: Option<u64>,
+    primary_targets: SourceTargets,
+    optional_targets: SourceTargets,
+    // Derived from current source-owned forms at the publication boundary.
+    target_sources: HashMap<String, EventSource>,
+}
+
+#[cfg(test)]
+mod lifecycle_controls;
 
 /// Recover from a poisoned mutex by unwrapping its inner value.
 ///
@@ -215,8 +264,13 @@ struct StreamSubscriber {
 }
 
 struct SharedState {
+    #[cfg(test)]
+    lifecycle_probes: lifecycle_controls::Probes,
+    cancellation: Arc<Cancellation>,
+    _cancellation_wakes: Vec<Registration>,
+    lazy: Mutex<LazyState>,
     primary_target: Mutex<Option<PrimaryTarget>>,
-    startup_recovery_reply: Mutex<Option<(String, mpsc::Sender<Value>)>>,
+    startup_recovery_reply: Mutex<Option<(String, Arc<BoundedQueue<Value>>)>>,
     buffer: Mutex<ResourceBuffer>,
     /// Write-half of the current "RPC" CLI client, if any.
     ///
@@ -233,7 +287,7 @@ struct SharedState {
     /// `daemon status` as `rpc_slot.held_secs` — a wedged daemon is diagnosable
     /// from "one client has held the slot for 900 s" in a way it was not when
     /// the slot recorded only an owner.
-    rpc_writer: Mutex<Option<RpcSlot>>,
+    rpc_writer: Arc<Mutex<Option<RpcSlot>>>,
     /// Signalled whenever the [`rpc_writer`](Self::rpc_writer) slot is released
     /// (iter-137 Theme B).
     ///
@@ -241,7 +295,7 @@ struct SharedState {
     /// **queues** on this condvar instead of being refused outright, so a batch
     /// of concurrent `ff-rdp` invocations against one daemon serialises and all
     /// succeed rather than half of them erroring out.
-    rpc_slot_released: Condvar,
+    rpc_slot_released: Arc<Condvar>,
     /// All currently-connected streaming subscribers.
     ///
     /// These are clients that have issued one or more `stream` daemon requests
@@ -302,10 +356,10 @@ struct SharedState {
     /// fans out to stream subscribers / `rpc_writer`, keeping the reader hot
     /// path free from lock contention with the client-handler threads.
     ///
-    /// `SyncSender` with a bounded capacity (4096) so a crashed dispatcher does
+    /// Private cancellable FIFO with a bounded capacity (4096) so a crashed dispatcher does
     /// not cause unbounded memory growth; the bound is large enough that the
     /// reader will never block in normal operation.
-    event_tx: SyncSender<Value>,
+    event_tx: Arc<BoundedQueue<DaemonEvent>>,
     /// Send half of the grip release queue.
     ///
     /// Watcher event parsers wrap returned actor grips in
@@ -328,7 +382,7 @@ struct SharedState {
     /// Actor ID of the current **top-level** target, if one has been observed
     /// (iter-101 Theme A).
     ///
-    /// Updated by [`handle_target_event`] on each top-level
+    /// Updated by [`handle_source_target_event`] on each top-level
     /// `target-available-form`.  Used to detect a *cross-process target
     /// switch*: when a new top-level target actor differs from this one, the
     /// resources buffered for the outgoing document are stale and must be
@@ -352,7 +406,7 @@ struct SharedState {
     /// through [`ff_rdp_core::target_events_from_packets`] so both connection
     /// modes produce byte-identical snapshots.
     ///
-    /// Maintained by [`handle_target_event`]: deduped/replaced by target actor
+    /// Maintained by [`handle_source_target_event`]: deduped/replaced by target actor
     /// id on `target-available-form`, removed on `target-destroyed-form`, and
     /// pruned to the surviving top-level target on a cross-process target
     /// switch (the outgoing document's frames are dead by then).
@@ -392,6 +446,61 @@ struct DispatcherHealth {
 }
 
 impl SharedState {
+    fn is_stopping(&self) -> bool {
+        self.shutdown.load(Ordering::Relaxed) || self.cancellation.reason().is_some()
+    }
+
+    fn stop(&self, reason: StopReason) {
+        self.cancellation.request_stop(reason);
+        self.shutdown.store(true, Ordering::Relaxed);
+    }
+
+    fn begin_lazy_generation(&self) -> u64 {
+        let mut lazy = lock_or_recover!(self.lazy);
+        // Normally the preceding worker's invalidation already cleared this.
+        // Never relabel a previous generation's forms as belonging to a new one.
+        for form in std::mem::take(&mut lazy.optional_targets).forms {
+            if let Some(actor) = packet_target_actor(&form) {
+                self.actor_registry.invalidate_target(&actor.into());
+            }
+        }
+        if lazy.published.take().is_some() {
+            lock_or_recover!(self.watcher_actor).clear();
+        }
+        lazy.next_generation += 1;
+        let generation = lazy.next_generation;
+        lazy.active = Some(generation);
+        publish_source_targets(self, &mut lazy);
+        generation
+    }
+
+    fn source_active(&self, source: EventSource) -> bool {
+        match source {
+            EventSource::Primary => true,
+            EventSource::Lazy(generation) => lock_or_recover!(self.lazy).active == Some(generation),
+        }
+    }
+
+    fn invalidate_lazy(&self, generation: u64) {
+        // Generation gate -> snapshot locks. No writer/RPC acquisition or I/O.
+        let mut lazy = lock_or_recover!(self.lazy);
+        if lazy.active != Some(generation) {
+            return;
+        }
+        lazy.active = None;
+        if lazy.published == Some(generation) {
+            lazy.published = None;
+            lock_or_recover!(self.watcher_actor).clear();
+        }
+        let retired = std::mem::take(&mut lazy.optional_targets).forms;
+        publish_source_targets(self, &mut lazy);
+        for form in retired {
+            if let Some(actor) = packet_target_actor(&form) {
+                self.actor_registry.invalidate_target(&actor.into());
+            }
+        }
+    }
+
     /// Issue a fresh, never-reused client id (iter-100 Theme D).
     fn next_client_id(&self) -> ClientId {
         self.next_client_id.fetch_add(1, Ordering::Relaxed)
@@ -750,118 +859,144 @@ fn establish_watcher_with_retry(
 /// `listTabs` / `getWatcher` / `watchResources` require.
 fn background_establish_watcher_loop(
     state: &Arc<SharedState>,
-    firefox_host: &str,
-    firefox_port: u16,
+    peer: std::net::SocketAddr,
     connect_timeout: Duration,
-    resource_setup_tx: &SyncSender<(ResourceCommand, ResourceReceiver)>,
+    resource_setup: &Arc<BoundedQueue<LazySubscription>>,
 ) {
-    let mut transport = match RdpTransport::connect_raw(firefox_host, firefox_port, connect_timeout)
-    {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("daemon: watcher-establisher could not connect to Firefox: {e}");
-            return;
-        }
-    };
-    // Consume and validate the greeting on this second connection.
-    match transport.recv() {
-        Ok(g) if validate_greeting(&g).is_ok() => {}
-        Ok(_) => {
-            eprintln!("daemon: watcher-establisher got an unexpected Firefox greeting");
-            return;
-        }
-        Err(e) => {
-            eprintln!("daemon: watcher-establisher failed to read greeting: {e}");
-            return;
+    struct Invalidate<'a>(&'a SharedState, u64);
+    impl Drop for Invalidate<'_> {
+        fn drop(&mut self) {
+            self.0.invalidate_lazy(self.1);
         }
     }
-
-    // iter-146 Theme C: same fix as the startup path in `run_daemon` — install
-    // an event sink before the synchronous `establish_watcher` handshake so a
-    // `target-available-form` catch-up event that races ahead of its RPC
-    // reply is buffered instead of silently dropped by `forward_event`. See
-    // the comment at the startup call site for the full mechanism.
-    let (early_tx, early_rx) = mpsc::channel::<Value>();
-    transport.set_event_sink(Some(early_tx));
-
-    // Poll for a tab until one appears, the daemon shuts down, or we exhaust the
-    // generous background budget.
-    let deadline = Instant::now() + WATCHER_BACKGROUND_RETRY;
-    let setup = loop {
-        if state.shutdown.load(Ordering::Relaxed) || termination_requested() {
-            return;
-        }
-        match establish_watcher(&mut transport) {
-            Ok(Some(setup)) => break setup,
-            Ok(None) => {
-                if Instant::now() >= deadline {
-                    eprintln!(
-                        "daemon: watcher-establisher gave up — no tab appeared within {WATCHER_BACKGROUND_RETRY:?}"
-                    );
-                    return;
+    let generation = state.begin_lazy_generation();
+    let _invalidate = Invalidate(state, generation);
+    #[cfg(test)]
+    state.lifecycle_probes.maybe_panic("watcher-establisher");
+    let setup_and_pump = || -> Result<()> {
+        let socket =
+            connect_cancellable(peer, &state.cancellation, Instant::now() + connect_timeout)?;
+        let _socket_registration = state.cancellation.register_socket(&socket)?;
+        socket.set_read_timeout(Some(connect_timeout))?;
+        socket.set_write_timeout(Some(connect_timeout))?;
+        let mut transport = RdpTransport::from_stream(socket)?;
+        validate_greeting(&transport.recv()?)?;
+        let (early_tx, early_rx) = mpsc::channel::<Value>();
+        transport.set_event_sink(Some(early_tx));
+        let deadline = Instant::now() + WATCHER_BACKGROUND_RETRY;
+        let setup = loop {
+            if state.is_stopping() {
+                return Ok(());
+            }
+            match establish_watcher(&mut transport)? {
+                Some(setup) => break setup,
+                None if Instant::now() >= deadline => {
+                    anyhow::bail!("optional watcher found no tab within its existing retry budget")
                 }
-                thread::sleep(Duration::from_millis(250));
-            }
-            Err(e) => {
-                eprintln!("daemon: watcher-establisher handshake failed: {e:#}");
-                return;
-            }
-        }
-    };
-    // Replay whatever the sink captured into the shared event channel, ahead
-    // of the live pump loop started below, in wire order.
-    for early_event in early_rx.try_iter() {
-        if state.event_tx.send(early_event).is_err() {
-            return;
-        }
-    }
-
-    // Publish the watcher actor so the dispatcher recognises its events.
-    {
-        let mut guard = lock_or_recover!(state.watcher_actor);
-        setup.watcher_actor.as_ref().clone_into(&mut guard);
-    }
-
-    // Hand the subscription to the dispatcher.  If the dispatcher is gone the
-    // daemon is shutting down — nothing more to do.
-    if resource_setup_tx
-        .send((setup.resource_bus, setup.resource_rx))
-        .is_err()
-    {
-        return;
-    }
-    eprintln!(
-        "daemon: resource watcher established lazily on {}",
-        setup.watcher_actor
-    );
-
-    // Pump this connection's messages into the shared event channel so the
-    // dispatcher buffers them.  A short read timeout lets us poll shutdown.
-    let (mut reader, _writer) = {
-        let (r, w) = transport.split();
-        (r, w)
-    };
-    if let Err(e) = reader.set_read_timeout(Some(Duration::from_secs(1))) {
-        eprintln!("daemon: watcher-establisher could not set read timeout: {e}");
-    }
-    loop {
-        if state.shutdown.load(Ordering::Relaxed) || termination_requested() {
-            return;
-        }
-        match reader.recv() {
-            Ok(msg) => {
-                if state.event_tx.send(msg).is_err() {
-                    // Dispatcher gone — daemon shutting down.
-                    return;
+                None => {
+                    if state
+                        .cancellation
+                        .wait_until((Instant::now() + Duration::from_millis(250)).min(deadline))
+                    {
+                        return Ok(());
+                    }
                 }
             }
-            Err(ProtocolError::Timeout) => {}
-            Err(_) => {
-                // This connection died — the daemon keeps running on the main
-                // connection; just stop pumping.
-                return;
+        };
+        let subscription = LazySubscription {
+            generation,
+            watcher: setup.watcher_actor.to_string(),
+            bus: setup.resource_bus,
+            rx: setup.resource_rx,
+        };
+        if resource_setup.send(subscription).is_err() {
+            return Ok(());
+        }
+        if state.event_tx.send(DaemonEvent::SubscriptionReady).is_err() {
+            return Ok(());
+        }
+        for message in early_rx.try_iter() {
+            if state
+                .event_tx
+                .send(DaemonEvent::Packet(EventSource::Lazy(generation), message))
+                .is_err()
+            {
+                return Ok(());
             }
         }
+        let (mut reader, _writer) = transport.split();
+        loop {
+            if state.is_stopping() {
+                return Ok(());
+            }
+            match reader.recv() {
+                Ok(message) => {
+                    if state
+                        .event_tx
+                        .send(DaemonEvent::Packet(EventSource::Lazy(generation), message))
+                        .is_err()
+                    {
+                        return Ok(());
+                    }
+                }
+                Err(ProtocolError::Timeout) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+    };
+    if let Err(error) = setup_and_pump()
+        && !state.is_stopping()
+    {
+        tracing::warn!(generation, error = %error, "daemon: optional watcher unavailable; main proxy remains running");
+    }
+    // Guard invalidation precedes the supervisor's optional-return outcome.
+}
+
+fn queue_cancellation_wakes(
+    cancellation: &Arc<Cancellation>,
+    events: &Arc<BoundedQueue<DaemonEvent>>,
+    releases: &ff_rdp_core::ReleaseQueueTx,
+    rpc: &Arc<Mutex<Option<RpcSlot>>>,
+    rpc_released: &Arc<Condvar>,
+) -> Vec<Registration> {
+    let events = Arc::clone(events);
+    let releases = releases.clone();
+    let rpc = Arc::clone(rpc);
+    let rpc_released = Arc::clone(rpc_released);
+    vec![
+        cancellation.register(WakePhase::Queue, move || events.close()),
+        cancellation.register(WakePhase::Queue, move || {
+            // Private wake item, enqueued only after stop. The drainer tests
+            // cancellation after recv and never serializes this item. If full,
+            // an item is already available, so no wake can be lost.
+            let _ = releases.try_send(ff_rdp_core::ReleaseRequest {
+                actor_id: "".into(),
+                method: "",
+            });
+        }),
+        cancellation.register(WakePhase::Rpc, move || {
+            let _guard = lock_or_recover!(rpc);
+            rpc_released.notify_all();
+        }),
+    ]
+}
+
+fn register_firefox_writer(
+    cancellation: &Arc<Cancellation>,
+    writer: &FirefoxWriter,
+) -> Registration {
+    let writer = Arc::downgrade(writer);
+    cancellation.register(WakePhase::SocketAndWriter, move || {
+        if let Some(writer) = writer.upgrade() {
+            writer.close();
+        }
+    })
+}
+
+struct RegistryLifetime(u16);
+impl Drop for RegistryLifetime {
+    fn drop(&mut self) {
+        let _ = registry::remove_registry(self.0);
     }
 }
 
@@ -874,12 +1009,22 @@ pub(crate) fn run_daemon(
     firefox_port: u16,
     idle_timeout_secs: u64,
 ) -> Result<()> {
+    #[cfg(test)]
+    let mut test_control = lifecycle_controls::take_run_control();
     let idle_timeout = Duration::from_secs(idle_timeout_secs);
     let connect_timeout = Duration::from_secs(10);
 
     // Connect to Firefox and perform initial protocol setup.
     let mut transport = RdpTransport::connect_raw(firefox_host, firefox_port, connect_timeout)
         .context("connecting to Firefox")?;
+    let cancellation = Arc::new(Cancellation::default());
+    let primary_socket = transport
+        .try_clone_stream()
+        .context("retaining primary socket shutdown handle")?;
+    let primary_peer = primary_socket
+        .peer_addr()
+        .context("reading primary Firefox peer")?;
+    let _primary_socket_registration = cancellation.register_socket(&primary_socket)?;
     let greeting = transport.recv().context("reading Firefox greeting")?;
     validate_greeting(&greeting)?;
 
@@ -961,6 +1106,7 @@ pub(crate) fn run_daemon(
         start_token: crate::daemon::process::process_start_token(std::process::id()),
     };
     registry::write_registry(&info).context("writing registry")?;
+    let _registry_lifetime = RegistryLifetime(firefox_port);
     eprintln!("daemon: listening on port {proxy_port}, PID {}", info.pid);
 
     // Split the transport so the reader and writer can live on separate threads.
@@ -969,17 +1115,11 @@ pub(crate) fn run_daemon(
     // Bounded channel: reader pushes; dispatcher drains.  4096 slots prevents
     // unbounded growth if the dispatcher falls behind; large enough that the
     // reader never blocks in normal SPA traffic (hundreds of events/s).
-    let (event_tx, event_rx) = mpsc::sync_channel::<Value>(4096);
-
-    // iter-146 Theme C: replay whatever `establish_watcher_with_retry`'s
-    // sink captured (see the comment at its installation above) into the
-    // real event channel, in the order Firefox sent it, before the
-    // dispatcher thread starts draining `event_rx` below. `try_iter` is
-    // exhaustive-but-nonblocking: `early_tx` was only ever held by the now-
-    // finished synchronous handshake, so there is nothing left to arrive.
-    for early_event in early_rx.try_iter() {
-        let _ = event_tx.send(early_event);
-    }
+    let event_tx = Arc::new(BoundedQueue::new(4096));
+    let event_rx = Arc::clone(&event_tx);
+    // Do not fill an undrained bounded queue. The dispatcher owns this initial
+    // sequence and consumes it before any live primary packet, preserving FIFO.
+    let initial_events = early_rx.try_iter().collect::<VecDeque<_>>();
 
     // Grip release queue (iter-76 Theme B, wired in iter-76b): watcher event
     // parsers wrap grip actor IDs in ResourceGripGuard instances backed by
@@ -999,13 +1139,29 @@ pub(crate) fn run_daemon(
     // resource subscription to the already-running dispatcher.  On a tabless
     // start the dispatcher begins with no subscription; the background
     // establisher sends the `(bus, rx)` pair here once a tab appears.
-    let (resource_setup_tx, resource_setup_rx) =
-        mpsc::sync_channel::<(ResourceCommand, ResourceReceiver)>(1);
+    let resource_setup = Arc::new(BoundedQueue::<LazySubscription>::new(1));
+    let setup_for_cancel = Arc::clone(&resource_setup);
+    let _setup_registration =
+        cancellation.register(WakePhase::Queue, move || setup_for_cancel.close());
+    let rpc_writer = Arc::new(Mutex::new(None));
+    let rpc_slot_released = Arc::new(Condvar::new());
+    let cancellation_wakes = queue_cancellation_wakes(
+        &cancellation,
+        &event_tx,
+        &grip_release_tx,
+        &rpc_writer,
+        &rpc_slot_released,
+    );
 
     let state = Arc::new(SharedState {
+        #[cfg(test)]
+        lifecycle_probes: lifecycle_controls::Probes::default(),
+        cancellation: Arc::clone(&cancellation),
+        _cancellation_wakes: cancellation_wakes,
+        lazy: Mutex::new(LazyState::default()),
         buffer: Mutex::new(ResourceBuffer::new()),
-        rpc_writer: Mutex::new(None),
-        rpc_slot_released: Condvar::new(),
+        rpc_writer,
+        rpc_slot_released,
         stream_subs: Mutex::new(Vec::new()),
         greeting,
         start_time: Instant::now(),
@@ -1033,148 +1189,89 @@ pub(crate) fn run_daemon(
 
     // The Firefox writer is shared: the main thread may forward CLI messages to
     // Firefox while the reader thread owns the read half exclusively.
-    let firefox_writer = Arc::new(Mutex::new(firefox_writer));
-
-    // iter-123 Theme A: if the watcher could not be established at startup
-    // (Firefox is still tabless), spawn a supervised background thread that
-    // keeps polling for a tab and, once one appears, establishes the watcher and
-    // hands the resulting subscription to the dispatcher via `resource_setup_tx`.
-    //
-    // The establisher opens its **own** short-lived RDP connection to Firefox
-    // for the request/response handshake (the main connection's read half is
-    // owned by the reader thread and cannot serve synchronous replies), then
-    // pushes its watcher's events into the shared `event_tx` so the single
-    // dispatcher buffers them exactly as it does the startup path.
+    let firefox_writer = Arc::new(WriterSlot::new(firefox_writer));
+    let _writer_registration = register_firefox_writer(&cancellation, &firefox_writer);
+    // Declared after registrations/registry: unwinding drops this owner first,
+    // cancels and joins all acquired handles while wake registrations still live.
+    let mut workers = WorkerOwner::new(Arc::clone(&cancellation));
+    #[cfg(test)]
+    if let Some(control) = &mut test_control {
+        control.attach(&state, &mut workers, &info);
+    }
     let (initial_bus, initial_rx) = if let Some(setup) = established {
         (Some(setup.resource_bus), Some(setup.resource_rx))
     } else {
-        let est_host = firefox_host.to_owned();
-        spawn_supervised(&state, "watcher-establisher", move |state| {
-            background_establish_watcher_loop(
-                state,
-                &est_host,
-                firefox_port,
-                connect_timeout,
-                &resource_setup_tx,
-            );
-        })
-        .context("spawning watcher establisher thread")?;
+        let worker_state = Arc::clone(&state);
+        let worker_setup = Arc::clone(&resource_setup);
+        workers
+            .spawn("watcher-establisher", WorkerPolicy::Optional, move || {
+                background_establish_watcher_loop(
+                    &worker_state,
+                    primary_peer,
+                    connect_timeout,
+                    &worker_setup,
+                );
+            })
+            .context("spawning watcher establisher thread")?;
         (None, None)
     };
-
-    // Spawn the grip-release-drainer thread (iter-76b Theme B), supervised.
-    //
-    // This thread owns the grip release queue receiver and issues `release`
-    // packets to Firefox for each enqueued grip actor.  Without this thread,
-    // the queue was immediately dropped and no release was ever sent —
-    // the headline "fix daemon-mode grip leaks" in iter-76 was completely inert.
+    let worker_state = Arc::clone(&state);
     let writer_for_drainer = Arc::clone(&firefox_writer);
-    spawn_supervised(&state, "grip-release-drainer", move |state| {
-        grip_release_drainer_loop(state, grip_release_rx, writer_for_drainer);
-    })
-    .context("spawning grip release drainer thread")?;
-
-    // Spawn the Firefox reader thread, supervised.
-    spawn_supervised(&state, "firefox-reader", move |state| {
-        firefox_reader_loop(state, firefox_reader);
-    })
-    .context("spawning Firefox reader thread")?;
-
-    // Spawn the dispatcher thread that drains the mpsc channel and routes
-    // events to stream subscribers / rpc_writer, supervised.  Decoupled from
-    // the reader so that heavy event bursts do not delay auth-greeting writes.
-    //
-    // iter-123 Theme A: the resource bus/receiver may be `None` at startup (the
-    // daemon began tabless); in that case the dispatcher receives the
-    // subscription later over `resource_setup_rx` once the background
-    // establisher succeeds.
-    // iter-240 review (finding 6): mark the dispatcher alive *before* spawning
-    // it. The registry file is already written and the listener already bound
-    // by this point, so a client can connect and run `daemon status` during the
-    // gap between `spawn_supervised` returning and the OS scheduling the new
-    // thread. `probe_daemon_health` reads `alive != true` as a hard failure
-    // ("the daemon's event dispatcher has exited") and tells the user to
-    // restart a perfectly healthy daemon. The thread flips it back to `false`
-    // via `DispatcherAliveGuard` if it ever exits, and back to `true` on entry
-    // if the supervisor restarts it, so this only closes the not-started-yet
-    // window and never masks a real exit.
+    workers
+        .spawn("grip-release-drainer", WorkerPolicy::Required, move || {
+            grip_release_drainer_loop(&worker_state, grip_release_rx, writer_for_drainer);
+        })
+        .context("spawning grip release drainer thread")?;
+    let worker_state = Arc::clone(&state);
+    workers
+        .spawn("firefox-reader", WorkerPolicy::Required, move || {
+            firefox_reader_loop(&worker_state, firefox_reader);
+        })
+        .context("spawning Firefox reader thread")?;
+    #[cfg(test)]
+    if let Some(control) = &test_control {
+        control.before_dispatcher_acquisition(&mut workers)?;
+    }
     mark_dispatcher_alive(&state);
+    let worker_state = Arc::clone(&state);
     let writer_for_dispatcher = Arc::clone(&firefox_writer);
-    spawn_supervised(&state, "event-dispatcher", move |state| {
-        event_dispatcher_loop(
-            state,
-            event_rx,
-            initial_bus,
-            initial_rx,
-            resource_setup_rx,
-            writer_for_dispatcher,
-        );
-    })
-    .context("spawning event dispatcher thread")?;
-
-    let result = accept_loop(&state, &listener, &firefox_writer, idle_timeout);
-
-    state.shutdown.store(true, Ordering::Relaxed);
-    let _ = registry::remove_registry(firefox_port);
-    eprintln!("daemon: shut down");
-
-    result
-}
-
-/// Spawn a supervised daemon worker thread (iter-100 Theme A).
-///
-/// The worker `body` receives a clone of the shared state.  Its whole run is
-/// wrapped in [`catch_unwind`] so that a panic anywhere inside the loop — a
-/// poisoned invariant, an `unwrap` we missed, an OOM abort avoided — does not
-/// silently kill just that one thread and leave a **zombie daemon**: PID,
-/// socket, and registry all look healthy while every client hangs forever
-/// because the reader/dispatcher/drainer that was supposed to service them is
-/// gone.
-///
-/// On *any* exit of `body` — normal return **or** panic — the supervisor sets
-/// `state.shutdown`.  A worker loop returning at all is itself abnormal (they
-/// are infinite loops that only break on shutdown), so an early return is
-/// treated the same as a panic: flip the daemon into shutdown so the accept
-/// loop stops taking clients and `run_daemon`'s cleanup (`remove_registry`)
-/// runs.  The next CLI invocation then spawns a fresh, healthy daemon — the
-/// same recovery path Firefox-death cleanup already relies on.
-///
-/// Supervision is panic-based, not restart-based: after a worker panics the
-/// daemon's invariants are unknown, so failing the whole daemon is the safe
-/// choice (see the plan's design notes).
-fn spawn_supervised<F>(
-    state: &Arc<SharedState>,
-    name: &str,
-    body: F,
-) -> std::io::Result<thread::JoinHandle<()>>
-where
-    F: FnOnce(&Arc<SharedState>) + Send + 'static,
-{
-    let state = Arc::clone(state);
-    let name_owned = name.to_owned();
-    thread::Builder::new().name(name.to_owned()).spawn(move || {
-        let result = catch_unwind(AssertUnwindSafe(|| body(&state)));
-        // Whether the worker panicked or merely returned, the daemon can no
-        // longer be trusted to service clients — flip it into shutdown so the
-        // accept loop refuses new connections and cleanup runs.
-        let was_already = state.shutdown.swap(true, Ordering::Relaxed);
-        if result.is_err() {
-            // Log the panic exactly once per worker so the incident is visible
-            // in `daemon.log` without a flood.
-            tracing::error!(
-                worker = %name_owned,
-                "daemon: worker thread panicked — flipping daemon into shutdown"
+    workers
+        .spawn("event-dispatcher", WorkerPolicy::Required, move || {
+            event_dispatcher_loop(
+                &worker_state,
+                event_rx,
+                initial_events,
+                initial_bus,
+                initial_rx,
+                resource_setup,
+                writer_for_dispatcher,
             );
-            eprintln!("daemon: worker thread {name_owned:?} panicked — shutting daemon down");
-        } else if !was_already {
-            // A worker loop only returns on shutdown; if it returned first,
-            // that is an abnormal early exit worth recording.
-            tracing::warn!(
-                worker = %name_owned,
-                "daemon: worker thread exited before shutdown — flipping daemon into shutdown"
-            );
-        }
-    })
+        })
+        .context("spawning event dispatcher thread")?;
+
+    let result = accept_loop(
+        &state,
+        &listener,
+        &firefox_writer,
+        idle_timeout,
+        &mut workers,
+    );
+    if result.is_err() {
+        state.stop(StopReason::StartupFailure);
+    }
+    let records = workers.shutdown_and_join(StopReason::Idle);
+    for record in records {
+        tracing::info!(worker = record.name, outcome = ?record.outcome, supervision_returned = record.supervision_returned, "daemon: worker joined");
+    }
+    let joined_successfully = workers.completed_successfully();
+    result?;
+    anyhow::ensure!(
+        joined_successfully,
+        "daemon stopped after a worker/lifecycle failure: {:?}",
+        cancellation.reason()
+    );
+    eprintln!("daemon: shut down after joining all acquired workers");
+    Ok(())
 }
 
 /// Drain the grip release queue and issue `release` packets to Firefox.
@@ -1191,36 +1288,25 @@ where
 fn grip_release_drainer_loop(
     state: &Arc<SharedState>,
     rx: ff_rdp_core::ReleaseQueueRx,
-    writer: Arc<Mutex<ff_rdp_core::FramedWriter>>,
+    writer: FirefoxWriter,
 ) {
     loop {
-        match rx.recv_timeout(Duration::from_secs(1)) {
-            Ok(req) => {
-                tracing::trace!(
-                    target: "ff_rdp_cli::daemon::grip_release",
-                    actor = %req.actor_id,
-                    method = %req.method,
-                    "sending grip release"
-                );
-                let packet = serde_json::json!({
-                    "to": req.actor_id.as_ref(),
-                    "type": req.method,
-                });
-                if let Ok(mut w) = writer.lock() {
-                    // Best-effort: ignore send errors (Firefox may have closed
-                    // the connection already, or the daemon is shutting down).
-                    let _ = w.send(&packet);
-                }
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                if state.shutdown.load(Ordering::Relaxed) || termination_requested() {
-                    break;
-                }
-            }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                break;
-            }
+        if state.is_stopping() {
+            return;
         }
+        let Ok(req) = rx.recv() else {
+            return;
+        };
+        // Stop wake items and queued releases after connection retirement must
+        // never become Firefox packets; the connection now owns reclamation.
+        if state.is_stopping() {
+            return;
+        }
+        let packet = serde_json::json!({"to": req.actor_id.as_ref(), "type": req.method});
+        let Some(mut writer) = writer.acquire_cancellable() else {
+            return;
+        };
+        let _ = writer.send(&packet);
     }
 }
 
@@ -1329,19 +1415,29 @@ unsafe extern "system" fn windows_console_ctrl_handler(
 // Firefox reader thread
 // ---------------------------------------------------------------------------
 
-/// Read from Firefox indefinitely, pushing every message into the mpsc channel.
+/// Read from Firefox indefinitely, pushing every message into the bounded FIFO.
 ///
 /// All routing logic lives in the dispatcher thread (`event_dispatcher_loop`)
 /// so this thread never contends on `rpc_writer` or stream-subscriber locks.
-/// A 1-second read timeout lets us check `state.shutdown` periodically.
+/// The existing 1-second read timeout still polls signals; cancellation also
+/// interrupts the independent socket handle and closes the event FIFO.
 fn firefox_reader_loop(state: &Arc<SharedState>, mut reader: FramedReader) {
+    #[cfg(test)]
+    let _return_probe = lifecycle_controls::ReaderReturn(&state.lifecycle_probes);
+    #[cfg(test)]
+    state.lifecycle_probes.reader_entered();
+    #[cfg(test)]
+    state.lifecycle_probes.maybe_panic("firefox-reader");
     // Apply a short read timeout so we can check the shutdown flag.
     if let Err(e) = reader.set_read_timeout(Some(Duration::from_secs(1))) {
         eprintln!("daemon: could not set Firefox read timeout: {e}");
     }
 
     loop {
-        if state.shutdown.load(Ordering::Relaxed) || termination_requested() {
+        if termination_requested() {
+            state.stop(StopReason::Signal);
+        }
+        if state.is_stopping() {
             break;
         }
 
@@ -1363,9 +1459,15 @@ fn firefox_reader_loop(state: &Arc<SharedState>, mut reader: FramedReader) {
                 // is the correct behavior.  `send` only returns Err when the
                 // receiver has been dropped, i.e. the dispatcher thread is
                 // gone — at which point the daemon must shut down.
-                if state.event_tx.send(msg).is_err() {
+                #[cfg(test)]
+                state.lifecycle_probes.before_reader_send();
+                if state
+                    .event_tx
+                    .send(DaemonEvent::Packet(EventSource::Primary, msg))
+                    .is_err()
+                {
                     eprintln!("daemon: dispatcher channel closed — shutting down reader");
-                    state.shutdown.store(true, Ordering::Relaxed);
+                    state.stop(StopReason::FirefoxConnectionLost);
                     break;
                 }
             }
@@ -1393,7 +1495,7 @@ fn firefox_reader_loop(state: &Arc<SharedState>, mut reader: FramedReader) {
             }
             Err(e) => {
                 eprintln!("daemon: Firefox connection lost: {e}");
-                state.shutdown.store(true, Ordering::Relaxed);
+                state.stop(StopReason::FirefoxConnectionLost);
                 break;
             }
         }
@@ -1410,80 +1512,80 @@ fn firefox_reader_loop(state: &Arc<SharedState>, mut reader: FramedReader) {
 /// target/console/nav/RPC traffic (so proxying works) and forwards otherwise
 /// unrouted replies into the setup-reply channel for the background
 /// establisher; once the establisher hands over a subscription via
-/// `resource_setup_rx` the dispatcher adopts it and begins buffering resources.
+/// `resource_setup` the dispatcher adopts it and begins buffering resources.
 ///
 /// `firefox_writer` is the write half of the split transport, used to flush
 /// pending `unwatchResources` packets via [`ResourceCommand::gc_fire_forget`]
 /// once per event-batch cycle.
-// `rx: mpsc::Receiver<Value>` must be owned; clippy incorrectly flags it as
-// "not consumed" because we call methods rather than move out of it.
+// Queue and subscription ownership spans the actual dispatcher lifetime.
 #[allow(clippy::needless_pass_by_value)]
 fn event_dispatcher_loop(
     state: &Arc<SharedState>,
-    rx: mpsc::Receiver<Value>,
+    rx: Arc<BoundedQueue<DaemonEvent>>,
+    mut initial_events: VecDeque<Value>,
     initial_bus: Option<ResourceCommand>,
     initial_rx: Option<ResourceReceiver>,
-    resource_setup_rx: mpsc::Receiver<(ResourceCommand, ResourceReceiver)>,
-    firefox_writer: Arc<Mutex<ff_rdp_core::FramedWriter>>,
+    resource_setup: Arc<BoundedQueue<LazySubscription>>,
+    firefox_writer: FirefoxWriter,
 ) {
-    // Idempotent with the pre-spawn call in `run_daemon`; needed on its own for
-    // the supervisor-restart path, which re-enters this loop after the guard
-    // below has cleared the flag.
     mark_dispatcher_alive(state);
-    // The dispatcher is the only thread routing Firefox traffic; if it returns
-    // (channel closed, shutdown) every client is on its own, so say so in
-    // `daemon status` rather than leaving `alive: true` behind.
     let _alive = DispatcherAliveGuard { state };
-
-    // `Some` once a resource subscription exists (either at startup or handed
-    // over later by the background establisher).
-    let mut subscription: Option<(ResourceCommand, ResourceReceiver)> =
-        match (initial_bus, initial_rx) {
-            (Some(bus), Some(rx)) => Some((bus, rx)),
-            _ => None,
-        };
-
+    let mut subscription = match (initial_bus, initial_rx) {
+        (Some(bus), Some(rx)) => Some((EventSource::Primary, bus, rx)),
+        _ => None,
+    };
     loop {
-        // Adopt a lazily-established subscription if one has arrived.
-        if subscription.is_none()
-            && let Ok((bus, res_rx)) = resource_setup_rx.try_recv()
+        if state.is_stopping() {
+            break;
+        }
+        if subscription
+            .as_ref()
+            .is_some_and(|(source, _, _)| !state.source_active(*source))
         {
-            subscription = Some((bus, res_rx));
+            subscription = None;
         }
-
-        // Use recv_timeout so we can check the shutdown flag periodically.
-        match rx.recv_timeout(Duration::from_secs(1)) {
-            Ok(msg) => {
-                // iter-240 Part B Theme C: bracket the dispatch so a stall is
-                // visible from `daemon status` as `in_flight: 1` with a growing
-                // `current_frame_age_ms`, instead of as total silence.
-                state.dispatch_started(&msg);
-                match subscription.as_mut() {
-                    Some((resource_bus, resource_rx)) => {
-                        dispatch_firefox_message(state, &msg, Some((resource_bus, resource_rx)));
-                        // Flush any pending `unwatchResources` accumulated during
-                        // dispatch (e.g. from dead-channel pruning). Runs once
-                        // per event — cheap when pending_unwatch is empty.
-                        resource_bus.gc_fire_forget(&mut *lock_or_recover!(firefox_writer));
-                    }
-                    None => {
-                        // No resource subscription yet (tabless start): route
-                        // everything except resource buffering.
-                        dispatch_firefox_message(state, &msg, None);
-                    }
-                }
-                state.dispatch_finished();
-            }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                if state.shutdown.load(Ordering::Relaxed) || termination_requested() {
-                    break;
-                }
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                // Reader thread exited (and dropped the sender) — stop.
-                break;
+        if let Some(setup) = resource_setup.try_recv() {
+            let mut lazy = lock_or_recover!(state.lazy);
+            if lazy.active == Some(setup.generation) {
+                *lock_or_recover!(state.watcher_actor) = setup.watcher;
+                lazy.published = Some(setup.generation);
+                subscription = Some((EventSource::Lazy(setup.generation), setup.bus, setup.rx));
             }
         }
+        let event = initial_events
+            .pop_front()
+            .map(|message| DaemonEvent::Packet(EventSource::Primary, message))
+            .or_else(|| rx.recv());
+        let Some(event) = event else {
+            break;
+        };
+        let DaemonEvent::Packet(source, message) = event else {
+            continue;
+        };
+        // Stop is checked even under continuously available input. A queued
+        // packet from an invalid optional connection never enters dispatch.
+        if state.is_stopping() {
+            break;
+        }
+        if !state.source_active(source) {
+            continue;
+        }
+        state.dispatch_started(&message);
+        let resources = subscription
+            .as_mut()
+            .filter(|(owner, _, _)| *owner == source)
+            .map(|(_, bus, receiver)| (bus, &*receiver));
+        dispatch_firefox_message_from(state, &message, resources, source);
+        if let Some((owner, bus, _)) = subscription.as_mut()
+            && state.source_active(*owner)
+            && !state.is_stopping()
+            && let Some(mut writer) = firefox_writer.acquire_cancellable()
+        {
+            bus.gc_fire_forget(&mut writer);
+        }
+        state.dispatch_finished();
+        #[cfg(test)]
+        state.lifecycle_probes.dispatched(&message);
     }
 }
 
@@ -1514,16 +1616,29 @@ impl Drop for DispatcherAliveGuard<'_> {
 /// is `None` while the daemon is still tabless (iter-123 Theme A), in which case
 /// watcher-event buffering is skipped but every other route (targets, console
 /// pushes, navigation, RPC forwarding, and setup-reply forwarding) still runs.
+#[cfg(test)]
 fn dispatch_firefox_message(
     state: &SharedState,
     msg: &Value,
     resources: Option<(&mut ResourceCommand, &ResourceReceiver)>,
 ) {
+    dispatch_firefox_message_from(state, msg, resources, EventSource::Primary);
+}
+
+fn dispatch_firefox_message_from(
+    state: &SharedState,
+    msg: &Value,
+    resources: Option<(&mut ResourceCommand, &ResourceReceiver)>,
+    source: EventSource,
+) {
+    if !state.source_active(source) {
+        return;
+    }
     if msg.get("type").is_none()
         && let Some((watcher, sender)) = lock_or_recover!(state.startup_recovery_reply).as_ref()
         && msg["from"].as_str() == Some(watcher.as_str())
     {
-        let _ = sender.send(msg.clone());
+        let _ = sender.try_send(msg.clone());
         return;
     }
     // Translate only the bound primary document's parent-process start into
@@ -1585,7 +1700,9 @@ fn dispatch_firefox_message(
         }
     } else if is_target_event(msg) {
         // Log target lifecycle events and track the count.
-        handle_target_event(state, msg);
+        if !dispatch_target_for_source(state, msg, source) {
+            return;
+        }
         // iter-137 Theme A: ALSO forward the raw target event to the RPC
         // client.  Before this the daemon consumed `target-available-form` /
         // `target-destroyed-form` entirely, so a proxied
@@ -1785,11 +1902,80 @@ fn is_target_event(msg: &Value) -> bool {
 /// Only `target-available-form` increments the counter; `target-destroyed-form`
 /// signals a target going away and invalidates it in the registry (including
 /// all dependent fronts — inspector, walker, console scoped to that target).
+fn dispatch_target_for_source(state: &SharedState, msg: &Value, source: EventSource) -> bool {
+    // This short publication gate is shared with optional-generation invalidation.
+    // It never covers forwarding to clients or a Firefox writer lease.
+    let mut lazy = lock_or_recover!(state.lazy);
+    if let EventSource::Lazy(generation) = source
+        && lazy.active != Some(generation)
+    {
+        return false;
+    }
+    let targets = match source {
+        EventSource::Primary => &mut lazy.primary_targets,
+        EventSource::Lazy(_) => &mut lazy.optional_targets,
+    };
+    handle_source_target_event(state, msg, source, targets);
+    publish_source_targets(state, &mut lazy);
+    true
+}
+
+/// Current forms and ownership are published together under the generation gate.
+/// Primary is authoritative after its first target packet, including empty
+/// destruction/replacement gaps. Optional connection identity alone is never a
+/// top-level switch and cannot purge the primary document's resources.
+fn publish_source_targets(state: &SharedState, lazy: &mut LazyState) {
+    lazy.target_sources.clear();
+    for form in &lazy.primary_targets.forms {
+        if let Some(actor) = packet_target_actor(form) {
+            lazy.target_sources
+                .insert(actor.to_owned(), EventSource::Primary);
+        }
+    }
+    if let Some(generation) = lazy.active {
+        for form in &lazy.optional_targets.forms {
+            if let Some(actor) = packet_target_actor(form) {
+                lazy.target_sources
+                    .insert(actor.to_owned(), EventSource::Lazy(generation));
+            }
+        }
+    }
+    let selected = if lazy.primary_targets.observed || lazy.active.is_none() {
+        &lazy.primary_targets
+    } else {
+        &lazy.optional_targets
+    };
+    // `top` also retains the last identity for switch detection. Expose it as
+    // current only while its actual form remains present.
+    *lock_or_recover!(state.top_level_target) = selected
+        .top
+        .as_ref()
+        .filter(|actor| {
+            selected
+                .forms
+                .iter()
+                .any(|form| packet_target_actor(form) == Some(actor.as_ref()))
+        })
+        .cloned();
+    lock_or_recover!(state.frame_targets).clone_from(&selected.forms);
+}
+
+#[cfg(test)]
 fn handle_target_event(state: &SharedState, msg: &Value) {
+    dispatch_target_for_source(state, msg, EventSource::Primary);
+}
+
+fn handle_source_target_event(
+    state: &SharedState,
+    msg: &Value,
+    source: EventSource,
+    targets: &mut SourceTargets,
+) {
     // Opt-in attribution of packets already delivered to this handler. This
     // records observation, not proof of when Firefox created the document.
     tracing::debug!(target: "ff_rdp_cli::frame_targets", "FRAME_TARGETS_EVENT pid={} packet={}", std::process::id(), msg);
-    if let Ok(mut binding) = state.primary_target.lock()
+    if source == EventSource::Primary
+        && let Ok(mut binding) = state.primary_target.lock()
         && let Some(binding) = binding.as_mut()
     {
         binding.observe(msg);
@@ -1822,13 +2008,20 @@ fn handle_target_event(state: &SharedState, msg: &Value) {
             // target switch — no per-target `watchResources` re-issue is needed
             // (see kb/rdp/actors/watcher.md).  What the daemon DID lack was
             // purging the outgoing top-level target's stale buffered resources.
-            let switched =
-                target.is_top_level && handle_top_level_target_switch(state, &target.actor, &url);
+            targets.observed = true;
+            let switched = target.is_top_level
+                && record_top_level_target_switch(state, &mut targets.top, &target.actor, &url);
 
             // iter-137 Theme A: record the raw form so a proxied
             // `enumerate_frame_targets` can replay it.  Done *after* the
             // top-level switch handling so `switched` is already known.
-            record_frame_target(state, msg, target.actor.as_ref(), switched);
+            record_frame_target(
+                state,
+                &mut targets.forms,
+                msg,
+                target.actor.as_ref(),
+                switched,
+            );
         }
         Some(WatcherEvent::TargetDestroyed { ref target, .. }) => {
             // Registry invalidation already performed by dispatch_watcher_event.
@@ -1838,7 +2031,8 @@ fn handle_target_event(state: &SharedState, msg: &Value) {
                 is_top_level = target.is_top_level,
                 "daemon: target destroyed"
             );
-            forget_frame_target(state, target.actor.as_ref());
+            targets.observed = true;
+            forget_frame_target(&mut targets.forms, target.actor.as_ref());
         }
         Some(WatcherEvent::Other { .. }) | None => {
             // Non-target event in the target-event path — log and continue.
@@ -1866,20 +2060,17 @@ fn handle_target_event(state: &SharedState, msg: &Value) {
 /// that to decide whether the recorded frame-target snapshot belongs to a dead
 /// document and must be dropped — a re-announcement of the same top-level
 /// actor is not a switch and must keep its frames.
-fn handle_top_level_target_switch(
+fn record_top_level_target_switch(
     state: &SharedState,
+    current: &mut Option<ff_rdp_core::ActorId>,
     new_target: &ff_rdp_core::ActorId,
     url: &str,
 ) -> bool {
-    let mut current = lock_or_recover!(state.top_level_target);
     let switched = match current.as_ref() {
         Some(prev) => prev != new_target,
         None => false,
     };
     *current = Some(new_target.clone());
-    // Release the lock before touching the buffer to avoid nesting locks.
-    drop(current);
-
     if switched {
         let purged = lock_or_recover!(state.buffer).purge_destroyed_target();
         tracing::info!(
@@ -1890,6 +2081,20 @@ fn handle_top_level_target_switch(
             "daemon: top-level target switch — purged stale buffered resources"
         );
     }
+    switched
+}
+
+#[cfg(test)]
+fn handle_top_level_target_switch(
+    state: &SharedState,
+    new_target: &ff_rdp_core::ActorId,
+    url: &str,
+) -> bool {
+    let mut lazy = lock_or_recover!(state.lazy);
+    lazy.primary_targets.observed = true;
+    let switched =
+        record_top_level_target_switch(state, &mut lazy.primary_targets.top, new_target, url);
+    publish_source_targets(state, &mut lazy);
     switched
 }
 
@@ -1917,10 +2122,22 @@ fn packet_target_actor(msg: &Value) -> Option<&str> {
 /// "0 frame(s)" bug this replaces, because it looks like real data.  A
 /// *re-announcement* of the same top-level actor must NOT prune (no switch
 /// happened, and its frames are still live).
-fn record_frame_target(state: &SharedState, msg: &Value, actor: &str, prune_others: bool) {
-    let mut targets = lock_or_recover!(state.frame_targets);
-
+fn record_frame_target(
+    state: &SharedState,
+    targets: &mut Vec<Value>,
+    msg: &Value,
+    actor: &str,
+    prune_others: bool,
+) {
     if prune_others {
+        // Retire this source's outgoing actors and dependent fronts before
+        // dropping their last current forms/ownership records. An incoming
+        // actor already present in the old forms is retained, not destroyed.
+        for form in targets.iter() {
+            if let Some(retired) = packet_target_actor(form).filter(|retired| *retired != actor) {
+                state.actor_registry.invalidate_target(&retired.into());
+            }
+        }
         targets.clear();
     }
 
@@ -1935,8 +2152,8 @@ fn record_frame_target(state: &SharedState, msg: &Value, actor: &str, prune_othe
 
 /// Drop a target from [`SharedState::frame_targets`] on
 /// `target-destroyed-form` (iter-137 Theme A).
-fn forget_frame_target(state: &SharedState, actor: &str) {
-    lock_or_recover!(state.frame_targets).retain(|t| packet_target_actor(t) != Some(actor));
+fn forget_frame_target(targets: &mut Vec<Value>, actor: &str) {
+    targets.retain(|t| packet_target_actor(t) != Some(actor));
 }
 
 /// Snapshot the recorded target forms in first-seen order (iter-137 Theme A).
@@ -2071,6 +2288,8 @@ fn forward_nav_event_to_stream_subs(state: &SharedState, event: &Value) {
 /// Outcome of a lazy RPC-writer-slot claim (iter-101 Theme B).
 #[derive(Debug)]
 enum RpcClaim {
+    /// Shutdown won the shared admission gate; no claim or heartbeat follows.
+    Cancelled,
     /// This client now owns the RPC-writer slot (either it was free or this
     /// client already owned it).
     Claimed,
@@ -2177,9 +2396,13 @@ fn claim_rpc_slot_queued(
         // forward Firefox replies.
         let still_contended = {
             let guard = lock_or_recover!(state.rpc_writer);
-            match claim_locked(guard, client_id, writer) {
-                Ok(()) => return RpcClaim::Claimed,
-                Err(guard) => {
+            match state
+                .cancellation
+                .while_running(|| claim_locked(guard, client_id, writer))
+            {
+                Err(_) => return RpcClaim::Cancelled,
+                Ok(Ok(())) => return RpcClaim::Claimed,
+                Ok(Err(guard)) => {
                     // Never sleep past the budget: a zero/short budget must
                     // return promptly, which is what makes this callable as a
                     // plain non-blocking try.
@@ -2206,6 +2429,9 @@ fn claim_rpc_slot_queued(
             }
         };
 
+        if state.is_stopping() {
+            return RpcClaim::Cancelled;
+        }
         let waited_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         if started.elapsed() >= budget {
             return RpcClaim::Busy { waited_ms };
@@ -2218,7 +2444,12 @@ fn claim_rpc_slot_queued(
         if let Some(writer) = heartbeat_writer {
             let notice = daemon_queued_notice(waited_ms);
             if let Ok(json) = serde_json::to_string(&notice)
-                && writer.send_raw(&json).is_err()
+                && writer
+                    .send_raw_until(
+                        &json,
+                        (started + budget).min(Instant::now() + CLIENT_WRITE_DEADLINE),
+                    )
+                    .is_err()
             {
                 // The queued client is gone — stop waiting on its behalf.
                 return RpcClaim::Busy { waited_ms };
@@ -2388,17 +2619,19 @@ fn buffer_watcher_event(buffer: &Mutex<ResourceBuffer>, msg: &Value) {
 fn accept_loop(
     state: &Arc<SharedState>,
     listener: &TcpListener,
-    firefox_writer: &Arc<Mutex<ff_rdp_core::FramedWriter>>,
+    firefox_writer: &FirefoxWriter,
     idle_timeout: Duration,
+    workers: &mut WorkerOwner,
 ) -> Result<()> {
     loop {
+        workers.reap_finished();
         // A termination signal (iter-100 Theme C) or a worker panic
         // (iter-100 Theme A) mirrors onto `state.shutdown`; once set, the
         // accept loop returns so `run_daemon` runs cleanup (remove_registry).
         if termination_requested() {
-            state.shutdown.store(true, Ordering::Relaxed);
+            state.stop(StopReason::Signal);
         }
-        if state.shutdown.load(Ordering::Relaxed) {
+        if state.is_stopping() {
             return Ok(());
         }
 
@@ -2410,6 +2643,7 @@ fn accept_loop(
             let last = *lock_or_recover!(state.last_activity);
             if last.elapsed() > idle_timeout {
                 eprintln!("daemon: idle timeout ({idle_timeout:?}), shutting down");
+                state.stop(StopReason::Idle);
                 return Ok(());
             }
         }
@@ -2420,7 +2654,7 @@ fn accept_loop(
                 // signal) do not spawn a full handler — send a clean
                 // "daemon shutting down" error frame and drop the socket so
                 // the client sees an honest error instead of hanging.
-                if state.shutdown.load(Ordering::Relaxed) {
+                if state.is_stopping() {
                     refuse_client_shutting_down(stream);
                     return Ok(());
                 }
@@ -2430,21 +2664,21 @@ fn accept_loop(
                 // idle deadline indefinitely (iter-100 Theme B).
                 let state_clone = Arc::clone(state);
                 let writer_clone = Arc::clone(firefox_writer);
-                thread::Builder::new()
-                    .name("cli-client".into())
-                    .spawn(move || {
-                        if let Err(e) = handle_client(&state_clone, stream, &writer_clone) {
-                            eprintln!("daemon: client session error: {e:#}");
-                        }
-                        // NOTE: `last_activity` is deliberately NOT bumped on
-                        // client-thread exit either — an error exit (including
-                        // a failed auth) must not extend the idle deadline
-                        // (iter-100 Theme B).
-                    })
-                    .context("spawning client handler thread")?;
+                if let Err(error) = workers.spawn("cli-client", WorkerPolicy::Client, move || {
+                    if let Err(error) = handle_client(&state_clone, stream, &writer_clone) {
+                        eprintln!("daemon: client session error: {error:#}");
+                    }
+                }) {
+                    if state.is_stopping() {
+                        return Ok(());
+                    }
+                    return Err(error).context("spawning client handler thread");
+                }
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(100));
+                state
+                    .cancellation
+                    .wait_until(Instant::now() + Duration::from_millis(100));
             }
             Err(e) => {
                 return Err(e).context("accepting CLI client connection");
@@ -2626,12 +2860,10 @@ fn is_client_hangup(e: &ProtocolError) -> bool {
 /// (worker panic or termination signal).  Best-effort: any write error is
 /// ignored — the client will observe the closed socket regardless.
 fn refuse_client_shutting_down(stream: TcpStream) {
+    let deadline = Instant::now() + CLIENT_DRAIN_BUDGET;
+    let _ = stream.set_nonblocking(false);
     let mut writer = FramedWriter::from_stream(stream);
-    let _ = writer.send(&json!({
-        "from": "daemon",
-        "error": "daemon is shutting down",
-        "error_type": "daemon_shutting_down",
-    }));
+    let _ = writer.send_raw_until(r#"{"from":"daemon","error":"daemon is shutting down","error_type":"daemon_shutting_down"}"#, deadline);
     // `writer` (and its stream) drop here, closing the connection.
 }
 
@@ -2652,8 +2884,17 @@ fn refuse_client_shutting_down(stream: TcpStream) {
 fn handle_client(
     state: &Arc<SharedState>,
     stream: TcpStream,
-    firefox_writer: &Arc<Mutex<ff_rdp_core::FramedWriter>>,
+    firefox_writer: &FirefoxWriter,
 ) -> Result<()> {
+    #[cfg(test)]
+    let test_peer_port = stream.peer_addr().context("test peer identity")?.port();
+    let _socket_registration = state
+        .cancellation
+        .register_socket(&stream)
+        .context("retaining accepted client shutdown handle")?;
+    if state.is_stopping() {
+        return Ok(());
+    }
     // Accepted sockets can inherit the listener's nonblocking mode (macOS).
     // This handler uses blocking reads with deadlines: otherwise an auth
     // read before the client's first write immediately returns WouldBlock,
@@ -2688,7 +2929,8 @@ fn handle_client(
     // this, each of those minted its own `FramedWriter` over its own
     // `try_clone`, so the dispatcher thread and the client thread could
     // interleave two frames mid-payload. See `client_writer.rs`.
-    let writer = ClientWriter::new(stream);
+    let writer = ClientWriter::try_new(stream).context("acquiring cancellable client writer")?;
+    let _writer_registration = writer.register_cancellation(&state.cancellation);
 
     // Auth handshake: the very first frame from the client must be
     // `{"auth": "<token>"}`.  Any mismatch (wrong token, malformed frame,
@@ -2700,6 +2942,8 @@ fn handle_client(
         .set_read_timeout(Some(AUTH_READ_TIMEOUT))
         .context("setting auth read timeout")?;
 
+    #[cfg(test)]
+    state.lifecycle_probes.client_phase("auth", test_peer_port);
     let auth_ok = match reader.recv() {
         Ok(msg) => msg
             .get("auth")
@@ -2711,6 +2955,10 @@ fn handle_client(
     };
 
     if !auth_ok {
+        if state.is_stopping() {
+            tracing::debug!("daemon: authentication read interrupted by daemon shutdown");
+            return Ok(());
+        }
         eprintln!("daemon: client failed auth — closing connection");
         // Reader and writer are dropped here, closing the connection.
         return Ok(());
@@ -2754,6 +3002,13 @@ fn handle_client(
             .map_err(|e| anyhow::anyhow!("sending greeting to CLI client: {}", e.reason()))?;
     }
 
+    #[cfg(test)]
+    state.lifecycle_probes.client_writer_ready(&writer);
+    #[cfg(test)]
+    state.lifecycle_probes.client_phase("idle", test_peer_port);
+    #[cfg(test)]
+    state.lifecycle_probes.maybe_panic("client-handler");
+
     // iter-101 Theme B: the RPC-writer slot is claimed *lazily* — only when
     // this client sends its first Firefox-forwarded (`to != "daemon"`) message,
     // and only if no other live client already owns the slot.  A second client
@@ -2783,7 +3038,7 @@ fn handle_client(
     // Connection reset by peer`, `error_type: "Transport"`, no cause — while
     // the daemon logged nothing at all.
     let exit = 'client: loop {
-        if state.shutdown.load(Ordering::Relaxed) || termination_requested() {
+        if state.is_stopping() || termination_requested() {
             break 'client ClientExit::DaemonShuttingDown;
         }
 
@@ -2802,6 +3057,14 @@ fn handle_client(
                 // `NetworkObserver` — the block-list and throttling config).
                 let teardown = classify_client_resource_teardown(&msg);
                 if to == "daemon" {
+                    if msg["type"] == "shutdown" {
+                        #[cfg(test)]
+                        state
+                            .lifecycle_probes
+                            .client_phase("shutdown", test_peer_port);
+                        let _ = respond_and_stop(state, &writer, CLIENT_WRITE_DEADLINE);
+                        break 'client ClientExit::DaemonShuttingDown;
+                    }
                     // Provide a fresh writer clone for this client so that
                     // handle_daemon_message can register a StreamSubscriber
                     // that writes to the correct connection.
@@ -2873,6 +3136,7 @@ fn handle_client(
                             RPC_QUEUE_BUDGET,
                         ) {
                             RpcClaim::Claimed => owns_rpc_slot = true,
+                            RpcClaim::Cancelled => break 'client ClientExit::DaemonShuttingDown,
                             RpcClaim::Busy { waited_ms } => {
                                 let busy = daemon_busy_response(waited_ms);
                                 let busy_json = match serde_json::to_string(&busy) {
@@ -2895,7 +3159,7 @@ fn handle_client(
                             }
                         }
                     }
-                    if state.shutdown.load(Ordering::Relaxed) || termination_requested() {
+                    if state.is_stopping() || termination_requested() {
                         break 'client ClientExit::DaemonShuttingDown;
                     }
                     // Forward to Firefox. iter-164: a partially-daemon-owned
@@ -2906,10 +3170,13 @@ fn handle_client(
                         ResourceTeardown::Forward(rewritten) => rewritten,
                         _ => msg,
                     };
-                    if let Err(e) = lock_or_recover!(firefox_writer).send(&outbound) {
+                    let Some(mut writer) = firefox_writer.acquire_cancellable() else {
+                        break 'client ClientExit::DaemonShuttingDown;
+                    };
+                    if let Err(error) = writer.send(&outbound) {
                         break 'client ClientExit::Abandoned {
                             reason: "firefox_write_failed",
-                            detail: e.to_string(),
+                            detail: error.to_string(),
                         };
                     }
                 }
@@ -3152,7 +3419,7 @@ fn recover_startup_target(
     state: &SharedState,
     msg: &Value,
     client_id: ClientId,
-    firefox_writer: &Arc<Mutex<FramedWriter>>,
+    firefox_writer: &FirefoxWriter,
 ) -> Value {
     let error =
         |message: &str| json!({"from":"daemon", "error":"startup_recovery", "message":message});
@@ -3182,17 +3449,21 @@ fn recover_startup_target(
         binding.startup_recovery = StartupRecovery::Finished;
         binding.watcher.to_string()
     };
-    let (tx, rx) = mpsc::channel();
-    *lock_or_recover!(state.startup_recovery_reply) = Some((watcher.clone(), tx));
+    let mailbox = Arc::new(BoundedQueue::new(1));
+    let mailbox_for_stop = Arc::clone(&mailbox);
+    let _mailbox_registration = state
+        .cancellation
+        .register(WakePhase::Queue, move || mailbox_for_stop.close());
+    *lock_or_recover!(state.startup_recovery_reply) = Some((watcher.clone(), Arc::clone(&mailbox)));
+    #[cfg(test)]
+    state.lifecycle_probes.before_recovery_writer();
     let sent = send_startup_recovery(firefox_writer, &watcher, deadline);
     drop(owner);
-    let reply = sent.ok().and_then(|()| {
-        rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .ok()
-    });
-    if reply
-        .as_ref()
-        .is_some_and(|reply| reply.get("error").is_none())
+    let reply = sent.ok().and_then(|()| mailbox.recv_until(deadline));
+    if !state.is_stopping()
+        && reply
+            .as_ref()
+            .is_some_and(|reply| reply.get("error").is_none())
     {
         *lock_or_recover!(state.startup_recovery_reply) = None;
         json!({"from":"daemon", "recovered":true})
@@ -3201,50 +3472,48 @@ fn recover_startup_target(
         // even oneway unwatchTargets can emit an error before watchTargets
         // replies. Retire on every recovery error rather than releasing an
         // outstanding reply to another RPC. Keep the sink for a racing reply.
-        state.shutdown.store(true, Ordering::Relaxed);
-        if let Ok(writer) = firefox_writer.try_lock() {
-            let _ = writer.shutdown();
-        }
+        state.stop(StopReason::RecoveryFailure);
         error("startup recovery failed; daemon connection retired")
     }
 }
 
 fn send_startup_recovery(
-    firefox_writer: &Mutex<FramedWriter>,
+    firefox_writer: &WriterSlot<FramedWriter>,
     watcher: &str,
     deadline: Instant,
 ) -> Result<(), ProtocolError> {
-    let mut writer = loop {
-        match firefox_writer.try_lock() {
-            Ok(writer) => break writer,
-            Err(std::sync::TryLockError::Poisoned(error)) => break error.into_inner(),
-            Err(std::sync::TryLockError::WouldBlock) => {
-                if Instant::now() >= deadline {
-                    return Err(ProtocolError::Timeout);
-                }
-                thread::sleep(Duration::from_millis(1));
+    let mut writer = firefox_writer
+        .acquire(deadline)
+        .map_err(|error| match error {
+            LeaseError::Deadline => ProtocolError::Timeout,
+            LeaseError::Cancelled => {
+                ProtocolError::ConnectionFailed(std::io::ErrorKind::Interrupted.into())
             }
+        })?;
+    for method in ["unwatchTargets", "watchTargets"] {
+        let packet =
+            serde_json::to_string(&json!({"to":watcher,"type":method,"targetType":"frame"}))
+                .map_err(|error| ProtocolError::InvalidPacket(error.to_string()))?;
+        writer.send_raw_until(&packet, deadline)?;
+    }
+    Ok(())
+}
+
+fn respond_and_stop(
+    state: &SharedState,
+    writer: &ClientWriter,
+    budget: Duration,
+) -> Result<(), super::client_writer::WriteFailure> {
+    struct StopAfterResponse<'a>(&'a SharedState);
+    impl Drop for StopAfterResponse<'_> {
+        fn drop(&mut self) {
+            self.0.stop(StopReason::AuthenticatedShutdown);
         }
-    };
-    let socket = writer
-        .try_clone_stream()
-        .map_err(ProtocolError::ConnectionFailed)?;
-    let previous = socket
-        .write_timeout()
-        .map_err(ProtocolError::ConnectionFailed)?;
-    let sent = (|| {
-        for method in ["unwatchTargets", "watchTargets"] {
-            let remaining = deadline
-                .checked_duration_since(Instant::now())
-                .filter(|d| !d.is_zero())
-                .ok_or(ProtocolError::Timeout)?;
-            writer.set_write_timeout(Some(remaining))?;
-            writer.send(&json!({"to":watcher,"type":method,"targetType":"frame"}))?;
-        }
-        Ok(())
-    })();
-    writer.set_write_timeout(previous)?;
-    sent
+    }
+    let _stop = StopAfterResponse(state);
+    let deadline = Instant::now() + budget;
+    // One absolute deadline covers writer ownership and every partial write.
+    writer.send_raw_until(r#"{"from":"daemon","shutdown":true}"#, deadline)
 }
 
 /// Handle a message addressed `to: "daemon"`.
@@ -3598,7 +3867,7 @@ fn handle_daemon_message(
         }
         "shutdown" => {
             // Set the shutdown flag so the accept loop and Firefox reader exit.
-            state.shutdown.store(true, Ordering::Relaxed);
+            state.stop(StopReason::AuthenticatedShutdown);
             json!({
                 "from": "daemon",
                 "shutdown": true,
@@ -3797,13 +4066,35 @@ mod tests {
     }
 
     // A minimal test-only SharedState with no real sockets.
-    fn test_state() -> SharedState {
+    pub(super) fn test_state() -> SharedState {
+        test_state_with_queues(1, ff_rdp_core::release_queue(1).0)
+    }
+
+    pub(super) fn test_state_with_queues(
+        capacity: usize,
+        grip_release_tx: ff_rdp_core::ReleaseQueueTx,
+    ) -> SharedState {
+        let cancellation = Arc::new(Cancellation::default());
+        let event_tx = Arc::new(BoundedQueue::new(capacity));
+        let rpc_writer = Arc::new(Mutex::new(None));
+        let rpc_slot_released = Arc::new(Condvar::new());
+        let cancellation_wakes = queue_cancellation_wakes(
+            &cancellation,
+            &event_tx,
+            &grip_release_tx,
+            &rpc_writer,
+            &rpc_slot_released,
+        );
         SharedState {
+            cancellation,
+            _cancellation_wakes: cancellation_wakes,
+            lazy: Mutex::new(LazyState::default()),
+            lifecycle_probes: lifecycle_controls::Probes::default(),
             dispatcher: DispatcherHealth::default(),
             clients_dropped_on_write: AtomicU64::new(0),
             buffer: Mutex::new(ResourceBuffer::new()),
-            rpc_writer: Mutex::new(None),
-            rpc_slot_released: Condvar::new(),
+            rpc_writer,
+            rpc_slot_released,
             stream_subs: Mutex::new(Vec::new()),
             greeting: json!({"applicationType": "browser"}),
             start_time: Instant::now(),
@@ -3815,8 +4106,8 @@ mod tests {
             nav_generation: AtomicU64::new(0),
             target_count: AtomicU64::new(0),
             actor_registry: Arc::new(Registry::new()),
-            event_tx: mpsc::sync_channel::<Value>(1).0,
-            grip_release_tx: ff_rdp_core::release_queue(1).0,
+            event_tx,
+            grip_release_tx,
             next_client_id: AtomicU64::new(1),
             top_level_target: Mutex::new(None),
             frame_targets: Mutex::new(Vec::new()),
@@ -3825,20 +4116,20 @@ mod tests {
         }
     }
 
-    fn startup_form(actor: &str, url: &str) -> Value {
+    pub(super) fn startup_form(actor: &str, url: &str) -> Value {
         json!({"from":"watcher","type":"target-available-form","target":{
             "actor":actor,"consoleActor":format!("{actor}/console"),"innerWindowId":21,
             "browsingContextID":11,"isTopLevelTarget":true,"isPopup":false,
             "targetType":"frame","url":url}})
     }
 
-    fn startup_destroy(actor: &str) -> Value {
+    pub(super) fn startup_destroy(actor: &str) -> Value {
         json!({"from":"watcher","type":"target-destroyed-form", "target":{
             "actor":actor,"innerWindowId":21,"isTopLevelTarget":true},
             "options":{"isTargetSwitching":false}})
     }
 
-    fn startup_state() -> SharedState {
+    pub(super) fn startup_state() -> SharedState {
         let state = test_state();
         *state.primary_target.lock().expect("test state lock") = Some(PrimaryTarget {
             startup_recovery: StartupRecovery::default(),
@@ -3918,7 +4209,12 @@ mod tests {
         ff_peer
             .set_read_timeout(Some(Duration::from_secs(1)))
             .unwrap();
-        let writer = Arc::new(Mutex::new(FramedWriter::from_stream(ff_socket)));
+        let _socket_registration = state
+            .cancellation
+            .register_socket(&ff_socket)
+            .expect("test Firefox shutdown registration");
+        let writer = Arc::new(WriterSlot::new(FramedWriter::from_stream(ff_socket)));
+        let _writer_registration = register_firefox_writer(&state.cancellation, &writer);
         let peer_state = Arc::clone(&state);
         let browser = thread::spawn(move || {
             let mut reader = BufReader::new(ff_peer);
@@ -3975,8 +4271,10 @@ mod tests {
     #[test]
     fn startup_recovery_write_lock_obeys_deadline_without_sending() {
         let (socket, mut peer) = loopback_pair();
-        let writer = Arc::new(Mutex::new(FramedWriter::from_stream(socket)));
-        let guard = writer.lock().expect("test state lock");
+        let writer = Arc::new(WriterSlot::new(FramedWriter::from_stream(socket)));
+        let guard = writer
+            .acquire(Instant::now() + Duration::from_secs(1))
+            .expect("test writer lease");
         let other = Arc::clone(&writer);
         let result = thread::spawn(move || {
             send_startup_recovery(
@@ -4003,7 +4301,12 @@ mod tests {
         *state.rpc_writer.lock().expect("test state lock") =
             Some((7, ClientWriter::new(owner_socket), Instant::now()));
         let (ff_socket, _ff_peer) = loopback_pair();
-        let writer = Arc::new(Mutex::new(FramedWriter::from_stream(ff_socket)));
+        let _socket_registration = state
+            .cancellation
+            .register_socket(&ff_socket)
+            .expect("test Firefox shutdown registration");
+        let writer = Arc::new(WriterSlot::new(FramedWriter::from_stream(ff_socket)));
+        let _writer_registration = register_firefox_writer(&state.cancellation, &writer);
         assert!(
             recover_startup_target(
                 &state,
@@ -4053,7 +4356,12 @@ mod tests {
             ff_peer
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();
-            let writer = Arc::new(Mutex::new(FramedWriter::from_stream(ff_socket)));
+            let _socket_registration = state
+                .cancellation
+                .register_socket(&ff_socket)
+                .expect("test Firefox shutdown registration");
+            let writer = Arc::new(WriterSlot::new(FramedWriter::from_stream(ff_socket)));
+            let _writer_registration = register_firefox_writer(&state.cancellation, &writer);
             let browser_state = Arc::clone(&state);
             let browser = thread::spawn(move || {
                 let mut reader = BufReader::new(ff_peer);
@@ -4124,7 +4432,12 @@ mod tests {
         ff_peer
             .set_read_timeout(Some(Duration::from_secs(3)))
             .unwrap();
-        let writer = Arc::new(Mutex::new(FramedWriter::from_stream(ff_socket)));
+        let _socket_registration = state
+            .cancellation
+            .register_socket(&ff_socket)
+            .expect("test Firefox shutdown registration");
+        let writer = Arc::new(WriterSlot::new(FramedWriter::from_stream(ff_socket)));
+        let _writer_registration = register_firefox_writer(&state.cancellation, &writer);
         let (queued_socket, queued_peer) = loopback_pair();
         let queued_shutdown = queued_peer.try_clone().unwrap();
         let mut queued_writer = FramedWriter::from_stream(queued_peer.try_clone().unwrap());
@@ -4285,7 +4598,7 @@ mod tests {
     /// the supervised spawn helper must set `state.shutdown` (so subsequent
     /// connects get a shutdown error instead of hanging on a zombie daemon).
     ///
-    /// This exercises `spawn_supervised` directly with a body that panics —
+    /// This exercises the retained worker owner directly with a body that panics —
     /// the same seam the three real workers (firefox-reader, event-dispatcher,
     /// grip-release-drainer) go through.  The plan's `handle_frame`/test-seam
     /// language is satisfied by injecting the panic *as* a worker body.
@@ -4293,24 +4606,27 @@ mod tests {
     fn unit_reader_panic_sets_shutdown() {
         let state = Arc::new(test_state());
         assert!(
-            !state.shutdown.load(Ordering::Relaxed),
+            !state.is_stopping(),
             "precondition: shutdown flag must start unset"
         );
 
         // Spawn a supervised worker whose body panics immediately, exactly as
         // a firefox-reader panic would.
-        let handle = spawn_supervised(&state, "test-panicking-reader", |_state| {
-            panic!("injected worker panic (simulating a firefox-reader crash)");
-        })
-        .expect("spawn supervised worker");
-
-        // Wait for the supervisor to observe the panic and flip shutdown.
-        handle
-            .join()
-            .expect("supervised thread must not itself panic");
+        let mut owner = WorkerOwner::new(Arc::clone(&state.cancellation));
+        owner
+            .spawn("test-panicking-reader", WorkerPolicy::Required, || {
+                panic!("injected worker panic (simulating a firefox-reader crash)");
+            })
+            .expect("spawn supervised worker");
+        let records = owner.join_acquired();
+        assert_eq!(
+            records[0].outcome,
+            super::super::lifecycle::WorkerOutcome::Panicked
+        );
+        assert!(records[0].supervision_returned);
 
         assert!(
-            state.shutdown.load(Ordering::Relaxed),
+            state.is_stopping(),
             "a worker panic must flip the daemon into shutdown (no zombie)"
         );
     }
@@ -4429,13 +4745,13 @@ mod tests {
     #[test]
     fn supervised_worker_early_return_sets_shutdown() {
         let state = Arc::new(test_state());
-        let handle = spawn_supervised(&state, "test-early-return", |_state| {
-            // Returns immediately — a worker loop should never do this.
-        })
-        .expect("spawn supervised worker");
-        handle.join().expect("join");
+        let mut owner = WorkerOwner::new(Arc::clone(&state.cancellation));
+        owner
+            .spawn("test-early-return", WorkerPolicy::Required, || {})
+            .expect("spawn supervised worker");
+        owner.join_acquired();
         assert!(
-            state.shutdown.load(Ordering::Relaxed),
+            state.is_stopping(),
             "an early worker return must flip the daemon into shutdown"
         );
     }
@@ -4459,11 +4775,19 @@ mod tests {
 
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         listener.set_nonblocking(true).expect("nonblocking");
-        let writer = Arc::new(Mutex::new(dummy_framed_writer()));
+        let writer = Arc::new(WriterSlot::new(dummy_framed_writer()));
 
         // A tiny idle timeout; last_activity is already 60s old, so the very
         // first loop iteration must return Ok(()).
-        let result = accept_loop(&state, &listener, &writer, Duration::from_millis(1));
+        let mut workers = WorkerOwner::new(Arc::clone(&state.cancellation));
+        let result = accept_loop(
+            &state,
+            &listener,
+            &writer,
+            Duration::from_millis(1),
+            &mut workers,
+        );
+        workers.shutdown_and_join(StopReason::Idle);
         assert!(
             result.is_ok(),
             "idle timeout should return Ok, got: {result:?}"
@@ -4492,7 +4816,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("addr");
         listener.set_nonblocking(true).expect("nonblocking");
-        let writer = Arc::new(Mutex::new(dummy_framed_writer()));
+        let writer = Arc::new(WriterSlot::new(dummy_framed_writer()));
 
         // Fire several unauthenticated connects that will be accepted; their
         // handler threads fail auth and exit without bumping last_activity.
@@ -4501,7 +4825,15 @@ mod tests {
         }
         // Give the accept loop a bounded run: it must still time out because
         // no authenticated request ever bumped last_activity.
-        let result = accept_loop(&state, &listener, &writer, Duration::from_millis(1));
+        let mut workers = WorkerOwner::new(Arc::clone(&state.cancellation));
+        let result = accept_loop(
+            &state,
+            &listener,
+            &writer,
+            Duration::from_millis(1),
+            &mut workers,
+        );
+        workers.shutdown_and_join(StopReason::Idle);
         assert!(result.is_ok(), "loop must return Ok on idle timeout");
 
         // The recorded last_activity must be unchanged by the failed connects
@@ -5577,7 +5909,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Build a loopback (server, client) TCP pair for use in tests.
-    fn loopback_pair() -> (TcpStream, TcpStream) {
+    pub(super) fn loopback_pair() -> (TcpStream, TcpStream) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let addr = listener.local_addr().expect("local_addr");
         let client = TcpStream::connect(addr).expect("connect");
@@ -5771,7 +6103,7 @@ mod tests {
         // Dummy firefox_writer: any writes from handle_client to "Firefox"
         // go into a loopback pair we never read.
         let (ff_server, _ff_client) = loopback_pair();
-        let firefox_writer = Arc::new(Mutex::new(FramedWriter::from_stream(ff_server)));
+        let firefox_writer = Arc::new(WriterSlot::new(FramedWriter::from_stream(ff_server)));
 
         // The pair we hand the daemon (server_side) and the test (client_side).
         let (server_side, client_side) = loopback_pair();
@@ -6271,7 +6603,7 @@ mod tests {
             "a dispatcher that was never spawned is not alive"
         );
 
-        // What `run_daemon` does immediately before `spawn_supervised`.
+        // What `run_daemon` does immediately before acquiring the dispatcher worker.
         mark_dispatcher_alive(&state);
         assert_eq!(
             state.dispatcher_health()["alive"],
@@ -6750,7 +7082,7 @@ mod tests {
         state.auth_token = "correct-token".to_owned();
         let state = Arc::new(state);
         let (ff_server, _ff_client) = loopback_pair();
-        let firefox_writer = Arc::new(Mutex::new(FramedWriter::from_stream(ff_server)));
+        let firefox_writer = Arc::new(WriterSlot::new(FramedWriter::from_stream(ff_server)));
         let (server, mut client) = loopback_pair();
         // macOS inherits this from the nonblocking listener; setting it
         // explicitly makes the regression meaningful on every platform.
@@ -6851,7 +7183,7 @@ mod tests {
             .unwrap();
         let thread = std::thread::spawn(move || {
             let (socket, _) = listener.accept().unwrap();
-            let writer = Arc::new(Mutex::new(FramedWriter::from_stream(ff_server)));
+            let writer = Arc::new(WriterSlot::new(FramedWriter::from_stream(ff_server)));
             handle_client(&handler_state, socket, &writer).unwrap();
         });
         assert!(matches!(
@@ -7420,7 +7752,7 @@ mod tests {
         );
 
         // ── gc_fire_forget via the same transport writer ────────────────────
-        // In the real daemon this is the Arc<Mutex<FramedWriter>> from the split.
+        // In the real daemon this is the FirefoxWriter from the split.
         // Here we reuse the transport's writer half by taking its write-side via
         // a loopback pair so we can inspect the outbound packet.
         let (gc_server, mut gc_client) = loopback_pair();

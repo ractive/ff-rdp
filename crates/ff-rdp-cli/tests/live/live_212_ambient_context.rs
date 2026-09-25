@@ -16,6 +16,9 @@
 //!   FF_RDP_LIVE_TESTS=1 cargo test-live -p ff-rdp-cli \
 //!       --test live live_212_ambient_context -- --nocapture
 
+#[path = "../common/home_ref_flow.rs"]
+mod home_ref_flow;
+
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::process::{Command, Output};
@@ -119,78 +122,7 @@ fn live_home_with_page_lists_tabs_and_refs() {
 
     // `--format json` because the home view renders text by default; the hook
     // and any script consume this shape.
-    let home = run_json(port, &["--format", "json"]);
-    let results = &home["results"];
-
-    assert_eq!(
-        results["browser"]["reachable"],
-        Value::Bool(true),
-        "a live Firefox must read as reachable: {home}"
-    );
-    let tabs = results["tabs"].as_array().expect("tabs array");
-    assert!(!tabs.is_empty(), "the loaded tab must be listed: {home}");
-    let listed = tabs[0]["url"]
-        .as_str()
-        .unwrap_or_else(|| panic!("tab url must be a string: {home}"));
-    assert!(
-        listed.starts_with(&url),
-        "tabs[0].url must name the page that is loaded ({url}), got {listed}: {home}"
-    );
-    assert_eq!(
-        tabs[0]["index"],
-        Value::from(1),
-        "tab indices are 1-based, matching `--tab N`: {home}"
-    );
-
-    let page = &results["page"];
-    assert!(
-        !page.is_null(),
-        "a loaded page must produce a page block: {home}"
-    );
-    let headings = page["headings"].as_array().expect("headings array");
-    assert!(
-        headings
-            .iter()
-            .any(|h| h["text"].as_str() == Some("Ambient context")),
-        "the page block must describe the loaded document: {home}"
-    );
-
-    let refs_registered = page["refs_registered"].as_bool().unwrap_or(false);
-    assert!(
-        refs_registered,
-        "on the daemon route the page block must carry live refs: {home}"
-    );
-    let first_ref = page["interactive"]
-        .as_array()
-        .and_then(|entries| entries.first())
-        .and_then(|entry| entry["ref"].as_str())
-        .unwrap_or_else(|| panic!("the first interactive entry must carry a ref: {home}"));
-
-    // The ref is only useful if `click` accepts it — the AC's actual claim.
-    let clicked = run_json(port, &["click", "--ref", first_ref]);
-    assert!(
-        clicked["results"]["clicked"] != Value::Bool(false),
-        "click --ref {first_ref} must act on the element the home view named: {clicked}"
-    );
-
-    let after = run_json(port, &["--format", "json"]);
-    let after_url = after["results"]["tabs"][0]["url"]
-        .as_str()
-        .unwrap_or_default();
-    assert!(
-        after_url.ends_with("/clicked"),
-        "the click must have followed the link the ref pointed at, got {after_url}: {after}"
-    );
-
-    // …and the hints an agent reads name that same ref, verbatim.
-    let hints = results["hints"].as_array().expect("hints array");
-    assert!(
-        hints
-            .iter()
-            .filter_map(Value::as_str)
-            .any(|h| h.contains(&format!("--ref {first_ref}"))),
-        "the hints must offer the ref the page block minted: {hints:?}"
-    );
+    home_ref_flow::check(&url, |args| run_json(port, args));
 
     stop_daemon(port);
 }

@@ -1,4 +1,7 @@
-use std::io::Read as _;
+mod startup;
+#[cfg(all(test, unix))]
+mod startup_controls;
+
 use std::net::ToSocketAddrs as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -447,10 +450,21 @@ fn stop_failed_launch(
     error: AppError,
     child: &mut std::process::Child,
     profile_guard: &mut crate::util::profile_dir::ManagedProfileGuard,
+    stderr: &mut startup::StderrCapture,
 ) -> AppError {
+    stderr.pump(None);
+    let error = error.with_warning(stderr.summary());
     // `try_wait` may already have collected an immediately-exited child. Never
     // turn its now-reusable numeric PID into authority to signal a new process.
-    if matches!(child.try_wait(), Ok(Some(_))) {
+    let observed = child.try_wait();
+    let state = match &observed {
+        Ok(Some(status)) => format!("natural exit observed before cleanup signals: {status}"),
+        Ok(None) => "alive before cleanup signals; subsequent exit cause unknown".to_owned(),
+        Err(error) => format!("status unknown before cleanup signals: {error}"),
+    };
+    stderr.trace(child.id(), "before_cleanup_signals", &state, None);
+    let error = error.with_warning(state);
+    if matches!(observed, Ok(Some(_))) {
         return report_failed_profile_cleanup(error, profile_guard);
     }
     let pid = child.id();
@@ -471,7 +485,11 @@ fn stop_failed_launch(
         }
     }
     match child.wait() {
-        Ok(_) => report_failed_profile_cleanup(error, profile_guard),
+        Ok(status) => {
+            stderr.pump(None);
+            stderr.trace(pid, "cleanup_wait", &status.to_string(), None);
+            report_failed_profile_cleanup(error, profile_guard)
+        }
         Err(e) => {
             profile_guard.disarm();
             error.with_warning(format!(
@@ -485,12 +503,13 @@ struct PendingLaunch {
     child: std::process::Child,
     profile: crate::util::profile_dir::ManagedProfileGuard,
     armed: bool,
+    stderr: startup::StderrCapture,
 }
 
 impl PendingLaunch {
     fn fail(&mut self, error: AppError) -> AppError {
         self.armed = false;
-        stop_failed_launch(error, &mut self.child, &mut self.profile)
+        stop_failed_launch(error, &mut self.child, &mut self.profile, &mut self.stderr)
     }
 
     fn disarm(&mut self) {
@@ -573,6 +592,8 @@ pub(crate) enum PortWaitOutcome {
     /// `host:port` could not be resolved at all — a configuration error, not a
     /// timing one.
     Unresolvable(String),
+    Exited(std::process::ExitStatus),
+    StatusFailed(String),
 }
 
 impl PortWaitOutcome {
@@ -592,6 +613,12 @@ impl PortWaitOutcome {
                 bound.as_secs()
             ))),
             Self::Unresolvable(msg) => Some(AppError::User(msg)),
+            Self::Exited(status) => Some(AppError::User(format!(
+                "Firefox (pid {pid}) exited during startup with {status}"
+            ))),
+            Self::StatusFailed(error) => Some(AppError::Internal(anyhow::anyhow!(
+                "failed to check Firefox status during startup: {error}"
+            ))),
         }
     }
 }
@@ -610,7 +637,8 @@ pub(crate) struct LaunchHooks {
     /// Identify the process listening on `port`, if the OS query succeeds.
     pub(crate) find_listener: fn(u16) -> Option<port_owner::PortOwner>,
     /// Poll `host:port` until it accepts a connection or the bound elapses.
-    pub(crate) probe_port: fn(&str, u16, Duration) -> PortWaitOutcome,
+    pub(crate) probe_port:
+        fn(&str, u16, Duration, &mut startup::Observation<'_>) -> PortWaitOutcome,
     /// Spawn the prepared Firefox command.
     pub(crate) spawn: fn(&mut std::process::Command) -> std::io::Result<std::process::Child>,
     /// Read the owned child's status; injectable for the OS error branch.
@@ -786,7 +814,12 @@ fn reject_if_port_occupied(port: u16, hooks: &LaunchHooks) -> Result<(), AppErro
 /// elapses. Tries all resolved addresses (IPv4 + IPv6) each iteration so
 /// Firefox is found regardless of which address family it binds.
 /// Retries every 200 ms.
-fn wait_for_port(host: &str, port: u16, timeout: Duration) -> PortWaitOutcome {
+fn wait_for_port(
+    host: &str,
+    port: u16,
+    timeout: Duration,
+    observation: &mut startup::Observation<'_>,
+) -> PortWaitOutcome {
     let addr_str = format!("{host}:{port}");
     let addrs: Vec<std::net::SocketAddr> = match addr_str.to_socket_addrs() {
         Ok(a) => a.collect(),
@@ -802,6 +835,18 @@ fn wait_for_port(host: &str, port: u16, timeout: Duration) -> PortWaitOutcome {
     let deadline = std::time::Instant::now() + timeout;
 
     loop {
+        observation.stderr.pump(Some(deadline));
+        match observation.status() {
+            Ok(Some(status)) => {
+                observation.terminal("port_wait", "natural_exit");
+                return PortWaitOutcome::Exited(status);
+            }
+            Err(error) => {
+                observation.terminal("port_wait", "status_unknown");
+                return PortWaitOutcome::StatusFailed(error.to_string());
+            }
+            Ok(None) => {}
+        }
         let iteration_start = std::time::Instant::now();
         let remaining = deadline.saturating_duration_since(iteration_start);
         if remaining.is_zero() {
@@ -813,8 +858,18 @@ fn wait_for_port(host: &str, port: u16, timeout: Duration) -> PortWaitOutcome {
             .checked_div(u32::try_from(addrs.len()).unwrap_or(u32::MAX))
             .unwrap_or(Duration::from_millis(50));
         for addr in &addrs {
-            if std::net::TcpStream::connect_timeout(addr, per_addr).is_ok() {
-                return PortWaitOutcome::Opened;
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            if std::net::TcpStream::connect_timeout(addr, per_addr.min(remaining)).is_ok() {
+                let result = match observation.status() {
+                    Ok(None) => PortWaitOutcome::Opened,
+                    Ok(Some(status)) => PortWaitOutcome::Exited(status),
+                    Err(error) => PortWaitOutcome::StatusFailed(error.to_string()),
+                };
+                observation.terminal("port_wait", &format!("{result:?}"));
+                return result;
             }
         }
         // Sleep only the remainder of the poll interval so we don't
@@ -827,6 +882,9 @@ fn wait_for_port(host: &str, port: u16, timeout: Duration) -> PortWaitOutcome {
         }
     }
 
+    // The turn checked actual child status at the absolute deadline. A later
+    // cleanup check records any natural exit racing with this observation.
+    observation.terminal("port_wait", "alive_when_deadline_checked");
     PortWaitOutcome::TimedOut
 }
 
@@ -983,7 +1041,13 @@ pub(crate) fn run_with_hooks(
         child,
         profile: profile_guard,
         armed: true,
+        stderr: startup::StderrCapture::default(),
     };
+    if let Err(error) = pending.stderr.attach(pending.child.stderr.take()) {
+        return Err(pending.fail(AppError::Internal(anyhow::anyhow!(
+            "failed to configure startup stderr: {error}"
+        ))));
+    }
     let child = &mut pending.child;
 
     // iter-171: mark ownership *here*, the instant the PID exists — not after
@@ -1016,32 +1080,24 @@ pub(crate) fn run_with_hooks(
         }
     }
 
-    // Wait briefly to catch immediately-crashing launches (bad flags, missing
-    // libraries, etc.).
-    std::thread::sleep(Duration::from_millis(500));
-
-    match (hooks.try_wait)(child) {
+    let mut observation = startup::Observation {
+        child,
+        stderr: &mut pending.stderr,
+        try_wait: hooks.try_wait,
+        started: std::time::Instant::now(),
+    };
+    match observation.initial_interval() {
         Ok(Some(status)) => {
-            // Process already exited — try to capture stderr for diagnostics.
-            let mut stderr_text = String::new();
-            if let Some(mut stderr) = child.stderr.take() {
-                let _ = stderr.read_to_string(&mut stderr_text);
-            }
-            let stderr_text = stderr_text.trim().to_owned();
-            let detail = if stderr_text.is_empty() {
-                String::new()
-            } else {
-                format!(": {stderr_text}")
-            };
-            let error = AppError::User(format!("Firefox exited immediately with {status}{detail}"));
+            observation.terminal("initial_interval", "natural_exit");
+            let error = AppError::User(format!("Firefox exited immediately with {status}"));
             Err(pending.fail(error))
         }
         Ok(None) => {
             // Still running — verify the debug port is actually reachable
             // before reporting success. Always probe localhost since we
             // just spawned a local Firefox, regardless of --host.
-            let pid = child.id();
-            let outcome = (hooks.probe_port)("localhost", port, port_wait_bound);
+            let pid = observation.child.id();
+            let outcome = (hooks.probe_port)("localhost", port, port_wait_bound, &mut observation);
             if let Some(e) = outcome.into_error(pid, port, port_wait_bound) {
                 return Err(pending.fail(e));
             }
@@ -1430,12 +1486,8 @@ mod tests {
     /// not a port conflict, and never the pre-158 hardcoded "5s".
     #[test]
     fn unit_158_port_wait_error_names_bind_timeout() {
-        let hooks = LaunchHooks {
-            probe_port: |_host, _port, _timeout| PortWaitOutcome::TimedOut,
-            ..LaunchHooks::real()
-        };
         let bound = resolve_port_wait_bound(Some(30), None);
-        let outcome = (hooks.probe_port)("localhost", 6123, bound);
+        let outcome = PortWaitOutcome::TimedOut;
         let err = outcome
             .into_error(4242, 6123, bound)
             .expect("a TimedOut outcome must produce an error");
@@ -1479,7 +1531,7 @@ mod tests {
                     uptime_s: None,
                 })
             },
-            probe_port: |_host, _port, _timeout| PortWaitOutcome::Opened,
+            probe_port: |_host, _port, _timeout, _observation| PortWaitOutcome::Opened,
             spawn: |_cmd| {
                 SPAWNS.fetch_add(1, Ordering::SeqCst);
                 Err(std::io::Error::other(
@@ -1944,7 +1996,7 @@ mod iter_175_tests {
                 locate_firefox: || Ok(PathBuf::from("/unused/firefox")),
                 is_port_in_use: |_| false,
                 spawn,
-                probe_port: |_, _, _| PortWaitOutcome::Opened,
+                probe_port: |_, _, _, _| PortWaitOutcome::Opened,
                 try_wait: if unwind {
                     |_| panic!("injected launch unwind")
                 } else if status_failure {
@@ -2041,7 +2093,7 @@ mod iter_175_tests {
         let hooks = LaunchHooks {
             is_port_in_use: |_port| false,
             find_listener: |_port| None,
-            probe_port: |_host, _port, _timeout| PortWaitOutcome::Opened,
+            probe_port: |_host, _port, _timeout, _observation| PortWaitOutcome::Opened,
             spawn: |cmd| {
                 *PROFILE.lock().expect("profile slot") = profile_arg_of(cmd);
                 Err(std::io::Error::other("simulated spawn failure"))
@@ -2076,7 +2128,7 @@ mod iter_175_tests {
         let hooks = LaunchHooks {
             is_port_in_use: |_port| false,
             find_listener: |_port| None,
-            probe_port: |_host, _port, _timeout| PortWaitOutcome::Opened,
+            probe_port: |_host, _port, _timeout, _observation| PortWaitOutcome::Opened,
             spawn: |cmd| {
                 let profile = profile_arg_of(cmd).expect("managed profile argument");
                 std::fs::remove_dir_all(&profile).expect("replace profile directory");
@@ -2131,7 +2183,7 @@ mod iter_175_tests {
         let hooks = LaunchHooks {
             is_port_in_use: |_port| false,
             find_listener: |_port| None,
-            probe_port: |_host, _port, _timeout| PortWaitOutcome::Opened,
+            probe_port: |_host, _port, _timeout, _observation| PortWaitOutcome::Opened,
             spawn: |cmd| {
                 *PROFILE.lock().expect("profile slot") = profile_arg_of(cmd);
                 spawn_exiting_child()
@@ -2143,7 +2195,8 @@ mod iter_175_tests {
         let err = run_with_hooks(&bare_launch_cli(), &managed_opts(7602), &hooks)
             .expect_err("a browser that exits immediately must fail the launch");
         assert!(
-            matches!(&err, AppError::User(m) if m.contains("exited immediately")),
+            err.to_error_json()["error_type"] == "User"
+                && err.to_string().contains("exited immediately"),
             "expected the immediate-exit message, got {err:?}"
         );
 
@@ -2168,7 +2221,7 @@ mod iter_175_tests {
         let hooks = LaunchHooks {
             is_port_in_use: |_port| false,
             find_listener: |_port| None,
-            probe_port: |_host, _port, _timeout| PortWaitOutcome::TimedOut,
+            probe_port: |_host, _port, _timeout, _observation| PortWaitOutcome::TimedOut,
             spawn: |cmd| {
                 *PROFILE.lock().expect("profile slot") = profile_arg_of(cmd);
                 spawn_lingering_child()
@@ -2180,7 +2233,8 @@ mod iter_175_tests {
         let err = run_with_hooks(&bare_launch_cli(), &managed_opts(7603), &hooks)
             .expect_err("a debug port that never opens must fail the launch");
         assert!(
-            matches!(&err, AppError::User(m) if m.contains("did not open debug port")),
+            err.to_error_json()["error_type"] == "User"
+                && err.to_string().contains("did not open debug port"),
             "expected the port-deadline message, got {err:?}"
         );
 
@@ -2213,7 +2267,7 @@ mod iter_175_tests {
         let hooks = LaunchHooks {
             is_port_in_use: |_port| false,
             find_listener: |_port| None,
-            probe_port: |_host, _port, _timeout| PortWaitOutcome::Opened,
+            probe_port: |_host, _port, _timeout, _observation| PortWaitOutcome::Opened,
             spawn: |_cmd| Err(std::io::Error::other("simulated spawn failure")),
             locate_firefox: || Ok(PathBuf::from("/nonexistent/ff-rdp-fake-firefox")),
             ..LaunchHooks::none_running()

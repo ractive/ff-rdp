@@ -334,21 +334,7 @@ impl RdpTransport {
                     stream
                         .set_write_timeout(Some(timeout))
                         .map_err(ProtocolError::ConnectionFailed)?;
-                    let reader = BufReader::new(
-                        stream
-                            .try_clone()
-                            .map_err(ProtocolError::ConnectionFailed)?,
-                    );
-                    return Ok(Self {
-                        reader,
-                        read_deadline: None,
-                        abandoned_replies: Vec::new(),
-                        decoder: FrameDecoder::default(),
-                        writer: stream,
-                        event_sink: None,
-                        target_guard: None,
-                        navigation_started: None,
-                    });
+                    return Self::from_stream(stream);
                 }
                 Err(e) => {
                     last_err = Some(if e.kind() == std::io::ErrorKind::TimedOut {
@@ -366,6 +352,33 @@ impl RdpTransport {
                 format!("could not resolve {host}:{port}"),
             ))
         }))
+    }
+
+    /// Adopt an already-connected stream without consuming its greeting.
+    ///
+    /// The daemon uses this after cancellable nonblocking connection acquisition.
+    /// The caller selects blocking mode and operation timeouts before adoption.
+    pub fn from_stream(stream: TcpStream) -> Result<Self, ProtocolError> {
+        let reader = BufReader::new(
+            stream
+                .try_clone()
+                .map_err(ProtocolError::ConnectionFailed)?,
+        );
+        Ok(Self {
+            reader,
+            read_deadline: None,
+            abandoned_replies: Vec::new(),
+            decoder: FrameDecoder::default(),
+            writer: stream,
+            event_sink: None,
+            target_guard: None,
+            navigation_started: None,
+        })
+    }
+
+    /// Clone this transport's socket for an independent daemon shutdown handle.
+    pub fn try_clone_stream(&self) -> std::io::Result<TcpStream> {
+        self.writer.try_clone()
     }
 
     /// Connect to a Firefox RDP server and consume the initial greeting packet.
@@ -847,6 +860,14 @@ impl FramedWriter {
     pub fn send_raw(&mut self, json: &str) -> Result<(), ProtocolError> {
         let frame = encode_frame(json);
         write_frame(&mut self.writer, frame.as_bytes())
+    }
+
+    /// Send one frame within the caller's absolute deadline, including partial
+    /// writes and interrupted syscalls. Used by the daemon's serialized writer
+    /// after acquiring its lease within that same deadline.
+    pub fn send_raw_until(&mut self, json: &str, deadline: Instant) -> Result<(), ProtocolError> {
+        let frame = encode_frame(json);
+        write_frame_until(&mut self.writer, frame.as_bytes(), deadline, Instant::now)
     }
 
     /// Set the write deadline (`SO_SNDTIMEO`) on the underlying socket.
@@ -1749,6 +1770,76 @@ fn write_frame(stream: &mut TcpStream, frame: &[u8]) -> Result<(), ProtocolError
         let _ = stream.shutdown(std::net::Shutdown::Both);
     }
     result
+}
+
+// Keep the real socket operations behind this private seam so partial progress
+// and EINTR can be controlled without relying on platform socket buffer sizes.
+trait DeadlineIo: Write {
+    fn timeout(&self) -> std::io::Result<Option<Duration>>;
+    fn set_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()>;
+    fn interrupt(&self);
+}
+
+impl DeadlineIo for TcpStream {
+    fn timeout(&self) -> std::io::Result<Option<Duration>> {
+        self.write_timeout()
+    }
+    fn set_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
+        self.set_write_timeout(timeout)
+    }
+    fn interrupt(&self) {
+        let _ = self.shutdown(std::net::Shutdown::Both);
+    }
+}
+
+fn write_frame_until<W: DeadlineIo>(
+    stream: &mut W,
+    frame: &[u8],
+    deadline: Instant,
+    now: impl FnMut() -> Instant,
+) -> Result<(), ProtocolError> {
+    let previous = stream.timeout().map_err(ProtocolError::ConnectionFailed)?;
+    let result = write_frame_to(
+        &mut DeadlineWriter {
+            stream,
+            deadline,
+            now,
+        },
+        frame,
+    );
+    if matches!(result, Err(ProtocolError::FrameWriteDesynchronised { .. })) {
+        stream.interrupt();
+    }
+    // The caller still owns its writer lease throughout restoration.
+    let restored = stream
+        .set_timeout(previous)
+        .map_err(ProtocolError::ConnectionFailed);
+    match result {
+        Err(error) => Err(error),
+        Ok(()) => restored,
+    }
+}
+
+/// A single absolute deadline is rechecked even after partial progress or EINTR.
+struct DeadlineWriter<'a, W, N> {
+    stream: &'a mut W,
+    deadline: Instant,
+    now: N,
+}
+
+impl<W: DeadlineIo, N: FnMut() -> Instant> Write for DeadlineWriter<'_, W, N> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let remaining = self.deadline.saturating_duration_since((self.now)());
+        if remaining.is_zero() {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        self.stream.set_timeout(Some(remaining))?;
+        self.stream.write(bytes)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.stream.flush()
+    }
 }
 
 /// [`write_frame`] over any `Write`, without the socket shutdown.
@@ -3466,6 +3557,133 @@ mod tests {
             rest_of_header.len(),
             "cursor should be positioned after header, not into body; \
              body bytes should still be unread (total={total_len}, pos={pos})"
+        );
+    }
+}
+
+#[cfg(test)]
+mod absolute_write_controls {
+    use super::*;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    struct ScriptedSocket {
+        timeout: Cell<Option<Duration>>,
+        clock: Rc<Cell<Instant>>,
+        expires: Instant,
+        first_write: Option<std::io::Result<usize>>,
+        writes: usize,
+        interrupted: Cell<bool>,
+    }
+
+    impl Write for ScriptedSocket {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            self.writes += 1;
+            self.clock.set(self.expires);
+            self.first_write
+                .take()
+                .expect("absolute deadline must prevent a second syscall")
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl DeadlineIo for ScriptedSocket {
+        fn timeout(&self) -> std::io::Result<Option<Duration>> {
+            Ok(self.timeout.get())
+        }
+        fn set_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
+            self.timeout.set(timeout);
+            Ok(())
+        }
+        fn interrupt(&self) {
+            self.interrupted.set(true);
+        }
+    }
+
+    #[test]
+    fn iter284_absolute_partial_expiry_retires_and_restores() {
+        let start = Instant::now();
+        let clock = Rc::new(Cell::new(start));
+        let previous = Some(Duration::from_secs(7));
+        let deadline = start + Duration::from_secs(1);
+        let mut socket = ScriptedSocket {
+            timeout: Cell::new(previous),
+            clock: Rc::clone(&clock),
+            expires: deadline,
+            first_write: Some(Ok(2)),
+            writes: 0,
+            interrupted: Cell::new(false),
+        };
+        let result = write_frame_until(&mut socket, b"9:{\"x\":123}", deadline, || clock.get());
+        assert!(matches!(
+            result,
+            Err(ProtocolError::FrameWriteDesynchronised { written: 2, .. })
+        ));
+        assert!(
+            socket.interrupted.get(),
+            "partial frame must retire its socket"
+        );
+        assert_eq!(socket.timeout.get(), previous);
+        assert_eq!(socket.writes, 1);
+    }
+
+    #[test]
+    fn iter284_absolute_eintr_does_not_restart_budget() {
+        let start = Instant::now();
+        let clock = Rc::new(Cell::new(start));
+        let deadline = start + Duration::from_secs(1);
+        let mut socket = ScriptedSocket {
+            timeout: Cell::new(None),
+            clock: Rc::clone(&clock),
+            expires: deadline,
+            first_write: Some(Err(std::io::ErrorKind::Interrupted.into())),
+            writes: 0,
+            interrupted: Cell::new(false),
+        };
+        let result = write_frame_until(&mut socket, b"2:{}", deadline, || clock.get());
+        assert!(matches!(result, Err(ProtocolError::Timeout)));
+        assert_eq!(socket.writes, 1);
+        assert!(
+            !socket.interrupted.get(),
+            "zero bytes preserve frame alignment"
+        );
+        assert_eq!(socket.timeout.get(), None);
+    }
+
+    #[test]
+    fn iter284_absolute_zero_expiry_preserves_real_socket_and_timeout() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback endpoint");
+        let socket = TcpStream::connect(listener.local_addr().expect("address")).expect("connect");
+        let (peer, _) = listener.accept().expect("accept");
+        let original = Some(Duration::from_secs(3));
+        socket
+            .set_write_timeout(original)
+            .expect("set previous timeout");
+        let observed = socket.try_clone().expect("timeout observation clone");
+        let mut writer = FramedWriter::from_stream(socket);
+        assert!(matches!(
+            writer.send_raw_until("{}", Instant::now()),
+            Err(ProtocolError::Timeout)
+        ));
+        assert_eq!(
+            observed.write_timeout().expect("restored timeout"),
+            original
+        );
+        writer
+            .send_raw_until("{\"normal\":true}", Instant::now() + Duration::from_secs(3))
+            .expect("next complete frame");
+        peer.set_read_timeout(Some(Duration::from_secs(3)))
+            .expect("peer deadline");
+        let mut reader = FramedReader::from_stream(peer);
+        assert_eq!(
+            reader.recv().expect("normal frame"),
+            serde_json::json!({"normal":true})
+        );
+        assert_eq!(
+            observed.write_timeout().expect("restored success timeout"),
+            original
         );
     }
 }

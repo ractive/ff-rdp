@@ -261,3 +261,34 @@ Preserve additional owners 274/267/268/271/275 and explicitly disposition the
 unlocalized 254 dogfood 124 and 169 reload/null-status watches. No row silently
 disappears; no new calendar wait, induced load or deliberate process death
 is required.
+
+## Iteration284 carry-over inputs — September 25
+
+These records extend this holder's terminal reconciliation input, without ticking
+its original criteria or scheduling extra sweeps.284closing1's direct166 case
+returned the correct complete canonical document but null/no_document_request
+after21125ms. Its separately admitted original direct-parity case passed both
+legs with200 and all new event phases. The old failure has no attributable
+event/subscription/document trace: it is distinct from the169 daemon reload
+watch and is not explained by that pass. Reopen on a new unexpected null-status
+occurrence with actual route, document/request identity, event progression and
+fallback reason; preserve the original status assertion and deadline.
+
+284closing1's original220 fragment case failed before action: Firefox77389
+did not open port62813 within30s.281closing3 subsequently recorded four
+separate old-launch timeouts:20025/64204,20047/64239,20073/64263,20075/64266.
+Their retained logs lack natural-exit/cleanup distinction and failed-child
+birth/profile/crash joins. The six retained281 profiles belonged to other
+launches. Keep each historical cause unknown; generic load classification
+is not attribution.284's controlled-child proof establishes two independent
+launcher weaknesses and repairs them without extending waits. On recurrence
+use the new redacted stderr-count/EOF/error and observed-child-status evidence,
+then declare only the finite experiment needed for a remaining distinction.
+No unchanged reproduction is scheduled by this row.
+
+284closing1 also records timing wall1400/report579/gap821 with711.603ms before
+dispatch and refresh skipped.281 owns the scoped phase diagnostics; missing
+underlying RPC/scheduling attribution remains explicit. A later passing timing
+case does not retrospectively prove host load or repair these intervals. Fold
+this exact occurrence into the terminal disposition alongside other retained
+281/283 timing records, without changing750ms/>5ms assertions.

@@ -333,6 +333,21 @@ impl FallbackStatusEvidence {
         }
     }
 
+    // Private one-capture diagnostic: observes existing retained state only.
+    // Raw receives (including teardown packets outside this observer) are
+    // captured by the existing ff_rdp_core::transport TRACE target.
+    fn trace_diagnostic(&self, phase: &'static str) {
+        tracing::debug!(
+            target: "ff_rdp_cli::navigation_166_diagnostic",
+            phase,
+            context = ?self.context,
+            outgoing_window = ?self.outgoing_window,
+            requests = ?self.requests,
+            statuses = ?self.statuses,
+            "166 retained status evidence"
+        );
+    }
+
     fn observe(&mut self, packet: &Value) {
         for update in parse_network_resource_updates(packet) {
             if let Some(status) = update.status.and_then(|s| s.parse::<u16>().ok()) {
@@ -2555,6 +2570,7 @@ pub fn run_core(
         // wait_for_doc_complete acquires the lock only during dispatch_event,
         // not across the full recv() wait — see its lock-discipline doc-comment.
         let mut fallback_status = FallbackStatusEvidence::new(ctx.target());
+        fallback_status.trace_diagnostic("events_begin");
         let event_result = wait_for_doc_complete_retaining_status(
             ctx.transport_mut(),
             &bus_arc,
@@ -2572,6 +2588,15 @@ pub fn run_core(
             (wait_opts.wait_strategy == WaitStrategy::Both).then_some(&mut fallback_status),
         );
 
+        tracing::debug!(
+            target: "ff_rdp_cli::navigation_166_diagnostic",
+            phase = "events_end_before_teardown",
+            result = ?event_result,
+            elapsed_ms = nav_start.elapsed().as_millis(),
+            "166 event wait outcome"
+        );
+        fallback_status.trace_diagnostic("events_end_before_teardown");
+
         // iter-138 Theme A: stop the daemon stream so it reverts to buffering
         // (best-effort — a failure here doesn't invalidate the navigation
         // result, it just means the daemon stays in streaming mode for
@@ -2580,6 +2605,8 @@ pub fn run_core(
             let _ = crate::daemon::client::stop_daemon_stream(ctx.transport_mut(), "network-event");
         }
 
+        fallback_status.trace_diagnostic("after_stream_stop_before_gc");
+
         // Flush any pending `unwatchResources` from dead-channel pruning that
         // occurred inside `wait_for_doc_complete` before we unsubscribe.
         let _ = bus_arc
@@ -2587,11 +2614,15 @@ pub fn run_core(
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .gc(ctx.transport_mut());
 
+        fallback_status.trace_diagnostic("after_gc_before_unsubscribe");
+
         // Unsubscribe regardless of outcome so Firefox cleans up server state.
         let _ = bus_arc
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .unsubscribe(ctx.transport_mut(), sub_id);
+
+        fallback_status.trace_diagnostic("after_unsubscribe_before_unwatch_targets");
 
         // Pair the prelude's `watchTargets("frame")` with `unwatchTargets`
         // (oneway, no reply) so the server-side frame-target subscription is
@@ -2603,6 +2634,8 @@ pub fn run_core(
         // Restore the original timeout so subsequent RDP round-trips (e.g.
         // wait-text / wait-selector polling) use the configured timeout.
         restore_timeout(ctx.transport_mut(), cli.timeout);
+
+        fallback_status.trace_diagnostic("after_teardown_and_timeout_restore");
 
         // Apply wait_strategy.  `Readystate` was handled by the early branch
         // above and never reaches this code.  Only `Events` and `Both` run here.
@@ -2617,9 +2650,11 @@ pub fn run_core(
                 // Events timed out — give readystate the reserved 30% slice,
                 // capped to whatever is actually left of cli.timeout so the
                 // total wall time stays inside the user's budget.
+                fallback_status.trace_diagnostic("fallback_before_direct_refresh");
                 if ctx.target_endpoint.is_none() {
                     refresh_console_actor(&mut ctx);
                 }
+                fallback_status.trace_diagnostic("fallback_after_direct_refresh");
                 let elapsed_ms =
                     u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(cli.timeout);
                 let remaining = cli.timeout.saturating_sub(elapsed_ms);
@@ -2644,6 +2679,14 @@ pub fn run_core(
             Err(e) => Err(e),
         };
 
+        tracing::debug!(
+            target: "ff_rdp_cli::navigation_166_diagnostic",
+            phase = "readiness_before_neterror_check",
+            used_fallback,
+            result = ?result,
+            "166 readiness outcome"
+        );
+        fallback_status.trace_diagnostic("readiness_before_neterror_check");
         let commit = reclassify_timeout_as_neterror(&mut ctx, url, result)?;
 
         // iter-174: the same check on the SUCCESS path, gated on "no HTTP
@@ -2687,6 +2730,16 @@ pub fn run_core(
                 fallback_status.resolve(&commit.committed_url);
         }
 
+        fallback_status.trace_diagnostic("final_after_resolution");
+        tracing::debug!(
+            target: "ff_rdp_cli::navigation_166_diagnostic",
+            phase = "final_after_resolution",
+            used_fallback,
+            committed_url = %commit.committed_url,
+            status = ?commit.http_status,
+            reason = ?commit.status_reason,
+            "166 final status outcome"
+        );
         Some(commit)
     };
 
