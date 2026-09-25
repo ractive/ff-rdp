@@ -643,7 +643,11 @@ pub(crate) fn autowait_element(
                 return Err(autowait_timeout(
                     selector,
                     timeout_ms,
-                    "rect stability probe did not answer",
+                    if rect_changed {
+                        "rect did not stabilise; rect stability probe did not answer"
+                    } else {
+                        "rect stability probe did not answer"
+                    },
                     observed.as_ref(),
                 ));
             }
@@ -1958,6 +1962,90 @@ mod tests {
             matches!(result, Err(AppError::Timeout(ref message)) if message.contains("rect did not stabilise") && message.contains("matched 1 element")),
             "{result:?}"
         );
+    }
+
+    #[test]
+    fn unit_276_stability_timeout_retains_only_observed_motion() {
+        use ff_rdp_core::transport::{encode_frame, recv_from};
+        use std::io::Write as _;
+        for accepted_rects in 0..=2 {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = std::thread::spawn(move || {
+                let (stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut writer = stream.try_clone().unwrap();
+                let mut reader = std::io::BufReader::new(stream);
+                let mut send = |value: Value| {
+                    writer
+                        .write_all(encode_frame(&value.to_string()).as_bytes())
+                        .unwrap();
+                };
+                send(json!({"from":"root","applicationType":"browser","traits":{}}));
+                let mut rects = 0;
+                let mut requests = Vec::new();
+                loop {
+                    let request = recv_from(&mut reader).unwrap();
+                    let stage = classify_eval(request["text"].as_str().unwrap());
+                    requests.push(stage);
+                    assert_eq!(request["type"], "evaluateJSAsync");
+                    if stage == "stability" && rects == accepted_rects {
+                        // The last request has no ack or result. Do not send
+                        // another reply that could accidentally satisfy it.
+                        // After the production helper's deadline it must close
+                        // without a post-expiry diagnostic or another query.
+                        assert!(recv_from(&mut reader).is_err(), "post-expiry request");
+                        return requests;
+                    }
+                    let result = match stage {
+                        "readiness" => json!("ready"),
+                        "diagnose" => json!(r#"{"matchCount":1,"hidden":false}"#),
+                        "stability" => {
+                            rects += 1;
+                            json!(format!("[{rects},0,10,10]"))
+                        }
+                        other => panic!("unexpected stage {other}"),
+                    };
+                    let id = format!("r{}", requests.len());
+                    send(json!({"from":"conn0/console1","resultID":id}));
+                    send(
+                        json!({"from":"conn0/console1","type":"evaluationResult","resultID":id,"result":result}),
+                    );
+                }
+            });
+            let (mut ctx, actor) = connect_for_test(port);
+            let prior = ctx.transport_mut().read_timeout().unwrap();
+            let start = Instant::now();
+            let result = autowait_element(&mut ctx, &actor, "#target", 700, false);
+            let elapsed = start.elapsed();
+            assert_eq!(ctx.transport_mut().read_timeout().unwrap(), prior);
+            drop(ctx);
+            let requests = server.join().unwrap();
+            assert_eq!(
+                requests.iter().filter(|&&s| s == "stability").count(),
+                accepted_rects + 1
+            );
+            assert_eq!(requests.iter().filter(|&&s| s == "diagnose").count(), 1);
+            let Err(AppError::Timeout(message)) = result else {
+                panic!("{result:?}")
+            };
+            eprintln!(
+                "accepted_rects={accepted_rects} elapsed={elapsed:?} requests={requests:?} message={message}"
+            );
+            assert!(elapsed < Duration::from_millis(1_000), "{elapsed:?}");
+            assert!(message.contains("matched 1 element"), "{message}");
+            assert!(
+                message.contains("rect stability probe did not answer"),
+                "{message}"
+            );
+            assert_eq!(
+                message.contains("rect did not stabilise"),
+                accepted_rects == 2,
+                "{message}"
+            );
+        }
     }
 
     #[test]

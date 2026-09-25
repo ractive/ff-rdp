@@ -307,6 +307,95 @@ impl DocumentStatusTracker {
     }
 }
 
+/// Observations retained only for this dispatch's Both fallback. This is
+/// conservative request correlation, not immutable document identity: another
+/// unobserved same-URL navigation from the same outgoing window is not proved
+/// absent. Do not borrow the requested URL's status after an accepted redirect.
+///
+/// Firefox's navigation request innerWindowId identifies the outgoing window
+/// (network-events.js onTopBrowsingContextWillNavigate), not the new document.
+/// The typed Resource loses these ownership fields, so inspect raw packets at
+/// the ordinary receive/replay boundaries without changing bus delivery.
+#[derive(Default)]
+struct FallbackStatusEvidence {
+    context: Option<u64>,
+    outgoing_window: Option<u64>,
+    requests: Vec<(u64, String)>,
+    statuses: Vec<(u64, u16)>,
+}
+
+impl FallbackStatusEvidence {
+    fn new(target: &ff_rdp_core::TargetInfo) -> Self {
+        Self {
+            context: target.browsing_context_id.filter(|id| *id > 0),
+            outgoing_window: target.inner_window_id.filter(|id| *id > 0),
+            ..Self::default()
+        }
+    }
+
+    fn observe(&mut self, packet: &Value) {
+        for update in parse_network_resource_updates(packet) {
+            if let Some(status) = update.status.and_then(|s| s.parse::<u16>().ok()) {
+                self.statuses.push((update.resource_id, status));
+            }
+        }
+        let (Some(context), Some(window)) = (self.context, self.outgoing_window) else {
+            return;
+        };
+        if packet["type"] != "resources-available-array" {
+            return;
+        }
+        let Some(groups) = packet["array"].as_array() else {
+            return;
+        };
+        for group in groups {
+            if group[0] != "network-event" {
+                continue;
+            }
+            let Some(resources) = group[1].as_array() else {
+                continue;
+            };
+            for resource in resources {
+                if resource["cause"]["type"] != "document"
+                    || resource["isNavigationRequest"] != true
+                    || resource["browsingContextID"].as_u64() != Some(context)
+                    || resource["innerWindowId"].as_u64() != Some(window)
+                {
+                    continue;
+                }
+                if let (Some(id), Some(url)) =
+                    (resource["resourceId"].as_u64(), resource["url"].as_str())
+                {
+                    self.requests.push((id, canonical_doc_url(url)));
+                }
+            }
+        }
+    }
+
+    fn resolve(&self, accepted_url: &str) -> (Option<u16>, Option<StatusUnknown>) {
+        let accepted = canonical_doc_url(accepted_url);
+        let mut matching = self
+            .requests
+            .iter()
+            .filter(|(_, url)| *url == accepted)
+            .map(|(id, _)| *id);
+        let Some(id) = matching.next() else {
+            return (None, Some(StatusUnknown::NoDocumentRequest));
+        };
+        if matching.any(|other| other != id) {
+            return (None, Some(StatusUnknown::NoDocumentRequest));
+        }
+        self.statuses
+            .iter()
+            .rev()
+            .find(|(resource, _)| *resource == id)
+            .map_or(
+                (None, Some(StatusUnknown::NoStatusReported)),
+                |(_, status)| (Some(*status), None),
+            )
+    }
+}
+
 /// The result of waiting for a navigation to commit.
 #[derive(Debug)]
 struct CommitInfo {
@@ -335,10 +424,9 @@ struct CommitInfo {
 /// page that has, in fact, finished loading — so a naive event-only wait burns
 /// the whole events budget (~7 s) before the readystate fallback ever runs.
 /// When this config is present, [`wait_for_doc_complete`] interleaves a
-/// lightweight `document.readyState === 'complete'` probe (guarded by the same
-/// `navigationStart > pre_epoch` freshness check as the pure readystate path,
-/// iter-92) into its drain loop, and returns as soon as the page reports
-/// `complete` — without waiting out the events budget.
+/// lightweight atomic readiness sample (using the same freshness/progress
+/// predicate as the pure readystate path) into its drain loop, returning when
+/// the page reports `complete` without waiting out the events budget.
 struct ReadyStateProbe<'a> {
     target_endpoint: Option<crate::daemon::client::TargetEndpoint>,
     /// Console actor bound to the navigating docshell, used to evaluate JS.
@@ -353,10 +441,10 @@ struct ReadyStateProbe<'a> {
     /// Tab descriptor actor used to re-resolve `console_actor` once the new
     /// docshell has committed (`getTarget` returns fresh actor IDs).
     tab_actor: &'a ff_rdp_core::ActorId,
-    /// `performance.timing.navigationStart` captured before `navigateTo`; a
-    /// `complete` reading whose `navigationStart` is not fresher than this is
-    /// stale (belongs to the prior page) and is ignored.
-    pre_epoch: f64,
+    /// Optional positive `navigationStart` captured before dispatch. A known
+    /// epoch is authoritative; absent epoch evidence may use a known changed
+    /// href as progress, without claiming a fresh document.
+    pre_epoch: Option<f64>,
     /// Do not probe until this instant, giving the (faster, richer)
     /// `dom-complete` event a head start on pages that do fire it promptly.
     first_probe_at: Instant,
@@ -421,26 +509,99 @@ struct ReadyStateProbe<'a> {
     trust_event_url: bool,
 }
 
-/// Evaluate `document.readyState === 'complete'` (with the `navigationStart`
-/// freshness guard) on `console_actor`, returning `true` only when the *current*
-/// document has finished loading.
-///
-/// A transport-level `recv` timeout or any eval error is treated as "not ready
-/// yet" (`false`) rather than a hard error — the caller keeps waiting on the
-/// events stream. The probe deliberately swallows these so a flaky mid-load
-/// eval never aborts the navigation.
+/// Capture primitives in one evaluation, so a subsequent document cannot supply
+/// the URL for an earlier document's readiness result. Actor IDs and cached target
+/// forms do not establish immutable document identity.
+const READINESS_SAMPLE: &str = "JSON.stringify({readyState: document.readyState, \
+    epoch: performance.timing.navigationStart, href: window.location.href})";
+
+#[derive(Clone, Copy)]
+struct ReadinessCheck<'a> {
+    pre_epoch: Option<f64>,
+    pre_href: &'a str,
+    requested_url: &'a str,
+}
+
+impl ReadinessCheck<'_> {
+    fn accepted_href(self, grip: &Grip) -> Option<String> {
+        let Grip::Value(Value::String(encoded)) = grip else {
+            return None;
+        };
+        let sample: Value = serde_json::from_str(encoded).ok()?;
+        if sample.get("readyState")?.as_str()? != "complete" {
+            return None;
+        }
+        let href = sample.get("href")?.as_str()?;
+        if href.is_empty()
+            || (!self.requested_url.is_empty() && needs_href_fallback(href, self.requested_url))
+        {
+            return None;
+        }
+        let progressed = match self.pre_epoch {
+            // A known epoch remains authoritative, even when href changed.
+            Some(before) => sample
+                .get("epoch")?
+                .as_f64()
+                .is_some_and(|now| now > before),
+            // Missing epoch evidence must not become zero. A known changed href
+            // can establish progress under the existing changed-href contract;
+            // it does not prove a fresh document or navigation causality.
+            None => !self.pre_href.is_empty() && href != self.pre_href,
+        };
+        progressed.then(|| href.to_owned())
+    }
+}
+
+/// An absent/exceptional/malformed baseline cannot authorize freshness.
+fn capture_pre_nav_epoch(ctx: &mut super::connect_tab::ConnectedTab, context: &str) -> Option<f64> {
+    let console = ctx.target().console_actor.clone();
+    let result = eval_or_bail(ctx, &console, "performance.timing.navigationStart", context).ok()?;
+    match result.result {
+        Grip::Value(Value::Number(n)) => n.as_f64().filter(|n| n.is_finite() && *n > 0.0),
+        _ => None,
+    }
+}
+
+/// Resolve the immutable serialized sample, not a new document evaluation.
+/// Callers keep the evaluation, bounded substring fetch and successful release
+/// inside the same read deadline, target guard and event-replay scope.
+fn evaluate_readiness_sample(
+    transport: &mut RdpTransport,
+    console: &ff_rdp_core::ActorId,
+) -> Result<ff_rdp_core::EvalResult, ff_rdp_core::ProtocolError> {
+    let mut result =
+        ff_rdp_core::WebConsoleActor::evaluate_js_async(transport, console, READINESS_SAMPLE)?;
+    if result.exception.is_none()
+        && let Grip::LongString { actor, length, .. } = &result.result
+    {
+        let full = ff_rdp_core::LongStringActor::full_string(transport, actor.as_ref(), *length)?;
+        // Reuse the existing explicit release semantics (including an already
+        // absent grip). Never issue cleanup RPCs after an incomplete fetch:
+        // that reply still belongs to the failed operation.
+        let grip = std::mem::replace(&mut result.result, Grip::Null);
+        ff_rdp_core::LongStringScopedGrip::without_queue(grip).release(transport)?;
+        // full_string bounds the announced length before fetching. Also bound
+        // actual UTF-8 bytes before parsing the serialized document sample.
+        if full.len() > ff_rdp_core::LongStringActor::MAX_FETCH {
+            return Err(ff_rdp_core::ProtocolError::InvalidPacket(
+                "readiness sample exceeds longstring byte limit".into(),
+            ));
+        }
+        result.result = Grip::Value(Value::String(full));
+    }
+    Ok(result)
+}
+
+/// Best-effort atomic readiness sample for the event loop. Evaluation failures
+/// mean "not ready yet"; the event loop retains its own deadline and replay.
 fn probe_readystate_complete(
     transport: &mut RdpTransport,
     console_actor: &ff_rdp_core::ActorId,
-    pre_epoch: f64,
-) -> bool {
-    let condition = format!(
-        "document.readyState === 'complete' && \
-         performance.timing.navigationStart > {pre_epoch}"
-    );
-    match ff_rdp_core::WebConsoleActor::evaluate_js_async(transport, console_actor, &condition) {
-        Ok(result) if result.exception.is_none() => super::js_helpers::is_truthy(&result.result),
-        _ => false,
+    check: ReadinessCheck<'_>,
+) -> Option<String> {
+    match evaluate_readiness_sample(transport, console_actor) {
+        Ok(result) if result.exception.is_none() => check.accepted_href(&result.result),
+        _ => None,
     }
 }
 
@@ -520,6 +681,7 @@ fn probe_same_document_commit_safe(
     bus_arc: &Arc<Mutex<ResourceCommand>>,
     console_actor: &ff_rdp_core::ActorId,
     pre_href: &str,
+    retained: Option<&mut FallbackStatusEvidence>,
 ) -> Option<String> {
     if pre_href.is_empty() {
         // Skip the sink dance entirely when the check itself is a no-op —
@@ -527,7 +689,7 @@ fn probe_same_document_commit_safe(
         // without touching `transport`.
         return None;
     }
-    with_event_replay(transport, bus_arc, |t| {
+    with_event_replay(transport, bus_arc, retained, |t| {
         probe_same_document_commit(t, console_actor, pre_href)
     })
 }
@@ -573,6 +735,7 @@ fn probe_same_document_commit_safe(
 fn with_event_replay<T>(
     transport: &mut RdpTransport,
     bus_arc: &Arc<Mutex<ResourceCommand>>,
+    mut retained: Option<&mut FallbackStatusEvidence>,
     f: impl FnOnce(&mut RdpTransport) -> T,
 ) -> T {
     let (tx, rx) = std::sync::mpsc::channel::<Value>();
@@ -593,6 +756,9 @@ fn with_event_replay<T>(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         for packet in captured {
+            if let Some(evidence) = retained.as_deref_mut() {
+                evidence.observe(&packet);
+            }
             bus.dispatch_event(&packet);
         }
     }
@@ -666,7 +832,7 @@ fn refresh_probe_console_actor(
 }
 
 /// Resolve `window.location.href` via `console_actor`, returning an empty string
-/// on any error. Used as the URL source for both the readystate fast-path and as
+/// on any error or exception. Used for the pre-dispatch href baseline and as
 /// a fallback when a committing `document-event` carries no `url` (iter-122
 /// Theme B — avoids emitting `about:blank` for SPAs that never fire
 /// `dom-loading` with a URL).
@@ -679,11 +845,11 @@ pub(crate) fn eval_location_href(
         console_actor,
         "window.location.href",
     ) {
-        Ok(result) => match result.result {
+        Ok(result) if result.exception.is_none() => match result.result {
             Grip::Value(serde_json::Value::String(s)) => s,
             _ => String::new(),
         },
-        Err(_) => String::new(),
+        _ => String::new(),
     }
 }
 
@@ -847,9 +1013,36 @@ fn wait_for_doc_complete(
     timeout_ms: u64,
     wait_level: WaitLevel,
     nav_start: Instant,
+    probe: Option<&mut ReadyStateProbe<'_>>,
+    requested_url: &str,
+    network_observed: bool,
+) -> Result<CommitInfo, AppError> {
+    wait_for_doc_complete_retaining_status(
+        transport,
+        bus_arc,
+        rx,
+        timeout_ms,
+        wait_level,
+        nav_start,
+        probe,
+        requested_url,
+        network_observed,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn wait_for_doc_complete_retaining_status(
+    transport: &mut RdpTransport,
+    bus_arc: &Arc<Mutex<ResourceCommand>>,
+    rx: &std::sync::mpsc::Receiver<std::sync::Arc<Resource>>,
+    timeout_ms: u64,
+    wait_level: WaitLevel,
+    nav_start: Instant,
     mut probe: Option<&mut ReadyStateProbe<'_>>,
     requested_url: &str,
     network_observed: bool,
+    mut retained: Option<&mut FallbackStatusEvidence>,
 ) -> Result<CommitInfo, AppError> {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
 
@@ -992,7 +1185,7 @@ fn wait_for_doc_complete(
                             && let Some(p) = probe.as_deref_mut()
                             && ((wait_level == WaitLevel::Complete && p.poll_enabled)
                                 || needs_href_fallback(&url, requested_url))
-                            && with_event_replay(transport, bus_arc, |t| {
+                            && with_event_replay(transport, bus_arc, retained.as_deref_mut(), |t| {
                                 refresh_probe_console_actor(t, p, deadline)
                             })
                         {
@@ -1017,9 +1210,12 @@ fn wait_for_doc_complete(
                                     match probe.as_deref() {
                                         Some(p) => {
                                             let actor = p.console_actor.clone();
-                                            with_event_replay(transport, bus_arc, |t| {
-                                                eval_location_href(t, &actor)
-                                            })
+                                            with_event_replay(
+                                                transport,
+                                                bus_arc,
+                                                retained.as_deref_mut(),
+                                                |t| eval_location_href(t, &actor),
+                                            )
                                         }
                                         None => String::new(),
                                     }
@@ -1064,9 +1260,12 @@ fn wait_for_doc_complete(
                                     match probe.as_deref() {
                                         Some(p) => {
                                             let actor = p.console_actor.clone();
-                                            with_event_replay(transport, bus_arc, |t| {
-                                                eval_location_href(t, &actor)
-                                            })
+                                            with_event_replay(
+                                                transport,
+                                                bus_arc,
+                                                retained.as_deref_mut(),
+                                                |t| eval_location_href(t, &actor),
+                                            )
                                         }
                                         None => String::new(),
                                     }
@@ -1117,9 +1316,12 @@ fn wait_for_doc_complete(
                             let mut href = match probe.as_deref() {
                                 Some(p) => {
                                     let actor = p.console_actor.clone();
-                                    with_event_replay(transport, bus_arc, |t| {
-                                        eval_location_href(t, &actor)
-                                    })
+                                    with_event_replay(
+                                        transport,
+                                        bus_arc,
+                                        retained.as_deref_mut(),
+                                        |t| eval_location_href(t, &actor),
+                                    )
                                 }
                                 None => String::new(),
                             };
@@ -1142,15 +1344,21 @@ fn wait_for_doc_complete(
                             // value below instead of being caught as ambiguous.
                             if needs_href_fallback(&href, requested_url)
                                 && let Some(p) = probe.as_deref_mut()
-                                && with_event_replay(transport, bus_arc, |t| {
-                                    refresh_probe_console_actor(t, p, deadline)
-                                })
+                                && with_event_replay(
+                                    transport,
+                                    bus_arc,
+                                    retained.as_deref_mut(),
+                                    |t| refresh_probe_console_actor(t, p, deadline),
+                                )
                             {
                                 probe_refreshed = true;
                                 let actor = p.console_actor.clone();
-                                href = with_event_replay(transport, bus_arc, |t| {
-                                    eval_location_href(t, &actor)
-                                });
+                                href = with_event_replay(
+                                    transport,
+                                    bus_arc,
+                                    retained.as_deref_mut(),
+                                    |t| eval_location_href(t, &actor),
+                                );
                             }
                             if needs_href_fallback(&href, requested_url) {
                                 unresolved_watched_complete |= probe.as_deref().is_some_and(|p| {
@@ -1218,14 +1426,14 @@ fn wait_for_doc_complete(
             // actor. This is a snapshot read, never a navigation retry; the
             // existing deadline and complete-and-changed URL check still apply.
             let watched_history_refreshed = if p.target_endpoint.is_some() && !p.poll_enabled {
-                with_event_replay(transport, bus_arc, |t| {
+                with_event_replay(transport, bus_arc, retained.as_deref_mut(), |t| {
                     refresh_probe_console_actor(t, p, deadline)
                 })
             } else {
                 false
             };
             if let Some(href) =
-                probe_same_document_commit_safe(transport, bus_arc, &p.console_actor, &p.pre_href)
+                probe_same_document_commit_safe(transport, bus_arc, &p.console_actor, &p.pre_href, retained.as_deref_mut())
                 // A changed URL is not necessarily a same-document commit:
                 // a cross-process transition can expose a complete blank
                 // document. For a known destination, apply the same ambiguity
@@ -1253,13 +1461,18 @@ fn wait_for_doc_complete(
             if watched_history_refreshed && unresolved_watched_complete {
                 let actor = p.console_actor.clone();
                 let sample_deadline = deadline.min(Instant::now() + poll_interval);
-                let href = with_event_replay(transport, bus_arc, |t| {
+                let href = with_event_replay(transport, bus_arc, retained.as_deref_mut(), |t| {
                     t.with_read_deadline(sample_deadline, |t| {
-                        Ok(if probe_readystate_complete(t, &actor, p.pre_epoch) {
-                            eval_location_href(t, &actor)
-                        } else {
-                            String::new()
-                        })
+                        Ok(probe_readystate_complete(
+                            t,
+                            &actor,
+                            ReadinessCheck {
+                                pre_epoch: p.pre_epoch,
+                                pre_href: &p.pre_href,
+                                requested_url,
+                            },
+                        )
+                        .unwrap_or_default())
                     })
                     .unwrap_or_default()
                 });
@@ -1296,70 +1509,43 @@ fn wait_for_doc_complete(
             // Fallback refresh: normally `dom-loading` already refreshed the
             // console actor above, but if the events stream is quiet (no
             // document-event delivered yet) this is the first opportunity.
-            // iter-169 Theme A: every one of these three round-trips reads
+            // iter-169 Theme A: each of these round-trips reads
             // raw packets off the wire while scanning for its own reply, so
             // each is wrapped so a `resources-updated-array` caught in the
             // middle is replayed into the bus rather than dropped.
-            if (p.target_endpoint.is_some() || !probe_refreshed)
-                && with_event_replay(transport, bus_arc, |t| {
+            if p.target_endpoint.is_some() || !probe_refreshed {
+                with_event_replay(transport, bus_arc, retained.as_deref_mut(), |t| {
                     refresh_probe_console_actor(t, p, deadline)
-                })
-            {
-                probe_refreshed = true;
+                });
             }
             let probe_actor = p.console_actor.clone();
-            let probe_epoch = p.pre_epoch;
-            if with_event_replay(transport, bus_arc, |t| {
-                probe_readystate_complete(t, &probe_actor, probe_epoch)
-            }) {
-                let mut committed =
-                    with_event_replay(transport, bus_arc, |t| eval_location_href(t, &probe_actor));
-                // iter-130 Theme A hardening (comparis.ch live-Firefox repro,
-                // not caught by any mock-based unit test): a
-                // `readyState === 'complete'` reading whose resolved URL is a
-                // literal `about:blank` mismatch is Firefox's transient
-                // about:blank intermediate docshell for a cross-process
-                // navigation, not the real requested page — that docshell
-                // also gets a fresh `navigationStart`, so it passes the
-                // `pre_epoch` freshness guard, and `about:blank` loads and
-                // reports `complete` almost instantly, letting this probe
-                // "win" the race against the real navigation. Force one more
-                // fresh actor lookup + re-eval before trusting the reading —
-                // `refresh_probe_console_actor` re-resolves via `getTarget`,
-                // which returns the *current* docshell's actors.
-                if needs_href_fallback(&committed, requested_url)
-                    && with_event_replay(transport, bus_arc, |t| {
-                        refresh_probe_console_actor(t, p, deadline)
+            let check = ReadinessCheck {
+                pre_epoch: p.pre_epoch,
+                pre_href: &p.pre_href,
+                requested_url,
+            };
+            if let Some(committed) =
+                with_event_replay(transport, bus_arc, retained.as_deref_mut(), |t| {
+                    t.with_read_deadline(deadline, |t| {
+                        Ok(probe_readystate_complete(t, &probe_actor, check))
                     })
-                {
-                    probe_refreshed = true;
-                    let fresh_actor = p.console_actor.clone();
-                    committed = with_event_replay(transport, bus_arc, |t| {
-                        eval_location_href(t, &fresh_actor)
-                    });
-                }
-                // Still ambiguous (empty — e.g. a torn-down transitional actor
-                // reporting noSuchActor — or a literal about:blank mismatch)
-                // after the fresh lookup: most likely still on the
-                // intermediate docshell. Don't falsely declare the navigation
-                // complete — fall through and keep polling (a later probe
-                // tick or the events path will observe the real commit)
-                // rather than returning a lie.
-                if !needs_href_fallback(&committed, requested_url) {
-                    tracing::debug!(branch = "fresh-epoch", committed_url = %committed, console_actor = %p.console_actor, "navigate: completion selected");
-                    let elapsed_ms =
-                        u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(u64::MAX);
-                    break 'wait CommitInfo {
-                        committed_url: committed,
-                        ready_state: "complete".to_owned(),
-                        elapsed_ms,
-                        // Resolved once, after the loop and its grace-wait (iter-166):
-                        // the committed URL is not known until this break.
-                        http_status: None,
-                        status_reason: None,
-                    };
-                }
+                    .unwrap_or_default()
+                })
+            {
+                tracing::debug!(branch = "readiness-sample", committed_url = %committed, console_actor = %p.console_actor, "navigate: completion selected");
+                let elapsed_ms = u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(u64::MAX);
+                break 'wait CommitInfo {
+                    committed_url: committed,
+                    ready_state: "complete".to_owned(),
+                    elapsed_ms,
+                    http_status: None,
+                    status_reason: None,
+                };
             }
+            // Rejected samples may belong to a transitional direct target. A
+            // later lookup must evaluate the whole sample on the new actor; it
+            // must never combine this actor's readiness with that actor's href.
+            probe_refreshed = false;
             // Re-arm the probe timer regardless of the outcome above.
             next_probe_at = Some(Instant::now() + p.probe_interval);
         }
@@ -1369,6 +1555,9 @@ fn wait_for_doc_complete(
         // The lock is acquired ONLY for dispatch_event (not held during recv).
         match transport.recv() {
             Ok(msg) => {
+                if let Some(evidence) = retained.as_deref_mut() {
+                    evidence.observe(&msg);
+                }
                 // Acquire the lock for dispatch only; release immediately after.
                 // SAFETY invariant: no panic path inside dispatch_event can
                 // leave the guard dropped while the bus is in a bad state —
@@ -1440,6 +1629,9 @@ fn wait_for_doc_complete(
         }
         match transport.recv() {
             Ok(msg) => {
+                if let Some(evidence) = retained.as_deref_mut() {
+                    evidence.observe(&msg);
+                }
                 bus_arc
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1513,7 +1705,23 @@ fn is_neterror_url(url: &str) -> bool {
 /// so the freshness logic can be verified without a live Firefox connection.
 #[cfg(test)]
 fn is_readystate_fresh(current_nav_start: f64, pre_epoch: f64) -> bool {
-    current_nav_start > pre_epoch
+    ReadinessCheck {
+        pre_epoch: Some(pre_epoch),
+        pre_href: "",
+        requested_url: "https://new.test/",
+    }
+    .accepted_href(&Grip::Value(scripted_readiness(
+        current_nav_start,
+        "https://new.test/",
+        "complete",
+    )))
+    .is_some()
+}
+
+// Declared protocol values for the actual Rust predicate; not Firefox fixtures.
+#[cfg(test)]
+fn scripted_readiness(epoch: f64, href: &str, state: &str) -> Value {
+    json!(json!({"epoch":epoch,"href":href,"readyState":state}).to_string())
 }
 
 /// Poll a watched document under one deadline. A Pending snapshot is not a
@@ -1522,10 +1730,10 @@ fn is_readystate_fresh(current_nav_start: f64, pre_epoch: f64) -> bool {
 /// navigation action. Other actor/protocol errors remain terminal.
 fn poll_watched_readystate(
     ctx: &mut super::connect_tab::ConnectedTab,
-    condition: &str,
+    check: ReadinessCheck<'_>,
     timeout_ms: u64,
-) -> Result<(), AppError> {
-    use ff_rdp_core::{ActorErrorKind, ProtocolError, WebConsoleActor};
+) -> Result<String, AppError> {
+    use ff_rdp_core::{ActorErrorKind, ProtocolError};
 
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let mut retired_console = None;
@@ -1547,9 +1755,9 @@ fn poll_watched_readystate(
         if retired_console.as_ref() != Some(&console) {
             let inner_window_id = ctx.target().inner_window_id;
             let mut guard = ctx.arm_target_guard(inner_window_id);
-            let result = guard.transport_mut().with_read_deadline(deadline, |t| {
-                WebConsoleActor::evaluate_js_async(t, &console, condition)
-            });
+            let result = guard
+                .transport_mut()
+                .with_read_deadline(deadline, |t| evaluate_readiness_sample(t, &console));
             match result {
                 Ok(result) => {
                     if let Some(exception) = result.exception {
@@ -1563,8 +1771,8 @@ fn poll_watched_readystate(
                             ff_rdp_core::sanitize_for_terminal(&message).into_owned(),
                         ));
                     }
-                    if super::js_helpers::is_truthy(&result.result) {
-                        return Ok(());
+                    if let Some(href) = check.accepted_href(&result.result) {
+                        return Ok(href);
                     }
                 }
                 Err(ProtocolError::EvalTargetDestroyed { .. }) => {
@@ -1587,88 +1795,84 @@ fn poll_watched_readystate(
     }
 }
 
+/// Direct counterpart of the watched sample poll. Keep the existing absolute
+/// deadline, error classification and zero-budget single-evaluation contract.
+fn poll_direct_readystate(
+    ctx: &mut super::connect_tab::ConnectedTab,
+    check: ReadinessCheck<'_>,
+    timeout_ms: u64,
+) -> Result<String, AppError> {
+    use ff_rdp_core::ProtocolError;
+    let console = ctx.target().console_actor.clone();
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        let evaluate = |t: &mut RdpTransport| evaluate_readiness_sample(t, &console);
+        let result = if timeout_ms == 0 {
+            evaluate(ctx.transport_mut())
+        } else {
+            ctx.transport_mut().with_read_deadline(deadline, evaluate)
+        };
+        match result {
+            Ok(result) => {
+                if let Some(exception) = result.exception {
+                    let message = format!(
+                        "navigate readystate: JS evaluation error{}",
+                        exception
+                            .message
+                            .map_or_else(String::new, |m| format!(": {m}"))
+                    );
+                    return Err(AppError::User(
+                        ff_rdp_core::sanitize_for_terminal(&message).into_owned(),
+                    ));
+                }
+                if let Some(href) = check.accepted_href(&result.result) {
+                    return Ok(href);
+                }
+            }
+            Err(ProtocolError::Timeout) => {}
+            Err(error) => return Err(error.into()),
+        }
+        if Instant::now() >= deadline {
+            return Err(AppError::Timeout("waiting for document readiness".into()));
+        }
+        std::thread::sleep(
+            Duration::from_millis(100).min(deadline.saturating_duration_since(Instant::now())),
+        );
+    }
+}
+
 /// Poll `document.readyState == "complete"` until the deadline, returning a
 /// `CommitInfo` when the condition is met.
 ///
-/// `pre_epoch` is the value of `performance.timing.navigationStart` captured
-/// *before* the navigate was dispatched.  Any `readyState == complete` reading
-/// whose `navigationStart` is not fresher than `pre_epoch` is treated as stale
-/// and the poll continues.  This prevents the second navigate to the same tab
-/// from short-circuiting on the pre-existing completed state.
+/// Readiness, epoch and committed href come from one sample. A known baseline
+/// epoch requires a strictly newer epoch; when unavailable, a known changed href
+/// can establish progress (not fresh-document identity or navigation causality).
+/// Missing evidence keeps polling under the existing deadline.
 ///
 /// Used by the `readystate` and `both` wait strategies as a fallback when the
 /// document-event resource stream doesn't fire within the timeout budget.
 fn wait_for_readystate_complete(
     ctx: &mut super::connect_tab::ConnectedTab,
     timeout_ms: u64,
-    pre_epoch: f64,
+    check: ReadinessCheck<'_>,
     nav_start: Instant,
 ) -> Result<CommitInfo, AppError> {
-    use crate::commands::js_helpers::poll_js_condition;
-
-    let console_actor = ctx.target().console_actor.clone();
-
-    // Combine readyState check with navigationStart freshness guard so that a
-    // pre-existing "complete" state from the prior page load is rejected.
-    // `performance.timing.navigationStart` is milliseconds since the Unix epoch
-    // (matching the value captured before navigate dispatch).
-    let condition = format!(
-        "document.readyState === 'complete' && \
-         performance.timing.navigationStart > {pre_epoch}"
-    );
-
-    // The poll's own elapsed only covers the readystate phase; discard it in
-    // favour of `nav_start` so `CommitInfo.elapsed_ms` reflects total
-    // wall-clock across the events→readystate fallback (iter-122 Theme B).
-    //
-    // iter-138 Theme D: on timeout, report the REAL wall-clock elapsed since
-    // `nav_start` rather than echoing back `timeout_ms`. For the `Both`
-    // strategy's fallback call (the common case that actually times out in
-    // practice), `timeout_ms` here is only the leftover sub-budget *after*
-    // the events phase already consumed part of the user's `--timeout` —
-    // echoing it under-reported the true wait by ~3x in dogfooding
-    // (`--timeout 8000` produced "within 2384ms" against an 8.1s measured
-    // wall-clock), leading an agent to under-size a retry.
     let readiness = if ctx.target_endpoint.is_some() && timeout_ms > 0 {
-        poll_watched_readystate(ctx, &condition, timeout_ms).map(|()| 0)
+        poll_watched_readystate(ctx, check, timeout_ms)
     } else {
-        poll_js_condition(
-            ctx,
-            &console_actor,
-            &condition,
-            timeout_ms,
-            "navigate readystate: JS evaluation error",
-            "navigate: document.readyState did not reach 'complete' (with fresh navigation) \
-             within its sub-budget — use --no-wait to skip or increase --timeout",
-        )
+        poll_direct_readystate(ctx, check, timeout_ms)
     };
-    match readiness {
-        Ok(_) => {}
+    let url = match readiness {
+        Ok(href) => href,
         Err(AppError::Timeout(_)) => {
             let total_elapsed_ms =
                 u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(u64::MAX);
             return Err(AppError::Timeout(format!(
-                "navigate: document.readyState did not reach 'complete' (with fresh navigation) \
+                "navigate: document.readyState did not reach 'complete' (with navigation progress) \
                  within {total_elapsed_ms}ms — use --no-wait to skip or increase --timeout"
             )));
         }
         Err(e) => return Err(e),
-    }
-
-    let url = {
-        let console_actor = ctx.target().console_actor.clone();
-        match super::js_helpers::eval_or_bail(
-            ctx,
-            &console_actor,
-            "window.location.href",
-            "navigate readystate: url eval",
-        ) {
-            Ok(result) => match result.result {
-                ff_rdp_core::Grip::Value(serde_json::Value::String(s)) => s,
-                _ => String::new(),
-            },
-            Err(_) => String::new(),
-        }
     };
 
     let elapsed_ms = u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -1817,24 +2021,7 @@ pub(crate) fn wait_for_navigation_commit(
     // never arrive on a direct connection. See `get_navigation_watcher`.
     let watcher_actor = get_navigation_watcher(ctx, &tab_actor)?;
 
-    // Best-effort freshness epoch, same pattern as run_core's pre_nav_epoch:
-    // a failed/exceptional eval disables the freshness guard (0.0) rather
-    // than blocking the navigation action.
-    let pre_nav_epoch: f64 = {
-        let console_actor = ctx.target().console_actor.clone();
-        match eval_or_bail(
-            ctx,
-            &console_actor,
-            "performance.timing.navigationStart",
-            "nav_action: pre-nav epoch eval",
-        ) {
-            Ok(result) => match result.result {
-                Grip::Value(serde_json::Value::Number(ref n)) => n.as_f64().unwrap_or(0.0),
-                _ => 0.0,
-            },
-            Err(_) => 0.0,
-        }
-    };
+    let pre_nav_epoch = capture_pre_nav_epoch(ctx, "nav_action: pre-nav epoch eval");
 
     // `window.location.href` captured before dispatch (iter-138 Themes B/C)
     // — the baseline `probe_same_document_commit` compares against to detect
@@ -1912,7 +2099,7 @@ pub(crate) fn wait_for_navigation_commit(
         first_probe_at: nav_start + Duration::from_millis(300),
         probe_interval: Duration::from_millis(250),
         poll_enabled: false,
-        pre_href: pre_nav_href,
+        pre_href: pre_nav_href.clone(),
         trust_event_url: false,
     });
 
@@ -1967,7 +2154,16 @@ pub(crate) fn wait_for_navigation_commit(
                     "nav_action: no remaining budget for readystate fallback".to_string(),
                 ))
             } else {
-                wait_for_readystate_complete(ctx, remaining, pre_nav_epoch, nav_start)
+                wait_for_readystate_complete(
+                    ctx,
+                    remaining,
+                    ReadinessCheck {
+                        pre_epoch: pre_nav_epoch,
+                        pre_href: &pre_nav_href,
+                        requested_url,
+                    },
+                    nav_start,
+                )
             }
         }
         Err(e) => Err(e),
@@ -2177,42 +2373,11 @@ pub fn run_core(
     // `get_navigation_watcher`.
     let watcher_actor = get_navigation_watcher(&mut ctx, &tab_actor)?;
 
-    // iter-92 Theme B: capture navigationStart *before* dispatching navigateTo
-    // so the readystate-poll path can reject a pre-existing "complete" state
-    // that belongs to the prior page load (the stale-dom-complete regression).
-    //
-    // This is a best-effort capture; if eval fails (e.g. the page is still
-    // loading when we connect), we fall back to 0.0 which effectively disables
-    // the freshness guard rather than blocking the navigate.
-    let pre_nav_epoch: f64 = if wait_opts.no_wait {
-        0.0 // freshness guard not needed for --no-wait
+    // Missing baseline evidence stays absent, never a synthetic epoch zero.
+    let pre_nav_epoch = if wait_opts.no_wait {
+        None
     } else {
-        let console_actor = ctx.target().console_actor.clone();
-        match eval_or_bail(
-            &mut ctx,
-            &console_actor,
-            "performance.timing.navigationStart",
-            "navigate: pre-nav epoch eval",
-        ) {
-            Ok(result) => match result.result {
-                Grip::Value(serde_json::Value::Number(ref n)) => n.as_f64().unwrap_or(0.0),
-                other => {
-                    tracing::warn!(
-                        ?other,
-                        "navigate: pre-nav epoch eval returned non-numeric grip; \
-                         freshness guard disabled"
-                    );
-                    0.0
-                }
-            },
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "navigate: pre-nav epoch eval failed; freshness guard disabled"
-                );
-                0.0
-            }
-        }
+        capture_pre_nav_epoch(&mut ctx, "navigate: pre-nav epoch eval")
     };
 
     // `window.location.href` captured before dispatch (iter-138 Themes B/C)
@@ -2226,7 +2391,7 @@ pub fn run_core(
         let console_actor = ctx.target().console_actor.clone();
         eval_location_href(ctx.transport_mut(), &console_actor)
     };
-    tracing::debug!(requested_url = url, pre_href = %pre_nav_href, pre_epoch = pre_nav_epoch, target = ?ctx.target(), "navigate: baseline captured");
+    tracing::debug!(requested_url = url, pre_href = %pre_nav_href, pre_epoch = ?pre_nav_epoch, target = ?ctx.target(), "navigate: baseline captured");
 
     let commit_info = if wait_opts.no_wait {
         // --no-wait: send navigateTo via the standard actor_request (response
@@ -2247,8 +2412,16 @@ pub fn run_core(
         if ctx.target_endpoint.is_none() {
             refresh_console_actor(&mut ctx);
         }
-        let rs_result =
-            wait_for_readystate_complete(&mut ctx, cli.timeout, pre_nav_epoch, nav_start);
+        let rs_result = wait_for_readystate_complete(
+            &mut ctx,
+            cli.timeout,
+            ReadinessCheck {
+                pre_epoch: pre_nav_epoch,
+                pre_href: &pre_nav_href,
+                requested_url: url,
+            },
+            nav_start,
+        );
         let ci = reclassify_timeout_as_neterror(&mut ctx, url, rs_result)?;
         Some(ci)
     } else {
@@ -2381,7 +2554,8 @@ pub fn run_core(
 
         // wait_for_doc_complete acquires the lock only during dispatch_event,
         // not across the full recv() wait — see its lock-discipline doc-comment.
-        let event_result = wait_for_doc_complete(
+        let mut fallback_status = FallbackStatusEvidence::new(ctx.target());
+        let event_result = wait_for_doc_complete_retaining_status(
             ctx.transport_mut(),
             &bus_arc,
             &rx,
@@ -2395,6 +2569,7 @@ pub fn run_core(
             // missing status here really does mean the server or the document
             // produced none (iter-166).
             true,
+            (wait_opts.wait_strategy == WaitStrategy::Both).then_some(&mut fallback_status),
         );
 
         // iter-138 Theme A: stop the daemon stream so it reverts to buffering
@@ -2434,6 +2609,7 @@ pub fn run_core(
         //
         // For `Both`, if events timed out, fall back to readystate polling with
         // only the REMAINING budget so we don't re-pay the full timeout.
+        let mut used_fallback = false;
         let result = match event_result {
             r @ Ok(_) => r,
             Err(e) if wait_opts.wait_strategy != WaitStrategy::Both => Err(e),
@@ -2452,7 +2628,17 @@ pub fn run_core(
                         "navigate: no remaining budget for readystate fallback".to_string(),
                     ))
                 } else {
-                    wait_for_readystate_complete(&mut ctx, remaining, pre_nav_epoch, nav_start)
+                    used_fallback = true;
+                    wait_for_readystate_complete(
+                        &mut ctx,
+                        remaining,
+                        ReadinessCheck {
+                            pre_epoch: pre_nav_epoch,
+                            pre_href: &pre_nav_href,
+                            requested_url: url,
+                        },
+                        nav_start,
+                    )
                 }
             }
             Err(e) => Err(e),
@@ -2492,6 +2678,14 @@ pub fn run_core(
         } else {
             commit
         };
+
+        // Preserve the existing fallback neterror check above: an observed
+        // response from a candidate request must never suppress that check.
+        let mut commit = commit;
+        if used_fallback {
+            (commit.http_status, commit.status_reason) =
+                fallback_status.resolve(&commit.committed_url);
+        }
 
         Some(commit)
     };
@@ -4136,8 +4330,7 @@ mod tests {
 
         // Mock Firefox: greeting, then answer the probe's lazy console-actor
         // refresh (getTarget — no dom-loading event arrives to trigger the
-        // earlier refresh, iter-124) followed by two eval round-trips — the
-        // readyState probe (truthy) and the follow-up location.href fetch.
+        // earlier refresh, iter-124) followed by one atomic readiness sample.
         // It never sends any document-event, so only the probe can resolve.
         let server_handle = std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
@@ -4153,19 +4346,12 @@ mod tests {
 
             answer_get_target(&mut reader, &mut writer, tab_actor, console_actor);
 
-            let ready_text = answer_one_eval(
+            answer_one_eval(
                 &mut reader,
                 &mut writer,
                 console_actor,
-                &serde_json::json!(true),
-            );
-            let href_text = answer_one_eval(
-                &mut reader,
-                &mut writer,
-                console_actor,
-                &serde_json::json!("https://example.com/"),
-            );
-            (ready_text, href_text)
+                &scripted_readiness(200.0, "https://example.com/", "complete"),
+            )
         });
 
         let mut transport =
@@ -4187,7 +4373,7 @@ mod tests {
             // refresh (via `tab_actor`) is what makes the probe usable.
             console_actor: ff_rdp_core::ActorId::from("conn0/stale-console"),
             tab_actor: &tab,
-            pre_epoch: 0.0,
+            pre_epoch: Some(1.0),
             // Probe almost immediately so the test does not wait 300 ms.
             first_probe_at: nav_start,
             probe_interval: Duration::from_millis(50),
@@ -4211,7 +4397,7 @@ mod tests {
             true,
         );
 
-        let (ready_text, href_text) = server_handle.join().unwrap();
+        let ready_text = server_handle.join().unwrap();
 
         let ci = result.expect("probe should short-circuit to a CommitInfo");
         assert_eq!(ci.ready_state, "complete");
@@ -4224,8 +4410,8 @@ mod tests {
             "first eval should be the readyState probe, got: {ready_text}"
         );
         assert!(
-            href_text.contains("location.href"),
-            "second eval should be the location.href fetch, got: {href_text}"
+            ready_text.contains("location.href"),
+            "the readiness evaluation must also sample href: {ready_text}"
         );
         assert!(
             nav_start.elapsed() < Duration::from_secs(4),
@@ -4263,7 +4449,7 @@ mod tests {
         // refresh (best-effort — see `refresh_probe_console_actor`'s doc
         // comment), so that stale-actor eval also errors before the loop
         // re-arms and tries again on the SECOND tick: a SUCCESSFUL getTarget,
-        // then the two evals the now-fresh probe needs to short-circuit.
+        // then the atomic sample the now-fresh probe needs to short-circuit.
         let server_handle = std::thread::spawn(move || {
             let (stream, _) = listener.accept().unwrap();
             let mut writer = stream.try_clone().unwrap();
@@ -4286,15 +4472,9 @@ mod tests {
                 &mut reader,
                 &mut writer,
                 console_actor,
-                &serde_json::json!(true),
+                &scripted_readiness(200.0, "https://retry.example/", "complete"),
             );
-            let href_text = answer_one_eval(
-                &mut reader,
-                &mut writer,
-                console_actor,
-                &serde_json::json!("https://retry.example/"),
-            );
-            (stale_eval_text, ready_text, href_text)
+            (stale_eval_text, ready_text)
         });
 
         let mut transport =
@@ -4315,7 +4495,7 @@ mod tests {
             target_endpoint: None,
             console_actor: ff_rdp_core::ActorId::from("conn0/stale-console"),
             tab_actor: &tab,
-            pre_epoch: 0.0,
+            pre_epoch: Some(1.0),
             // Probe almost immediately, then again after a short interval so
             // the second (successful) getTarget attempt happens quickly.
             first_probe_at: nav_start,
@@ -4339,7 +4519,7 @@ mod tests {
             true,
         );
 
-        let (stale_eval_text, ready_text, href_text) = server_handle.join().unwrap();
+        let (stale_eval_text, ready_text) = server_handle.join().unwrap();
 
         let ci = result.expect(
             "probe must recover after a transient getTarget failure and \
@@ -4348,7 +4528,7 @@ mod tests {
         assert_eq!(ci.ready_state, "complete");
         assert_eq!(
             ci.committed_url, "https://retry.example/",
-            "committed_url must come from the post-recovery location.href fetch"
+            "committed_url must come from the post-recovery readiness sample"
         );
         assert!(
             stale_eval_text.contains("readyState"),
@@ -4360,8 +4540,8 @@ mod tests {
             "the eval after recovery should be the readyState probe, got: {ready_text}"
         );
         assert!(
-            href_text.contains("location.href"),
-            "the final eval should be the location.href fetch, got: {href_text}"
+            ready_text.contains("location.href"),
+            "the recovered readiness sample must also carry href: {ready_text}"
         );
         assert!(
             nav_start.elapsed() < Duration::from_secs(4),
@@ -4445,7 +4625,7 @@ mod tests {
             target_endpoint: None,
             console_actor: ff_rdp_core::ActorId::from("conn0/stale-console"),
             tab_actor: &tab,
-            pre_epoch: 0.0,
+            pre_epoch: Some(1.0),
             first_probe_at: nav_start,
             // Short interval + short overall budget below so a persistently
             // failing refresh still exercises several retries without
@@ -4569,7 +4749,7 @@ mod tests {
             target_endpoint: None,
             console_actor: ff_rdp_core::ActorId::from("conn0/stale-console"),
             tab_actor: &tab,
-            pre_epoch: 0.0,
+            pre_epoch: Some(1.0),
             // Push the probe far into the future so only the dom-complete
             // fallback path (not the interleaved probe) fires.
             first_probe_at: nav_start + Duration::from_secs(30),
@@ -4675,7 +4855,7 @@ mod tests {
             target_endpoint: None,
             console_actor: ff_rdp_core::ActorId::from("conn0/stale-console"),
             tab_actor: &tab,
-            pre_epoch: 0.0,
+            pre_epoch: Some(1.0),
             first_probe_at: nav_start,
             probe_interval: Duration::from_millis(10),
             poll_enabled: true,
@@ -4752,7 +4932,7 @@ mod tests {
             target_endpoint: None,
             console_actor: ff_rdp_core::ActorId::from("conn0/console1"),
             tab_actor: tab,
-            pre_epoch: 0.0,
+            pre_epoch: Some(1.0),
             first_probe_at: Instant::now(),
             probe_interval: Duration::from_millis(50),
             poll_enabled: false,
@@ -5287,7 +5467,7 @@ mod tests {
             target_endpoint: None,
             console_actor: ff_rdp_core::ActorId::from("conn0/stale-console"),
             tab_actor: &tab,
-            pre_epoch: 0.0,
+            pre_epoch: Some(1.0),
             // Push the probe far into the future — only the dom-complete
             // fallback path should fire, not the interleaved probe.
             first_probe_at: nav_start + Duration::from_secs(30),
@@ -5380,9 +5560,14 @@ mod snapshot_probe_tests {
                     &json!({"from":"root","applicationType":"browser"}),
                 );
                 for (actor, result) in [
-                    ("a/console", json!(false)),
-                    ("b/console", json!(true)),
-                    ("b/console", json!("https://new.test/")),
+                    (
+                        "a/console",
+                        scripted_readiness(42.0, "https://old.test/", "complete"),
+                    ),
+                    (
+                        "b/console",
+                        scripted_readiness(43.0, "https://new.test/", "complete"),
+                    ),
                 ] {
                     let mut request = recv_from(&mut reader).unwrap();
                     if request["type"] == "listFrames" {
@@ -5398,15 +5583,7 @@ mod snapshot_probe_tests {
                         "no shared getTarget is permitted"
                     );
                     assert_eq!(request["to"], actor);
-                    if result.is_boolean() {
-                        assert!(
-                            request["text"]
-                                .as_str()
-                                .unwrap()
-                                .contains("navigationStart > 42"),
-                            "completion must remain fresh-document gated"
-                        );
-                    }
+                    assert_eq!(request["text"], READINESS_SAMPLE);
                     send(&mut stream, &json!({"from":actor,"resultID":"r"}));
                     send(
                         &mut stream,
@@ -5422,7 +5599,7 @@ mod snapshot_probe_tests {
                 target_endpoint: Some(endpoint),
                 console_actor: "a/console".into(),
                 tab_actor: &tab,
-                pre_epoch: 42.0,
+                pre_epoch: Some(42.0),
                 first_probe_at: start,
                 probe_interval: Duration::from_millis(10),
                 poll_enabled: true,
@@ -5707,7 +5884,18 @@ mod snapshot_probe_tests {
                         .borrow_mut()
                         .push((deadline, entered, Instant::now()));
                 },
-                || wait_for_readystate_complete(&mut ctx, 600, 42.0, start),
+                || {
+                    wait_for_readystate_complete(
+                        &mut ctx,
+                        600,
+                        ReadinessCheck {
+                            pre_epoch: Some(42.0),
+                            pre_href: "",
+                            requested_url: "https://new.test/",
+                        },
+                        start,
+                    )
+                },
             )
         }));
         let returned = Instant::now();
@@ -5888,12 +6076,8 @@ mod snapshot_probe_tests {
                             assert_eq!(actor, "b/console");
                             live_evals += 1;
                             let js = request["text"].as_str().unwrap();
-                            let result = if js == "window.location.href" {
-                                json!("https://new.test/")
-                            } else {
-                                assert!(js.contains("navigationStart > 42"));
-                                json!(true)
-                            };
+                            assert_eq!(js, READINESS_SAMPLE, "no second href evaluation");
+                            let result = scripted_readiness(43.0, "https://new.test/", "complete");
                             send(&mut stream, &json!({"from":actor,"resultID":"fresh"}));
                             send(
                                 &mut stream,
@@ -5922,7 +6106,16 @@ mod snapshot_probe_tests {
             deadline_tx
                 .send(start + Duration::from_millis(600))
                 .unwrap();
-            let result = wait_for_readystate_complete(&mut ctx, 600, 42.0, start);
+            let result = wait_for_readystate_complete(
+                &mut ctx,
+                600,
+                ReadinessCheck {
+                    pre_epoch: Some(42.0),
+                    pre_href: "",
+                    requested_url: "https://new.test/",
+                },
+                start,
+            );
             drop(ctx);
             stop.store(true, std::sync::atomic::Ordering::Relaxed);
             let snapshot_join = snapshots.join();
@@ -5959,13 +6152,35 @@ mod snapshot_probe_tests {
                 assert_eq!(ci.ready_state, "complete");
                 assert!(ci.elapsed_ms < 600);
                 assert_eq!(dead_evals, usize::from(failure != "pending"));
-                assert_eq!(live_evals, 2);
+                assert_eq!(live_evals, 1);
             }
         }
     }
 
     #[test]
     fn reload_retains_terminal_event_until_watched_readiness_is_fresh() {
+        retained_terminal_readiness(false);
+    }
+
+    #[test]
+    fn long_string_watched_terminal_preserves_gate_and_sample() {
+        retained_terminal_readiness(true);
+    }
+
+    fn retained_terminal_readiness(long_string: bool) {
+        static LONG_HREF: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        let href = if long_string {
+            LONG_HREF
+                .get_or_init(|| {
+                    format!(
+                        "https://same.test/{}",
+                        "a".repeat(9990 - "https://same.test/".len())
+                    )
+                })
+                .as_str()
+        } else {
+            "https://same.test/"
+        };
         for (always_stale, terminal_event) in [(false, true), (true, true), (false, false)] {
             let side = TcpListener::bind("127.0.0.1:0").unwrap();
             side.set_nonblocking(true).unwrap();
@@ -6020,13 +6235,16 @@ mod snapshot_probe_tests {
                     &json!({"from":"root","applicationType":"browser"}),
                 );
                 let mut fresh_evaluations = 0;
+                let mut encoded = String::new();
+                let mut substring_count = 0;
+                let mut release_count = 0;
                 while let Ok(request) = recv_from(&mut reader) {
                     match request["type"].as_str().unwrap() {
                         "listFrames" => {
                             assert_eq!(request["to"], "b");
                             send(
                                 &mut stream,
-                                &json!({"from":"b","frames":[{"isTopLevel":true,"url":"https://same.test/"}]}),
+                                &json!({"from":"b","frames":[{"isTopLevel":true,"url":href}]}),
                             );
                         }
                         "evaluateJSAsync" if request["to"] == "a/console" => {
@@ -6038,20 +6256,36 @@ mod snapshot_probe_tests {
                         "evaluateJSAsync" => {
                             assert_eq!(request["to"], "b/console");
                             let text = request["text"].as_str().unwrap();
-                            let value = if text == "window.location.href" {
-                                json!("https://same.test/")
-                            } else if text.contains("navigationStart > 42") {
+                            assert_ne!(
+                                text, "window.location.href",
+                                "accepted watched sample must supply its own href"
+                            );
+                            let value = if text == READINESS_SAMPLE {
                                 assert!(text.contains("document.readyState"));
                                 fresh_evaluations += 1;
                                 // A stale ready document must not satisfy the
                                 // retained terminal event, even at the same URL.
-                                json!(!always_stale && fresh_evaluations >= 2)
+                                scripted_readiness(
+                                    if !always_stale && fresh_evaluations >= 2 {
+                                        43.0
+                                    } else {
+                                        42.0
+                                    },
+                                    href,
+                                    "complete",
+                                )
                             } else {
                                 assert!(
-                                    text.contains("document.readyState")
-                                        && text.contains("https://same.test/")
+                                    text.contains("document.readyState") && text.contains(href)
                                 );
                                 Value::Null // unchanged URL never satisfies the SPA check
+                            };
+                            let value = if long_string && text == READINESS_SAMPLE {
+                                encoded = value.as_str().unwrap().to_owned();
+                                assert!(encoded.len() >= 10000);
+                                json!({"type":"longString","actor":format!("sample-{fresh_evaluations}"),"length":encoded.len(),"initial":&encoded[..1000]})
+                            } else {
+                                value
                             };
                             send(&mut stream, &json!({"from":"b/console","resultID":"r"}));
                             send(
@@ -6059,10 +6293,31 @@ mod snapshot_probe_tests {
                                 &json!({"from":"b/console","type":"evaluationResult","resultID":"r","result":value}),
                             );
                         }
+                        "substring" => {
+                            assert!(long_string);
+                            assert_eq!(request["to"], format!("sample-{fresh_evaluations}"));
+                            assert_eq!(request["start"], 0);
+                            assert_eq!(request["end"], encoded.len());
+                            substring_count += 1;
+                            send(
+                                &mut stream,
+                                &json!({"from":request["to"],"substring":encoded}),
+                            );
+                        }
+                        "release" => {
+                            assert!(long_string);
+                            assert_eq!(request["to"], format!("sample-{fresh_evaluations}"));
+                            release_count += 1;
+                            send(&mut stream, &json!({"from":request["to"]}));
+                        }
                         other => {
                             panic!("unexpected request (no shared getTarget permitted): {other}")
                         }
                     }
+                }
+                if long_string {
+                    assert_eq!(substring_count, fresh_evaluations);
+                    assert_eq!(release_count, fresh_evaluations);
                 }
                 fresh_evaluations
             });
@@ -6074,11 +6329,11 @@ mod snapshot_probe_tests {
                 target_endpoint: Some(endpoint),
                 console_actor: "a/console".into(),
                 tab_actor: &tab,
-                pre_epoch: 42.0,
+                pre_epoch: Some(42.0),
                 first_probe_at: start + Duration::from_millis(30),
                 probe_interval: Duration::from_millis(30),
                 poll_enabled: false,
-                pre_href: "https://same.test/".into(),
+                pre_href: href.into(),
                 trust_event_url: false,
             };
             let (tx, rx) = std::sync::mpsc::channel();
@@ -6086,7 +6341,7 @@ mod snapshot_probe_tests {
                 ff_rdp_core::NetworkResource {
                     actor: "net".into(),
                     method: "GET".into(),
-                    url: "https://same.test/".into(),
+                    url: href.into(),
                     is_xhr: false,
                     cause_type: "document".into(),
                     started_date_time: String::new(),
@@ -6108,7 +6363,7 @@ mod snapshot_probe_tests {
                     continue;
                 }
                 tx.send(Arc::new(Resource::DocumentEvent(
-                    json!({"name":name,"url":"https://same.test/"}),
+                    json!({"name":name,"url":href}),
                 )))
                 .unwrap();
             }
@@ -6162,7 +6417,7 @@ mod snapshot_probe_tests {
             } else {
                 let result = result
                     .expect("reload must retain terminal evidence across a Pending target refresh");
-                assert_eq!(result.committed_url, "https://same.test/");
+                assert_eq!(result.committed_url, href);
                 assert_eq!(result.ready_state, "complete");
                 assert!(result.elapsed_ms < 500);
                 assert!(queries >= 3);
@@ -6272,7 +6527,7 @@ mod snapshot_probe_tests {
             target_endpoint: Some(endpoint),
             console_actor: "a/console".into(),
             tab_actor: &tab,
-            pre_epoch: 42.0,
+            pre_epoch: Some(42.0),
             first_probe_at: start + Duration::from_millis(30),
             probe_interval: Duration::from_millis(30),
             poll_enabled: false,
@@ -6441,11 +6696,8 @@ mod blank_shortcut_tests {
                                     json!(sampled)
                                 }
                             } else {
-                                assert!(
-                                    text.contains("navigationStart > 42"),
-                                    "unexpected eval: {text}"
-                                );
-                                json!(false)
+                                assert!(text == READINESS_SAMPLE, "unexpected eval: {text}");
+                                scripted_readiness(42.0, sampled, "complete")
                             };
                             send(&mut stream, &json!({"from":"console", "resultID":"r"}));
                             send(
@@ -6480,7 +6732,7 @@ mod blank_shortcut_tests {
                 target_endpoint: None,
                 console_actor: "console".into(),
                 tab_actor: &tab,
-                pre_epoch: 42.0,
+                pre_epoch: Some(42.0),
                 first_probe_at: start,
                 probe_interval: Duration::from_secs(1),
                 poll_enabled: true,
@@ -6514,5 +6766,401 @@ mod blank_shortcut_tests {
                 (!observing).then_some(StatusUnknown::NotObserved)
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod atomic_readiness_tests {
+    use super::*;
+    use crate::commands::connect_tab::ConnectedTab;
+    use ff_rdp_core::transport::recv_from;
+    use std::io::{BufReader, Write};
+    use std::net::{TcpListener, TcpStream};
+
+    fn send(stream: &mut TcpStream, value: &Value) {
+        let body = serde_json::to_vec(value).unwrap();
+        write!(stream, "{}:", body.len()).unwrap();
+        stream.write_all(&body).unwrap();
+    }
+
+    #[test]
+    fn direct_poll_preserves_zero_budget_errors_and_deadline() {
+        for case in [
+            "ready",
+            "not-ready",
+            "malformed",
+            "exception",
+            "actor-error",
+            "timeout",
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(1)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                send(
+                    &mut stream,
+                    &json!({"from":"root","applicationType":"browser"}),
+                );
+                let request = recv_from(&mut reader).unwrap();
+                assert_eq!(request["to"], "console");
+                assert_eq!(request["type"], "evaluateJSAsync");
+                assert_eq!(request["text"], READINESS_SAMPLE);
+                if case == "timeout" {
+                    // No reply: the caller's positive absolute deadline must
+                    // override the much longer connection timeout.
+                    std::thread::sleep(Duration::from_millis(150));
+                } else if case == "actor-error" {
+                    send(
+                        &mut stream,
+                        &json!({"from":"console","error":"wrongState","message":"terminal"}),
+                    );
+                } else {
+                    send(&mut stream, &json!({"from":"console","resultID":"r"}));
+                    let value = if case == "malformed" {
+                        json!("not JSON")
+                    } else {
+                        scripted_readiness(
+                            43.0,
+                            "https://new.test/",
+                            if case == "not-ready" {
+                                "loading"
+                            } else {
+                                "complete"
+                            },
+                        )
+                    };
+                    let mut reply = json!({"from":"console","type":"evaluationResult","resultID":"r","result":value});
+                    if case == "exception" {
+                        reply["exception"] = json!("\u{1b}[31munsafe\u{1b}[0m");
+                    }
+                    send(&mut stream, &reply);
+                }
+                assert!(
+                    recv_from(&mut reader).is_err(),
+                    "one evaluation; no follow-up href request"
+                );
+            });
+            let transport =
+                RdpTransport::connect("127.0.0.1", port, Duration::from_secs(2)).unwrap();
+            let mut ctx = ConnectedTab::for_test(transport, "console".into());
+            let start = Instant::now();
+            let result = wait_for_readystate_complete(
+                &mut ctx,
+                if case == "timeout" { 50 } else { 0 },
+                ReadinessCheck {
+                    pre_epoch: Some(42.0),
+                    pre_href: "https://old.test/",
+                    requested_url: "https://new.test/",
+                },
+                start,
+            );
+            let elapsed = start.elapsed();
+            drop(ctx);
+            server.join().unwrap();
+            match case {
+                "ready" => assert_eq!(result.unwrap().committed_url, "https://new.test/"),
+                "exception" => assert!(
+                    matches!(result, Err(AppError::User(ref text)) if text.contains("unsafe") && !text.contains('\u{1b}'))
+                ),
+                "actor-error" => assert!(
+                    matches!(result, Err(AppError::User(ref text)) if text.contains("wrongState"))
+                ),
+                _ => assert!(
+                    matches!(result, Err(AppError::Timeout(ref text)) if text.contains("document.readyState")),
+                    "{case}: {result:?}"
+                ),
+            }
+            assert!(elapsed < Duration::from_secs(1), "{case}: {elapsed:?}");
+        }
+    }
+
+    #[test]
+    fn baseline_requires_successful_positive_epoch_and_href() {
+        for (value, exceptional, expected) in [
+            (json!(42), false, Some(42.0)),
+            (json!(0), false, None),
+            (json!(-1), false, None),
+            (json!("42"), false, None),
+            (Value::Null, false, None),
+            (json!({"type":"NaN"}), false, None),
+            (json!({"type":"Infinity"}), false, None),
+            (json!(42), true, None),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(1)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                send(
+                    &mut stream,
+                    &json!({"from":"root","applicationType":"browser"}),
+                );
+                for (js, value) in [
+                    ("performance.timing.navigationStart", value),
+                    ("window.location.href", json!("https://old.test/")),
+                ] {
+                    let request = recv_from(&mut reader).unwrap();
+                    assert_eq!(request["text"], js);
+                    send(&mut stream, &json!({"from":"console","resultID":"r"}));
+                    let mut reply = json!({"from":"console","type":"evaluationResult","resultID":"r","result":value});
+                    if exceptional {
+                        reply["exception"] = json!("unavailable");
+                    }
+                    send(&mut stream, &reply);
+                }
+            });
+            let transport =
+                RdpTransport::connect("127.0.0.1", port, Duration::from_secs(1)).unwrap();
+            let mut ctx = ConnectedTab::for_test(transport, "console".into());
+            assert_eq!(capture_pre_nav_epoch(&mut ctx, "test epoch"), expected);
+            assert_eq!(
+                eval_location_href(ctx.transport_mut(), &"console".into()),
+                if exceptional { "" } else { "https://old.test/" }
+            );
+            drop(ctx);
+            server.join().unwrap();
+        }
+    }
+}
+
+#[cfg(test)]
+mod long_string_readiness_tests {
+    use super::*;
+    use crate::commands::connect_tab::ConnectedTab;
+    use ff_rdp_core::transport::recv_from;
+    use std::io::{BufReader, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    fn send(stream: &mut TcpStream, value: &Value) {
+        let body = serde_json::to_vec(value).unwrap();
+        write!(stream, "{}:", body.len()).unwrap();
+        stream.write_all(&body).unwrap();
+    }
+
+    #[test]
+    fn long_string_direct_and_watched_fetch_boundaries() {
+        for watched in [false, true] {
+            for case in [
+                "ready",
+                "oversize",
+                "exception",
+                "actor-error",
+                "malformed",
+                "timeout",
+                "release-error",
+                "destroyed",
+            ] {
+                if case != "destroyed" || watched {
+                    fetch_case(watched, case);
+                }
+            }
+        }
+    }
+
+    fn fetch_case(watched: bool, case: &'static str) {
+        let side = TcpListener::bind("127.0.0.1:0").unwrap();
+        side.set_nonblocking(true).unwrap();
+        let endpoint =
+            crate::daemon::client::TargetEndpoint::new(side.local_addr().unwrap().port(), "token");
+        let stop = Arc::new(AtomicBool::new(false));
+        let done = Arc::clone(&stop);
+        let snapshots = std::thread::spawn(move || {
+            let mut queries = 0;
+            while !done.load(Ordering::Relaxed) {
+                let Ok((mut stream, _)) = side.accept() else {
+                    std::thread::sleep(Duration::from_millis(1));
+                    continue;
+                };
+                stream.set_nonblocking(false).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(1)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                assert_eq!(recv_from(&mut reader).unwrap()["auth"], "token");
+                send(
+                    &mut stream,
+                    &json!({"protocol_version":crate::daemon::server::DAEMON_PROTOCOL_VERSION}),
+                );
+                let query = recv_from(&mut reader).unwrap();
+                assert_eq!(query["type"], "resolve-tab-target");
+                queries += 1;
+                let actor = if case == "destroyed" && queries >= 3 {
+                    "b"
+                } else {
+                    "a"
+                };
+                send(
+                    &mut stream,
+                    &json!({"from":"daemon","type":"resolve-tab-target","state":"live","target":{
+                        "actor":actor,"consoleActor":format!("{actor}/console"),"innerWindowId":if actor == "a" {1} else {2}
+                    }}),
+                );
+            }
+            queries
+        });
+        let main = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = main.local_addr().unwrap().port();
+        let href = format!(
+            "https://long.test/{}",
+            "a".repeat(9990 - "https://long.test/".len())
+        );
+        let sample = json!({"readyState":"complete","epoch":43,"href":href}).to_string();
+        assert!(sample.len() >= 10000);
+        let evaluations = std::thread::spawn(move || {
+            let (mut stream, _) = main.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            send(
+                &mut stream,
+                &json!({"from":"root","applicationType":"browser"}),
+            );
+            let mut evals = 0;
+            let mut substrings = 0;
+            let mut releases = 0;
+            while let Ok(request) = recv_from(&mut reader) {
+                let actor = request["to"].as_str().unwrap();
+                match request["type"].as_str().unwrap() {
+                    "listFrames" => send(
+                        &mut stream,
+                        &json!({"from":actor,"frames":[{"isTopLevel":true,"url":"https://old.test/"}]}),
+                    ),
+                    "evaluateJSAsync" => {
+                        evals += 1;
+                        assert_eq!(
+                            request["text"], READINESS_SAMPLE,
+                            "no separate href evaluation"
+                        );
+                        assert_eq!(actor, if evals == 1 { "a/console" } else { "b/console" });
+                        send(&mut stream, &json!({"from":actor,"resultID":"r"}));
+                        let mut reply = json!({"from":actor,"type":"evaluationResult","resultID":"r","result":{
+                            "type":"longString","actor":format!("sample-{evals}"),"length":if case == "oversize" {ff_rdp_core::LongStringActor::MAX_FETCH+1} else {sample.len()},"initial":&sample[..1000]
+                        }});
+                        if case == "exception" {
+                            reply["exception"] = json!("\u{1b}[31munsafe\u{1b}[0m");
+                        }
+                        send(&mut stream, &reply);
+                    }
+                    "substring" => {
+                        substrings += 1;
+                        assert_eq!(actor, format!("sample-{evals}"));
+                        assert_eq!(request["start"], 0);
+                        assert_eq!(request["end"], sample.len());
+                        if case == "timeout" {
+                            std::thread::sleep(Duration::from_millis(650));
+                            assert!(
+                                recv_from(&mut reader).is_err(),
+                                "no extra request after the fetch deadline"
+                            );
+                            break;
+                        }
+                        if case == "destroyed" && evals == 1 {
+                            send(
+                                &mut stream,
+                                &json!({"from":"watcher","type":"target-destroyed-form","target":{"actor":"a","innerWindowId":1,"isTopLevelTarget":true}}),
+                            );
+                        }
+                        let response = if case == "actor-error" {
+                            json!({"from":actor,"error":"wrongState","message":"terminal substring error"})
+                        } else if case == "malformed" {
+                            json!({"from":actor,"substring":false})
+                        } else {
+                            json!({"from":actor,"substring":sample})
+                        };
+                        send(&mut stream, &response);
+                    }
+                    "release" => {
+                        releases += 1;
+                        assert_eq!(actor, format!("sample-{evals}"));
+                        let response = if case == "release-error" {
+                            json!({"from":actor,"error":"wrongState","message":"terminal release error"})
+                        } else {
+                            json!({"from":actor})
+                        };
+                        send(&mut stream, &response);
+                    }
+                    method => panic!("unexpected request: {method}"),
+                }
+            }
+            (evals, substrings, releases)
+        });
+        let transport = RdpTransport::connect("127.0.0.1", port, Duration::from_secs(2)).unwrap();
+        let mut ctx = ConnectedTab::for_test(transport, "a/console".into());
+        if watched {
+            ctx.target_endpoint = Some(endpoint);
+            ctx.via_daemon = true;
+        }
+        let start = Instant::now();
+        let result = wait_for_readystate_complete(
+            &mut ctx,
+            500,
+            ReadinessCheck {
+                pre_epoch: Some(42.0),
+                pre_href: "https://old.test/",
+                requested_url: &href,
+            },
+            start,
+        );
+        let elapsed = start.elapsed();
+        drop(ctx);
+        stop.store(true, Ordering::Relaxed);
+        let snapshot_result = snapshots.join();
+        let evaluation_result = evaluations.join();
+        eprintln!(
+            "long_string watched={watched} case={case} elapsed={elapsed:?} result={result:?} snapshots={snapshot_result:?} evaluations={evaluation_result:?}"
+        );
+        let queries = snapshot_result.unwrap();
+        let (evals, substrings, releases) = evaluation_result.unwrap();
+        assert_eq!(evals, if case == "destroyed" { 2 } else { 1 });
+        assert_eq!(
+            substrings,
+            match case {
+                "oversize" | "exception" => 0,
+                "destroyed" => 2,
+                _ => 1,
+            }
+        );
+        assert_eq!(
+            releases,
+            usize::from(matches!(case, "ready" | "destroyed" | "release-error"))
+        );
+        assert_eq!(
+            queries,
+            if !watched {
+                0
+            } else if case == "destroyed" {
+                3
+            } else {
+                1
+            }
+        );
+        match case {
+            "ready" | "destroyed" => assert_eq!(result.unwrap().committed_url, href),
+            "oversize" | "malformed" => assert!(
+                matches!(result, Err(AppError::RdpShape { .. })),
+                "{result:?}"
+            ),
+            "exception" => assert!(
+                matches!(result, Err(AppError::User(ref s)) if s.contains("unsafe") && !s.contains('\u{1b}'))
+            ),
+            "actor-error" | "release-error" => {
+                assert!(matches!(result, Err(AppError::User(ref s)) if s.contains("wrongState")));
+            }
+            "timeout" => assert!(matches!(result, Err(AppError::Timeout(_))), "{result:?}"),
+            _ => unreachable!(),
+        }
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "one500ms budget, not the2s connection timeout"
+        );
     }
 }
