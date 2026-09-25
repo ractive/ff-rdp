@@ -374,6 +374,7 @@ fn install_settle_probe(
     ctx: &mut ConnectedTab,
     console_actor: &ActorId,
     escaped_selector: &str,
+    deadline: Instant,
 ) -> SettleProbe {
     let js = format!(
         r"(function() {{
@@ -381,7 +382,11 @@ fn install_settle_probe(
   return {SETTLE_INJECT_JS};
 }})()"
     );
-    let Ok(eval) = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, &js)
+    let Ok(eval) = ctx
+        .transport_mut()
+        .with_read_deadline(deadline, |transport| {
+            WebConsoleActor::evaluate_js_async(transport, console_actor, &js)
+        })
     else {
         return SettleProbe::Unavailable;
     };
@@ -413,6 +418,7 @@ fn selector_absent_on_settled_page(
     ctx: &mut ConnectedTab,
     console_actor: &ActorId,
     escaped_selector: &str,
+    deadline: Instant,
 ) -> bool {
     let js = format!(
         r"(function() {{
@@ -421,7 +427,11 @@ fn selector_absent_on_settled_page(
   return {SETTLE_IDLE_CHECK_JS};
 }})()"
     );
-    match WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, &js) {
+    match ctx
+        .transport_mut()
+        .with_read_deadline(deadline, |transport| {
+            WebConsoleActor::evaluate_js_async(transport, console_actor, &js)
+        }) {
         Ok(eval) if eval.exception.is_none() => is_truthy(&eval.result),
         _ => false,
     }
@@ -450,6 +460,9 @@ pub(crate) fn autowait_element(
     let timeout = Duration::from_millis(timeout_ms);
     let poll = Duration::from_millis(POLL_INTERVAL_MS);
     let started = Instant::now();
+    let deadline = started + timeout;
+    let mut observed: Option<(String, SelectorFinding)> = None;
+    let mut stability_deadline = deadline;
     // iter-237 Part B: state for the "page is idle and the selector still
     // matches nothing" short-circuit. Starts `Uninstalled` — nothing is
     // injected until a poll actually fails to find the element.
@@ -458,20 +471,30 @@ pub(crate) fn autowait_element(
     // Phase 1: wait for element to exist + be visible + have non-zero rect.
     loop {
         if started.elapsed() >= timeout {
-            // iter-140 Theme B: run one extra (cheap — only at the moment of
-            // failure, never per-poll) diagnostic eval so the error names how
-            // many elements matched and distinguishes "hidden" from
-            // "not found" instead of the old undifferentiated
-            // "not found / hidden / unstable" for every cause.
-            // Theme G note: the timeout branch has no exception to thread,
-            // so it keeps using the diagnostic verbatim, unchanged.
-            let (diag, _) = diagnose_selector_failure(ctx, console_actor, selector, &escaped);
-            return Err(AppError::Timeout(format!("{diag} after {timeout_ms}ms")));
+            return Err(autowait_timeout(
+                selector,
+                timeout_ms,
+                "readiness",
+                observed.as_ref(),
+            ));
         }
 
-        let eval =
-            WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, &readiness_js)
-                .map_err(AppError::from)?;
+        let eval = match ctx
+            .transport_mut()
+            .with_read_deadline(deadline, |transport| {
+                WebConsoleActor::evaluate_js_async(transport, console_actor, &readiness_js)
+            }) {
+            Ok(eval) => eval,
+            Err(ProtocolError::Timeout) => {
+                return Err(autowait_timeout(
+                    selector,
+                    timeout_ms,
+                    "readiness",
+                    observed.as_ref(),
+                ));
+            }
+            Err(error) => return Err(AppError::from(error)),
+        };
 
         if let Some(ref exc) = eval.exception {
             // iter-140 Theme B (on-the-wire correction): `display:none` /
@@ -498,7 +521,8 @@ pub(crate) fn autowait_element(
             // keep the diagnostic when it does (hidden-ness / not-found),
             // since for `display:none` and `visibility:hidden` — which also
             // arrive here — its text is the better message.
-            let (diag, finding) = diagnose_selector_failure(ctx, console_actor, selector, &escaped);
+            let (diag, finding) =
+                diagnose_selector_failure(ctx, console_actor, selector, &escaped, deadline);
             let elapsed_ms = started.elapsed().as_millis();
             let message = compose_readiness_error(selector, exc.message.as_deref(), diag, &finding);
             return Err(AppError::Timeout(format!(
@@ -506,7 +530,31 @@ pub(crate) fn autowait_element(
             )));
         }
 
-        if is_truthy(&eval.result) {
+        // Collect evidence while the budget is still open. A timed-out later
+        // read must not start a fresh diagnostic under the socket timeout.
+        let ready = is_truthy(&eval.result);
+        if ready {
+            stability_deadline = deadline.min(Instant::now() + Duration::from_millis(500));
+            observed = Some((
+                format!("selector '{selector}' was ready; match count unavailable"),
+                SelectorFinding::Unavailable,
+            ));
+        }
+        let diagnostic_deadline = if ready { stability_deadline } else { deadline };
+        let diagnostic =
+            diagnose_selector_failure(ctx, console_actor, selector, &escaped, diagnostic_deadline);
+        if !matches!(diagnostic.1, SelectorFinding::Unavailable) {
+            observed = Some(diagnostic);
+        }
+        if Instant::now() >= diagnostic_deadline {
+            return Err(autowait_timeout(
+                selector,
+                timeout_ms,
+                "selector diagnostic",
+                observed.as_ref(),
+            ));
+        }
+        if ready {
             break; // visible + non-zero rect
         }
 
@@ -528,13 +576,23 @@ pub(crate) fn autowait_element(
         // command started is still invisible to it; the floor is the cover for
         // that, and `--no-wait` the escape hatch.)
         if settle_probe == SettleProbe::Uninstalled {
-            settle_probe = install_settle_probe(ctx, console_actor, &escaped);
+            settle_probe = install_settle_probe(ctx, console_actor, &escaped, deadline);
+            if Instant::now() >= deadline {
+                return Err(autowait_timeout(
+                    selector,
+                    timeout_ms,
+                    "settle installation",
+                    observed.as_ref(),
+                ));
+            }
         }
         if started.elapsed() >= Duration::from_millis(not_found_min_observation_ms(timeout_ms))
             && settle_probe == SettleProbe::Installed
-            && selector_absent_on_settled_page(ctx, console_actor, &escaped)
+            && selector_absent_on_settled_page(ctx, console_actor, &escaped, deadline)
         {
-            let (diag, _) = diagnose_selector_failure(ctx, console_actor, selector, &escaped);
+            // The predicate itself just observed zero matches and a settled
+            // page; no extra diagnostic is needed to substantiate this exit.
+            let diag = format!("selector '{selector}' not ready — 0 elements matched (not found)");
             let elapsed_ms = started.elapsed().as_millis();
             return Err(AppError::Timeout(format!(
                 "{diag} after {elapsed_ms}ms — the page is idle (document complete, no network \
@@ -542,31 +600,67 @@ pub(crate) fn autowait_element(
                  budget could not have changed the answer"
             )));
         }
+        if Instant::now() >= deadline {
+            return Err(autowait_timeout(
+                selector,
+                timeout_ms,
+                "settled-page probe",
+                observed.as_ref(),
+            ));
+        }
 
-        std::thread::sleep(poll);
+        std::thread::sleep(poll.min(deadline.saturating_duration_since(Instant::now())));
     }
 
     // Phase 2: wait for stable rect (two consecutive reads must match).
-    let stability_timeout = started.elapsed() + Duration::from_millis(500);
     let mut last_rect: Option<String> = None;
+    let mut rect_changed = false;
 
     loop {
-        if started.elapsed() >= stability_timeout {
-            // Stability check timed out — the element rect never stopped changing.
-            return Err(AppError::Timeout(format!(
-                "selector '{selector}' rect did not stabilise after {timeout_ms}ms"
-            )));
-        }
-        if started.elapsed() >= timeout {
-            // Theme G note: the timeout branch has no exception to thread,
-            // so it keeps using the diagnostic verbatim, unchanged.
-            let (diag, _) = diagnose_selector_failure(ctx, console_actor, selector, &escaped);
-            return Err(AppError::Timeout(format!("{diag} after {timeout_ms}ms")));
+        if Instant::now() >= stability_deadline {
+            // Only observed changes establish motion; a missing second sample
+            // leaves stability unknown.
+            let stage = if rect_changed {
+                "rect did not stabilise"
+            } else {
+                "rect stability was not confirmed"
+            };
+            return Err(autowait_timeout(
+                selector,
+                timeout_ms,
+                stage,
+                observed.as_ref(),
+            ));
         }
 
-        let eval =
-            WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, &stability_js)
-                .map_err(AppError::from)?;
+        let eval = match ctx
+            .transport_mut()
+            .with_read_deadline(stability_deadline, |transport| {
+                WebConsoleActor::evaluate_js_async(transport, console_actor, &stability_js)
+            }) {
+            Ok(eval) => eval,
+            Err(ProtocolError::Timeout) => {
+                return Err(autowait_timeout(
+                    selector,
+                    timeout_ms,
+                    "rect stability probe did not answer",
+                    observed.as_ref(),
+                ));
+            }
+            Err(error) => return Err(AppError::from(error)),
+        };
+        if let Some(exception) = eval.exception {
+            let reason = exception
+                .message
+                .as_deref()
+                .unwrap_or("rect stability probe threw an exception");
+            return Err(autowait_timeout(
+                selector,
+                timeout_ms,
+                reason,
+                observed.as_ref(),
+            ));
+        }
 
         let current = match &eval.result {
             Grip::Value(v) => v.as_str().map(std::borrow::ToOwned::to_owned),
@@ -579,13 +673,42 @@ pub(crate) fn autowait_element(
             {
                 break; // stable
             }
+            rect_changed |= last_rect.is_some();
             last_rect = current;
+        } else if matches!(eval.result, Grip::Null) {
+            observed = Some((
+                format!("selector '{selector}' not ready — 0 elements matched (not found)"),
+                SelectorFinding::Substantive,
+            ));
+            last_rect = None;
+            rect_changed = false;
         }
 
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(
+            Duration::from_millis(50)
+                .min(stability_deadline.saturating_duration_since(Instant::now())),
+        );
     }
 
     Ok(Value::Null) // caller will proceed with the action
+}
+
+fn autowait_timeout(
+    selector: &str,
+    timeout_ms: u64,
+    stage: &str,
+    observed: Option<&(String, SelectorFinding)>,
+) -> AppError {
+    let evidence = observed.map_or_else(
+        || {
+            "selector diagnostic evidence unavailable (no successful selector diagnostic)"
+                .to_owned()
+        },
+        |(message, _)| format!("last observation: {message}"),
+    );
+    AppError::Timeout(format!(
+        "selector '{selector}' auto-wait stopped during {stage} (budget {timeout_ms}ms); {evidence}"
+    ))
 }
 
 /// Diagnose *why* a selector never became ready, for a richer timeout error
@@ -593,8 +716,7 @@ pub(crate) fn autowait_element(
 /// Theme B: gov.uk's `input[name=keywords]` matches two elements — `type`
 /// silently took the hidden one and reported nothing about the other match).
 ///
-/// Runs a single extra JS eval — cheap, since it only happens once, at the
-/// moment `autowait_element` gives up — that reports the match count and
+/// Runs a budgeted JS eval while auto-wait can still observe the page, reporting the match count and
 /// whether the DOM-order-0 match (the one autowait actually polled) is
 /// hidden. Distinguishes:
 /// - 0 matches → not found
@@ -602,11 +724,10 @@ pub(crate) fn autowait_element(
 ///   problem — just genuinely hidden)
 /// - 2+ matches, chosen (index 0) hidden → the exact repro from the plan:
 ///   names the count and points at `--visible`/`--index` to recover
-/// - 2+ matches, chosen (index 0) visible but unstable → same match-count
-///   context, without wrongly implying the element can't be found at all
+/// - visible matches → match-count context, without guessing why readiness failed
 ///
 /// Best-effort: if the diagnostic eval itself throws or the transport drops,
-/// falls back to the original undifferentiated message rather than masking
+/// explicitly reports unavailable evidence rather than masking
 /// the real timeout with a second error.
 /// Decide what a readiness *exception* should report, given the blind re-probe
 /// [`diagnose_selector_failure`] ran afterwards (iter-160 Theme G).
@@ -619,9 +740,7 @@ pub(crate) fn autowait_element(
 ///   through the exception, and for those the diagnostic's hidden-aware text —
 ///   which also names the match count and points at `--visible`/`--index` — is
 ///   the better message.
-/// - `MatchCountOnly` → the diagnostic's own text ends in the hardcoded
-///   "layout did not stabilise" fallback, which is the last branch left in the
-///   tree rather than a finding. Use the thrown reason and keep only the
+/// - `MatchCountOnly` → no failure cause was established. Use the thrown reason and keep only the
 ///   match-count phrase as trailing context.
 /// - `Unavailable` → the diagnostic eval itself failed; the exception is all
 ///   there is.
@@ -653,8 +772,7 @@ enum SelectorFinding {
     /// The diagnostic found 0 matches, or found the chosen match hidden — a
     /// conclusion of its own that the readiness exception does not carry.
     Substantive,
-    /// The diagnostic only counted matches; its message ends in the hardcoded
-    /// "layout did not stabilise" guess. `context` is the match-count phrase
+    /// The diagnostic only counted visible matches. `context` is the match-count phrase
     /// worth keeping as trailing context for a better message.
     MatchCountOnly { context: String },
     /// The diagnostic eval itself threw or the transport dropped.
@@ -666,6 +784,7 @@ fn diagnose_selector_failure(
     console_actor: &ActorId,
     selector: &str,
     escaped_selector: &str,
+    deadline: Instant,
 ) -> (String, SelectorFinding) {
     let js = format!(
         r"(function() {{
@@ -680,7 +799,11 @@ fn diagnose_selector_failure(
 }})()"
     );
 
-    let diag = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, &js)
+    let diag = ctx
+        .transport_mut()
+        .with_read_deadline(deadline, |transport| {
+            WebConsoleActor::evaluate_js_async(transport, console_actor, &js)
+        })
         .ok()
         .filter(|r| r.exception.is_none())
         .and_then(|r| match r.result {
@@ -692,19 +815,29 @@ fn diagnose_selector_failure(
 
     let Some(diag) = diag else {
         return (
-            format!("selector '{selector}' not ready (not found / hidden / unstable)"),
+            format!("selector '{selector}' not ready — selector diagnostic evidence unavailable"),
             SelectorFinding::Unavailable,
         );
     };
 
-    let match_count = diag.get("matchCount").and_then(Value::as_u64).unwrap_or(0);
+    let Some(match_count) = diag.get("matchCount").and_then(Value::as_u64) else {
+        return (
+            format!("selector '{selector}' not ready — selector diagnostic evidence unavailable"),
+            SelectorFinding::Unavailable,
+        );
+    };
     if match_count == 0 {
         return (
             format!("selector '{selector}' not ready — 0 elements matched (not found)"),
             SelectorFinding::Substantive,
         );
     }
-    let hidden = diag.get("hidden").and_then(Value::as_bool).unwrap_or(false);
+    let Some(hidden) = diag.get("hidden").and_then(Value::as_bool) else {
+        return (
+            format!("selector '{selector}' not ready — selector diagnostic evidence unavailable"),
+            SelectorFinding::Unavailable,
+        );
+    };
     if match_count == 1 {
         return if hidden {
             (
@@ -714,7 +847,7 @@ fn diagnose_selector_failure(
         } else {
             (
                 format!(
-                    "selector '{selector}' not ready — matched 1 element (layout did not stabilise)"
+                    "selector '{selector}' not ready — matched 1 element (readiness was not established)"
                 ),
                 SelectorFinding::MatchCountOnly {
                     context: "matched 1 element".to_owned(),
@@ -736,7 +869,7 @@ fn diagnose_selector_failure(
         (
             format!(
                 "selector '{selector}' not ready — matched {match_count} elements, chose index 0 \
-                 (layout did not stabilise); pass --index 0..{last_index} to target a different \
+                 (readiness was not established); pass --index 0..{last_index} to target a different \
                  match"
             ),
             SelectorFinding::MatchCountOnly {
@@ -1706,6 +1839,170 @@ mod tests {
         let console_actor = ActorId::from("conn0/console1");
         let ctx = ConnectedTab::for_test(transport, console_actor.clone());
         (ctx, console_actor)
+    }
+
+    #[test]
+    fn unit_272_every_stage_obeys_the_absolute_budget() {
+        for blocked in ["readiness", "diagnose", "install", "idle", "stability"] {
+            let (port, server) = spawn_scripted_console(move |js| {
+                let stage = classify_eval(js);
+                if stage == blocked {
+                    std::thread::sleep(Duration::from_millis(1_200));
+                }
+                match stage {
+                    "readiness" if blocked == "stability" => json!("ready"),
+                    "readiness" => json!({"type": "null"}),
+                    "diagnose" if blocked == "stability" => {
+                        json!(r#"{"matchCount":2,"hidden":false}"#)
+                    }
+                    "diagnose" => json!(r#"{"matchCount":0}"#),
+                    "install" => json!("__ok__"),
+                    "idle" => json!(false),
+                    _ => json!("[0,0,10,10]"),
+                }
+            });
+            let (mut ctx, actor) = connect_for_test(port);
+            let prior = ctx.transport_mut().read_timeout().unwrap();
+            let start = Instant::now();
+            let result = autowait_element(&mut ctx, &actor, "#target", 700, false);
+            let elapsed = start.elapsed();
+            assert_eq!(ctx.transport_mut().read_timeout().unwrap(), prior);
+            drop(ctx);
+            server.join().unwrap();
+            let Err(AppError::Timeout(message)) = result else {
+                panic!("{blocked}: {result:?}");
+            };
+            assert!(
+                elapsed < Duration::from_millis(1_000),
+                "{blocked}: {elapsed:?}, {message}"
+            );
+            assert!(message.contains("#target"), "{message}");
+            if matches!(blocked, "readiness" | "diagnose") {
+                assert!(
+                    message.contains("evidence unavailable"),
+                    "{blocked}: {message}"
+                );
+                assert!(!message.contains("0 elements"), "{message}");
+            } else if blocked == "stability" {
+                assert!(message.contains("matched 2 elements"), "{message}");
+                assert!(
+                    !message.contains("did not stabilise"),
+                    "a blocked probe is not observed motion: {message}"
+                );
+            } else {
+                assert!(
+                    message.contains("last observation") && message.contains("0 elements"),
+                    "{message}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn unit_272_zero_budget_sends_no_probe_and_preserves_unbounded_timeout() {
+        let (port, server) = spawn_scripted_console(|_| panic!("expired budget sent a probe"));
+        let (mut ctx, actor) = connect_for_test(port);
+        ctx.transport_mut().set_read_timeout(None).unwrap();
+        let result = autowait_element(&mut ctx, &actor, "#zero", 0, false);
+        assert!(
+            matches!(result, Err(AppError::Timeout(ref message)) if message.contains("evidence unavailable"))
+        );
+        assert_eq!(ctx.transport_mut().read_timeout().unwrap(), None);
+        drop(ctx);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn unit_272_diagnostics_require_valid_evidence_and_report_motion() {
+        for (diagnostic, expected) in [
+            (r#"{"matchCount":0}"#, "0 elements matched (not found)"),
+            (
+                r#"{"matchCount":1,"hidden":true}"#,
+                "the 1 matching element is hidden",
+            ),
+            (
+                r#"{"matchCount":3,"hidden":true}"#,
+                "matched 3 elements, chose index 0 which is hidden",
+            ),
+            (r#"{"hidden":false}"#, "evidence unavailable"),
+            (r#"{"matchCount":1}"#, "evidence unavailable"),
+        ] {
+            let (port, server) = spawn_scripted_console(move |js| match classify_eval(js) {
+                "diagnose" => json!(diagnostic),
+                "install" => json!("__csp__"),
+                _ => json!({"type": "null"}),
+            });
+            let (mut ctx, actor) = connect_for_test(port);
+            let result = autowait_element(&mut ctx, &actor, "#target", 100, false);
+            drop(ctx);
+            server.join().unwrap();
+            assert!(
+                matches!(result, Err(AppError::Timeout(ref message)) if message.contains(expected)),
+                "{diagnostic}: {result:?}"
+            );
+        }
+        let sequence = std::sync::atomic::AtomicUsize::new(0);
+        let (port, server) = spawn_scripted_console(move |js| match classify_eval(js) {
+            "readiness" => json!("ready"),
+            "diagnose" => json!(r#"{"matchCount":1,"hidden":false}"#),
+            _ => json!(format!(
+                "[{},0,10,10]",
+                sequence.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )),
+        });
+        let (mut ctx, actor) = connect_for_test(port);
+        let result = autowait_element(&mut ctx, &actor, "#moving", 2_000, false);
+        drop(ctx);
+        server.join().unwrap();
+        assert!(
+            matches!(result, Err(AppError::Timeout(ref message)) if message.contains("rect did not stabilise") && message.contains("matched 1 element")),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn unit_272_push_traffic_and_late_ack_cannot_escape_or_supply_the_next_result() {
+        use ff_rdp_core::transport::{encode_frame, recv_from};
+        use std::io::Write as _;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut writer = stream.try_clone().unwrap();
+            let mut reader = std::io::BufReader::new(stream);
+            let mut send = |value: Value| {
+                writer
+                    .write_all(encode_frame(&value.to_string()).as_bytes())
+                    .unwrap();
+            };
+            send(json!({"from":"root","applicationType":"browser","traits":{}}));
+            recv_from(&mut reader).unwrap();
+            for _ in 0..12 {
+                send(json!({"from":"conn0/console1","type":"consoleAPICall"}));
+                std::thread::sleep(Duration::from_millis(15));
+            }
+            send(json!({"from":"conn0/console1","resultID":"old"}));
+            send(
+                json!({"from":"conn0/console1","type":"evaluationResult","resultID":"old","result":true}),
+            );
+            recv_from(&mut reader).unwrap();
+            send(json!({"from":"conn0/console1","resultID":"new"}));
+            send(
+                json!({"from":"conn0/console1","type":"evaluationResult","resultID":"new","result":false}),
+            );
+        });
+        let (mut ctx, actor) = connect_for_test(port);
+        let start = Instant::now();
+        let result = autowait_element(&mut ctx, &actor, "#target", 80, false);
+        assert!(matches!(result, Err(AppError::Timeout(_))), "{result:?}");
+        assert!(start.elapsed() < Duration::from_millis(150));
+        let own = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &actor, "false").unwrap();
+        assert!(!is_truthy(&own.result), "late result was adopted: {own:?}");
+        drop(ctx);
+        server.join().unwrap();
     }
 
     #[test]

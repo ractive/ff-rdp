@@ -273,3 +273,59 @@ fn click_element_not_found_exits_nonzero() {
         "stdout should carry the frame-aware not-found diagnostic: {stdout}"
     );
 }
+
+#[test]
+fn e2e_272_frame_records_actual_direct_result() {
+    let server = MockRdpServer::new()
+        .on("listTabs", load_fixture("list_tabs_response.json"))
+        .on("getTarget", load_fixture("get_target_response.json"))
+        .on("getWatcher", serde_json::json!({"from":"server1.conn0.tabDescriptor1", "actor":"server1.conn0.watcher4"}))
+        .on_with_followup("watchTargets", serde_json::json!({"from":"server1.conn0.watcher4"}),
+            serde_json::json!({"from":"server1.conn0.watcher4", "type":"target-available-form", "target":{"actor":"frame272", "url":"https://frame.example/", "targetType":"frame", "browsingContextID":272}}))
+        .on("watchResources", serde_json::json!({"from":"server1.conn0.watcher4"}));
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+    let child = std::process::Command::new(ff_rdp_bin())
+        .args(base_args(port))
+        .args(["click", "body", "--frame", "no-such-frame-159"])
+        .env(
+            "RUST_LOG",
+            "ff_rdp_cli::frame_targets=debug,ff_rdp_cli::action_route=debug",
+        )
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn click");
+    let pid = child.id();
+    let output = child.wait_with_output().expect("wait click");
+    handle.join().unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "{}",
+        support::output_note(&output)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("1 frame(s) available"),
+        "{}",
+        support::output_note(&output)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for marker in [
+        format!("FRAME_TARGETS_BEGIN pid={pid} via_daemon=false"),
+        format!("FRAME_TARGETS_END pid={pid} via_daemon=false"),
+    ] {
+        assert_eq!(
+            stderr.matches(&marker).count(),
+            1,
+            "{}",
+            support::output_note(&output)
+        );
+    }
+    assert!(
+        stderr.contains("frame272") && stderr.contains("browsing_context_id: Some(272)"),
+        "{}",
+        support::output_note(&output)
+    );
+}

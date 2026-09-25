@@ -460,6 +460,24 @@ fn live_159_frame_targets_survive_the_fix() {
     }
     let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
+    let observation_start = Instant::now();
+    let observed_run = |label: &str, args: Vec<String>| {
+        let begin_ns = observation_start.elapsed().as_nanos();
+        let out = Command::new(ff_rdp_bin())
+            .args(&args)
+            .env(
+                "RUST_LOG",
+                "ff_rdp_cli::frame_targets=debug,ff_rdp_cli::action_route=debug",
+            )
+            .output()
+            .expect("failed to spawn ff-rdp");
+        let end_ns = observation_start.elapsed().as_nanos();
+        eprintln!(
+            "FRAME_SAMPLE label={label} begin_ns={begin_ns} end_ns={end_ns} args={args:?} {}",
+            crate::common::output_note(&out)
+        );
+        out
+    };
 
     let mut nav = daemon_args(port);
     nav.extend([
@@ -467,7 +485,7 @@ fn live_159_frame_targets_survive_the_fix() {
         CROSS_ORIGIN_FIXTURE.to_owned(),
         "--allow-unsafe-urls".to_owned(),
     ]);
-    let nav_out = run(nav);
+    let nav_out = observed_run("navigate", nav);
     if !nav_out.status.success() {
         stop_daemon(port);
         if is_proxy_startup_flake(&nav_out) {
@@ -482,7 +500,7 @@ fn live_159_frame_targets_survive_the_fix() {
 
     // A deliberately non-existent frame name: the error envelope names how many
     // frames the enumeration actually found, which is the number under test.
-    let frame_count = |args: Vec<String>| -> usize {
+    let frame_count = |label: &str, args: Vec<String>| -> usize {
         let mut a = args;
         a.extend([
             "click".to_owned(),
@@ -490,7 +508,7 @@ fn live_159_frame_targets_survive_the_fix() {
             "--frame".to_owned(),
             "no-such-frame-159".to_owned(),
         ]);
-        let out = run(a);
+        let out = observed_run(label, a);
         let text = format!(
             "{}{}",
             String::from_utf8_lossy(&out.stdout),
@@ -504,12 +522,12 @@ fn live_159_frame_targets_survive_the_fix() {
             .unwrap_or(0)
     };
 
-    let via_daemon = frame_count(daemon_args(port));
-    let direct = frame_count(direct_args(port));
+    let via_daemon = frame_count("daemon-frame", daemon_args(port));
+    let direct = frame_count("direct-frame", direct_args(port));
 
     let mut status = daemon_args(port);
     status.extend(["daemon".to_owned(), "status".to_owned()]);
-    let status_json = parse_json(&run(status));
+    let status_json = parse_json(&observed_run("daemon-status", status));
     let live_targets = status_json["results"]["live_target_count"]
         .as_u64()
         .unwrap_or(0);

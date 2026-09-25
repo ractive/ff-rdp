@@ -1786,6 +1786,9 @@ fn is_target_event(msg: &Value) -> bool {
 /// signals a target going away and invalidates it in the registry (including
 /// all dependent fronts — inspector, walker, console scoped to that target).
 fn handle_target_event(state: &SharedState, msg: &Value) {
+    // Opt-in attribution of packets already delivered to this handler. This
+    // records observation, not proof of when Firefox created the document.
+    tracing::debug!(target: "ff_rdp_cli::frame_targets", "FRAME_TARGETS_EVENT pid={} packet={}", std::process::id(), msg);
     if let Ok(mut binding) = state.primary_target.lock()
         && let Some(binding) = binding.as_mut()
     {
