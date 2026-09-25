@@ -2007,8 +2007,9 @@ fn run_wait_for_predicates(
 /// Refresh the console actor in `ctx` after navigation.
 ///
 /// Theme K: the consoleActor ID cached in `ctx.target()` is bound to the old
-/// docshell.  After any navigate (including to about:neterror pages), call this
-/// to fetch a fresh actor so the next `eval` does not get `noSuchActor`.
+/// docshell. After navigation (including to about:neterror pages), callers
+/// that reuse this connection fetch a fresh actor before their next `eval`
+/// so it does not get `noSuchActor`.
 ///
 /// This is a best-effort operation; failures are logged to stderr and swallowed.
 ///
@@ -2108,6 +2109,15 @@ fn reclassify_timeout_as_neterror(
     }
 }
 
+// Diagnostic offsets share an origin only within the named scope of one PID.
+// They do not redefine public elapsed_ms or account for process startup/exit.
+fn trace_navigation_timing(scope: &str, stage: &str, origin: Option<Instant>, at: Instant) {
+    if let Some(origin) = origin {
+        tracing::debug!(target: "ff_rdp_cli::navigation_timing", "NAV_TIMING pid={} scope={} stage={} elapsed_ns={}",
+            std::process::id(), scope, stage, at.duration_since(origin).as_nanos());
+    }
+}
+
 /// Navigate to `url` and return the result value without printing.
 ///
 /// Called by the script runner, which handles its own NDJSON output.
@@ -2129,8 +2139,13 @@ pub fn run_core(
     wait_opts: &WaitAfterNav<'_>,
     page_args: &crate::cli::args::PageViewArgs,
 ) -> Result<(serde_json::Value, bool), AppError> {
+    let timing_origin =
+        tracing::enabled!(target: "ff_rdp_cli::navigation_timing", tracing::Level::DEBUG)
+            .then(Instant::now);
+    trace_navigation_timing("core", "entry", timing_origin, Instant::now());
     validate_url_with_opts(url, cli.allow_file_urls, cli.allow_unsafe_urls)?;
     let mut ctx = connect_and_get_target(cli)?;
+    trace_navigation_timing("core", "connected", timing_origin, Instant::now());
     let target_actor = ctx.target().actor.clone();
     let tab_actor = ctx.target_tab_actor().clone();
 
@@ -2206,6 +2221,7 @@ pub fn run_core(
         // Sending navigateTo + immediately polling document.readyState avoids
         // the full event-wait timeout cost that the default Events path pays.
         let nav_start = Instant::now();
+        trace_navigation_timing("core", "dispatch", timing_origin, nav_start);
         WindowGlobalTarget::navigate_to(ctx.transport_mut(), &target_actor, url)
             .map_err(AppError::from)?;
         // The watched readiness poll acquires under its own existing deadline.
@@ -2273,6 +2289,7 @@ pub fn run_core(
         // Record the wall-clock instant before sending navigateTo so we can
         // compute the remaining budget for the Both readystate fallback.
         let nav_start = Instant::now();
+        trace_navigation_timing("core", "dispatch", timing_origin, nav_start);
 
         // Send navigateTo raw (not via actor_request) so we don't lose
         // resources-available-array events that arrive before the ack.
@@ -2461,9 +2478,27 @@ pub fn run_core(
         Some(commit)
     };
 
-    // Theme K: invalidate the cached consoleActor after any navigate so the
-    // next `eval` call fetches a fresh actor bound to the new docshell.
-    refresh_console_actor(&mut ctx);
+    trace_navigation_timing("core", "commit_resolved", timing_origin, Instant::now());
+    // This connection's target and navigation latch do not escape run_core.
+    // Refresh only when a postcommit consumer will use them; plain committed
+    // navigation can return its captured result and drop the connection. Keep
+    // no-wait's existing sequence because it has not established a commit.
+    if wait_opts.no_wait
+        || wait_opts.has_condition()
+        || !wait_opts.wait_for.is_empty()
+        || page_args.with_page
+    {
+        trace_navigation_timing("postcommit_refresh", "begin", timing_origin, Instant::now());
+        refresh_console_actor(&mut ctx);
+        trace_navigation_timing("postcommit_refresh", "end", timing_origin, Instant::now());
+    } else {
+        trace_navigation_timing(
+            "postcommit_refresh",
+            "skipped",
+            timing_origin,
+            Instant::now(),
+        );
+    }
 
     let wait_result = wait_after_navigate(&mut ctx, wait_opts)?;
 
@@ -2513,6 +2548,7 @@ pub fn run_core(
         super::page_view::attach(cli, &mut ctx, &mut result, Some(cli.timeout), page_args)?;
     }
 
+    trace_navigation_timing("core", "return_before_drop", timing_origin, Instant::now());
     Ok((result, ctx.via_daemon))
 }
 
@@ -2600,6 +2636,10 @@ pub fn run(
     auto_consent: bool,
     page_args: &crate::cli::args::PageViewArgs,
 ) -> Result<(), AppError> {
+    let timing_origin =
+        tracing::enabled!(target: "ff_rdp_cli::navigation_timing", tracing::Level::DEBUG)
+            .then(Instant::now);
+    trace_navigation_timing("run", "entry", timing_origin, Instant::now());
     // iter-210: `--with-page` promises the page it returns describes the
     // document *this command* produced. `--auto-consent`'s dismiss click
     // runs after `run_core` returns (on a fresh connection — see
@@ -2619,7 +2659,14 @@ pub fn run(
     } else {
         std::borrow::Cow::Borrowed(page_args)
     };
+    trace_navigation_timing("run", "core_call", timing_origin, Instant::now());
     let (mut result, via_daemon) = run_core(cli, url, wait_opts, core_args.as_ref())?;
+    trace_navigation_timing(
+        "run",
+        "core_return_after_drop",
+        timing_origin,
+        Instant::now(),
+    );
     if auto_consent {
         merge_auto_consent(cli, &mut result);
     }
@@ -2642,8 +2689,10 @@ pub fn run(
     let envelope = output::envelope(&result, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Navigate);
+    trace_navigation_timing("run", "output_begin", timing_origin, Instant::now());
     OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))?;
     super::page_view::render_text_section(page_text.as_ref());
+    trace_navigation_timing("run", "output_end", timing_origin, Instant::now());
     Ok(())
 }
 

@@ -22,7 +22,7 @@ fn navigate_server() -> MockRdpServer {
     // and waits for dom-complete (not JS readyState polling).  The flow (iter-79):
     //   listTabs → getTarget → getWatcher → watchTargets → watchResources →
     //   navigateTo (with dom-loading + dom-complete followups) →
-    //   unwatchResources → getTarget (refresh_console_actor after navigate)
+    //   unwatchResources → unwatchTargets → return (plain committed navigate)
     //
     // `evaluateJSAsync` is registered defensively (iter-96): the `Both`
     // wait-strategy readystate fallback calls it twice (readyState condition
@@ -509,4 +509,332 @@ fn navigate_wait_text_reresolves_console_actor_after_navigate() {
         "expected getTarget to be re-resolved after navigation; got {} calls",
         get_target_calls.load(Ordering::SeqCst)
     );
+}
+
+/// Same-operation records must survive a real CLI/mock-RDP invocation and
+/// identify its PID, ordering and monotonic offsets without changing JSON.
+#[test]
+fn e2e_279_navigation_timing_records_same_command() {
+    let server = navigate_server();
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+    let child = std::process::Command::new(ff_rdp_bin())
+        .args(base_args(port))
+        .args(["navigate", "https://example.com"])
+        .env("RUST_LOG", "ff_rdp_cli::navigation_timing=debug")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn navigate");
+    let pid = child.id();
+    let output = child.wait_with_output().expect("wait navigate");
+    handle.join().unwrap();
+    assert!(output.status.success(), "{}", support::output_note(&output));
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["results"]["navigated"], "https://example.com");
+    assert!(json["results"]["elapsed_ms"].is_number());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for (scope, stages) in [
+        (
+            "core",
+            [
+                "entry",
+                "connected",
+                "dispatch",
+                "commit_resolved",
+                "return_before_drop",
+            ],
+        ),
+        (
+            "run",
+            [
+                "entry",
+                "core_call",
+                "core_return_after_drop",
+                "output_begin",
+                "output_end",
+            ],
+        ),
+    ] {
+        let prefix = format!("NAV_TIMING pid={pid} scope={scope} stage=");
+        let rows: Vec<_> = stderr
+            .lines()
+            .filter_map(|line| line.split_once(&prefix).map(|(_, row)| row))
+            .collect();
+        assert_eq!(
+            rows.len(),
+            stages.len(),
+            "{}",
+            support::output_note(&output)
+        );
+        let mut previous = 0;
+        for (row, stage) in rows.iter().zip(stages) {
+            let (actual, ns) = row.split_once(" elapsed_ns=").expect("timing fields");
+            assert_eq!(actual, stage);
+            let ns: u128 = ns.trim().parse().expect("monotonic nanoseconds");
+            assert!(ns >= previous);
+            previous = ns;
+        }
+    }
+}
+
+/// A completed plain navigation owns no further target consumer. Preserve the
+/// subscription and commit path, but do not fetch a target after tearing it down.
+#[test]
+fn e2e_279_plain_commit_finishes_without_unused_target_refresh() {
+    let server = navigate_server();
+    let requests = server.request_log();
+    let port = server.port();
+    let peer = std::thread::spawn(move || server.serve_one());
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(base_args(port))
+        .args(["navigate", "https://example.com"])
+        .output()
+        .expect("spawn navigate");
+    peer.join().expect("mock peer returned");
+    assert!(output.status.success(), "{}", support::output_note(&output));
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["results"]["navigated"], "https://example.com");
+    assert_eq!(json["results"]["ready_state"], "complete");
+    assert!(json["results"]["elapsed_ms"].is_number());
+    assert!(json["results"].get("status").is_some());
+    let requests = requests.lock().unwrap();
+    let methods: Vec<_> = requests
+        .iter()
+        .map(|r| r["type"].as_str().unwrap())
+        .collect();
+    let first = |method| methods.iter().position(|m| *m == method).unwrap();
+    let teardown = methods
+        .iter()
+        .rposition(|m| *m == "unwatchTargets")
+        .unwrap();
+    assert!(first("getTarget") < first("navigateTo"), "{methods:?}");
+    assert!(
+        first("watchTargets") < first("watchResources"),
+        "{methods:?}"
+    );
+    assert!(first("watchResources") < first("navigateTo"), "{methods:?}");
+    assert!(
+        first("navigateTo") < first("unwatchResources"),
+        "{methods:?}"
+    );
+    assert!(first("unwatchResources") < teardown, "{methods:?}");
+    assert!(
+        !methods[teardown + 1..].contains(&"getTarget"),
+        "unused target fetch after subscription teardown: {methods:?}"
+    );
+}
+
+/// Replay recorded packets with an actor change at navigateTo. Unlike a total
+/// getTarget count, the wire log identifies which document receives each eval.
+fn actor_change_peer(
+    connections: usize,
+) -> (
+    u16,
+    std::thread::JoinHandle<Vec<(usize, serde_json::Value)>>,
+) {
+    use ff_rdp_core::transport::{encode_frame, recv_from};
+    use std::io::{BufReader, Write as _};
+    use std::time::{Duration, Instant};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    listener.set_nonblocking(true).unwrap();
+    let peer = std::thread::spawn(move || {
+        let mut requests = Vec::new();
+        let mut navigated = false;
+        for connection in 0..connections {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(Instant::now() < deadline, "missing connection {connection}");
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(e) => panic!("accept: {e}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let send = |stream: &mut std::net::TcpStream, value: &serde_json::Value| {
+                stream
+                    .write_all(encode_frame(&value.to_string()).as_bytes())
+                    .unwrap();
+            };
+            send(
+                &mut stream,
+                &serde_json::json!({"from":"root", "applicationType":"browser", "traits":{}}),
+            );
+            loop {
+                let request = match recv_from(&mut reader) {
+                    Ok(request) => request,
+                    Err(ff_rdp_core::ProtocolError::RecvFailed(error))
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset
+                        ) =>
+                    {
+                        break;
+                    }
+                    Err(error) => panic!("mock receive failed: {error}"),
+                };
+                requests.push((connection, request.clone()));
+                let method = request["type"].as_str().unwrap();
+                let mut followups = Vec::new();
+                let mut reply = match method {
+                    "listTabs" => load_fixture("list_tabs_response.json"),
+                    "getRoot" => serde_json::json!({"error":"unknownMethod"}),
+                    "getTarget" => {
+                        let mut target = load_fixture("get_target_response.json");
+                        if navigated {
+                            target["frame"]["consoleActor"] =
+                                serde_json::json!("new-document/console");
+                            target["frame"]["innerWindowId"] = serde_json::json!(2);
+                        }
+                        target
+                    }
+                    "getWatcher" => load_fixture("get_watcher_response.json"),
+                    "watchTargets" => load_fixture("watch_targets_response.json"),
+                    "watchResources" | "unwatchResources" | "unwatchTargets" => {
+                        load_fixture("watch_resources_response.json")
+                    }
+                    "navigateTo" => {
+                        navigated = true;
+                        followups = vec![
+                            load_fixture("resources_available_document_event_dom_loading.json"),
+                            load_fixture("resources_available_document_event_dom_complete.json"),
+                        ];
+                        load_fixture("navigate_response.json")
+                    }
+                    "evaluateJSAsync" => {
+                        let js = request["text"].as_str().unwrap();
+                        let mut result = if js.len() > 10_000 {
+                            load_fixture("eval_result_a11y_summary.json")
+                        } else {
+                            load_fixture("eval_result_wait_true.json")
+                        };
+                        if js.contains("window.location.href")
+                            || js.contains("document.location.href")
+                        {
+                            result["result"] = serde_json::json!("https://example.com/");
+                        } else if js.contains("document.readyState") && js.len() < 10_000 {
+                            result["result"] = serde_json::json!("complete");
+                        }
+                        result["from"] = request["to"].clone();
+                        followups.push(result);
+                        load_fixture("eval_immediate_response.json")
+                    }
+                    _ => panic!("unexpected request: {request}"),
+                };
+                reply["from"] = request["to"].clone();
+                send(&mut stream, &reply);
+                for followup in followups {
+                    send(&mut stream, &followup);
+                }
+            }
+        }
+        requests
+    });
+    (port, peer)
+}
+
+#[test]
+fn e2e_279_postcommit_consumers_use_new_document_actor() {
+    for flags in [
+        vec!["--wait-text", "Success"],
+        vec!["--wait-selector", ".results"],
+        vec!["--wait-for", "text:Success"],
+        vec!["--with-page"],
+        vec!["--no-wait"],
+    ] {
+        let (port, peer) = actor_change_peer(1);
+        let output = std::process::Command::new(ff_rdp_bin())
+            .args(base_args(port))
+            .args(["navigate", "https://example.com"])
+            .args(&flags)
+            .output()
+            .expect("spawn navigate consumer");
+        let requests = peer.join().expect("mock peer returned");
+        assert!(
+            output.status.success(),
+            "{flags:?}: {}",
+            support::output_note(&output)
+        );
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(json["results"]["navigated"], "https://example.com");
+        let navigation = requests
+            .iter()
+            .position(|(_, r)| r["type"] == "navigateTo")
+            .unwrap();
+        let refresh = requests
+            .iter()
+            .rposition(|(_, r)| r["type"] == "getTarget")
+            .unwrap();
+        assert!(refresh > navigation, "{flags:?}: {requests:?}");
+        if flags == ["--no-wait"] {
+            assert!(json["results"].get("elapsed_ms").is_none());
+        } else {
+            let eval = requests
+                .iter()
+                .rposition(|(_, r)| r["type"] == "evaluateJSAsync")
+                .unwrap();
+            assert!(eval > refresh, "{flags:?}: {requests:?}");
+            assert_eq!(requests[eval].1["to"], "new-document/console", "{flags:?}");
+            if flags == ["--with-page"] {
+                assert_eq!(
+                    json["results"]["page"]["headings"][0]["text"],
+                    "Example Domain"
+                );
+            } else if flags[0] == "--wait-for" {
+                assert_eq!(json["results"]["wait_for"]["waited"], true);
+            } else {
+                assert_eq!(json["results"]["wait"]["waited"], true);
+            }
+        }
+    }
+}
+
+#[test]
+fn e2e_279_script_navigate_then_eval_connects_to_new_document() {
+    let (port, peer) = actor_change_peer(2);
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("navigate-eval.json");
+    std::fs::write(&script, r#"{"version":1,"steps":[{"navigate":{"url":"https://example.com"}},{"eval":{"script":"true"}}]}"#).unwrap();
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(base_args(port))
+        .arg("run")
+        .arg(script)
+        .output()
+        .expect("spawn script");
+    let requests = peer.join().expect("both mock connections returned");
+    assert!(output.status.success(), "{}", support::output_note(&output));
+    let rows: Vec<serde_json::Value> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let eval_result = rows.iter().find(|row| row["verb"] == "eval").unwrap();
+    assert_eq!(eval_result["ok"], true);
+    assert_eq!(eval_result["results"]["eval"], true);
+    let eval_connection: Vec<_> = requests
+        .iter()
+        .filter(|(connection, _)| *connection == 1)
+        .map(|(_, r)| r)
+        .collect();
+    let refresh = eval_connection
+        .iter()
+        .position(|r| r["type"] == "getTarget")
+        .unwrap();
+    let eval = eval_connection
+        .iter()
+        .position(|r| r["type"] == "evaluateJSAsync")
+        .unwrap();
+    assert!(refresh < eval, "{requests:?}");
+    assert_eq!(eval_connection[eval]["to"], "new-document/console");
 }
