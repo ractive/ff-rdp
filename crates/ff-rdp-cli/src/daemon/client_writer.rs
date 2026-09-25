@@ -16,8 +16,8 @@
 //!
 //! Every daemon→client byte now goes through one `ClientWriter`, and every
 //! holder (greeting, daemon responses, heartbeats, the RPC slot, the
-//! stream-subscriber list) holds a *clone of the same* `Arc<Mutex<…>>`. The
-//! hazard is gone by construction rather than by timing.
+//! stream-subscriber list) holds a clone of the same private writer lease slot. Cancellation can
+//! close the slot and interrupt its socket without waiting for that lease.
 //!
 //! # The write deadline
 //!
@@ -30,7 +30,8 @@
 //! recorded ("~25 hops, then every hop times out, and the daemon log says
 //! nothing at all").
 //!
-//! Every write here is bounded by [`CLIENT_WRITE_DEADLINE`]. A client that
+//! Every write, including lease acquisition and partial syscalls, shares one
+//! absolute budget bounded by [`CLIENT_WRITE_DEADLINE`]. A client that
 //! misses it is marked broken and its socket is shut down, so the dispatcher
 //! moves on and the next write to that client fails immediately rather than
 //! blocking again.
@@ -38,7 +39,9 @@
 use std::io;
 use std::net::TcpStream;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+use super::lifecycle::{Cancellation, LeaseError, Registration, WakePhase, WriterSlot};
 
 use ff_rdp_core::{FramedWriter, ProtocolError};
 use serde_json::Value;
@@ -67,6 +70,8 @@ pub(crate) enum WriteFailure {
     DeadlineExpired,
     /// The socket errored (reset, closed, …).
     SocketError,
+    /// The daemon cancelled this connection before another frame could begin.
+    DaemonStopping,
 }
 
 impl WriteFailure {
@@ -77,164 +82,154 @@ impl WriteFailure {
             Self::Desynchronised => "client_frame_write_desynchronised",
             Self::DeadlineExpired => "client_write_deadline_expired",
             Self::SocketError => "client_write_failed",
+            Self::DaemonStopping => "daemon_shutting_down",
         }
     }
 }
 
 struct Inner {
-    writer: FramedWriter,
-    /// The deadline installed on the socket in steady state, restored after a
-    /// [`ClientWriter::send_bounded`] narrows it for one frame.
+    writer: WriterSlot<FramedWriter>,
+    interrupt: TcpStream,
     deadline: Duration,
-    /// Set on the first failure; every later write fails fast with it rather
-    /// than blocking on a socket that is already known to be gone.
-    failed: Option<(WriteFailure, String)>,
+    failed: Mutex<Option<(WriteFailure, String)>>,
 }
 
-/// Write one frame through an already-locked writer, recording the first
-/// failure and shutting the socket down on it.
-///
-/// The shutdown is not merely tidiness (iter-240 review, finding 1). The RPC
-/// slot is released by exactly one place — the owning client's
-/// `ClientCleanupGuard` — so a client the *dispatcher* gave up on must be made
-/// to notice: `Shutdown::Both` breaks its handler thread out of `recv()`, the
-/// handler returns, and the guard frees the slot. Leaving the socket open
-/// would leave the slot held by a client nobody is writing to any more.
-fn send_locked(inner: &mut Inner, json: &str) -> Result<(), WriteFailure> {
-    if let Some((failure, _)) = inner.failed {
-        return Err(failure);
-    }
-    match inner.writer.send_raw(json) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let failure = classify(&e);
-            // Nothing of a deadline-expired frame reached the socket, so the
-            // stream is still aligned — but the client is not draining, and a
-            // second attempt would block for another full deadline on the
-            // dispatcher thread. A desynchronised or errored socket is worse
-            // still. Every case ends the same way: shut it down so the client
-            // learns immediately instead of waiting out its own read timeout.
-            let _ = inner.writer.shutdown();
-            inner.failed = Some((failure, e.to_string()));
-            Err(failure)
-        }
-    }
-}
-
-/// The single, shared, deadline-bounded write half of one CLI client's socket.
-///
-/// Cloning is cheap and yields another handle to the *same* writer — that is
-/// the whole point: there is exactly one place where bytes enter this socket.
+/// Every writer clone leases the same socket writer. Metadata and cancellation
+/// never wait behind a lease doing I/O.
 #[derive(Clone)]
 pub(crate) struct ClientWriter {
-    inner: Arc<Mutex<Inner>>,
+    inner: Arc<Inner>,
 }
 
 impl ClientWriter {
-    /// Wrap a client socket, installing [`CLIENT_WRITE_DEADLINE`] on it.
-    ///
-    /// The deadline is best-effort: a platform that refuses `SO_SNDTIMEO`
-    /// leaves the writer working exactly as before rather than failing the
-    /// connection outright.
-    pub(crate) fn new(stream: TcpStream) -> Self {
-        Self::with_deadline(stream, CLIENT_WRITE_DEADLINE)
+    /// Production acquisition fails if its independent shutdown handle cannot
+    /// be retained. No handler proceeds with uncancellable socket ownership.
+    pub(crate) fn try_new(stream: TcpStream) -> io::Result<Self> {
+        let interrupt = stream.try_clone()?;
+        Ok(Self::from_parts(stream, interrupt, CLIENT_WRITE_DEADLINE))
     }
 
-    /// [`ClientWriter::new`] with an explicit deadline.
-    ///
-    /// Production always uses [`CLIENT_WRITE_DEADLINE`]; tests that need to
-    /// observe the drop-on-deadline behaviour pass a short one rather than
-    /// spending ten seconds proving it.
-    pub(crate) fn with_deadline(stream: TcpStream, deadline: Duration) -> Self {
+    fn from_parts(stream: TcpStream, interrupt: TcpStream, deadline: Duration) -> Self {
         let writer = FramedWriter::from_stream(stream);
         let _ = writer.set_write_timeout(Some(deadline));
         Self {
-            inner: Arc::new(Mutex::new(Inner {
-                writer,
+            inner: Arc::new(Inner {
+                writer: WriterSlot::new(writer),
+                interrupt,
                 deadline,
-                failed: None,
-            })),
+                failed: Mutex::new(None),
+            }),
         }
     }
 
-    /// Send a pre-serialised JSON string as one frame.
-    ///
-    /// Returns the typed failure so the caller can name it in the daemon log
-    /// and in the client's goodbye frame.
-    pub(crate) fn send_raw(&self, json: &str) -> Result<(), WriteFailure> {
-        // Poison recovery mirrors `lock_or_recover!` in `server.rs`: the
-        // protected data stays structurally valid across a panic, and refusing
-        // to write for the rest of the daemon's life would be a worse outcome
-        // than continuing.
-        let mut guard = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        send_locked(&mut guard, json)
+    #[cfg(test)]
+    pub(crate) fn new(stream: TcpStream) -> Self {
+        Self::try_new(stream).expect("test client writer shutdown clone")
     }
 
-    /// Send one frame under a *narrower* deadline than the writer's own.
-    ///
-    /// Used for the goodbye frame on the way out of `handle_client`
-    /// (iter-240 review, finding 3): that frame must go through this writer —
-    /// it can race the dispatcher fanning an event onto the same socket, and
-    /// two unsynchronised `write` sequences on one socket are exactly the
-    /// desync this type exists to remove — but it must not cost the departing
-    /// thread a full [`CLIENT_WRITE_DEADLINE`], because the RPC slot is not
-    /// released until that thread returns.
-    ///
-    /// The socket's own deadline is restored before returning, so a writer
-    /// that somehow outlives the goodbye keeps its normal bound.
+    #[cfg(test)]
+    pub(crate) fn with_deadline(stream: TcpStream, deadline: Duration) -> Self {
+        let interrupt = stream
+            .try_clone()
+            .expect("test client writer shutdown clone");
+        Self::from_parts(stream, interrupt, deadline)
+    }
+
+    pub(super) fn register_cancellation(&self, cancellation: &Arc<Cancellation>) -> Registration {
+        let inner = Arc::downgrade(&self.inner);
+        cancellation.register(WakePhase::SocketAndWriter, move || {
+            if let Some(inner) = inner.upgrade() {
+                let _ = inner.interrupt.shutdown(std::net::Shutdown::Both);
+                inner.writer.close();
+            }
+        })
+    }
+
+    fn fail(&self, failure: WriteFailure, detail: String) -> WriteFailure {
+        let mut failed = self
+            .inner
+            .failed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let first = failed.get_or_insert((failure, detail)).0;
+        drop(failed);
+        let _ = self.inner.interrupt.shutdown(std::net::Shutdown::Both);
+        self.inner.writer.close();
+        first
+    }
+
+    pub(crate) fn send_raw(&self, json: &str) -> Result<(), WriteFailure> {
+        self.send_raw_until(json, Instant::now() + self.inner.deadline)
+    }
+
+    /// The caller starts this deadline before serialization and lease acquisition.
+    /// Core transport consumes the same deadline through every write attempt.
+    pub(super) fn send_raw_until(&self, json: &str, deadline: Instant) -> Result<(), WriteFailure> {
+        if let Some((failure, _)) = self.failure() {
+            return Err(failure);
+        }
+        let mut writer = match self.inner.writer.acquire(deadline) {
+            Ok(writer) => writer,
+            Err(LeaseError::Cancelled) => {
+                return Err(self.failure().map_or(WriteFailure::DaemonStopping, |f| f.0));
+            }
+            Err(LeaseError::Deadline) => {
+                return Err(self.fail(
+                    WriteFailure::DeadlineExpired,
+                    "writer lease deadline expired".to_owned(),
+                ));
+            }
+        };
+        if let Some((failure, _)) = self.failure() {
+            return Err(failure);
+        }
+        match writer.send_raw_until(json, deadline) {
+            Ok(()) => Ok(()),
+            Err(error) => Err(self.fail(classify(&error), error.to_string())),
+        }
+    }
+
     pub(crate) fn send_bounded(
         &self,
         message: &Value,
-        deadline: Duration,
+        budget: Duration,
     ) -> Result<(), WriteFailure> {
-        let Ok(json) = serde_json::to_string(message) else {
-            return Err(WriteFailure::SocketError);
-        };
-        let mut guard = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let restore = guard.deadline;
-        let _ = guard.writer.set_write_timeout(Some(deadline));
-        let result = send_locked(&mut guard, &json);
-        let _ = guard.writer.set_write_timeout(Some(restore));
-        result
+        let deadline = Instant::now() + budget.min(self.inner.deadline);
+        let json = serde_json::to_string(message).map_err(|_| WriteFailure::SocketError)?;
+        self.send_raw_until(&json, deadline)
     }
 
-    /// Send a JSON value as one frame.
     pub(crate) fn send(&self, message: &Value) -> Result<(), WriteFailure> {
-        match serde_json::to_string(message) {
-            Ok(json) => self.send_raw(&json),
-            // An unserialisable value is a daemon bug, not a client failure;
-            // report it as a socket error so the caller drops the client rather
-            // than looping on it.
-            Err(_) => Err(WriteFailure::SocketError),
-        }
+        self.send_bounded(message, self.inner.deadline)
     }
 
-    /// Has this writer already latched a failure?
-    ///
-    /// Cheaper than [`failure`](Self::failure) (no `String` clone) and used on
-    /// the dispatcher's hot path to tell the write that *drops* a client from
-    /// the fast no-ops that follow it.
     pub(crate) fn is_failed(&self) -> bool {
         self.inner
+            .failed
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .failed
             .is_some()
     }
 
-    /// The failure and its underlying I/O description, if any.
     pub(crate) fn failure(&self) -> Option<(WriteFailure, String)> {
         self.inner
+            .failed
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .failed
             .clone()
+    }
+
+    #[cfg(test)]
+    pub(super) fn wait_for_blocked(&self, deadline: Instant) -> bool {
+        self.inner.writer.wait_for_blocked(deadline)
+    }
+
+    #[cfg(test)]
+    pub(super) fn hold_for_test(
+        &self,
+        deadline: Instant,
+    ) -> Result<super::lifecycle::WriterLease<'_, FramedWriter>, LeaseError> {
+        self.inner.writer.acquire(deadline)
     }
 }
 
