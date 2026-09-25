@@ -10,6 +10,7 @@ mod dom_help_mentions_styles;
 
 mod a11y;
 mod click;
+mod closing_284;
 mod completions;
 mod computed;
 mod console;

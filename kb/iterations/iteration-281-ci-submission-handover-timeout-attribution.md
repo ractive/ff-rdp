@@ -1,6 +1,6 @@
 ---
 type: iteration
-status: in-progress
+status: done
 date: 2026-09-24
 branch: iter-281/caller-timing-20260925
 depends_on: []
@@ -159,15 +159,15 @@ original conditional correction task remains unticked because no product
 mechanism was established. This scope amendment requires independent review
 before completion and does not reset any historical capture allowance.
 
-### Delivery acceptance [0/3]
+### Delivery acceptance [3/3]
 
-- [ ] Test-only observations distinguish the actual caller's decoded side reply,
+- [x] Test-only observations distinguish the actual caller's decoded side reply,
       parsed snapshot, metadata outcome, replacement decision and timeout
       conversion, retaining precise case/deadline and actual peer-join evidence.
-- [ ] The finite timely/delayed-side/delayed-metadata controls verify those
+- [x] The finite timely/delayed-side/delayed-metadata controls verify those
       distinctions at the original 400/1000ms bounds; existing success,
       exhaustion, protocol and real-socket deadline regressions remain intact.
-- [ ] Independent review, current ordered gates and this diagnostic candidate's
+- [x] Independent review, current ordered gates and this diagnostic candidate's
       own dual-gate closing sweep pass, with every failed result retained.
 
 ### Historical attribution disposition
@@ -353,3 +353,87 @@ unknown.284's separately reviewed bounded stderr/status repair addresses
 those observable weaknesses; its already-required changed-source validation
 can record a recurrence without a separate unchanged reproduction. A pass
 will not explain these four historical events.
+
+## Integrated284 validation — 2026-09-25
+
+PR275 merged284 at `1d100a087cc1b0a961ba9343cf44914fd91643b6` after
+all ten checks passed on reviewed head `76b63f32c79a5bff0e976ce67d3b8a25d5b270f2`.
+This actual main merge is integrated without conflicts into281. The common
+`navigate.rs` path retains both exact diagnostic additions; all five281 Rust
+paths retain their reviewed changes. The startup stderr/status observations,
+joined shutdown, final goodbye fixture repair and284 regressions are included.
+This does not attribute the four historical closing3 startup failures.
+
+One fresh ordered formatting, strict workspace/all-target Clippy and normal
+parallel workspace sequence passed:2646 outer passed,0 failed,423 ignored
+across37 target summaries, plus one separately identified nested child pass.
+Same-day stable1.98.1 update evidence was verified against installed versions.
+The two cheap source-invariant/live-layout preflights passed before the ordered
+gates. Formatting changed no source bytes. No separate focused test or spent
+native schedule was repeated. All582 source inputs and12 fresh current-checkout
+producer binaries are frozen with verified dependency and embedded CLI bindings
+under `.git/ralph-loop/20260924-all-open/iter281/integration284-execution1/`.
+
+The333 baseline private profile records were conserved; four new workspace
+profiles remain under the private workspace home, with marker/PID records
+retained. The real default state, four real managed profiles, protected desktop
+births and110 installed Firefox package files were unchanged. Commands were
+actually waited; no owned process survived the final census. Native absence
+is not worker-return evidence.
+
+The own changed-source closing4 runner is prepared with the correct redacted
+`ff_rdp_cli::launch_startup=debug` target. It has not been admitted or executed.
+A fresh independent integration/evidence review and supervisor admission are
+still required before that single closing. Original AC0/4 and prospective
+delivery0/3 remain; every prior failed result and consumed claim is preserved.
+No completion, PR or merge of281 is claimed.
+
+## Final diagnostic-delivery validation — September 25
+
+The changed candidate's own closing4 passed all349 exact names across all six
+required tiers: CLI338, frame targets1, registry3,61u3, Firefox2 and watcher
+protocol2. Both live gates were enabled; default6jobs and300s/900s watchdogs,
+original launch bounds and timing assertions were unchanged.
+
+```text
+LIVE_SWEEP_SUMMARY executed=349 skipped=0 preexisting=0 vanished=0 launch_timeout=0 timed_out=0 total=349
+LIVE_SWEEP_PROFILES leaked=0 unattributed=0
+```
+
+The actual sweep process59893 was waited with exit0. The owned raw browser was
+actually waited(-15) after scoped shutdown; no owned process remained and the
+protected desktop identities were unchanged. All337 baseline profile records
+were conserved, all10 new retained profiles attributed, and341 launch attempts
+paired with none unmatched. The profile-root path above is abbreviated; the
+full private run home and every raw summary remain in closing4. Source582,
+Firefox110, real4 and all8 actual running artifacts matched before and after.
+
+Before admission, the supervisor found that standalone Cargo sweep artifacts
+use a different feature graph from workspace artifacts. The new private guard
+would incorrectly require workspace xtask bytes after the standalone run.
+Seven compile-only commands qualified the exact8 sweep artifacts, with current
+manifest/source/dependency and embedded CLI bindings; no tests were repeated.
+The corrected guard verifies those8 current/frozen artifacts and preserves all12
+frozen workspace artifacts separately. Fresh scoped review accepted this repair
+with zero findings before the single live run. All draft versions are retained.
+
+Fresh integration review also accepted the combined implementation/evidence with
+zero findings. Current ordered gates remain2646passed/0failed/423ignored plus
+one separately identified nested child pass. No runtime source changed after
+those gates. This passing own sweep completes the independently accepted
+prospective diagnostic delivery: delivery acceptance3/3. Original acceptance
+remains0/4 and the original conditional correction task remains unticked.
+The old CI timeout and previous timing/startup failures remain unexplained;
+no historical cause or product correction is claimed from this pass. Their
+recorded evidence-triggered follow-up dispositions and all failed results remain.
+
+Exact-head GitHub CI and a verified GitHub merge are still publication conditions.
+Status done describes the adapted diagnostic delivery, not resolved historical
+attribution. Evidence is retained under the private iteration281 integration,
+review-integrated284, review-closing4-producers and closing4 directories.
+
+All enumerated static xtask checks passed after closure, including plan and
+Firefox-reference checks for281 and the unchanged203 watch holder. Both dogfood
+checks explicitly skipped because no runnable script is declared. Hyalo HYALO005
+and diff whitespace checks passed. This bookkeeping does not alter runtime inputs
+or discharge any historical attribution criterion.
