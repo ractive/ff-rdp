@@ -39,6 +39,7 @@ mod page_text;
 mod perf;
 mod perf_compare;
 mod profiles;
+mod readiness_document;
 mod recorder;
 mod responsive;
 mod screenshot;
