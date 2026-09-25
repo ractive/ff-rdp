@@ -67,9 +67,13 @@ mod initial_tab_controls {
         fn closed(&mut self) {
             let mut byte = [0u8];
             let result = self.reader.read(&mut byte);
+            // Windows may report an aborted connection after the observer closes
+            // with unread fixture bytes. Like reset/EOF, this is terminal; a
+            // timeout or any further request byte still fails this assertion.
             assert!(
                 matches!(result, Ok(0))
-                    || matches!(&result, Err(e) if e.kind() == io::ErrorKind::ConnectionReset),
+                    || matches!(&result, Err(e) if matches!(e.kind(),
+                        io::ErrorKind::ConnectionReset | io::ErrorKind::ConnectionAborted)),
                 "observer must close without another query: {result:?}"
             );
         }
@@ -300,7 +304,9 @@ mod initial_tab_controls {
                     assert!(
                         matches!(
                             error.kind(),
-                            io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
+                            io::ErrorKind::BrokenPipe
+                                | io::ErrorKind::ConnectionReset
+                                | io::ErrorKind::ConnectionAborted
                         ),
                         "{error}"
                     );
@@ -578,7 +584,8 @@ mod initial_tab_controls {
             assert!(
                 result.is_ok()
                     || matches!(result, Err(ref error) if matches!(
-                error.kind(), io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset))
+                error.kind(), io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::ConnectionAborted))
             );
             peer.closed();
         });
@@ -602,7 +609,9 @@ mod initial_tab_controls {
                         assert!(
                             matches!(
                                 error.kind(),
-                                io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
+                                io::ErrorKind::BrokenPipe
+                                    | io::ErrorKind::ConnectionReset
+                                    | io::ErrorKind::ConnectionAborted
                             ),
                             "{error}"
                         );
