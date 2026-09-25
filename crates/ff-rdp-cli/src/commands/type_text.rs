@@ -695,6 +695,15 @@ pub fn run(
 }
 
 #[cfg(test)]
+pub(super) fn trace_submission(
+    phase: &str,
+    deadline: std::time::Instant,
+    detail: impl std::fmt::Debug,
+) {
+    tests::trace_submission(phase, deadline, detail);
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::{
@@ -702,6 +711,7 @@ mod tests {
         sync::{Arc, Mutex, atomic::AtomicBool},
         time::Instant,
     };
+    use tracing_subscriber::prelude::*;
 
     // Only the current fixture's caller thread records the production deadline.
     // Other parallel tests do not enable tracing or mutate process environment.
@@ -758,6 +768,61 @@ mod tests {
         }
     }
 
+    pub(super) fn trace_submission(phase: &str, deadline: Instant, detail: impl std::fmt::Debug) {
+        SUBMISSION_TRACE.with(|slot| {
+            if let Some(trace) = slot.borrow().as_ref() {
+                trace.row(
+                    phase,
+                    (deadline.saturating_duration_since(Instant::now()), detail),
+                );
+            }
+        });
+    }
+
+    // Reuse the transport's wire observations without a process-global subscriber
+    // or a second implementation of current_url. `send` precedes write_frame:
+    // it is an attempt, while `recv` records an actually decoded packet.
+    struct SubmissionTransportTrace(Arc<SubmissionTrace>);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for SubmissionTransportTrace {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            #[derive(Default)]
+            struct PacketFields {
+                direction: String,
+                actor: String,
+                kind: String,
+            }
+            impl tracing::field::Visit for PacketFields {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    let dest = match field.name() {
+                        "direction" => &mut self.direction,
+                        "actor" => &mut self.actor,
+                        "kind" => &mut self.kind,
+                        _ => return,
+                    };
+                    *dest = format!("{value:?}");
+                }
+            }
+            if event.metadata().target() != "ff_rdp_core::transport" {
+                return;
+            }
+            let mut fields = PacketFields::default();
+            event.record(&mut fields);
+            self.0.row(
+                "caller_transport",
+                (fields.direction, fields.actor, fields.kind),
+            );
+        }
+    }
+
     pub(super) fn trace_submission_deadline(deadline: Instant, wait_timeout_ms: u64) {
         SUBMISSION_TRACE.with(|slot| {
             if let Some(trace) = slot.borrow().as_ref() {
@@ -801,6 +866,44 @@ mod tests {
     /// These are scripted protocol peers, not recorded Firefox fixtures.
     #[test]
     fn unit_262_submission_callers_wait_for_replacement() {
+        submission_caller_cases(SubmissionTiming::Timely, false);
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum SubmissionTiming {
+        Timely,
+        WithholdSide,
+        WithholdMetadata,
+    }
+
+    fn withhold_until_caller_returns(stop: &AtomicBool, trace: &SubmissionTrace) {
+        // Retain the fixture's existing two-second peer I/O ceiling as a
+        // backstop even if a regression stops the caller honoring its deadline.
+        let deadline = Instant::now() + std::time::Duration::from_secs(2);
+        while !stop.load(std::sync::atomic::Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let stopped = stop.load(std::sync::atomic::Ordering::SeqCst);
+        trace.row("withheld_response_released_by_caller", stopped);
+        assert!(
+            stopped,
+            "{}: caller did not return before peer ceiling",
+            trace.label
+        );
+    }
+
+    #[test]
+    fn unit_281_submission_caller_timing_controls() {
+        for timing in [
+            SubmissionTiming::Timely,
+            SubmissionTiming::WithholdSide,
+            SubmissionTiming::WithholdMetadata,
+        ] {
+            submission_caller_cases(timing, true);
+        }
+    }
+
+    fn submission_caller_cases(timing: SubmissionTiming, controls: bool) {
         use clap::Parser;
         use ff_rdp_core::{
             RdpTransport,
@@ -870,13 +973,23 @@ mod tests {
             ("predicate", "poll_ack", "same_document"),
             ("settle", "poll_ack", "protocol_error"),
         ] {
+            if controls
+                && !(option == "predicate"
+                    && metadata == "ok"
+                    && matches!(interruption, "poll_result" | "request_ack"))
+            {
+                continue;
+            }
             for exhausted in [false, true] {
+                if controls && exhausted {
+                    continue;
+                }
                 if metadata == "protocol_error" && exhausted {
                     continue;
                 }
                 let trace = Arc::new(SubmissionTrace {
                     label: format!(
-                        "option={option} interruption={interruption} metadata={metadata} exhausted={exhausted}"
+                        "option={option} interruption={interruption} metadata={metadata} exhausted={exhausted} timing={timing:?} controls={controls}"
                     ),
                     origin: Instant::now(),
                     rows: Mutex::new(Vec::new()),
@@ -884,6 +997,9 @@ mod tests {
                     peer_returned: AtomicBool::new(false),
                 });
                 let _trace_scope = SubmissionTraceScope::enter(Arc::clone(&trace));
+                let subscriber = tracing_subscriber::registry()
+                    .with(SubmissionTransportTrace(Arc::clone(&trace)));
+                let _transport_scope = tracing::subscriber::set_default(subscriber);
                 eprintln!(
                     "submission-handover CASE_BEGIN thread={:?} {} origin={:?}",
                     std::thread::current().id(),
@@ -946,6 +1062,11 @@ mod tests {
                             json!({"from":"daemon","type":"resolve-tab-target","state":"pending"})
                         };
                         side_trace.row("snapshot_selected", (&n, &response));
+                        if n >= 3 && timing == SubmissionTiming::WithholdSide {
+                            side_trace.row("replacement_side_withheld", n);
+                            withhold_until_caller_returns(&side_stop, &side_trace);
+                            break;
+                        }
                         let written =
                             socket.write_all(encode_frame(&response.to_string()).as_bytes());
                         side_trace.row("snapshot_write", &written);
@@ -963,6 +1084,7 @@ mod tests {
                 let (mut socket, _) = main.accept().unwrap();
                 let peer_snapshots = Arc::clone(&snapshots);
                 let peer_trace = Arc::clone(&trace);
+                let peer_stop = Arc::clone(&stop);
                 peers.peer = Some(std::thread::spawn(move || {
                     socket
                         .set_write_timeout(Some(Duration::from_secs(2)))
@@ -995,6 +1117,13 @@ mod tests {
                             written.unwrap();
                         };
                         if request["type"] == "listFrames" {
+                            if request["to"] == "new-target"
+                                && timing == SubmissionTiming::WithholdMetadata
+                            {
+                                peer_trace.row("replacement_metadata_withheld", ());
+                                withhold_until_caller_returns(&peer_stop, &peer_trace);
+                                break;
+                            }
                             if request["to"] == "old-target"
                                 && matches!(
                                     metadata,
@@ -1135,6 +1264,7 @@ mod tests {
                 }
                 let guard = ctx.transport_mut().target_guard();
                 trace.row("guard_after_caller", guard);
+                let observations = trace.rows.lock().unwrap().join("\n");
                 drop(ctx);
                 let (side_join, peer_join) = peers.join();
                 side_join.expect("side spawned").expect("actual side join");
@@ -1154,7 +1284,7 @@ mod tests {
                         trace.label
                     );
                     assert_eq!(post_evals, 0, "{}", trace.label);
-                } else if exhausted {
+                } else if exhausted || timing != SubmissionTiming::Timely {
                     assert!(
                         matches!(result, Err(AppError::Timeout(_))),
                         "{option}/{interruption}/{metadata}/exhausted={exhausted}: {result:?}"
@@ -1187,6 +1317,50 @@ mod tests {
                     );
                     assert!(post_evals > 0, "{}", trace.label);
                     assert_eq!(result.unwrap().0["navigated"], true, "{}", trace.label);
+                }
+                if controls {
+                    let replacement_consumed = observations.lines().any(|row| {
+                        row.contains("side_snapshot_consumed") && row.contains("new-target")
+                    });
+                    let replacement_decided = observations.lines().any(|row| {
+                        row.split_once(" replacement_decision ")
+                            .is_some_and(|(_, detail)| detail.contains(", true"))
+                    });
+                    assert_eq!(
+                        replacement_consumed,
+                        timing != SubmissionTiming::WithholdSide,
+                        "{}\n{observations}",
+                        trace.label
+                    );
+                    assert_eq!(
+                        replacement_decided,
+                        timing == SubmissionTiming::Timely,
+                        "{}\n{observations}",
+                        trace.label
+                    );
+                    assert!(observations.contains("caller_transport"), "{}", trace.label);
+                    if timing != SubmissionTiming::Timely {
+                        assert!(
+                            observations.contains("handover_timeout_conversion"),
+                            "{}\n{observations}",
+                            trace.label
+                        );
+                    }
+                    if timing == SubmissionTiming::WithholdMetadata {
+                        assert!(
+                            observations.contains("replacement_metadata_withheld"),
+                            "{}\n{observations}",
+                            trace.label
+                        );
+                        assert!(
+                            observations
+                                .lines()
+                                .any(|row| row.contains("metadata_outcome")
+                                    && row.contains("Timeout")),
+                            "{}\n{observations}",
+                            trace.label
+                        );
+                    }
                 }
                 eprintln!(
                     "submission-handover CASE_VERIFIED {} elapsed={elapsed:?} snapshots={} post_evals={post_evals}",
