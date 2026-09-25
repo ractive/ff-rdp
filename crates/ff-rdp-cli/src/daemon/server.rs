@@ -7460,6 +7460,175 @@ mod tests {
         );
     }
 
+    /// Exercise the daemon dispatcher and reply path against the real direct
+    /// enumeration handshake. Scripted identities are known within each
+    /// connection; no actor string is treated as a cross-connection identity.
+    /// This is a contract control, not a reconstruction of either native 1/2.
+    #[test]
+    fn unit_283_frame_parity_requires_current_documents_at_the_same_cut() {
+        use ff_rdp_core::transport::recv_from;
+        use std::io::{BufReader, Read};
+
+        fn form(connection: &str, name: &str, bc: u64, window: u64, top: u64) -> Value {
+            json!({"from":format!("{connection}/watcher"),
+            "type":"target-available-form", "target":{
+                "actor":format!("{connection}/{name}"),
+                "consoleActor":format!("{connection}/{name}/console"),
+                "targetType":"frame", "isTopLevelTarget":bc == 11,
+                "browsingContextID":bc, "processID":42,
+                "innerWindowId":window, "topInnerWindowId":top,
+                "url":if bc == 11 { "https://top.test/" } else { "https://child.test/" }
+            }})
+        }
+        fn identity(packet: &Value) -> (u64, u64, u64, u64) {
+            let t = &packet["target"];
+            (
+                t["browsingContextID"].as_u64().unwrap(),
+                t["processID"].as_u64().unwrap(),
+                t["innerWindowId"].as_u64().unwrap(),
+                t["topInnerWindowId"].as_u64().unwrap(),
+            )
+        }
+        let state = test_state();
+        *state.watcher_actor.lock().expect("test state lock") =
+            "daemon-connection/watcher".to_owned();
+        let old = form("daemon-connection", "old-top", 11, 100, 100);
+        let current = form("daemon-connection", "new-top", 11, 101, 101);
+        dispatch_firefox_message(&state, &old, None);
+        dispatch_firefox_message(
+            &state,
+            &json!({
+                "from":"daemon-connection/watcher", "type":"target-destroyed-form",
+                "target":old["target"], "options":{"isTargetSwitching":true}
+            }),
+            None,
+        );
+        dispatch_firefox_message(&state, &current, None);
+        let query = || {
+            handle_daemon_message(
+                &state,
+                &json!({"to":"daemon","type":"frame-targets"}),
+                TEST_CLIENT_ID,
+                None,
+            )
+        };
+        let early = query();
+        assert_eq!(
+            early["target_count"], 2,
+            "counter is cumulative announcements"
+        );
+        assert_eq!(early["watcher_ready"], true);
+        let early_forms = early["targets"].as_array().unwrap();
+        assert_eq!(
+            early_forms.len(),
+            1,
+            "two available events do not mean two live frames"
+        );
+        assert_eq!(identity(&early_forms[0]), (11, 42, 101, 101));
+        assert_eq!(identity(&old).0, identity(&early_forms[0]).0);
+        assert_ne!(
+            identity(&old),
+            identity(&early_forms[0]),
+            "same BC, process and URL must not hide a stale document"
+        );
+
+        let child = form("daemon-connection", "child", 12, 102, 101);
+        dispatch_firefox_message(&state, &child, None);
+        let daemon_reply = query();
+        let daemon_forms = daemon_reply["targets"].as_array().unwrap();
+        let daemon_targets = ff_rdp_core::target_events_from_packets(daemon_forms.iter());
+        assert_eq!(
+            daemon_targets.len(),
+            2,
+            "the dispatcher must retain the observed child"
+        );
+        assert_eq!(daemon_targets[1].actor.as_ref(), "daemon-connection/child");
+        assert_eq!(daemon_reply["target_count"], 3);
+        let daemon_identities: Vec<_> = daemon_forms.iter().map(identity).collect();
+        assert_eq!(daemon_identities, [(11, 42, 101, 101), (12, 42, 102, 101)]);
+
+        // A fresh direct subscription sees those current documents under its
+        // own actor namespace. Send the catch-up before watchTargets' reply;
+        // zero post-handshake settle makes ordering deterministic without sleep.
+        let direct_forms = [
+            form("direct-connection", "top", 11, 101, 101),
+            form("direct-connection", "child", 12, 102, 101),
+        ];
+        let sent_forms = direct_forms.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let peer = thread::spawn(move || {
+            let (socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut reader = BufReader::new(socket.try_clone().unwrap());
+            let mut writer = FramedWriter::from_stream(socket);
+            let request = recv_from(&mut reader).unwrap();
+            assert_eq!(
+                request,
+                json!({"to":"direct-connection/watcher",
+                "type":"watchTargets", "targetType":"frame"})
+            );
+            for packet in &sent_forms {
+                writer.send(packet).unwrap();
+            }
+            writer
+                .send(&json!({"from":"direct-connection/watcher"}))
+                .unwrap();
+            let request = recv_from(&mut reader).unwrap();
+            assert_eq!(
+                request,
+                json!({"to":"direct-connection/watcher",
+                "type":"watchResources", "resourceTypes":["document-event"]})
+            );
+            writer
+                .send(&json!({"from":"direct-connection/watcher"}))
+                .unwrap();
+            // Completion requires actual client closure and an actual join.
+            assert_eq!(reader.read(&mut [0]).unwrap(), 0);
+        });
+        let mut transport =
+            RdpTransport::connect_raw("127.0.0.1", address.port(), Duration::from_secs(3)).unwrap();
+        let direct = ff_rdp_core::enumerate_frame_targets(
+            &mut transport,
+            &"direct-connection/watcher".into(),
+            Duration::ZERO,
+        );
+        drop(transport);
+        peer.join().expect("scripted peer returned normally");
+        let direct = direct.unwrap();
+        assert_eq!(
+            direct.len(),
+            2,
+            "direct catch-up must retain both current forms"
+        );
+        // The typed API omits innerWindowId. Join each actor only to the exact
+        // scripted form sent on THAT connection, never to the daemon actor.
+        let direct_identities: Vec<_> = direct
+            .iter()
+            .map(|target| {
+                let packet = direct_forms
+                    .iter()
+                    .find(|p| p["target"]["actor"].as_str() == Some(target.actor.as_ref()))
+                    .unwrap();
+                assert_eq!(
+                    target.browsing_context_id,
+                    packet["target"]["browsingContextID"].as_u64()
+                );
+                assert_eq!(target.process_id, packet["target"]["processID"].as_u64());
+                identity(packet)
+            })
+            .collect();
+        assert_ne!(daemon_targets[0].actor, direct[0].actor);
+        assert_eq!(daemon_identities, direct_identities);
+        // Count-only comparison passes for this stale alternative. The exact
+        // identity oracle rejects it even though BC, process and URL agree.
+        let stale_identities = [identity(&old), identity(&child)];
+        assert_eq!(stale_identities.len(), direct_identities.len());
+        assert_ne!(stale_identities.as_slice(), direct_identities.as_slice());
+    }
+
     // ── Registry integration ─────────────────────────────────────────────────
 
     #[test]

@@ -63,24 +63,123 @@ fn parse_json(output: &Output) -> serde_json::Value {
     })
 }
 
+// Opt-in passive attribution. Evidence failure invalidates the capture, never
+// skips a command/stop attempt or bypasses waiting for an already-spawned child.
+static OBSERVATION_INVALID: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+static OBSERVATION_COMMAND: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn observe_record(mut record: serde_json::Value) {
+    use std::io::Write as _;
+    use std::sync::atomic::Ordering;
+    if std::env::var_os("FF_RDP_159_OBSERVE").is_none() {
+        return;
+    }
+    record["test_pid"] = serde_json::json!(std::process::id());
+    record["capture_invalid"] = serde_json::json!(OBSERVATION_INVALID.load(Ordering::Relaxed));
+    let written = (|| -> std::io::Result<()> {
+        let bytes = serde_json::to_vec(&record).map_err(std::io::Error::other)?;
+        let mut stderr = std::io::stderr().lock();
+        stderr.write_all(b"NETWORK159_OBSERVATION ")?;
+        stderr.write_all(&bytes)?;
+        stderr.write_all(b"\n")
+    })();
+    if written.is_err() {
+        OBSERVATION_INVALID.store(true, Ordering::Relaxed);
+    }
+}
+
+fn observe_stage(stage: &str) {
+    observe_record(serde_json::json!({"phase":"stage", "stage":stage}));
+}
+
+fn observed_output(command: &mut Command) -> std::io::Result<Output> {
+    if std::env::var_os("FF_RDP_159_OBSERVE").is_none() {
+        return command.output();
+    }
+    let command_id = OBSERVATION_COMMAND.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let args: Vec<_> = command
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    let port = args.windows(2).find(|a| a[0] == "--port").map(|a| &a[1]);
+    let registry = || {
+        let path = std::env::var_os("FF_RDP_HOME")
+            .zip(port)
+            .map(|(home, port)| {
+                std::path::PathBuf::from(home)
+                    .join(".ff-rdp")
+                    .join(format!("daemon.{port}.json"))
+            });
+        match path.map(std::fs::read) {
+            Some(Ok(bytes)) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
+                Ok(v) => serde_json::json!({"pid":v["pid"], "proxy_port":v["proxy_port"],
+                    "firefox_host":v["firefox_host"], "firefox_port":v["firefox_port"],
+                    "started_at":v["started_at"], "start_token":v["start_token"]}),
+                Err(e) => serde_json::json!({"read_error":e.to_string()}),
+            },
+            Some(Err(e)) => serde_json::json!({"read_error":e.to_string()}),
+            None => serde_json::json!({"unavailable":"home or port absent"}),
+        }
+    };
+    let started = Instant::now();
+    let wall = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+        .to_string();
+    observe_record(serde_json::json!({"phase":"start", "command_id":command_id,
+        "wall_unix_ns":wall,"program":command.get_program().to_string_lossy(),
+        "args":args,"registry":registry()}));
+    let child = match command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => {
+            observe_record(
+                serde_json::json!({"phase":"spawn_error", "command_id":command_id,
+                "args":args,"error":error.to_string()}),
+            );
+            return Err(error);
+        }
+    };
+    let pid = child.id();
+    observe_record(
+        serde_json::json!({"phase":"spawned", "command_id":command_id,
+        "child_pid":pid,"args":args}),
+    );
+    // The recorder never propagates I/O errors, so this wait is reached even
+    // when its preceding start/spawned record could not be written.
+    let result = child.wait_with_output();
+    match &result {
+        Ok(out) => observe_record(serde_json::json!({
+            "phase":"actual_wait_output", "command_id":command_id,"child_pid":pid,
+            "elapsed_ns":started.elapsed().as_nanos().to_string(),
+            "args":args,"status":out.status.to_string(),"success":out.status.success(),
+            "stdout_bytes":out.stdout,"stderr_bytes":out.stderr,"registry":registry()})),
+        Err(e) => observe_record(serde_json::json!({
+            "phase":"wait_error","command_id":command_id,"child_pid":pid,
+            "args":args,"error":e.to_string()})),
+    }
+    result
+}
+
 fn run(args: Vec<String>) -> Output {
-    Command::new(ff_rdp_bin())
-        .args(args)
-        .output()
-        .expect("spawn ff-rdp")
+    observed_output(Command::new(ff_rdp_bin()).args(args)).expect("spawn ff-rdp")
 }
 
 fn stop_daemon(port: u16) {
-    let _ = Command::new(ff_rdp_bin())
-        .args([
-            "--host",
-            "127.0.0.1",
-            "--port",
-            &port.to_string(),
-            "daemon",
-            "stop",
-        ])
-        .output();
+    let _ = observed_output(Command::new(ff_rdp_bin()).args([
+        "--host",
+        "127.0.0.1",
+        "--port",
+        &port.to_string(),
+        "daemon",
+        "stop",
+    ]));
 }
 
 /// Number of `network-event` entries the daemon is currently holding.
@@ -282,13 +381,16 @@ fn live_159_watcher_result_is_uncontaminated() {
 #[test]
 #[ignore = "requires Firefox, network access, and FF_RDP_LIVE_NETWORK_TESTS=1"]
 fn live_159_network_default_source_is_watcher() {
+    observe_stage("entered");
     if !network_tests_enabled("live_159_network_default_source_is_watcher") {
+        observe_stage("live_gate_unset_return");
         return;
     }
     let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     assert_eq!(buffered_network_events(port), 0, "buffer must start empty");
+    observe_stage("empty_buffer_assertion_passed");
 
     let mut nav = daemon_args(port);
     nav.extend(["navigate".to_owned(), BUSY_PAGE.to_owned()]);
@@ -296,15 +398,18 @@ fn live_159_network_default_source_is_watcher() {
     if !nav_out.status.success() {
         stop_daemon(port);
         if is_proxy_startup_flake(&nav_out) {
+            observe_stage("startup_flake_return_unexercised");
             eprintln!("live_159_network_default_source_is_watcher: skipped — iter-164 flake");
             return;
         }
+        observe_stage("first_navigation_failed");
         panic!(
             "plain daemon navigate must succeed: {}",
             crate::common::output_note(&nav_out)
         );
     }
 
+    observe_stage("first_navigation_succeeded");
     let mut net = daemon_args(port);
     net.extend(["network".to_owned(), "--detail".to_owned()]);
     let net_out = run(net);
@@ -320,6 +425,7 @@ fn live_159_network_default_source_is_watcher() {
         "default-source rows must carry a method — the field the Performance API cannot supply"
     );
 
+    observe_stage("watcher_assertions_passed");
     // The explicit opt-out still works. It needs its own navigate because the
     // read above drained the buffer.
     let mut nav2 = daemon_args(port);
@@ -340,11 +446,13 @@ fn live_159_network_default_source_is_watcher() {
     );
     let perf_json = parse_json(&perf_out);
     assert_eq!(perf_json["meta"]["source"], "performance-api");
+    observe_stage("performance_api_assertions_passed");
 
     eprintln!(
         "live_159_network_default_source_is_watcher: PASSED — {} default rows, opt-out intact",
         entries.len()
     );
+    observe_stage("acceptance_reached");
 }
 
 /// `live_159_daemon_direct_watcher_parity`: the same page on the same Firefox

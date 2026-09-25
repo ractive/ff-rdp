@@ -1,5 +1,5 @@
-//! One frame-target enumeration entry point that behaves identically with and
-//! without the daemon (iteration 137 Theme A).
+//! One frame-target enumeration entry point for direct and daemon connections
+//! (iteration 137 Theme A).
 //!
 //! # Why this module exists
 //!
@@ -25,8 +25,29 @@
 //! snapshot over a `{"to":"daemon","type":"frame-targets"}` request; this
 //! module replays those raw packets through
 //! [`ff_rdp_core::target_events_from_packets`] — the same add/replace/remove
-//! rules the direct drain uses — so both modes produce the same
-//! `Vec<TargetEvent>`.
+//! rules the direct drain uses.
+//!
+//! # Parity contract (iteration 283)
+//!
+//! Each result describes the surviving forms observed on its own connection:
+//! the daemon's last snapshot reply, or the direct subscription catch-up plus
+//! drain. Equal settle durations do not synchronize these observation cuts;
+//! direct subscription setup also precedes its drain. Neither result promises
+//! a complete future frame tree. On a stable document with both subscriptions
+//! caught up, the routes must enumerate the same current documents. Missing an
+//! already-observed live form or retaining an observed destroyed form is a bug.
+//!
+//! Actor IDs identify actors only within one connection. To establish document
+//! parity across connections, compare the raw forms' browsingContextID,
+//! processID, innerWindowId and topInnerWindowId in the same Firefox lifetime,
+//! with compatible top-level roles and lifecycle cuts. URL, BC or count alone
+//! cannot establish this: navigation can replace a document in the same BC and
+//! process. TargetEvent retains BC/process but not the two window IDs, so its
+//! debug output alone cannot prove a cross-connection document join.
+//!
+//! The sequential original159 regression remains a count-parity requirement
+//! on its fixture, with unchanged order and bounds. An unexplained mismatch
+//! still fails; this contract does not reclassify it as an acceptable race.
 
 use std::time::{Duration, Instant};
 
@@ -41,10 +62,10 @@ use crate::error::AppError;
 
 /// How long the daemon path re-polls the daemon's snapshot before answering.
 ///
-/// Matched to [`DEFAULT_FRAME_TARGETS_SETTLE`] so a caller waits the same in
-/// both connection modes: the direct path always drains for the full settle
-/// window, and the daemon path polls for exactly as long before concluding
-/// that it has seen every frame the page is going to create.
+/// Uses the same settle duration as [`DEFAULT_FRAME_TARGETS_SETTLE`]. Direct
+/// subscription setup precedes its drain; daemon requests and poll boundaries
+/// can overrun this duration. This bounds observation, not future frame creation
+/// or agreement between successive invocations.
 const DAEMON_SNAPSHOT_SETTLE: Duration = DEFAULT_FRAME_TARGETS_SETTLE;
 
 /// Gap between daemon snapshot polls.
