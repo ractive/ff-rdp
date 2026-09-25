@@ -2,8 +2,8 @@
 title: "Iteration 203: the live-sweep and toolchain watch conditions, third holder"
 type: iteration
 date: 2026-08-24
-status: planned
-branch: iter-203/live-sweep-watch-conditions-third-holder
+status: done
+branch: iter-203/watch-disposition-20260925
 depends_on:
   - iteration-192-live-sweep-watch-conditions-carried-forward
 first_call_sites: []
@@ -292,3 +292,109 @@ underlying RPC/scheduling attribution remains explicit. A later passing timing
 case does not retrospectively prove host load or repair these intervals. Fold
 this exact occurrence into the terminal disposition alongside other retained
 281/283 timing records, without changing750ms/>5ms assertions.
+
+## Terminal disposition — evidence cutoff September 25, 2026, 17:51 UTC
+
+This is the finite reconciliation authorized by the plan adaptation in PR272
+(merge `c25a80c5c0011e6b895d81137c848422e16b9512`). It supersedes the earlier
+instructions to keep this holder parked indefinitely. **No fourth holder will
+be created.** Retiring a watch means that this file no longer requests ongoing
+monitoring; it does not establish the historical cause or close a separately
+assigned implementation. An independent local review accepted this disposition with zero findings.
+The supervisor reconciled the still-open selected owners before publication;
+required documentation gates and exact-head CI govern its merge. The original thirteen criteria and their `[0/13]` state are
+preserved verbatim rather than turning this disposition into historical proof.
+
+The checkout baseline is merged main
+`f727318d18d887a59e3db929324630fe0a66f249` (283 / PR277). It contains completed
+262 / PR264 `c761c1b1f62b3cd9f6bcf56301e6528b1e70fad2`, 267's scoped blocking-mode
+repair, and 284's joined daemon shutdown. Neither that ancestry nor a subsequent
+passing sweep retroactively attributes an older EOF, reset, timeout, missing
+selector, or navigation status. All older entries above remain historical
+records, including their then-current owner/status statements.
+
+### Evidence reused, without another sweep
+
+Three independently required closing sweeps on their own qualified source and
+binary sets passed all 349 names: 284 closing2, 281 closing4, and 283 integrated
+closing2. Each used both live environment gates, reconciled all six tiers
+(338 CLI, 1 frame-target, 3 registry, 3 live61u, 2 Firefox, 2 watcher-protocol),
+and reported:
+
+```text
+LIVE_SWEEP_SUMMARY executed=349 skipped=0 preexisting=0 vanished=0 launch_timeout=0 timed_out=0 total=349
+LIVE_SWEEP_PROFILES leaked=0 unattributed=0
+```
+
+The profile line above retains the counts; each original log also records its
+own private root. All three logs explicitly report `ok` for the exact names
+`live_160_envelope_honesty::live_160_ref_click_asserts_handler_effect`,
+`live_104_security_pwa::live_manifest_fetch_canonical`,
+`live_145_error_envelope_completeness::live_145_click_element_not_found_unchanged`,
+`live_109_throttle_block::live_throttle_slow3g_slows_fetch`,
+`live_137_daemon_mode_parity::live_137_consent_accept_via_daemon`, and
+`live_169_nav_verb_status_parity::live_169_nav_verbs_report_status_daemon`.
+These are three passing observations, not a claim of no recurrence since August
+24, continuous raw-browser availability, or a new 203 sweep. Earlier failures
+in those iterations remain in their original logs and are dispositioned below.
+
+The saved GitHub query of `toolchain-watch.yml` contains five scheduled runs,
+all `completed/success`, on August 24 and 31 and September 7, 14 and 21. The
+latest is [run 35582616896](https://github.com/ractive/ff-rdp/actions/runs/35582616896),
+created September 21 at 09:19:28 UTC against `c761c1b1`; it completed at
+09:20:23 UTC. The separate August 23 manual run is excluded from scheduled
+claims. These records establish cron execution and no consecutive red scheduled
+pair in the observed history. They do not test September 25 main, prove
+notification delivery, or guarantee the next scheduled run.
+
+### Original thirteen criteria: disposition and reopening conditions
+
+| Criterion / condition | Evidence and terminal disposition | Concrete reopening condition / owner |
+|---|---|---|
+| 1 / ref-click intermittent | Retire this general watch without claiming the old cause. Exact ref-click passed the three qualified sweeps above. Other named160 greeting-wait observations are distinct and retained below. | A new exact ref-click failure: preserve command, route/fallback, target and handler effect, then file a scoped owner before repair. |
+| 2 / launch-timeout budget | Retire budget speculation; no larger wait is justified. The old220 failure and four281 startup timeouts remain individually unknown.284 repaired two independently proved launcher diagnostic weaknesses, without extending the30s bound. Three later zero-timeout sweeps do not explain them. | A new named launch timeout: retain the owned child's identity, stderr count/EOF/error and observed status from284's diagnostics; scope one discriminating experiment for what remains unknown. |
+| 3 / count reconciliation | Retire the holder row; the three retained six-tier reconciliations conserve349 exact names and all count categories. This does not claim that their zero-count runs exercised vanished/launch-timeout branches. | A nonconserving total, missing/duplicate verdict, or incorrectly classified named outcome: file a sweep-accounting defect with the original log and compiled partition. No deliberately killed browser is scheduled. |
+| 4 / unprovoked port6000 death | Retire the indefinite hunt without assigning cause. The old267 raw browser was absent at sweep startup, with exit cause missing; it is not proof of a death during an untouched sweep. Later owned-browser setup/teardown and boundary censuses establish only their recorded observations. | A newly observed unexpected death of the qualified raw browser: retain birth, listener and operator/signal timeline, then run the finite polling investigation from173. No continuous-availability claim is made here. |
+| 5 / manifest timeout | The exact manifest test passed the three current sweeps, but this watch previously fired in258 with a greeting-wait Timeout and was recorded in267. Retire the duplicate holder; retain that historical occurrence without attributing it to267's separately demonstrated socket-mode race. | Recurrence on repaired source requires its own connection/handshake/request evidence before assigning267 or268 as cause. |
+| 6 / click-not-found145 | The promotion occurrence was assigned to262;262 completed its original five criteria and three qualifying sweeps. The exact named145 control also passed all three current sweeps. Retire this duplicate watch, without equating other145 outcomes with promotion. | New named failure: distinguish target readiness, frame scan, protocol and action stage, then reopen the appropriate scoped owner. |
+| 7 / throttle or launch/daemon-start failure | The broader trigger fired in named161 startup cases and was folded into267;267 repaired its attributable165 handshake occurrence. The exact throttle control passed all three current sweeps. Retire the umbrella watch; older161 and other envelopes remain unattributed. | Retain each new startup error and connection identity separately. An EOF/reset belongs to268 only by its actual stage; a displayed “after auth” Timeout alone does not prove server authentication success. |
+| 8 /137 promotion | The fork arm is factually satisfied by262 and its preserved137/145 promotion evidence; this is not a tick for a mere pass.262 is merged and complete. The different ready-target/no-CMP/action outcomes remain275's responsibility. | New target1/live0 occurrence reopens promotion investigation; ready-target consent failure follows275. Neither route is closed by retiring203. |
+| 10 / merge-red main survives canary | Retire the speculative holder row under the existing DEC-044 cost decision. Five scheduled successes are the bounded observation; there is no proof about main between those runs or the newest merges. | An actual merge-introduced lint failure that survives a full scheduled cycle uncaught reopens the CI-trigger decision with exact heads/run evidence. |
+| 11 / failed canary unnoticed | Retire the holder row: no red pair exists among the five observed scheduled conclusions. Notification delivery has not been tested. | Two consecutive scheduled failures on the same unresolved cause require a concrete alerting/follow-up plan; no artificial red run is needed now. |
+| 13 / cron never fired | The missing-cron premise is obsolete: five `schedule` successes exist. Retire this row on observed execution, not workflow YAML inspection alone. | A later Monday with no scheduled run, or GitHub reporting a disabled schedule, requires a workflow investigation. No new periodic monitor is installed. |
+| 14 / raw browser left by sweep | The installed Codex iteration-close skill explicitly requires ownership-first inspection and stop/wait of the raw browser this run launched. Current closing receipts retain actual raw-child waits and independent cleanup observations. Retire the missing-instruction premise. | A stale raw listener, missing actual wait, or ownership-ambiguous cleanup requires a scoped runner correction; never stop a pre-existing browser merely by its port/name. |
+| Final / fourth holder decision | Explicit decision: no fourth holder, no calendar wait and no extra sweep. Historical evidence is retained here; implementation responsibilities stay with their named plans. | A concrete recurrence is handled during its required closing review, with one scoped owner and finite evidence schedule. Do not reopen an indefinite holder. |
+
+### Additional frontmatter/body watches and active owners
+
+| Retained observation | Disposition, limits and reopening evidence |
+|---|---|
+| 252/253/254/242 named160/161/164/219/240 greeting-wait Timeout envelopes |267 retains the individual observations and its demonstrated165 repair. Retire the duplicated203 watch. Do not generalize that proof to every older occurrence; on recurrence preserve pre-auth connection identity, auth read/write, greeting and request/dispatcher sequence. |
+| Historical240 hop27 EOF;224 hop7 reset54; later265 EOF |268 remains open with original0/4 and distinct occurrence records.284's actual joined-shutdown implementation supplies a prerequisite, not missing failed-occurrence attribution. External death is not a worker return. No consumed268 capture is replayed by this disposition. |
+| 253 applied-styles missing-p;261 styles failure with missing panic |274 completed its explicitly bounded unresolved investigation and merged. The single passing instrumented control did not diagnose either failure. Retire the duplicated watch; a new attributable recurrence reopens274's exact stage/document/DOM/route/rules evidence requirement. |
+| 254 dogfood exit124 after lifecycle checks, before sentinel |Retire the nonactionable watch with cause unresolved: the original suppressed/removed output cannot localize the failed command. The later output-retaining script and passing control are not a product repair. On recurrence retain the exact command/envelope, port/PID and route; route to267 only if the evidence supports that stage. |
+| 242 daemon169 reload: complete, null/not_observed after21028ms |Retire this historical watch without a cause claim. Exact169 passed the three current sweeps; those passes cannot recover its missing event/document trace. A new null-status occurrence requires route, actual document/request identity, network status, subscription/event progression and fallback reason before repair. |
+| 284 direct166: complete canonical document, null/no_document_request after21125ms |Keep separate from daemon169. The admitted original direct-parity passing control observed both200 legs but did not explain the old result. Retire the duplicate watch with the same evidence requirements scoped to its actual direct route; preserve original assertion/deadline. |
+| 284220 initial launch timeout and four281 old-launch timeouts |Retain every PID/port and missing-evidence limitation in the284 input section above. Retire203's duplicate tracking after284's diagnostic repair, not as historical causal closure. The original30s budget remains; new recurrence uses the new failed-child evidence. |
+| 281/283/284 elapsed-time gaps |281's merged phase diagnostics and279's region contract identify measured versus excluded work; they do not identify the underlying scheduling/RPC cause of each old gap. In particular284's wall1400/report579/gap821 and711.603ms pre-dispatch remain preserved, alongside283's gap1048 and281's earlier failures. Retire the duplicate watch; new failure requires actual command phases under unchanged750ms/>5ms assertions. |
+| 283 historical daemon/direct frame-count mismatch and later159 initial network timeout |283 completed the same-observation-cut contract and controls; sequential observations are not an atomic identity oracle. The old causes remain unknown. Retire any duplicate umbrella inference; a new failure needs target identities and observation windows, or the actual failed navigation stage, respectively. |
+| Guardian ready-target detection/action failures; BBC no-CMP |275 remains open at this cutoff;271 remains dependent on its consent contract. Neither262 promotion repair nor203 retirement closes either site-specific occurrence. Preserve the distinct page/banner/action/effect evidence before claiming a shared cause. |
+|147 language diagnostics,259 outstanding-reply ownership,266 resource grips |These are independent open implementation owners, not watches to retire here.147's English-pack named proof still failed;259 retains its action-specific execution-filter boundary;266 remains dependent on259. No source work or acceptance evidence is supplied by this documentation audit. |
+
+There is no all-open-complete claim:275,271,147,259,266 and268 remain under the
+supervisor's selected queue. At final reconciliation,275 had passed its two separately admitted five-case
+native matrices and its own closing sweep was running, so it remained open.
+268 had repaired two attribution-check findings pending fresh review;147
+had a reviewed private diagnostic pending qualification.259/266 and271 remained
+pending. Completion here applies only to the terminal watch disposition, not
+to those owners or the original historical criteria. Publication does not
+authorize a new capture, replace a criterion, or erase failed results.
+
+Evidence for this audit is private under
+`.git/ralph-loop/20260924-all-open/iter203/disposition1/`: the original plan,
+exact-name/six-tier extracts and source log hashes, saved scheduled-run records,
+final diff and original-criteria conservation receipt. The reused source logs
+are `iter284/closing2`, `iter281/closing4`, and
+`iter283/integrated-gates1/closing2` under the same run root. This documentation
+audit launched no additional Cargo tests, Firefox, sweep or investigation;
+normal publication CI remains required.
