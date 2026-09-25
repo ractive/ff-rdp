@@ -6424,10 +6424,10 @@ mod tests {
     /// one socket split mid-payload, which is the desync this iteration
     /// removes by construction.
     ///
-    /// Payloads are sized past any loopback send buffer so `write_all` is
-    /// several kernel writes, which is what makes an unsynchronised second
-    /// writer observable; the scenario is repeated because a race that is
-    /// *possible* need not fire on the first attempt.
+    /// Ordinary traffic is drained promptly. The original payload, writer and
+    /// round counts remain; every send and every decoded frame must succeed.
+    /// The separate occupied-lease control proves goodbye serialization without
+    /// requiring a deliberately throttled peer to meet its 250 ms close budget.
     #[test]
     fn unit_240_goodbye_frame_shares_the_one_client_writer() {
         use std::io::Read as _;
@@ -6450,10 +6450,9 @@ mod tests {
             let sock = server.try_clone().expect("clone");
             let writer = ClientWriter::new(server);
 
-            // Drain slowly on the client side. A full receive window keeps
-            // every writer parked *inside* its `write_all`, which is the state
-            // an unsynchronised second writer corrupts; a fast drain would let
-            // each frame land in one uninterrupted burst and hide the race.
+            // Drain ordinary traffic promptly. Deliberately throttling the peer
+            // can legitimately expire the goodbye lease budget and retire an
+            // active frame; that failure contract has its own controlled test.
             let reader = std::thread::spawn(move || {
                 let mut client = client;
                 client
@@ -6461,16 +6460,16 @@ mod tests {
                     .expect("read timeout");
                 let mut buf = Vec::new();
                 let mut chunk = [0u8; 16384];
-                loop {
+                let terminal_error = loop {
                     match client.read(&mut chunk) {
                         Ok(n) if n > 0 => {
                             buf.extend_from_slice(&chunk[..n]);
-                            std::thread::sleep(Duration::from_millis(1));
                         }
-                        Ok(_) | Err(_) => break,
+                        Ok(_) => break None,
+                        Err(error) => break Some(error),
                     }
-                }
-                buf
+                };
+                (buf, terminal_error)
             });
 
             // The dispatcher fanning events onto the same socket.
@@ -6482,24 +6481,33 @@ mod tests {
                 let start = Arc::clone(&start);
                 handles.push(std::thread::spawn(move || {
                     start.wait();
-                    for _ in 0..PER_THREAD {
-                        let _ = w.send_raw(&body);
-                    }
+                    (0..PER_THREAD)
+                        .map(|_| w.send_raw(&body))
+                        .collect::<Vec<_>>()
                 }));
             }
 
             start.wait();
-            // Let every writer fill the window and park mid-`write_all`, so the
-            // goodbye really does have to cut into one of them.
-            std::thread::sleep(Duration::from_millis(50));
             close_client_with_error(&writer, &sock, "client_frame_undecodable", "boom");
 
-            for h in handles {
-                h.join().expect("writer thread");
-            }
+            let outcomes: Vec<_> = handles
+                .into_iter()
+                .map(|handle| handle.join().expect("writer thread"))
+                .collect();
+            let failure = writer.failure();
             drop(writer);
             drop(sock);
-            let buf = reader.join().expect("reader thread");
+            let (buf, terminal_error) = reader.join().expect("reader thread");
+            assert!(
+                outcomes.iter().flatten().all(Result::is_ok),
+                "round {round}: dispatcher outcomes={outcomes:?}, writer={failure:?}, reader={terminal_error:?}, bytes={}",
+                buf.len()
+            );
+            assert!(
+                failure.is_none() && terminal_error.is_none(),
+                "round {round}: writer={failure:?}, reader={terminal_error:?}, bytes={}",
+                buf.len()
+            );
 
             // Strict re-framing: an interleaved write shows up either as a
             // non-digit where a length is expected or as a payload that is
@@ -6549,6 +6557,86 @@ mod tests {
                 "round {round}: every dispatcher frame must survive the goodbye intact"
             );
         }
+    }
+
+    /// A held shared lease outlives the fixed goodbye budget. The connection
+    /// must retire without appending a goodbye after an in-flight frame prefix.
+    /// The prefix is deliberately staged through the test-owned real writer
+    /// lease; this does not claim a particular blocked kernel syscall schedule.
+    #[test]
+    fn iter284_goodbye_occupied_lease_retires_incomplete_frame() {
+        use std::io::{Read as _, Write as _};
+
+        let (server, mut client) = loopback_pair();
+        let sock = server.try_clone().expect("clone");
+        let writer = ClientWriter::new(server);
+        let lease = writer
+            .hold_for_test(Instant::now() + Duration::from_secs(5))
+            .expect("occupy actual shared writer");
+        let prefix = b"400033:";
+        let mut staged = lease.try_clone_stream().expect("leased socket");
+        staged
+            .write_all(prefix)
+            .expect("stage incomplete frame prefix");
+        drop(staged);
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("control read guard");
+        let mut observed = [0; 7];
+        client
+            .read_exact(&mut observed)
+            .expect("observe staged prefix");
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let closer_writer = writer.clone();
+        let closer_socket = sock.try_clone().expect("closer socket");
+        let closer = std::thread::spawn(move || {
+            close_client_with_error(
+                &closer_writer,
+                &closer_socket,
+                "client_frame_undecodable",
+                "controlled occupied lease",
+            );
+            let _ = done_tx.send(());
+        });
+        let returned_while_held = done_rx.recv_timeout(Duration::from_secs(5)).is_ok();
+        // Release the owned blocker even on a failed completion observation,
+        // then actually join before asserting the recorded outcome.
+        drop(lease);
+        let joined = closer.join();
+        let failure = writer.failure();
+        drop(writer);
+        drop(sock);
+        let mut trailing = Vec::new();
+        let read_result = client.read_to_end(&mut trailing);
+
+        assert!(
+            returned_while_held,
+            "goodbye did not return while its lease stayed occupied"
+        );
+        assert!(joined.is_ok(), "actual closer thread panicked");
+        assert_eq!(
+            &observed, prefix,
+            "actual client must observe the staged prefix"
+        );
+        assert_eq!(
+            failure
+                .as_ref()
+                .map(|(kind, detail)| (*kind, detail.as_str())),
+            Some((
+                super::super::client_writer::WriteFailure::DeadlineExpired,
+                "writer lease deadline expired"
+            )),
+            "bounded goodbye must retire the occupied shared writer: {failure:?}"
+        );
+        assert!(
+            read_result.is_ok(),
+            "reader must observe EOF after retirement: {read_result:?}"
+        );
+        assert!(
+            trailing.is_empty(),
+            "no goodbye may append after the staged prefix: {trailing:?}"
+        );
     }
 
     /// iter-240 review, finding 3, the deterministic half: the goodbye must not

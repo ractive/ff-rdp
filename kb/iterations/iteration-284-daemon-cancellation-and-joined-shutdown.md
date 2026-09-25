@@ -484,3 +484,69 @@ Original tasks and AC4/4 now have local implementation/review/gate/closing
 evidence. Exact-head GitHub CI remains the publication/merge condition; no
 Windows result or remote merge is claimed here before that condition succeeds.
 268 remains separate with its original0/4 and original224/240 requirements.
+
+## Exact-head CI blocked — September 25
+
+PR275 head648b2c9f245320d84c78a4523d444721dc91722f failed macOS CI at
+`unit_240_goodbye_frame_shares_the_one_client_writer`: round0 decoded six
+complete event frames before a400033-byte frame ended early. The job reports
+1340 passed,1 failed,4 ignored. Local ordered6 and the own349/349 closing2
+remain recorded passes; they do not override this exact-head CI failure. No
+merge is claimed. Other CI job dispositions are tracked separately by the
+supervisor.
+
+Read-only source investigation established that the test deliberately slows
+its reader and discards writer/read errors while demanding unconditional
+completion, whereas284's unchanged250ms goodbye budget now includes writer
+lease acquisition and retires the shared socket on expiry. The CI log does
+not retain the failure detail needed to assign that mechanism to the observed
+occurrence. No production defect or scheduling cause is inferred from local
+passes. An unapplied test-only repair draft preserves counts/concurrency and
+all original framing/completeness assertions, adds outcome diagnostics, and
+proposes a separate occupied-lease control with a serialization-bypass mutation.
+The exact draft and finite three-execution proposal are private under
+ci-goodbye-preparation1. Scoped review and supervisor admission are still
+required; no compilation, test or retry ran during preparation.
+
+## CI fixture repair qualified locally — September 25
+
+The first exact-head CI run on648b2c9 finished with nine green checks, including
+Windows, and one macOS failure; publication/ci-final1.json records the complete
+rollup. The macOS occurrence and its attribution limits remain preserved.
+Fresh independent scoped review accepted the paired test-only correction with
+zero findings. An earlier reviewer refusal before inspection is retained and
+was not treated as a passing review.
+
+The admitted three-execution proof qualified without retries. The new occupied
+shared-lease control passed once on unchanged production. A freshly compiled
+serialization-bypass mutant failed once at the intended assertion: no latched
+writer failure instead of DeadlineExpired with writer-lease detail. Cleanup
+and the actual closer join precede that assertion; this was not a compilation
+error or watchdog. Exact formatted reviewed source was restored, compiled fresh,
+and the original named240 normal-success test passed once with its original
+three rounds, dispatcher/payload counts and all strict framing/completeness
+assertions. No original slow-reader baseline was repeated. This demonstrates
+fixture sensitivity and bounded-close behavior, not the exact historical CI
+termination cause or a specific blocked kernel write.
+
+Static source-invariant/live-layout preflights passed, followed by one ordered7
+sequence: fmt, strict workspace/all-target Clippy and normal parallel workspace
+tests all passed. Totals2645 passed,0 failed,423 ignored across37 top-level
+results including doctests exclude the explicitly named nested282 child. One
+offline count checker initially missed that child's name because parallel output
+interleaved39 lines; the corrected block-based identification used the existing
+output with no build or test repeat. All failure bytes remain archived.
+
+All582 source inputs and12 fresh current-manifest binaries are frozen. Only
+server.rs's test module differs from648b2c9; its production prefix and the other
+581 inputs, including all live tests, are unchanged. Each of the three proof
+variants has its exact582-source archive, fresh producer and frozen binary.
+The full private census conserved329 baseline profiles, retained four new
+private test-home profiles, and found no unexpected process. Real four profiles,
+default state and preexisting probe.txt are unchanged; actual waits are retained.
+
+The supervisor's prior own349/349 closing2 result is reused for unchanged
+production/live inputs; no new sweep ran. This local repair has not been
+committed or published by the execution agent, and exact-new-head CI remains
+required before merge. Original criteria and their local evidence are unchanged;
+268's separate0/4 and original224/240 obligations remain.
