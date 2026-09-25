@@ -315,3 +315,41 @@ parser failures, original/final qualifications and independent review.
 Original historical acceptance remains0/4 and prospective delivery0/3. The
 finished diagnostic candidate still owes its own successful dual-gate closing
 validation, static closing gates and exact-head CI before completion/merge.
+
+## Third closing validation — retained startup failures
+
+The reviewed diagnostic candidate at `2bd907ea23787999e0a55ea57e7290a3520891d3`
+ran its separately admitted third closing sweep once:345passed/4rawfailed of349
+exact six-tier names, actual sweep wait1. All four failures were initial Firefox
+launches that did not open their debug ports within the unchanged30s bound:
+`live_stale_tab_race`20025/64204, `live_styles_applied`20047/64239,
+`live_styles_applied_dedupe`20073/64263 and `live_target_destroyed`20075/64266.
+Their test actions were not reached. The timing case passed; this does not
+explain earlier slow occurrences. The harness reported345executed plus4launch
+timeouts, zero leaked/unattributed profiles. Its generic machine-load explanation
+is not an established cause for these occurrences.
+
+All305 baseline profile identities/markers were conserved; six new retained
+profiles were attributed to recorded launches,342 launch attempts paired, no
+owned process survived cleanup. The raw browser was actually waited(-15).
+All575 source inputs,110 Firefox package files and four real managed profiles
+remained unchanged. Eight actual sweep binaries and every failure are preserved
+under `.git/ralph-loop/20260924-all-open/iter281/closing3/`. External absence is
+not worker-return evidence. The cause of each startup failure remains unknown
+pending examination of retained evidence.
+
+No fourth unchanged sweep is admitted. The supervisor prioritizes284's reviewed
+startup/shutdown work before integration and any further closing validation.
+Original AC0/4 and prospective delivery0/3 remain; no completion or merge is
+claimed from this failed sweep.
+
+The retained-evidence startup audit found no attributable failed-child birth,
+profile or crash-report join for any of the four launches. The old launcher
+checked child status once before its port-only wait and did not drain stderr;
+its empty captured launcher stderr cannot prove Firefox wrote nothing. The
+six retained profiles belong to other recorded launches. The old cleanup
+discarded natural-versus-signaled statuses, so the historical causes remain
+unknown.284's separately reviewed bounded stderr/status repair addresses
+those observable weaknesses; its already-required changed-source validation
+can record a recurrence without a separate unchanged reproduction. A pass
+will not explain these four historical events.
