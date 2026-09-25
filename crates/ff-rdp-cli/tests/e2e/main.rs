@@ -54,3 +54,5 @@ mod tabs;
 mod throttle;
 mod type_text;
 mod wait;
+
+mod consent_selection;
