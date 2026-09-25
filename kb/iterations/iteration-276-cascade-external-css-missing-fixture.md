@@ -414,3 +414,47 @@ reports known motion only when it was actually observed. Neither failure is
 relabelled as proven old cause. General worker-return attribution remains with
 284/268, and reply/grip ownership remains with259/266. No additional discovery
 sweep or repetition of an answered experiment was used to close this scope.
+
+## Publication CI fixture correction — 2026-09-25
+
+PR274 headf4c098b49092d832a834b14ebbc714e43b3fcc87 had nine green checks and one
+macOS workspace failure. The LongString matrix's final destroyed-target leg
+returned Timeout at500.407ms with one evaluation, one substring and no release.
+Its snapshot worker reached EOF waiting after authentication, then its join
+assertion failed. The retained log does not identify which later snapshot
+connection closed, whether its greeting had been decoded, or where the budget
+was consumed. The other14 matrix legs passed. This failure does not attribute
+any historical missing-h1 or prior native occurrence.
+
+One instrumented destroyed-only diagnostic passed in232.370ms with the original
+500ms budget and exact three-snapshot/two-evaluation/two-substring/one-release
+assertions. Its phase records show initial a, retired a, then replacement b,
+and all three greeting-decode boundaries. There was no recurrence, so it does
+not establish the CI cause. The existing snapshot observation hook is
+thread-local, endpoint-bound and cleared by a scope guard, rather than a global
+timing switch; this fixture's callback records phases without delaying work.
+
+The test helper now serializes each complete frame with encode_frame and submits
+it through one write_all, removing unnecessary separate header/body writes.
+This follows the other protocol fixtures and changes no production framing,
+Nagle option, budget, lifecycle or assertion. It is a fixture-quality correction,
+not a claim that split writes caused the CI timeout. Phase records remain so a
+future failure preserves the missing connection/query boundary. The destroyed
+leg is a separately named test: the same15 legs now occupy two tests instead of
+one. The single corrected matrix run passed15/15; destroyed passed in222.713ms.
+
+Private evidence is `iter276/ci-fixture-repair/`, retaining original CI logs by
+reference, the instrumented diagnostic source and executable, phase output,
+corrected source and actual command receipts. The code diff is confined to the
+existing cfg(test) LongString module; all production and original live-source
+bytes remain unchanged from f4c098b4. Thus the reviewed349/349 closing2 result
+remains applicable; no new native sweep was run for this test-only correction.
+Prospective implementation/closing completion above remains subject to the
+publication gate: fresh scoped review and exact-head green CI are still owed.
+
+The test-only correction passed final ordered stable update, fmt, strict
+workspace/all-targets Clippy and normal parallel workspace tests2601/0/421 on
+their first attempts. Raw2602 includes the separately printed282 child. The
+one additional Rust test comes solely from naming the existing destroyed leg
+separately; matrix coverage remains15 legs.575 source pins stayed unchanged
+through the final Clippy/workspace gates. No new native validation was consumed.

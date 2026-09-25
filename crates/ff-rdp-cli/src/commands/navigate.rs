@@ -6934,15 +6934,16 @@ mod atomic_readiness_tests {
 mod long_string_readiness_tests {
     use super::*;
     use crate::commands::connect_tab::ConnectedTab;
-    use ff_rdp_core::transport::recv_from;
+    use ff_rdp_core::transport::{encode_frame, recv_from};
     use std::io::{BufReader, Write};
     use std::net::{TcpListener, TcpStream};
     use std::sync::atomic::{AtomicBool, Ordering};
 
     fn send(stream: &mut TcpStream, value: &Value) {
-        let body = serde_json::to_vec(value).unwrap();
-        write!(stream, "{}:", body.len()).unwrap();
-        stream.write_all(&body).unwrap();
+        // Submit one complete frame instead of deliberately splitting its
+        // header/body into small writes on a deadline-sensitive fixture.
+        let frame = encode_frame(&value.to_string());
+        stream.write_all(frame.as_bytes()).unwrap();
     }
 
     #[test]
@@ -6956,40 +6957,78 @@ mod long_string_readiness_tests {
                 "malformed",
                 "timeout",
                 "release-error",
-                "destroyed",
             ] {
-                if case != "destroyed" || watched {
-                    fetch_case(watched, case);
-                }
+                fetch_case(watched, case);
             }
         }
     }
 
+    #[test]
+    fn long_string_watched_destroyed_fetch_boundary() {
+        fetch_case(true, "destroyed");
+    }
+
+    fn phase(
+        tx: &std::sync::mpsc::Sender<(Duration, String)>,
+        origin: Instant,
+        message: impl Into<String>,
+    ) {
+        let _ = tx.send((origin.elapsed(), message.into()));
+    }
+
     fn fetch_case(watched: bool, case: &'static str) {
+        let origin = Instant::now();
+        let (phase_tx, phase_rx) = std::sync::mpsc::channel();
+        let snapshot_phases = phase_tx.clone();
+        let evaluation_phases = phase_tx.clone();
+        let boundary_phases = phase_tx.clone();
         let side = TcpListener::bind("127.0.0.1:0").unwrap();
         side.set_nonblocking(true).unwrap();
-        let endpoint =
-            crate::daemon::client::TargetEndpoint::new(side.local_addr().unwrap().port(), "token");
+        let endpoint_port = side.local_addr().unwrap().port();
+        let endpoint = crate::daemon::client::TargetEndpoint::new(endpoint_port, "token");
         let stop = Arc::new(AtomicBool::new(false));
         let done = Arc::clone(&stop);
         let snapshots = std::thread::spawn(move || {
             let mut queries = 0;
+            let mut connections = 0;
             while !done.load(Ordering::Relaxed) {
                 let Ok((mut stream, _)) = side.accept() else {
                     std::thread::sleep(Duration::from_millis(1));
                     continue;
                 };
+                connections += 1;
+                phase(
+                    &snapshot_phases,
+                    origin,
+                    format!("snapshot{connections}: accepted; completed_queries={queries}"),
+                );
                 stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(1)))
                     .unwrap();
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 assert_eq!(recv_from(&mut reader).unwrap()["auth"], "token");
+                phase(
+                    &snapshot_phases,
+                    origin,
+                    format!("snapshot{connections}: auth received; greeting write begin"),
+                );
                 send(
                     &mut stream,
                     &json!({"protocol_version":crate::daemon::server::DAEMON_PROTOCOL_VERSION}),
                 );
-                let query = recv_from(&mut reader).unwrap();
+                phase(
+                    &snapshot_phases,
+                    origin,
+                    format!("snapshot{connections}: greeting write finished"),
+                );
+                let query = recv_from(&mut reader);
+                phase(
+                    &snapshot_phases,
+                    origin,
+                    format!("snapshot{connections}: query result={query:?}"),
+                );
+                let query = query.unwrap();
                 assert_eq!(query["type"], "resolve-tab-target");
                 queries += 1;
                 let actor = if case == "destroyed" && queries >= 3 {
@@ -7002,6 +7041,11 @@ mod long_string_readiness_tests {
                     &json!({"from":"daemon","type":"resolve-tab-target","state":"live","target":{
                         "actor":actor,"consoleActor":format!("{actor}/console"),"innerWindowId":if actor == "a" {1} else {2}
                     }}),
+                );
+                phase(
+                    &snapshot_phases,
+                    origin,
+                    format!("snapshot{connections}: target {actor} reply written"),
                 );
             }
             queries
@@ -7029,6 +7073,11 @@ mod long_string_readiness_tests {
             let mut releases = 0;
             while let Ok(request) = recv_from(&mut reader) {
                 let actor = request["to"].as_str().unwrap();
+                phase(
+                    &evaluation_phases,
+                    origin,
+                    format!("main: request {} to {actor}", request["type"]),
+                );
                 match request["type"].as_str().unwrap() {
                     "listFrames" => send(
                         &mut stream,
@@ -7049,6 +7098,11 @@ mod long_string_readiness_tests {
                             reply["exception"] = json!("\u{1b}[31munsafe\u{1b}[0m");
                         }
                         send(&mut stream, &reply);
+                        phase(
+                            &evaluation_phases,
+                            origin,
+                            format!("main: evaluation{evals} result written"),
+                        );
                     }
                     "substring" => {
                         substrings += 1;
@@ -7068,6 +7122,11 @@ mod long_string_readiness_tests {
                                 &mut stream,
                                 &json!({"from":"watcher","type":"target-destroyed-form","target":{"actor":"a","innerWindowId":1,"isTopLevelTarget":true}}),
                             );
+                            phase(
+                                &evaluation_phases,
+                                origin,
+                                "main: target a destruction written",
+                            );
                         }
                         let response = if case == "actor-error" {
                             json!({"from":actor,"error":"wrongState","message":"terminal substring error"})
@@ -7077,6 +7136,11 @@ mod long_string_readiness_tests {
                             json!({"from":actor,"substring":sample})
                         };
                         send(&mut stream, &response);
+                        phase(
+                            &evaluation_phases,
+                            origin,
+                            format!("main: substring{evals} reply written"),
+                        );
                     }
                     "release" => {
                         releases += 1;
@@ -7087,6 +7151,11 @@ mod long_string_readiness_tests {
                             json!({"from":actor})
                         };
                         send(&mut stream, &response);
+                        phase(
+                            &evaluation_phases,
+                            origin,
+                            format!("main: release{evals} reply written"),
+                        );
                     }
                     method => panic!("unexpected request: {method}"),
                 }
@@ -7100,17 +7169,41 @@ mod long_string_readiness_tests {
             ctx.via_daemon = true;
         }
         let start = Instant::now();
-        let result = wait_for_readystate_complete(
-            &mut ctx,
-            500,
-            ReadinessCheck {
-                pre_epoch: Some(42.0),
-                pre_href: "https://old.test/",
-                requested_url: &href,
+        phase(&phase_tx, origin, "caller: readiness begin");
+        let result = crate::daemon::client::snapshot_query_boundary::with(
+            endpoint_port,
+            move |deadline| {
+                phase(
+                    &boundary_phases,
+                    origin,
+                    format!(
+                        "caller: snapshot greeting decoded; remaining={:?}",
+                        deadline.saturating_duration_since(Instant::now())
+                    ),
+                );
             },
-            start,
+            || {
+                wait_for_readystate_complete(
+                    &mut ctx,
+                    500,
+                    ReadinessCheck {
+                        pre_epoch: Some(42.0),
+                        pre_href: "https://old.test/",
+                        requested_url: &href,
+                    },
+                    start,
+                )
+            },
         );
         let elapsed = start.elapsed();
+        phase(
+            &phase_tx,
+            origin,
+            format!(
+                "caller: readiness returned after {elapsed:?}; success={}",
+                result.is_ok()
+            ),
+        );
         drop(ctx);
         stop.store(true, Ordering::Relaxed);
         let snapshot_result = snapshots.join();
@@ -7118,6 +7211,9 @@ mod long_string_readiness_tests {
         eprintln!(
             "long_string watched={watched} case={case} elapsed={elapsed:?} result={result:?} snapshots={snapshot_result:?} evaluations={evaluation_result:?}"
         );
+        for (elapsed, message) in phase_rx.try_iter() {
+            eprintln!("long_string phase watched={watched} case={case} at={elapsed:?} {message}");
+        }
         let queries = snapshot_result.unwrap();
         let (evals, substrings, releases) = evaluation_result.unwrap();
         assert_eq!(evals, if case == "destroyed" { 2 } else { 1 });
