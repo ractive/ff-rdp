@@ -85,3 +85,29 @@ Filed from272's independently reviewed carry-over proposal. The private review
 `iter272/review-carryover/report.md` accepts this separate scope with zero findings;
 it does not approve a future test-contract change, native capture or completion.
 272 still has unmet closing acceptance after its latest348/349 failed sweep.
+
+## Post272 implementation boundary — 2026-09-25
+
+Begin from merged 272. Its snapshot removal, equal-count replacement and
+readiness-withdrawal repairs and controls are reusable, not new 283 work.
+First inspect retained 159 operation windows and available identity joins.
+A differing-event-cut control establishes a possible contract distinction,
+not the historical1/2 cause.
+
+The remaining delivery is an explicit current parity/observation-window
+contract and only the additional production-path proof or correction needed
+to discriminate real missing/stale targets. Preserve original 159 unchanged.
+Do not add another full sweep or native schedule solely to repeat evidence
+already supplied by 272.
+
+## Verified 272 completion — 2026-09-25
+
+Iteration 272 merged through GitHub as PR271 at
+`e4c3efb0a931860af2f9f0e050e512ce5bd19c9f`, after all ten CI checks passed
+on reviewed head `04e0086d`. Its final-source closing sweep passed 349/349
+with profile summaries leaked0/unattributed0. This supersedes the earlier
+pending 272 closing/publication state above. The earlier347/349 sweep retained
+both the159 daemon1/direct2 mismatch and a timing failure; the later348/349
+sweep failed only timing. Both failed sweeps remain historical evidence.
+Neither the passing closing nor the merge attributes that old frame
+mismatch or completes283; its original tasks and criteria remain unchanged.

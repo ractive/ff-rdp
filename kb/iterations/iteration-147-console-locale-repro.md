@@ -7,11 +7,12 @@ branch: iter-147/console-locale-repro
 depends_on:
   - kb/iterations/iteration-144-session-hygiene-followup.md
 first_call_sites: []
-dogfood_path: |
-  ff-rdp launch --headless --port 6100
-  # → against a Firefox build/langpack whose UI locale is genuinely
-  #   non-English, console/error text must still be English (or the fix
-  #   that makes it so must be identified and applied)
+dogfood_path: >-
+  Use an exclusively owned Firefox runtime/profile with verified German
+  application locale and available English and German language resources. Record baseline
+  and product-launched requested/available/application/default locales plus build
+  identity. Run live_147_console_locale_pinned with a real engine-produced
+  console/error message; setting LANG alone is not qualification.
 tags: [iteration]
 ---
 
@@ -100,3 +101,22 @@ scoped as a follow-up rather than folded into this investigation.
 - [[iteration-144-session-hygiene-followup]]
 - [[iteration-142-session-hygiene]]
 - [[decision-log]] — DEC-028
+
+## Scope clarification — 2026-09-25
+
+Qualify actual locale capability before reproduction: the owned runtime must
+demonstrate a German application-locale baseline and usable English resources
+for the product's English pin. A matching language pack or official localized
+runtime is sufficient; no Firefox source build or new CI provisioning system
+is required unless ordinary provisioning proves inadequate.
+
+If current product launch yields English console/error text, conclude only that
+current behavior is locale-stable under the recorded reproduction. Do not infer
+that the historical German report predated the pin or measured another channel.
+Its chronology and cause remain unknown. The original named-test acceptance
+criterion is unchanged.
+
+The historical Task B “If not localized” inference is unsupported and is
+explicitly superseded by this clarification. Its text and checkbox remain
+unchanged as the original record; a passing current test cannot satisfy that
+chronological assertion. No speculative preference change is authorized.

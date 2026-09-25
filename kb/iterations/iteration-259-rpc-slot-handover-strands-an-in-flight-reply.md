@@ -8,6 +8,7 @@ depends_on:
   - iteration-240-daemon-frame-desync-root-cause
 first_call_sites: []
 dogfood_path: |
+  Historical slow-eval example below is retained as a delivery probe only: evaluateJSAsync resultID matching means it cannot alone prove that the successor accepted another client’s answer. Use the current-main execution clarification for the attributable ordinary-reply case. Existing60-hop and20-eval obligations remain unchanged.
   # The window, stated precisely. The daemon serialises Firefox-bound requests
   # through a single RPC slot because RDP replies carry no per-request
   # correlation id (crates/ff-rdp-cli/src/daemon/server.rs, `rpc_writer`).
@@ -143,3 +144,90 @@ The current-owner forwarding gap remains an investigation target, not a demonstr
 
 This source/evidence audit adds implementation guidance, not a new execution result.
 Original task and acceptance-criterion wording and checkbox states remain unchanged.
+
+## Restart plan — 2026-09-19
+
+Follow [[ralph-loop-open-iterations-2026-09-19]]. The preserved checkpoint is
+`cc44e873e977c979729372010ba65fcf088341b9` on this plan's branch and worktree
+`/Users/james/.cache/ff-rdp/queue-20260919-259`. It contains documentation only:
+execution blocker, corrected historical links and266's dependency. No attributable
+wrong-answer reproduction or product repair exists; all original ACs remain unmet.
+
+**Entry gate.** An automated content filter rejected the prior protocol
+investigation as possible cybersecurity risk. A fresh session, different model,
+renamed task or equivalent alternate tool is not evidence that this restriction
+has cleared. Inspect the recorded blocker and current applicable access/policy
+state without reissuing the rejected action as a capability probe. Proceed only
+through an actually available permitted path; record why it is permitted. If no
+such path is established, retain259blocked and skip266, continuing independent
+262/268/271. Do not reinterpret this plan as approval to bypass a denial.
+
+**Conditional implementation plan, only after the entry gate clears (Astra).**
+
+1. Verify the current owner-only RPC-slot release and shared writer from240, plus
+   the now-merged258 absolute deadlines/abandoned-ACK handling and267 auth fix.
+   Determine which layer owns each obligation; do not overwrite those fixes.
+   Update the historical slow-eval dogfood qualification before relying on it:
+   ConsoleActor uses a resultID, so arrival at a new client does not itself prove
+   that client accepted the wrong result.
+2. Establish a bounded, owned two-client lifecycle experiment for a reply type
+   whose actual correlation contract is verified in the running Firefox revision.
+   Record request/actor identity, departure, slot ownership transition, reply
+   arrival/forwarding and whether the recipient accepts/rejects the answer. Use
+   only local owned fixtures/connections. A deterministic transport-level test
+   may isolate ordering, but it cannot replace the required real-Firefox evidence.
+   After verifying that reply contract and before execution, record both a finite
+   attempt ceiling and wall-time budget, with a maximum of20 paired trials or
+   30minutes for this first reproduction block, whichever comes first. Stop early
+   on a conclusive attributed result. On exhaustion, preserve exact scenarios,
+   counts and negative evidence with all unmet ACs; do not extend or restart the
+   block unchanged. These discovery limits do not replace the separate required
+   60-hop dogfood/20-eval measurements or clear the execution entry gate.
+3. Measure outstanding work at release during the existing24060-hop dogfood,
+   and record the original20-sequential-eval before/after comparison. Define
+   matching build/environment and wall-time measurement before collecting data;
+   avoid a new unrequested benchmark suite. A no-reproduction result must list
+   the actual scenarios and counts; it does not automatically satisfy the status
+   instrumentation or regression criteria.
+4. After attribution, choose the narrow ownership/correlation fix, or an honest
+   detectable limitation if no safe correlation exists. Do not impose a universal
+   quiescence delay on the empty-outstanding common path. Define the observable
+   outstanding-work counter and its lifecycle in `daemon status`. Distinguish
+   ordinary replies, async result-ID traffic, events and one-way methods from the
+   published Firefox contracts; do not assume all methods ACK or share FIFO rules.
+5. Add the meaningful regression required by the original plan and validate
+   status answerability/common-path latency,60hops/0reconnects/0abandoned clients,
+   own dual-gate sweep and ordered gates. Independent Astra review must resolve
+   concurrency and reply-attribution findings before publication.
+
+The original plan permits a no-reproduction/documented-limitation outcome, while
+still requiring observable status and evidence. Reconcile each original box
+explicitly; do not mark the iteration complete just because no failure appeared.
+Two repair batches remain the normal new-run ceiling; preserve prior attempts
+and do not reset unresolved findings by changing sessions.
+
+## Execution checkpoint — 2026-09-19
+
+The selected investigation was stopped by an automated content filter that
+reported possible cybersecurity risk before any attributable reproduction or
+product implementation was completed. This is an execution blocker, not evidence
+that the proposed reply-ownership diagnosis is correct. No workaround, rephrased
+retry, or delegated repetition of the rejected action was attempted.
+
+The clean product baseline was `010059c632da4ce1344b0516a05a7c911b4cfe15`.
+Owned raw Firefox PID70596 and its wrapper PID70579 were stopped; port6000 was
+verified free and desktop Firefox PID1112 was preserved. Exact evidence is in
+`.git/ralph-loop/20260919-queue/iter259/execution-blocker.md` and the retained
+source-fetch/build/cleanup artifacts. No acceptance criterion is fulfilled by
+this attempt. Resume requires an appropriate permitted execution path; iteration266
+remains blocked on this plan's unresolved reply attribution.
+
+The batch-end inventory audit corrected two stale historical wikilink names only.
+No product investigation was resumed by that bookkeeping change.
+
+## Current-main adaptation — 2026-09-25
+The current-owner forwarding gap remains present after 282/279. Establish a same-actor ordinary-reply case that records both delivery and the successor's accepted answer; a late asynchronous evaluation event alone is insufficient. Preserve the finite reproduction ceiling and collect the original 60-hop outstanding-work and 20-eval before/after measurements on the same current-main baseline.
+
+Define connection-scoped ownership before sending, including ordinary replies, asynchronous ACK/result traffic, declared one-way operations and daemon-owned release replies. Preserve the startup-recovery reply sink and the no-wait empty-outstanding common path. Unknown attribution must have an explicit safe disposition and observable status. A negative reproduction does not establish that safe attribution is impossible or discharge instrumentation.
+
+The all-open owner grant does not override the historical automated execution-filter denial. Preserve `.git/ralph-loop/20260924-all-open/259-historical-filter-boundary.json`; do not reissue, disguise or substitute equivalent rejected operations to probe it. The historical record is an unspecified agent-filter failure, not evidence of a blanket prohibition on local correctness work. A materially safer local deterministic unit-work path may be assessed separately on its actual content; this documentation adaptation neither executes it nor establishes clearance for a previously rejected operation. All original tasks and ACs remain unchanged.
