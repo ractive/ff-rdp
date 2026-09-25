@@ -16,6 +16,8 @@
 // `#[path]`-included, while production code stays denied.
 #![allow(unsafe_code)]
 
+pub mod action_route;
+
 use std::collections::HashMap;
 use std::io::{Read, Seek, Write};
 use std::net::{TcpListener, TcpStream};

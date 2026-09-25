@@ -81,6 +81,8 @@ pub fn run_core(
     opts: &ClickOptions<'_>,
 ) -> Result<(Value, bool), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
+    tracing::debug!(target: "ff_rdp_cli::action_route",
+        "FF_RDP_ACTION_ROUTE action=click via_daemon={}", ctx.via_daemon);
 
     // When --wait-for-network is requested in direct mode, subscribe to the
     // watcher before clicking so we don't miss early events.

@@ -774,3 +774,116 @@ fn e2e_error_shape_parity_daemon_extended() {
         &["click", "--no-wait", "button.missing"],
     );
 }
+
+/// The same expected-error action must attest the connection it actually used.
+/// A corrupt registry forces the review's daemon-requested/direct-fallback path;
+/// its otherwise valid error envelope must not qualify as daemon evidence.
+#[test]
+fn e2e_272_action_route_survives_errors_and_rejects_direct_fallback() {
+    let _guard = daemon_test_mutex().lock().unwrap();
+    for action in ["click", "type"] {
+        for mode in ["direct", "daemon", "fallback"] {
+            let home = isolated_home();
+            let server = eval_exception_daemon_server("eval_result_exception.json");
+            let port = server.port();
+            let requests = server.request_log();
+            let mock = std::thread::spawn(move || server.serve_one());
+            let mut daemon = if mode == "daemon" {
+                let guard = start_daemon(port, home.path());
+                wait_for_daemon_ready(port, Duration::from_secs(5), home.path());
+                Some(guard)
+            } else {
+                None
+            };
+            if mode == "fallback" {
+                std::fs::write(
+                    home.path().join(format!(".ff-rdp/daemon.{port}.json")),
+                    b"not valid json",
+                )
+                .unwrap();
+            }
+            // Use the live272 builder itself, including its target host.
+            let mut command =
+                crate::common::action_route::command(port, mode == "direct", &[action, "#target"]);
+            command.env("FF_RDP_HOME", home.path());
+            if action == "type" {
+                command.arg("hello");
+            }
+            if mode == "daemon" {
+                let registry: serde_json::Value = serde_json::from_slice(
+                    &std::fs::read(home.path().join(format!(".ff-rdp/daemon.{port}.json")))
+                        .unwrap(),
+                )
+                .unwrap();
+                let args: Vec<_> = command.get_args().collect();
+                let requested_host = args
+                    .windows(2)
+                    .find(|pair| pair[0] == "--host")
+                    .and_then(|pair| pair[1].to_str());
+                let registered_host = registry["firefox_host"].as_str().unwrap();
+                // Fail before launching a second daemon against a different
+                // host spelling; reap the one this mock test already owns.
+                if requested_host != Some(registered_host) {
+                    daemon.as_mut().unwrap().kill();
+                    mock.join().unwrap();
+                    panic!(
+                        "live272 builder host {requested_host:?} differs from actual daemon registry host {registered_host:?}"
+                    );
+                }
+            }
+            let output = crate::common::bounded_command_output(
+                &mut command,
+                Duration::from_secs(20),
+                "272 mock action route",
+            )
+            .unwrap();
+            if let Some(guard) = daemon.as_mut() {
+                guard.kill();
+            }
+            mock.join().unwrap();
+            let note = support::output_note(&output);
+            assert!(!output.status.success(), "{mode}/{action}: {note}");
+            let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert!(envelope["error"].is_string(), "{note}");
+            assert!(
+                requests
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|request| request["type"] == "evaluateJSAsync"),
+                "action never evaluated: {note}"
+            );
+            let require = crate::common::action_route::require_action_route;
+            require(&output.stderr, action, mode == "daemon")
+                .unwrap_or_else(|error| panic!("{mode}/{action}: {error}: {note}"));
+            assert!(
+                require(&output.stderr, action, mode != "daemon").is_err(),
+                "wrong route qualified: {mode}/{action}: {}",
+                support::output_note(&output)
+            );
+        }
+    }
+}
+
+#[test]
+fn e2e_272_action_route_requires_one_exact_record() {
+    let require = crate::common::action_route::require_action_route;
+    for invalid in [
+        "",
+        "FF_RDP_ACTION_ROUTE action=eval via_daemon=true",
+        "FF_RDP_ACTION_ROUTE action=click via_daemon=false",
+        "FF_RDP_ACTION_ROUTE action=click via_daemon=true extra",
+        "FF_RDP_ACTION_ROUTE action=click via_daemon=true\nFF_RDP_ACTION_ROUTE action=click via_daemon=true",
+    ] {
+        assert!(
+            require(invalid.as_bytes(), "click", true).is_err(),
+            "{invalid}"
+        );
+    }
+    require(
+        b"DEBUG target: FF_RDP_ACTION_ROUTE action=click via_daemon=true\x1b[0m\n",
+        "click",
+        true,
+    )
+    .unwrap();
+}

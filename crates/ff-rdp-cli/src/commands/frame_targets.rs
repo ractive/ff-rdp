@@ -55,9 +55,9 @@ const DAEMON_SNAPSHOT_POLL: Duration = Duration::from_millis(50);
 /// supports.
 ///
 /// * **Daemon connection** — asks the daemon for its recorded target forms and
-///   replays them, re-polling for [`DAEMON_SNAPSHOT_SETTLE`] and keeping the
-///   largest snapshot, so a command issued immediately after `navigate` does
-///   not race Firefox's frame spawning.
+///   replays them, re-polling for [`DAEMON_SNAPSHOT_SETTLE`] and returning the
+///   latest observed snapshot. This includes removals and replacements; the
+///   settle window cannot guarantee observation of frames announced later.
 /// * **Direct connection** — the iteration-129 path: opt into server-side
 ///   target switching via `get_watcher_with_options(Some(true))` and drain the
 ///   live event stream.
@@ -67,10 +67,15 @@ const DAEMON_SNAPSHOT_POLL: Duration = Duration::from_millis(50);
 /// `watchTargets` is a no-op and yields an empty list. The daemon path is
 /// idempotent, but callers must not rely on that difference.
 pub(crate) fn fetch_frame_targets(ctx: &mut ConnectedTab) -> Result<Vec<TargetEvent>, AppError> {
-    if ctx.via_daemon {
-        return fetch_via_daemon(ctx, DAEMON_SNAPSHOT_SETTLE);
-    }
-    fetch_direct(ctx)
+    let started = Instant::now();
+    tracing::debug!(target: "ff_rdp_cli::frame_targets", "FRAME_TARGETS_BEGIN pid={} via_daemon={}", std::process::id(), ctx.via_daemon);
+    let result = if ctx.via_daemon {
+        fetch_via_daemon(ctx, DAEMON_SNAPSHOT_SETTLE)
+    } else {
+        fetch_direct(ctx)
+    };
+    tracing::debug!(target: "ff_rdp_cli::frame_targets", "FRAME_TARGETS_END pid={} via_daemon={} elapsed_ns={} result={:?}", std::process::id(), ctx.via_daemon, started.elapsed().as_nanos(), result);
+    result
 }
 
 /// Direct-connection enumeration (iteration-129 behaviour, unchanged).
@@ -115,29 +120,12 @@ fn fetch_via_daemon(
     while Instant::now() < deadline {
         std::thread::sleep(DAEMON_SNAPSHOT_POLL);
         let next = request_frame_targets(ctx)?;
-        // Never regress to a shorter snapshot mid-poll: a `target-destroyed`
-        // for a transient frame must not discard targets already observed.
-        if next.watcher_ready
-            && (!latest.watcher_ready || next.targets.len() > latest.targets.len())
-        {
-            latest = next;
-        }
+        // A snapshot is current state, not an accumulating event history.
+        // Keep removals, equal-count replacements and readiness changes.
+        latest.observe(next);
     }
 
-    if !latest.watcher_ready {
-        return Err(AppError::Unsupported {
-            error_type: "daemon_watcher_not_ready",
-            message: "the daemon has not established its frame-target subscription yet, \
-                      so frame enumeration would report zero frames that do not reflect \
-                      the page.\n\
-                      hint: retry in a moment, run `ff-rdp daemon status` to check \
-                      (`live_target_count`), or use --no-daemon for a direct connection."
-                .to_owned(),
-            details: None,
-        });
-    }
-
-    Ok(latest.targets)
+    latest.finish()
 }
 
 /// One `frame-targets` answer: the replayed targets plus whether the daemon's
@@ -145,6 +133,30 @@ fn fetch_via_daemon(
 struct DaemonSnapshot {
     targets: Vec<TargetEvent>,
     watcher_ready: bool,
+}
+
+impl DaemonSnapshot {
+    fn observe(&mut self, next: Self) {
+        // A previously larger snapshot can contain destroyed actors. Keeping
+        // it would undo the lifecycle rules shared by direct and daemon paths.
+        *self = next;
+    }
+
+    fn finish(self) -> Result<Vec<TargetEvent>, AppError> {
+        if !self.watcher_ready {
+            return Err(AppError::Unsupported {
+                error_type: "daemon_watcher_not_ready",
+                message: "the daemon has not established its frame-target subscription yet, \
+                          so frame enumeration would report zero frames that do not reflect \
+                          the page.\n\
+                          hint: retry in a moment, run `ff-rdp daemon status` to check \
+                          (`live_target_count`), or use --no-daemon for a direct connection."
+                    .to_owned(),
+                details: None,
+            });
+        }
+        Ok(self.targets)
+    }
 }
 
 /// Issue one `{"to":"daemon","type":"frame-targets"}` request and parse the
@@ -164,6 +176,7 @@ fn request_frame_targets(ctx: &mut ConnectedTab) -> Result<DaemonSnapshot, AppEr
     })
     .map_err(AppError::from)?;
 
+    tracing::debug!(target: "ff_rdp_cli::frame_targets", "FRAME_TARGETS_REPLY pid={} reply={}", std::process::id(), reply);
     let packets: Vec<Value> = reply
         .get("targets")
         .and_then(Value::as_array)
@@ -266,5 +279,82 @@ mod tests {
     fn unit_frame_targets_replay_empty_snapshot() {
         let packets: Vec<Value> = Vec::new();
         assert!(target_events_from_packets(packets.iter()).is_empty());
+    }
+    fn snapshot(packets: &[Value], watcher_ready: bool) -> DaemonSnapshot {
+        DaemonSnapshot {
+            targets: target_events_from_packets(packets.iter()),
+            watcher_ready,
+        }
+    }
+
+    fn available(actor: &str, url: &str) -> Value {
+        json!({"type":"target-available-form", "target": {
+            "actor":actor, "url":url, "targetType":"frame"
+        }})
+    }
+
+    #[test]
+    fn unit_272_frame_snapshot_applies_observed_removal() {
+        let top = available("top", "https://top.example/");
+        let child = available("child", "https://child.example/");
+        let destroyed = json!({"type":"target-destroyed-form", "target":{"actor":"child"}});
+        let mut observed = snapshot(&[top.clone(), child.clone()], true);
+        observed.observe(snapshot(std::slice::from_ref(&top), true));
+        let actual = observed.finish().unwrap();
+        let direct = target_events_from_packets([top, child, destroyed].iter());
+        assert_eq!(
+            actual.len(),
+            direct.len(),
+            "must not return a target the next snapshot removed"
+        );
+        assert_eq!(actual[0].actor, direct[0].actor);
+    }
+
+    #[test]
+    fn unit_272_frame_snapshot_applies_same_count_replacement() {
+        let old = available("child", "about:blank");
+        let new = available("child", "https://child.example/");
+        let mut observed = snapshot(std::slice::from_ref(&old), true);
+        observed.observe(snapshot(std::slice::from_ref(&new), true));
+        let actual = observed.finish().unwrap();
+        let direct = target_events_from_packets([old, new].iter());
+        assert_eq!(
+            actual[0].url, direct[0].url,
+            "equal count does not mean identical target form"
+        );
+    }
+
+    #[test]
+    fn unit_272_frame_snapshot_refuses_withdrawn_readiness() {
+        let mut observed = snapshot(&[available("top", "https://top.example/")], true);
+        observed.observe(snapshot(&[], false));
+        assert!(
+            matches!(
+                observed.finish(),
+                Err(AppError::Unsupported {
+                    error_type: "daemon_watcher_not_ready",
+                    ..
+                })
+            ),
+            "a prior ready snapshot must not hide the latest unavailable subscription"
+        );
+    }
+
+    #[test]
+    fn unit_272_frame_snapshot_distinct_windows_can_disagree() {
+        let top = available("top", "https://top.example/");
+        let child = available("child", "https://child.example/");
+        // The first enumeration ends before the child is announced. The
+        // second sees both events. Neither can infer the other's event cut.
+        let daemon_early = snapshot(std::slice::from_ref(&top), true).finish().unwrap();
+        let direct_later = target_events_from_packets([top.clone(), child.clone()].iter());
+        assert_eq!(daemon_early.len(), 1);
+        assert_eq!(direct_later.len(), 2);
+        // Once both routes observe that same cut, their target sets agree.
+        let mut daemon_later = snapshot(std::slice::from_ref(&top), true);
+        daemon_later.observe(snapshot(&[top, child], true));
+        let daemon_later = daemon_later.finish().unwrap();
+        assert_eq!(daemon_later.len(), direct_later.len());
+        assert_eq!(daemon_later[1].actor, direct_later[1].actor);
     }
 }

@@ -148,3 +148,5 @@ mod live_styles_applied;
 mod live_styles_applied_dedupe;
 mod live_target_destroyed;
 mod live_wait_timeout_ms_canonical;
+
+mod live_272_autowait_deadline;

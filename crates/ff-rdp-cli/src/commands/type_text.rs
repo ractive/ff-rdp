@@ -514,6 +514,8 @@ pub fn run_core(
     opts: &TypeOptions<'_>,
 ) -> Result<(serde_json::Value, bool), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
+    tracing::debug!(target: "ff_rdp_cli::action_route",
+        "FF_RDP_ACTION_ROUTE action=type via_daemon={}", ctx.via_daemon);
     run_connected(cli, &mut ctx, selector, text, clear, opts)
 }
 
