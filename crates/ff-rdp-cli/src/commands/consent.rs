@@ -14,7 +14,7 @@
 //! - `ff-rdp consent accept` — explicit, on-demand.
 //! - `ff-rdp navigate --auto-consent` — best-effort, post-navigate.
 
-use ff_rdp_core::WebConsoleActor;
+use ff_rdp_core::{Grip, WebConsoleActor};
 use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
@@ -23,7 +23,6 @@ use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::{ConnectedTab, connect_and_get_target};
-use super::js_helpers::JSON_SENTINEL;
 
 /// `ff-rdp consent accept` — explicit, on-demand consent acceptance.
 ///
@@ -72,8 +71,8 @@ pub fn run(cli: &Cli, allow_no_cmp: bool) -> Result<(), AppError> {
 /// `allow_no_cmp` opts *only* the "nothing recognised was on the page" outcome
 /// back into exit 0. A CMP that was found and could not be actioned stays a
 /// failure regardless: the caller asked for the banner to be dismissed, the
-/// banner is still there, and something is wrong with the page or the accept
-/// table that the caller needs to see.
+/// acceptance is unconfirmed. An unexpected evaluation failure may follow a
+/// partial action, so it does not prove the banner is still visible.
 ///
 /// `result` is the `ConsentResult::to_json` value; its three keys are merged
 /// into the error envelope so the failing caller reads `cmp`/`action`/`status`
@@ -91,10 +90,9 @@ fn consent_exit_error(
     let message = match status {
         ConsentStatus::Accepted => return None,
         ConsentStatus::DetectedNotActioned => {
-            "a known consent-management platform was detected but its accept control could \
-             not be actioned — the banner is still on screen.\n\
-             hint: inspect the CMP frame with `ff-rdp dom --frames`, or click the control \
-             directly with `ff-rdp click --frame <url-substring> <selector>`."
+            "a known consent-management platform was detected, but acceptance could not be confirmed.\n\
+             hint: to act on a known control, use \
+             `ff-rdp click --frame <url-substring> <selector>`."
                 .to_owned()
         }
         ConsentStatus::NoCmpDetected => {
@@ -200,8 +198,8 @@ pub(crate) struct ConsentResult {
 pub(crate) enum ConsentStatus {
     /// A known CMP was found and its accept control was clicked.
     Accepted,
-    /// A known CMP was recognised, but no accept control could be actioned
-    /// inside it.
+    /// A known CMP was recognised, but acceptance was not confirmed. This
+    /// includes ambiguous evaluation failures after a possible partial action.
     DetectedNotActioned,
     /// No CMP this build recognises was present.
     NoCmpDetected,
@@ -270,27 +268,22 @@ fn status_of(result: &Value) -> ConsentStatus {
     }
 }
 
-/// JS that finds and clicks a control whose accessible label matches a
-/// known "accept all" phrasing, evaluated inside a specific frame's console
-/// actor. Mirrors `build_click_js`'s not-found error shape so failures read
-/// consistently across ff-rdp's eval-based commands.
+/// JS that finds and clicks a known accept-all label in one frame. Only a
+/// known pre-action miss returns false; unexpected exceptions are not caught.
 fn accept_all_js() -> String {
-    format!(
-        r#"(function() {{
+    r#"(function() {
   var re = /^(accept all|accept all cookies|accept all and continue|accept all and close|accept all and subscribe|i accept|i agree|allow all)$/i;
   var candidates = Array.prototype.slice.call(document.querySelectorAll('button, [role="button"], a'));
   var target = null;
-  for (var i = 0; i < candidates.length; i++) {{
+  for (var i = 0; i < candidates.length; i++) {
     var el = candidates[i];
     var label = (el.getAttribute('aria-label') || el.textContent || '').trim();
-    if (re.test(label)) {{ target = el; break; }}
-  }}
-  if (!target) throw new Error('Element not found: no accept-all control matched known consent labels');
-  var label = (target.getAttribute('aria-label') || target.textContent || '').trim();
+    if (re.test(label)) { target = el; break; }
+  }
+  if (!target) return false;
   target.click();
-  return '{JSON_SENTINEL}' + JSON.stringify({{accepted: true, label: label}});
-}})()"#
-    )
+  return true;
+})()"#.to_owned()
 }
 
 /// JS that clicks a fixed CSS selector directly in the top document,
@@ -304,14 +297,39 @@ fn native_accept_js(selector: &str) -> String {
     format!(
         r"(function() {{
   var target = document.querySelector('{escaped}');
-  if (!target) throw new Error('Element not found: no native consent control at the known selector');
+  if (!target) return false;
   var r = target.getBoundingClientRect();
-  if (r.width === 0 || r.height === 0) throw new Error('Element not found: native consent control present but not visible (covered or collapsed)');
-  var label = (target.getAttribute('aria-label') || target.textContent || '').trim();
+  if (r.width === 0 || r.height === 0) return false;
   target.click();
-  return '{JSON_SENTINEL}' + JSON.stringify({{accepted: true, label: label}});
+  return true;
 }})()"
     )
+}
+
+/// A false Boolean is the only evaluation result that permits another action.
+/// A true Boolean confirms the click call returned; site persistence requires
+/// separate observation. Exceptions and other grips leave acceptance unknown.
+enum AcceptAttempt {
+    Miss,
+    Accepted,
+    Unconfirmed,
+}
+
+fn evaluate_accept(
+    ctx: &mut ConnectedTab,
+    console_actor: &ff_rdp_core::ActorId,
+    js: &str,
+) -> Result<AcceptAttempt, AppError> {
+    let result = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, js)
+        .map_err(AppError::from)?;
+    if result.exception.is_some() {
+        return Ok(AcceptAttempt::Unconfirmed);
+    }
+    Ok(match result.result {
+        Grip::Value(Value::Bool(false)) => AcceptAttempt::Miss,
+        Grip::Value(Value::Bool(true)) => AcceptAttempt::Accepted,
+        _ => AcceptAttempt::Unconfirmed,
+    })
 }
 
 /// Try every [`NATIVE_CMP_TABLE`] entry whose host substring matches the
@@ -331,18 +349,18 @@ fn try_native_cmp(
     };
 
     let js = native_accept_js(entry.selector);
-    let eval_result = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, &js)
-        .map_err(AppError::from)?;
-
-    if eval_result.exception.is_none() {
-        Ok(Some(ConsentResult {
+    match evaluate_accept(ctx, console_actor, &js)? {
+        AcceptAttempt::Miss => Ok(None),
+        AcceptAttempt::Accepted => Ok(Some(ConsentResult {
             cmp: Some(entry.name),
             action: Some("accepted"),
-        }))
-    } else {
-        // Present-but-invisible or genuinely absent — either way, not this
-        // call's job to report; let the iframe table take a turn.
-        Ok(None)
+        })),
+        // An exception may occur after a partial action. Never try an iframe
+        // after an ambiguous native action, including an unexpected result.
+        AcceptAttempt::Unconfirmed => Ok(Some(ConsentResult {
+            cmp: Some(entry.name),
+            action: None,
+        })),
     }
 }
 
@@ -352,12 +370,13 @@ fn try_native_cmp(
 /// tries [`NATIVE_CMP_TABLE`] (same-origin, top-document controls) via
 /// [`try_native_cmp`]; if that finds nothing actionable, matches each
 /// non-top frame's URL against [`CMP_TABLE`] and evaluates the accept-click
-/// JS on the first match's own console actor.
+/// JS on each match's own console actor until an action succeeds. Only a known
+/// pre-action miss permits continuing; an ambiguous evaluation stops the pass.
 ///
 /// Returns `{"cmp": null, "action": null}` when no known CMP frame is found.
 /// Returns `{"cmp": "<name>", "action": null}` when a CMP frame is found but
-/// no matching accept control could be located in it (CMP detected, not
-/// actionable — still an always-present pair of keys, never omitted).
+/// acceptance could not be confirmed (including an ambiguous partial action).
+/// These keys remain present for every outcome, never omitted.
 /// Returns `{"cmp": "<name>", "action": "accepted"}` on success.
 pub(crate) fn detect_and_accept(ctx: &mut ConnectedTab) -> Result<Value, AppError> {
     // iter-137 Theme A: route through the connection-aware entry point.  The
@@ -377,42 +396,32 @@ pub(crate) fn detect_and_accept(ctx: &mut ConnectedTab) -> Result<Value, AppErro
         return Ok(result.to_json());
     }
 
-    let Some((cmp_name, target)) = targets.iter().find_map(|t| {
-        if t.is_top_level {
-            return None;
+    let mut result = ConsentResult::none();
+    let js = accept_all_js();
+    for target in targets.iter().filter(|target| !target.is_top_level) {
+        let Some(cmp_name) = match_cmp(target.url.as_deref().unwrap_or_default()) else {
+            continue;
+        };
+        if result.cmp.is_none() {
+            result.cmp = Some(cmp_name);
         }
-        match_cmp(t.url.as_deref().unwrap_or_default()).map(|name| (name, t))
-    }) else {
-        return Ok(ConsentResult::none().to_json());
-    };
-
-    let Some(console_actor) = target.console_actor.as_ref() else {
-        // Frame matched by URL but Firefox didn't ship a consoleActor for it
-        // (should not happen per the frame-targets research, but stay
-        // defensive) — report the CMP as found, not actioned.
+        let Some(console_actor) = target.console_actor.as_ref() else {
+            // Recognition without a usable console is not an action. A later
+            // recognized frame can still contain the actionable control.
+            continue;
+        };
+        let action = match evaluate_accept(ctx, console_actor, &js)? {
+            AcceptAttempt::Miss => continue,
+            AcceptAttempt::Accepted => Some("accepted"),
+            AcceptAttempt::Unconfirmed => None,
+        };
         return Ok(ConsentResult {
             cmp: Some(cmp_name),
-            action: None,
+            action,
         }
         .to_json());
-    };
-
-    let js = accept_all_js();
-    let eval_result = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, &js)
-        .map_err(AppError::from)?;
-
-    let action = if eval_result.exception.is_none() {
-        Some("accepted")
-    } else {
-        // Frame matched but no known-label button was found inside it —
-        // report detection without a false "accepted" claim.
-        None
-    };
-    Ok(ConsentResult {
-        cmp: Some(cmp_name),
-        action,
     }
-    .to_json())
+    Ok(result.to_json())
 }
 
 /// Returns the first [`CmpEntry`] whose `frame_url_substrings` matches `url`
@@ -519,10 +528,10 @@ mod tests {
     // ── accept_all_js shape ──────────────────────────────────────────────
 
     #[test]
-    fn accept_all_js_contains_not_found_marker_and_sentinel() {
+    fn accept_all_js_has_explicit_pre_action_miss_and_success() {
         let js = accept_all_js();
-        assert!(js.contains("Element not found:"));
-        assert!(js.contains(JSON_SENTINEL));
+        assert!(js.contains("return false"));
+        assert!(js.contains("target.click();\n  return true;"));
         assert!(js.contains("accept all"));
     }
 
@@ -583,9 +592,9 @@ mod tests {
     fn native_accept_js_requires_visible_rect_and_carries_selector() {
         let js = native_accept_js("#bbccookies-continue-button");
         assert!(js.contains("#bbccookies-continue-button"));
-        assert!(js.contains("Element not found:"));
+        assert!(js.contains("return false"));
         assert!(js.contains("getBoundingClientRect"));
-        assert!(js.contains(JSON_SENTINEL));
+        assert!(js.contains("target.click();\n  return true;"));
     }
 
     /// A selector containing a single quote must not break out of the JS
@@ -672,7 +681,7 @@ mod tests {
     fn unit_160_allow_no_cmp_only_forgives_the_no_cmp_outcome() {
         assert!(consent_exit_error(ConsentStatus::NoCmpDetected, true, &json!({})).is_none());
         // A CMP that was found and could not be actioned is still a failure:
-        // the caller asked for the banner to go away and it is still there.
+        // the caller asked for acceptance, which remains unconfirmed.
         let err = consent_exit_error(ConsentStatus::DetectedNotActioned, true, &json!({}))
             .expect("must still fail with --allow-no-cmp");
         assert_eq!(err.error_type(), "consent_not_actioned");
