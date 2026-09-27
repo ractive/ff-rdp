@@ -187,10 +187,19 @@ fn protocol_fault_actor_error_response() {
 
 #[test]
 fn connection_fault_nothing_listening() {
-    // Bind to get a free port, then drop so nothing listens.
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
+    // Reserve the endpoint without listening. Dropping an ephemeral listener
+    // here lets another parallel fixture claim its port before the CLI connects.
+    let reservation = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None)
+        .expect("create refused endpoint reservation");
+    reservation
+        .bind(&std::net::SocketAddr::from(([127, 0, 0, 1], 0)).into())
+        .expect("bind refused endpoint reservation");
+    let address = reservation.local_addr().unwrap().as_socket().unwrap();
+    let port = address.port();
+    assert!(
+        TcpListener::bind(address).is_err(),
+        "refused endpoint must not be available to another fixture"
+    );
 
     let mut args = base_args(port);
     args.push("tabs".to_owned());
@@ -199,6 +208,13 @@ fn connection_fault_nothing_listening() {
         .args(&args)
         .output()
         .expect("spawn ff-rdp");
+
+    // Command::output has waited for the CLI; keep the lease until that wait.
+    assert!(
+        TcpListener::bind(address).is_err(),
+        "refused endpoint reservation must survive the CLI wait"
+    );
+    drop(reservation);
 
     assert_eq!(
         output.status.code(),

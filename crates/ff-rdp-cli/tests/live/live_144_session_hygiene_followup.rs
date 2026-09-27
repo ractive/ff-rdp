@@ -60,6 +60,138 @@ fn parse_json(out: &std::process::Output, test: &str) -> serde_json::Value {
     })
 }
 
+const BBC_FAILURE_CONTEXT_MAX_BYTES: usize = 16 * 1024;
+const BBC_FAILURE_CONTEXT_TRUNCATION_MARKER: &str = "\n...[diagnostic truncated]";
+
+fn cap_bbc_failure_context(note: String) -> String {
+    if note.len() <= BBC_FAILURE_CONTEXT_MAX_BYTES {
+        return note;
+    }
+
+    let prefix_limit =
+        BBC_FAILURE_CONTEXT_MAX_BYTES.saturating_sub(BBC_FAILURE_CONTEXT_TRUNCATION_MARKER.len());
+    let prefix_end = note
+        .char_indices()
+        .take_while(|(index, character)| *index + character.len_utf8() <= prefix_limit)
+        .map(|(index, character)| index + character.len_utf8())
+        .last()
+        .unwrap_or(0);
+    format!(
+        "{}{}",
+        &note[..prefix_end],
+        BBC_FAILURE_CONTEXT_TRUNCATION_MARKER
+    )
+}
+
+const BBC_FAILURE_CONTEXT_JS: &str = r#"(function() {
+      var MAX_MATCHES = 12;
+      var MAX_TEXT_LENGTH = 240;
+      var MAX_ATTRIBUTE_LENGTH = 160;
+      function truncate(value, limit) {
+        value = String(value || '');
+        return value.length <= limit ? value : value.slice(0, limit) + '...[truncated]';
+      }
+      function shape(el) {
+        var r = el.getBoundingClientRect();
+        return {
+          tag: el.tagName,
+          id: truncate(el.id, MAX_ATTRIBUTE_LENGTH),
+          role: truncate(el.getAttribute('role'), MAX_ATTRIBUTE_LENGTH),
+          className: truncate(el.className, MAX_ATTRIBUTE_LENGTH),
+          src: truncate(el.getAttribute('src'), MAX_ATTRIBUTE_LENGTH),
+          width: r.width,
+          height: r.height,
+          text: truncate(el.innerText || el.textContent, MAX_TEXT_LENGTH)
+        };
+      }
+      function cookieSummary() {
+        var raw = document.cookie || '';
+        var names = raw.split(';').map(function(part) {
+          return part.split('=')[0].trim();
+        }).filter(Boolean);
+        return {
+          present: raw.length > 0,
+          count: names.length,
+          names: names.slice(0, MAX_MATCHES).map(function(name) {
+            return truncate(name, MAX_ATTRIBUTE_LENGTH);
+          }),
+          omitted: Math.max(0, names.length - MAX_MATCHES),
+          rawLength: raw.length
+        };
+      }
+      function bounded(selector, limit) {
+        var all = Array.from(document.querySelectorAll(selector));
+        return {items: all.slice(0, limit).map(shape), omitted: Math.max(0, all.length - limit)};
+      }
+      return JSON.stringify({url: truncate(location.href, MAX_ATTRIBUTE_LENGTH),
+        documentURL: truncate(document.URL, MAX_ATTRIBUTE_LENGTH),
+        title: truncate(document.title, MAX_TEXT_LENGTH),
+        readyState: document.readyState,
+        language: navigator.language,
+        languages: Array.from(navigator.languages || []).slice(0, MAX_MATCHES),
+        documentLanguage: truncate(document.documentElement.lang, MAX_ATTRIBUTE_LENGTH),
+        timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        cookies: cookieSummary(),
+        native: bounded('#bbccookies-continue-button', MAX_MATCHES),
+        banners: bounded('[id*="cookie"],[id*="consent"],[role="dialog"],iframe', MAX_MATCHES)
+      });
+    })()"#;
+
+// Classify the command's report, not the site's unknowable decision-time DOM.
+// Only NativeAccepted can advance to the separate post-action effect check.
+#[derive(Debug, PartialEq)]
+enum BbcConsentOutcome {
+    NativeAccepted,
+    OtherCmp,
+    NoCmpReported,
+    NativeNotActioned,
+    InvalidOrFailed,
+}
+
+fn bbc_consent_outcome(success: bool, envelope: &serde_json::Value) -> BbcConsentOutcome {
+    let result = if success {
+        &envelope["results"]
+    } else {
+        envelope
+    };
+    if !success
+        && envelope["error_type"] == "consent_no_cmp"
+        && result.get("cmp") == Some(&serde_json::Value::Null)
+        && result.get("action") == Some(&serde_json::Value::Null)
+        && result["status"] == "no_cmp_detected"
+    {
+        return BbcConsentOutcome::NoCmpReported;
+    }
+    match result["cmp"].as_str() {
+        Some("bbc")
+            if success
+                && envelope.get("error_type").is_none()
+                && result["action"] == "accepted"
+                && result["status"] == "accepted" =>
+        {
+            BbcConsentOutcome::NativeAccepted
+        }
+        Some("bbc") => BbcConsentOutcome::NativeNotActioned,
+        Some(_) => BbcConsentOutcome::OtherCmp,
+        None => BbcConsentOutcome::InvalidOrFailed,
+    }
+}
+
+fn bbc_control_dismissed(sample: &serde_json::Value) -> bool {
+    match sample["present"].as_bool() {
+        Some(false) => true,
+        Some(true) => match (sample["w"].as_f64(), sample["h"].as_f64()) {
+            (Some(width), Some(height))
+                if width.is_finite() && height.is_finite() && width >= 0.0 && height >= 0.0 =>
+            {
+                width == 0.0 || height == 0.0
+            }
+            _ => false,
+        },
+        None => false,
+    }
+}
+
 /// `live_144_auto_consent_field_honest`:
 ///
 /// `launch --auto-consent`'s JSON reports `results.auto_consent_extension_installed`
@@ -157,32 +289,34 @@ fn live_144_bbc_cmp_dismissed() {
         .args(["navigate", "https://www.bbc.com/news"])
         .output()
         .expect("run navigate");
-    if !nav.status.success() {
-        eprintln!(
-            "{TEST}: navigate to www.bbc.com failed (network unavailable?) — skipping: {}",
-            String::from_utf8_lossy(&nav.stderr)
-        );
-        return;
-    }
+    assert!(
+        nav.status.success(),
+        "{TEST}: navigation failed; no dismissal was verified — {}\npage after failure: {}",
+        crate::common::output_note(&nav),
+        bbc_failure_context(ff.port())
+    );
 
     let out = Command::new(ff_rdp_bin())
         .args(base_args(ff.port()))
         .args(["consent", "accept"])
         .output()
         .expect("run consent accept");
-    assert!(
-        out.status.success(),
-        "{TEST}: consent accept failed — {}",
-        crate::common::output_note(&out)
-    );
-    let json = parse_json(&out, TEST);
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|error| {
+        panic!(
+            "{TEST}: invalid consent JSON ({error}) — {}\npage after failure (later observation): {}",
+            crate::common::output_note(&out),
+            bbc_failure_context(ff.port())
+        )
+    });
+    let outcome = bbc_consent_outcome(out.status.success(), &json);
     assert_eq!(
-        json["results"]["cmp"], "bbc",
-        "{TEST}: expected the native BBC adapter to match: {json}"
-    );
-    assert_eq!(
-        json["results"]["action"], "accepted",
-        "{TEST}: expected a real click, not just a match: {json}"
+        outcome,
+        BbcConsentOutcome::NativeAccepted,
+        "{TEST}: native BBC dismissal unverified; command outcome {outcome:?} — {}\n\
+         navigate: {}\npage after failure (later observation): {}",
+        crate::common::output_note(&out),
+        crate::common::output_note(&nav),
+        bbc_failure_context(ff.port())
     );
 
     // Confirm the control is genuinely gone, not just blindly clicked.
@@ -205,14 +339,115 @@ fn live_144_bbc_cmp_dismissed() {
             .unwrap_or_else(|| panic!("{TEST}: eval results not a string: {eval_json}")),
     )
     .unwrap_or_else(|e| panic!("{TEST}: eval result not JSON: {e}"));
-    let still_visible = inner["present"].as_bool().unwrap_or(false)
-        && inner["w"].as_f64().unwrap_or(0.0) > 0.0
-        && inner["h"].as_f64().unwrap_or(0.0) > 0.0;
     assert!(
-        !still_visible,
-        "{TEST}: the accept control is still visible after `consent accept` claimed \
-         it was accepted: {inner}"
+        bbc_control_dismissed(&inner),
+        "{TEST}: native post-action effect missing or invalid: {inner}\n\
+         page after failure (later observation): {}",
+        bbc_failure_context(ff.port())
     );
+}
+
+// Read only after a failed command: an extra pre-consent round trip could hide
+// the readiness race this real-site test is intended to expose. This is a
+// subsequent observation, not an atomic snapshot of the failed consent call.
+fn bbc_failure_context(port: u16) -> String {
+    match Command::new(ff_rdp_bin())
+        .args(base_args(port))
+        .args(["eval", BBC_FAILURE_CONTEXT_JS])
+        .output()
+    {
+        Ok(out) => cap_bbc_failure_context(crate::common::output_note(&out)),
+        Err(err) => cap_bbc_failure_context(format!("could not collect page context: {err}")),
+    }
+}
+
+// allow-ungated-live: Firefox-free formatting regression; no browser or env gate is needed.
+#[test]
+fn bbc_failure_context_preserves_utf8_and_caps_bytes() {
+    let short = "short diagnostic é".to_owned();
+    assert_eq!(cap_bbc_failure_context(short.clone()), short);
+    let oversized = format!("prefix-{}", "é".repeat(BBC_FAILURE_CONTEXT_MAX_BYTES));
+    let capped = cap_bbc_failure_context(oversized);
+    assert!(capped.len() <= BBC_FAILURE_CONTEXT_MAX_BYTES);
+    assert!(capped.ends_with(BBC_FAILURE_CONTEXT_TRUNCATION_MARKER));
+    let prefix = capped
+        .strip_suffix(BBC_FAILURE_CONTEXT_TRUNCATION_MARKER)
+        .expect("truncation marker");
+    assert!(prefix.starts_with("prefix-"));
+    assert!(prefix["prefix-".len()..].chars().all(|ch| ch == 'é'));
+    assert!(BBC_FAILURE_CONTEXT_MAX_BYTES - capped.len() < 'é'.len_utf8());
+}
+
+// allow-ungated-live: pure command-contract unit controls, not invented RDP/site fixtures.
+#[test]
+fn bbc_consent_requires_native_accepted_action() {
+    use serde_json::json;
+    let native = json!({"results":{"cmp":"bbc","action":"accepted","status":"accepted"}});
+    assert_eq!(
+        bbc_consent_outcome(true, &native),
+        BbcConsentOutcome::NativeAccepted
+    );
+    for field in ["cmp", "action", "status"] {
+        let mut missing = native.clone();
+        missing["results"].as_object_mut().unwrap().remove(field);
+        assert_ne!(
+            bbc_consent_outcome(true, &missing),
+            BbcConsentOutcome::NativeAccepted
+        );
+        let mut null = native.clone();
+        null["results"][field] = serde_json::Value::Null;
+        assert_ne!(
+            bbc_consent_outcome(true, &null),
+            BbcConsentOutcome::NativeAccepted
+        );
+    }
+    assert_ne!(
+        bbc_consent_outcome(false, &native),
+        BbcConsentOutcome::NativeAccepted
+    );
+    let other = json!({"results":{"cmp":"sourcepoint","action":"accepted","status":"accepted"}});
+    assert_eq!(
+        bbc_consent_outcome(true, &other),
+        BbcConsentOutcome::OtherCmp
+    );
+    let no_cmp =
+        json!({"error_type":"consent_no_cmp","cmp":null,"action":null,"status":"no_cmp_detected"});
+    assert_eq!(
+        bbc_consent_outcome(false, &no_cmp),
+        BbcConsentOutcome::NoCmpReported
+    );
+    assert_ne!(
+        bbc_consent_outcome(true, &no_cmp),
+        BbcConsentOutcome::NativeAccepted
+    );
+    let no_action = json!({"error_type":"consent_not_actioned","cmp":"bbc","action":null,"status":"detected_not_actioned"});
+    assert_eq!(
+        bbc_consent_outcome(false, &no_action),
+        BbcConsentOutcome::NativeNotActioned
+    );
+}
+
+// allow-ungated-live: pure effect-oracle controls; malformed samples must not prove dismissal.
+#[test]
+fn bbc_dismissal_requires_valid_post_action_effect() {
+    use serde_json::json;
+    for sample in [
+        json!({"present":false}),
+        json!({"present":true,"w":0,"h":10}),
+        json!({"present":true,"w":10,"h":0}),
+    ] {
+        assert!(bbc_control_dismissed(&sample), "{sample}");
+    }
+    for sample in [
+        json!({}),
+        json!({"present":null}),
+        json!({"present":true}),
+        json!({"present":true,"w":0}),
+        json!({"present":true,"w":-1,"h":0}),
+        json!({"present":true,"w":10,"h":10}),
+    ] {
+        assert!(!bbc_control_dismissed(&sample), "{sample}");
+    }
 }
 
 /// `live_144_full_page_no_duplicate_header`:

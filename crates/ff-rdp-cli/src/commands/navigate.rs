@@ -5846,6 +5846,160 @@ mod snapshot_probe_tests {
         assert_snapshot_query_deadline(true);
     }
 
+    // This boundary fixture has already decoded auth and written its greeting.
+    // Record a close before any query bytes; do not qualify it as an expected
+    // deadline close until the real caller result and absolute deadline exist.
+    fn snapshot_boundary_query(
+        reader: &mut impl std::io::BufRead,
+    ) -> std::result::Result<Value, (std::io::ErrorKind, Instant)> {
+        use std::io::ErrorKind;
+        match reader.fill_buf() {
+            Ok([]) => {
+                return Err((ErrorKind::UnexpectedEof, Instant::now()));
+            }
+            Err(error) if error.kind() == ErrorKind::ConnectionReset => {
+                return Err((ErrorKind::ConnectionReset, Instant::now()));
+            }
+            Err(error) => panic!("snapshot boundary pre-query read: {error}"),
+            Ok(_) => {}
+        }
+        // Once even one query byte is visible, EOF/reset is an incomplete
+        // frame, not a terminal no-query boundary.
+        let query = recv_from(reader)
+            .unwrap_or_else(|error| panic!("incomplete/invalid boundary query: {error}"));
+        assert_eq!(query["to"], "daemon");
+        assert_eq!(query["type"], "resolve-tab-target");
+        assert_eq!(query["descriptor"], "conn0/tab1");
+        Ok(query)
+    }
+
+    fn assert_snapshot_terminal_boundary<T>(
+        close: (std::io::ErrorKind, Instant),
+        deadline: Instant,
+        caller: &Result<T, AppError>,
+    ) {
+        assert!(
+            close.1 >= deadline,
+            "pre-query close before deadline: {close:?}"
+        );
+        assert!(
+            matches!(caller, Err(AppError::Timeout(_))),
+            "terminal snapshot closure requires actual caller Timeout: {close:?}"
+        );
+    }
+
+    #[test]
+    fn snapshot_boundary_rejects_early_non_timeout_and_partial_closes() {
+        use std::io::{BufRead, Cursor, ErrorKind, Read};
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+
+        struct FaultAfterBytes {
+            bytes: Cursor<Vec<u8>>,
+            error: ErrorKind,
+        }
+        impl Read for FaultAfterBytes {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let count = self.bytes.read(buf)?;
+                if count == 0 && !buf.is_empty() {
+                    Err(self.error.into())
+                } else {
+                    Ok(count)
+                }
+            }
+        }
+        impl BufRead for FaultAfterBytes {
+            fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+                let bytes = self.bytes.fill_buf()?;
+                if bytes.is_empty() {
+                    Err(self.error.into())
+                } else {
+                    Ok(bytes)
+                }
+            }
+            fn consume(&mut self, count: usize) {
+                self.bytes.consume(count);
+            }
+        }
+
+        let eof = snapshot_boundary_query(&mut Cursor::new(Vec::<u8>::new())).unwrap_err();
+        let reset = snapshot_boundary_query(&mut FaultAfterBytes {
+            bytes: Cursor::new(Vec::new()),
+            error: ErrorKind::ConnectionReset,
+        })
+        .unwrap_err();
+        assert_eq!(eof.0, ErrorKind::UnexpectedEof);
+        assert_eq!(reset.0, ErrorKind::ConnectionReset);
+        for close in [eof, reset] {
+            let timeout = Err::<(), _>(AppError::Timeout("deadline".into()));
+            assert_snapshot_terminal_boundary(close, close.1, &timeout);
+            for (deadline, caller) in [
+                (close.1 + Duration::from_millis(600), timeout),
+                (close.1, Err(AppError::Connection("reset".into()))),
+                (close.1, Ok(())),
+            ] {
+                assert!(
+                    catch_unwind(AssertUnwindSafe(|| {
+                        assert_snapshot_terminal_boundary(close, deadline, &caller);
+                    }))
+                    .is_err()
+                );
+            }
+        }
+        let valid = json!({
+            "to": "daemon",
+            "type": "resolve-tab-target",
+            "descriptor": "conn0/tab1"
+        });
+        assert_eq!(
+            snapshot_boundary_query(&mut Cursor::new(
+                encode_frame(&valid.to_string()).into_bytes()
+            ))
+            .unwrap(),
+            valid
+        );
+        let mut invalid_frames = vec![b"10:{".to_vec(), b"1:x".to_vec()];
+        for field in ["to", "type", "descriptor"] {
+            let mut wrong = valid.clone();
+            wrong[field] = json!("wrong");
+            invalid_frames.push(encode_frame(&wrong.to_string()).into_bytes());
+        }
+        for bytes in invalid_frames {
+            assert!(
+                catch_unwind(AssertUnwindSafe(|| {
+                    snapshot_boundary_query(&mut Cursor::new(bytes.clone()))
+                }))
+                .is_err(),
+                "partial/invalid queries ending in EOF must remain failures"
+            );
+            assert!(
+                catch_unwind(AssertUnwindSafe(|| {
+                    snapshot_boundary_query(&mut FaultAfterBytes {
+                        bytes: Cursor::new(bytes),
+                        error: ErrorKind::ConnectionReset,
+                    })
+                }))
+                .is_err(),
+                "partial/invalid queries must not become terminal closes"
+            );
+        }
+        for error in [
+            ErrorKind::TimedOut,
+            ErrorKind::ConnectionAborted,
+            ErrorKind::BrokenPipe,
+        ] {
+            assert!(
+                catch_unwind(|| {
+                    snapshot_boundary_query(&mut FaultAfterBytes {
+                        bytes: Cursor::new(Vec::new()),
+                        error,
+                    })
+                })
+                .is_err(),
+                "only pre-query EOF/reset may reach terminal qualification"
+            );
+        }
+    }
+
     #[test]
     fn snapshot_pending_queries_keep_absolute_deadline() {
         assert_snapshot_query_deadline(false);
@@ -5853,7 +6007,7 @@ mod snapshot_probe_tests {
 
     fn assert_snapshot_query_deadline(pause_at_boundary: bool) {
         use std::cell::RefCell;
-        use std::io::{BufRead, Read};
+        use std::io::Read;
         use std::panic::{AssertUnwindSafe, catch_unwind};
         use std::rc::Rc;
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -5897,7 +6051,7 @@ mod snapshot_probe_tests {
         let fixture_end = start + Duration::from_secs(2);
         let snapshots = std::thread::spawn(move || {
             let mut queries = 0;
-            let mut terminal_eof = false;
+            let mut terminal_close = None;
             while !done.load(Ordering::Relaxed) && Instant::now() < fixture_end {
                 let mut stream = match side.accept() {
                     Ok((stream, _)) => stream,
@@ -5920,22 +6074,17 @@ mod snapshot_probe_tests {
                     &mut stream,
                     &json!({"protocol_version":crate::daemon::server::DAEMON_PROTOCOL_VERSION}),
                 );
-                if reader.fill_buf().unwrap().is_empty() {
-                    assert!(start.elapsed() >= Duration::from_millis(600));
-                    terminal_eof = true;
+                if let Err(close) = snapshot_boundary_query(&mut reader) {
+                    terminal_close = Some(close);
                     break;
                 }
-                let query = recv_from(&mut reader).unwrap();
-                assert_eq!(query["to"], "daemon");
-                assert_eq!(query["type"], "resolve-tab-target");
-                assert_eq!(query["descriptor"], "conn0/tab1");
                 queries += 1;
                 send(
                     &mut stream,
                     &json!({"from":"daemon","type":"resolve-tab-target","state":"pending"}),
                 );
             }
-            (queries, terminal_eof)
+            (queries, terminal_close)
         });
         let caller = catch_unwind(AssertUnwindSafe(|| {
             crate::daemon::client::snapshot_query_boundary::with(
@@ -5990,28 +6139,31 @@ mod snapshot_probe_tests {
             returned.duration_since(start),
             observations.borrow().first(),
         );
-        let (queries, terminal_eof) = joined.unwrap();
+        let (queries, terminal_close) = joined.unwrap();
         main_shutdown.expect("fixture main-channel send shutdown");
         assert!(
             matches!(client_eof, Err(ff_rdp_core::ProtocolError::RecvFailed(ref e)) if e.kind() == std::io::ErrorKind::UnexpectedEof),
             "fixture client must observe peer FIN: {client_eof:?}"
         );
         assert_eq!(main_eof.unwrap(), 0, "no shared RPC/evaluation is allowed");
+        let result = caller.unwrap();
         let records = observations.borrow();
         assert!(
             !records.is_empty(),
             "at least one decoded greeting required"
         );
         assert!(records.iter().all(|record| record.0 == records[0].0));
+        if let Some(close) = terminal_close {
+            assert_snapshot_terminal_boundary(close, records[0].0, &result);
+        }
         if pause_at_boundary {
             assert_eq!(records.len(), 1);
             assert_eq!(queries, 0);
-            assert!(terminal_eof);
+            assert!(terminal_close.is_some());
             assert!(records[0].1 < records[0].0 && records[0].2 >= records[0].0);
         } else {
             assert!(queries > 0, "ordinary control must send complete queries");
         }
-        let result = caller.unwrap();
         assert!(
             matches!(result, Err(AppError::Timeout(_))),
             "strict watched-readiness result must remain Timeout: {result:?}"
