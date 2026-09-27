@@ -648,3 +648,103 @@ claim. No product/Rust bytes or unrelated plans changed. Original attribution
 requirements remain explicitly unmet. No commit, PR or merge is claimed by
 this completion record; the supervisor owns those steps. Actual token usage
 is unavailable.
+
+## PR280 CI fixture repair pending — 2026-09-27
+
+Ubuntu CI on head `76129189ec480bce3d80e6aab15009d1bd62326c` failed
+`connection_fault_nothing_listening` (exit6 instead of3) and
+`shape_fault_malformed_frame` (exit3 instead of4/6). The raw job is preserved
+at `.git/ralph-loop/20260924-all-open/iter271/ci-ubuntu-job.log`. It contains
+no port trace, so cross-test port reuse is plausible, not an established
+exclusive cause of those two occurrences.
+
+The connection fixture demonstrably released an ephemeral listening socket
+before starting its CLI. The proposed repair keeps a bound, non-listening
+`socket2` socket alive through the CLI's actual `Command::output` wait, using
+the existing dependency and the repository's refused-endpoint pattern. Rebind
+assertions before and after that wait check the ownership invariant. Exact
+exit3/`Connection` assertions and the other four tests, including their actual
+fixture-thread joins, are unchanged. No retries, sleeps, wider accepted errors
+or global test serialization are introduced.
+
+Only this nonlive `error_shapes` integration target and this plan changed.
+All eight closing2 producer input lists and retained depinfo exclude that test
+file; no product, live-test, manifest or dependency bytes changed. The351-name
+live closing proof therefore remains applicable to its unchanged relevant
+inputs. It does not validate the new fixture. Fresh scoped review, finite
+fixture validation, ordered commit gates and green CI on the repaired PR head
+are still owed; PR280 is not currently mergeable. No new execution or passing
+result is claimed in this pending repair record. Original AC0/4 and every
+historical failure remain unchanged.
+
+## PR280 macOS snapshot fixture repair pending — 2026-09-27
+
+The same PR head's macOS unit run failed
+`snapshot_pending_queries_keep_absolute_deadline`: the fixture's first query
+`fill_buf().unwrap()` saw ConnectionReset54 after authentication and greeting
+write. The actual caller returned AppError::Timeout at601.477709ms; the main
+channel observed peer FIN and zero reverse bytes, but the snapshot fixture
+join reported its panic. `ci-macos-job.log` and `ci-macos-source-audit.json`
+remain intact under the same private271 evidence root. The old trace has no
+separate reset-observation instant; it does not by itself establish the precise
+terminal ordering or explain any historical262/267/268 failure.
+
+The proposed test-only repair records EOF/reset only before any query bytes
+and qualifies that observation after the actual fixture join, against the
+caller's observed absolute deadline and its actual AppError::Timeout result.
+Early closure, other caller errors/success, partial or malformed frames,
+wrong query routing and other read errors remain failures. A pure controlled
+reader checks those distinctions. The original600ms budget,2s fixture bounds,
+sub-second caller bound, identical recorded deadlines, complete ordinary
+queries, paused one-boundary/zero-query assertions, main-channel FIN/zero-RPC
+checks and actual joins remain. The shared `snapshot_fixture_query` helper
+and its other callers are unchanged; no production timing or error behavior
+is modified.
+
+The navigate.rs file hash changes, so the prior full-file pin is not claimed
+unchanged. `ci-snapshot-repair1/live-proof-cfg-boundary.json` proves every edit
+lies inside the existing `#[cfg(test)] snapshot_probe_tests` module, with all
+bytes outside it identical. Of closing2's eight producer inputs, only the
+normal CLI lists this changed file; its artifact has profile.test=false and
+excludes the changed module. The other seven producers' source inputs match.
+This explicit compilation boundary supports supervisor reuse of the351/351
+live proof, not validation of either new CI fixture. Combined independent
+review, finite focused proof, ordered gates and green exact-head CI are still
+owed. No new tests, Cargo, Firefox or shared-target mutation ran during this
+repair preparation; PR280 remains unmergeable until those gates pass.
+
+
+## Repaired CI candidate validated locally — 2026-09-27
+
+Combined independent review accepted both fixture repairs with zero findings
+(`review-ci-combined1/report.md`, SHA256 `a26a1a76e121fce1cb8e5ac8c5ae01148a35f2df8c2089b39e21a4e8fc3cc70e`).
+Under the separately recorded600-second schedule, both negative controls failed
+at their exact intended assertions; the restored five error-shape tests and
+six snapshot controls all passed. Both compile generations have current source,
+typed Git metadata, frozen producer and actual child-wait evidence. Exact
+source restoration and420-profile conservation passed; actual outer wait0.
+Evidence: `.git/ralph-loop/20260924-all-open/iter271/ci-focused-preparation1/`.
+
+The ordered fmt, strict workspace/all-target Clippy and workspace test commands
+all returned actual wait0. The38 test summaries contain2693 passing results,
+zero failures and426 ignored, including one nested helper pass. Rustfmt only
+wrapped one expression. All nine static gates passed or explicitly skipped
+(the plan has no dogfood script), plus all-plan validation, HYALO005 and diff
+checks. No passing body or closing sweep was replayed for bookkeeping.
+
+The ordered2 wrapper originally exited1 because it required exact equality of
+the whole profile list. It found four new private command-builder fixture
+profiles, while all420 baseline profiles and protected/real state were unchanged.
+Independent attribution review accepted their aggregate fixture provenance
+with zero findings (`review-profile-attribution1/report.md`, SHA256
+`1d184eb828c345f8b0bdbe8db127f8fd08683e581f039ddbfa1b03025572f428`).
+The failed wrapper result and all four directories remain preserved. No
+individual filename-to-test mapping or worker return was inferred from PID
+absence. Local ordered gates remain valid; this correction did not rerun them.
+Evidence: `iter271/ordered2/`, `static2/`, and `final-checkpoint2/` in the same
+private run root.
+
+The reviewed test-only boundary preserves closing2's351/351 dual-gate proof.
+Original tasks/AC0/4 and every historical failure remain unchanged. This is
+local validation of the repaired candidate, not a claim that its future PR
+head is CI-green or merged; exact-head CI and verified GitHub merge remain.
