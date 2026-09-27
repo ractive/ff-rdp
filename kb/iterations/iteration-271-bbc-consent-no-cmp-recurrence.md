@@ -2,7 +2,7 @@
 title: "Iteration 271: BBC consent action and live-site test contract"
 date: 2026-09-14
 type: iteration
-status: in-progress
+status: done
 branch: iter-271/bbc-consent-no-cmp-recurrence
 tags: [iteration, carry-over, consent, live-tests]
 first_call_sites: []
@@ -402,15 +402,15 @@ AC1 remains unfulfilled without their missing page evidence. A newly observed
 site state may justify a prospective test-contract change, independently
 reviewed before implementation, but does not reconstruct those failures.
 
-### Delivery acceptance [0/3]
+### Delivery acceptance [3/3]
 
-- [ ] Navigation failure is a real failure, with the reviewed bounded
+- [x] Navigation failure is a real failure, with the reviewed bounded
       failure-only diagnostics; the blocked-navigation regression remains
       sensitive and successful execution gains no diagnostic delay.
-- [ ] Native BBC dismissal has real Firefox action/effect proof. Current
+- [x] Native BBC dismissal has real Firefox action/effect proof. Current
       remote-site outcomes are explicitly classified; no-banner, another CMP
       and failed dismissal cannot count as native accepted success.
-- [ ] Any changed site/test behavior has meaningful contract coverage and
+- [x] Any changed site/test behavior has meaningful contract coverage and
       independent review, followed by ordered gates and this iteration's own
       dual-gate closing sweep.
 
@@ -426,3 +426,225 @@ later process70/receipt0 terminal-publication mismatch in
 `.git/ralph-loop/20260920-another-spin/iter271/`. Do not execute that runner or
 reuse its consumed repair claim. If a native comparison is needed for the new
 contract, use current qualified owned-child execution with actual waits.
+
+## Current delivery candidate and finite verification — 2026-09-26
+
+Current base is `7b5549f02f1d33af620c06d43b3f3d45b3810720`, including275.
+Only the reviewed live144 navigation assertion and bounded failure-context
+repair were recovered from `f044e6791683126b9d45e4444982c918d6648e88`.
+That file is identical at `10312d2fecb5f905f0a23df795d69dd31a0a30af`;
+its recovered SHA256 before the current changes is
+`f42f2f95bd172574d6c01132b6f2d1231ae24a65251a6e57d1d09faedc422fbe`.
+The original review and explicit zero-finding repair review remain under
+`.git/ralph-loop/20260919-queue/iter271-review/` and
+`iter271-repair-review/`. Their coverage of the unchanged bounded JavaScript
+and UTF-8 output cap is reused. The rejected pair runner, diagnostic product
+changes and unrelated branch plans are not part of this candidate.
+
+The prospective remote-site contract is strict and explicit: the command's
+native `bbc`/`accepted`/`accepted` report with a successful exit may advance
+to the separate native post-action check. Another CMP, reported no-CMP,
+native non-action and invalid/failed output are distinct diagnostic outcomes;
+all fail the native-dismissal test. Reported no-CMP does not establish physical
+banner absence. An alternate CMP report does not establish layer ordering.
+No new remote-site state is counted as a native dismissal or a skipped pass.
+The native effect check still requires absent or zero-size control geometry,
+and now rejects malformed/missing geometry instead of defaulting it to zero.
+The command classification adds no round trip; page context remains a later,
+failure-only observation. Product code and consent selection are unchanged.
+
+New Firefox-free unit controls exercise the command-contract boundary and
+malformed effect samples. These are scalar/oracle controls, not recorded site
+fixtures or invented RDP payloads. Historical native, Sourcepoint and post-action
+no-CMP envelopes in `iter271/consent.log`, `second-consent.log` and
+`third-consent.log` establish the reported shapes; they do not explain any
+original fresh-profile failure. Existing275 local controls remain separate
+evidence of adapter selection and cannot replace BBC-site action/effect proof.
+
+Finite validation proposed for fresh review before runtime execution:
+
+1. Run the three focused Firefox-free BBC controls on the final source.
+2. Once shared execution is granted, run one current exact native BBC test with
+   both live gates on a fresh exclusively owned profile. Preserve the command,
+   source/binary/browser identities, launch/exit and cleanup receipts. Its
+   existing success path proves a native reported action followed by a native
+   absent/zero-size control. On any failure preserve the bounded context and
+   stop this experiment; do not retry unchanged or replace it with another CMP.
+3. Run one blocked-navigation mutation (`http://127.0.0.1:1/`) to verify that
+   navigation failure is still a failed test, then restore and verify exact
+   candidate bytes. The prior before/after mutation proof is retained; there
+   is no reason to rerun the old false-skip implementation.
+4. On a review-approved final candidate, run ordered gates, required static
+   checks and this iteration's own dual-gate closing sweep. A sweep is closing
+   verification, not an open-ended discovery schedule; preserve and disposition
+   every failed occurrence without retry-only masking.
+
+No runtime validation has run for this candidate yet. All original tasks and
+AC0/4, and prospective delivery0/3, remain unticked pending the supervisor's
+evidence reconciliation. A failing current site state may require a separate
+reviewed prospective decision; it cannot make the native-dismissal test pass.
+Actual token usage is unavailable. Current code/report evidence is under
+`.git/ralph-loop/20260924-all-open/iter271/current-20260926/`.
+
+
+## Current validation and failed closing checkpoint — 2026-09-27
+
+The prospective candidate passed fresh independent review with zero actionable
+findings (`review-current1/report.md`). The reviewed Rust bytes remain SHA256
+`5e717e05009847857f9342af124a17b5e4950d81a76ca98143f85c0f089f693a`.
+Current evidence below is under the primary checkout's
+`.git/ralph-loop/20260924-all-open/iter271/`. No product correction, completion
+PR or merge is claimed. Original tasks/AC0/4 remain unchanged; prospective
+Delivery2/3 reflects the native contract and navigation repair, while closure
+remains incomplete because the final sweep failed.
+
+`nonlive-preparation1/execution/` passed all three exact Firefox-free BBC
+controls in one finite packet, with twelve actual command waits and outer
+driver exit0. Its589 source inputs and current core/CLI/live/build-script
+producers were qualified. One fresh-profile native BBC occurrence in
+`native1/` passed in3.90s (actual test-process wait0), requiring the real native
+accepted result and subsequent absent/zero-size native control. That passing
+occurrence was reused, not replayed as another discovery attempt.
+
+One blocked-navigation URL mutation was then executed in `mutation2/`.
+Its exact test failed in2.25s with exit101 at the navigation assertion, CLI
+exit12/`nav_unknown`, `deniedPortAccess` and a bounded later `about:neterror`
+page capture. Thus this is an observed navigation-assertion failure, not an
+arbitrary unsuccessful test. All589 candidate inputs were restored exactly.
+The old false-skip implementation and oversized JavaScript fixture were not
+rerun; their unchanged reviewed historical proof is retained.
+
+Preparation/reporting failures remain visible. `mutation1/` stopped before
+any Cargo or test child because the command-home parent directory was missing;
+its cleanup also incorrectly assumed a launch log existed. The source-backed
+setup repair created that parent and handled the no-launch case. The one
+actual mutation in `mutation2/` then completed its intended negative control,
+but the wrapper read an old census filename and exited1 during reconciliation.
+`mutation2/offline-reconciliation.json` checks the actual retained mutation2
+before/after receipts, exact launch/profile attribution, actual test wait and
+source restoration. No native invocation was repeated to repair reporting.
+
+Ordered validation in `ordered1/` passed: stable update (rustc1.98.1), fmt,
+strict workspace/all-target Clippy, then normal parallel workspace tests
+2692passed/0failed/426ignored. `static1/` enumerated and passed the nine
+current checks, plus all288 plans, Hyalo HYALO005 and diff whitespace. Its
+first dogfood invocation failed the required live-env precondition; setting
+that required gate produced the explicit no-script skip. This is no claim of
+an executed dogfood script. Already-passing checks were reused. Every static
+command used an explicit source-matching CLI; no cross-checkout implicit build
+was used. `closing-build1/` qualified and froze all eight actual sweep binaries.
+
+The one authorized dual-gate closing sweep in `closing1/` is **FAILED**:
+
+```text
+LIVE_SWEEP_SUMMARY executed=348 skipped=0 preexisting=0 vanished=0 launch_timeout=3 timed_out=0 total=351
+LIVE_SWEEP_PROFILES leaked=0 unattributed=0 root=<private closing1 home>/ff-rdp/profiles
+```
+
+All351 exact compiled ignored names reconcile across six tiers: CLI336pass/
+4fail and all11 core tests pass, for347pass/4fail. Three failures are carved
+into `launch_timeout`, leaving347passed+1executed failure=348executed. BBC
+passed in this sweep. No verdict is missing, duplicated or unexpected. The
+sweep process actually exited1; its wrapper exited0 after completing cleanup,
+which is explicitly not a passing sweep verdict. Earlier progress updates
+counted passed lines and incorrectly said there were no failures; the final
+reconciliation above supersedes those updates without altering the raw log.
+
+| Observation | Disposition before any further closure |
+|---|---|
+| `live_141_output_hygiene::live_141_snapshot_truncation_in_meta`: Firefox68822/debug60119 missed30s, observed30518ms | Retain in271 closing evidence, owned by the supervisor for a source-backed next-step decision. No automatic isolation/retry or bound increase. |
+| `live_141_output_hygiene::live_141_text_empty_result_keeps_metadata`: Firefox68939/debug60136 missed30s, observed30517ms | Same explicit closure owner; separate occurrence retained. |
+| `live_142_daemon_stop_pid_honesty::live_142_daemon_stop_no_false_error`: Firefox69062/debug60170 missed30s, observed30507ms | Same explicit closure owner; separate occurrence retained. |
+| `live_navigate_default_fast::live_navigate_elapsed_matches_wall`: wall1957ms, reported910ms, gap1047ms exceeds750ms | Retain exact NAV_TIMING regions for the supervisor, referring to [[iteration-279-navigation-timing-regions-and-load]] only as the existing timing-contract history. No bound change or retry here. |
+| Original242/257 BBC no-CMP occurrences lack attributable failed-page evidence | Retain historical AC0/4. Current native passes and mutation proof do not reconstruct them. |
+
+The three failed launches each retained38 startup-stderr bytes, redacted in
+the public envelope. Their observations say alive at deadline and before
+cleanup, then SIGKILL during cleanup; subsequent exit cause is not established.
+The navigation trace places about969ms before dispatch and about50ms after
+core return. Those regions lie outside the reported navigation duration; they
+do not establish why the regions took that time. The timing sample reports
+load averages230.92/156.86/79.86, which is context, not a proven cause or a
+passing disposition for any failure. No new experiment followed these failures.
+
+Cleanup is qualified: the owned raw browser had an actual wait after TERM;
+no raw-group member remained, protected desktop/helper identities and real
+state were unchanged. The exact398-profile baseline is conserved, with ten
+new profiles attributed through launch ledgers/product records. All341 launch
+attempts pair start/output, with0unpaired records. Retained profiles are
+preserved evidence, not live-owned leaks. Legacy LiveFirefox teardown does
+not supply actual Firefox Child.wait evidence; the qualified native census
+is a separate cleanup boundary, never worker-return proof. All589 source
+inputs and eight binary pairs matched throughout closing. Final plan-only
+recording changes do not change that tested Rust candidate.
+
+No commit, push or PR occurred. New experiments stopped at this failed closing
+checkpoint. The supervisor must review the failure evidence and next scope;
+there is no unchanged retry, renewed historical capture claim or background
+continuation. Actual token usage is unavailable.
+
+## Prospective delivery completed — 2026-09-27
+
+Completed under the owner-authorized September25 prospective scope: Delivery3/3.
+The original Tasks0/4 and Acceptance Criteria0/4 remain verbatim and unmet.
+This delivers a test-honesty and explicit native-contract repair, not a product
+consent fix or an explanation of the historical BBC no-CMP occurrences.
+
+The independent `audit-closing1/report.md` found the three initial launch
+causes unknown and accounted for the timing gap primarily as969ms of
+pre-dispatch work. It established no scoped product repair. A separately
+reviewed finite schedule ran each of those three named tests and the timing
+test once, serially, with existing bounded startup diagnostics and retained
+raw stderr. All four passed with unchanged contracts and bounds. Case1's
+actual test passed, but its driver incorrectly expected a string where Rust
+serialized the private home as Unix bytes. Exact offline decoding qualified
+the saved result; the original driver failure remains in `focused1/` and
+case1 was not rerun. The strictly typed reader repair passed fresh scoped
+review; `focused1-continuation/` ran only cases2–4 within the original1020s
+deadline. The timing occurrence measured559ms wall/255ms reported, gap304ms
+against the unchanged750ms bound. These passes do not establish the historical
+startup cause or imply that resource observations explain it.
+
+The supervisor then admitted one new required closing validation. Shared-target
+producer qualification in `closing-build2/` refreshed current core/custom-build,
+CLI/live, five core tiers and xtask, preserving all eight earlier frozen
+binaries. Its initial census CLI argument error occurred before compilation;
+the corrected existing import interface continued within the original600s
+producer grant. All three no-body compiler commands had actual wait0 receipts.
+The589 source inputs were unchanged; typed Git metadata, source/depinfo and
+fresh producer receipts bind the eight frozen artifacts in
+`closing-build2/binary-pins.json` (SHA256
+`d2ac5410567bb80a735d44c6c703f884bdd1450ac5129521a74dfc4d9996570e`).
+The already-passing ordered/static gates and independent candidate review
+above remain applicable to the unchanged Rust candidate; they were not repeated.
+
+The single dual-gate `closing2/` sweep passed351/351: CLI340 and core tiers
+1+3+3+2+2, with exact names reconciled against all six compiled tiers:
+
+```text
+LIVE_SWEEP_SUMMARY executed=351 skipped=0 preexisting=0 vanished=0 launch_timeout=0 timed_out=0 total=351
+LIVE_SWEEP_PROFILES leaked=0 unattributed=0 root=<private closing2 home>/ff-rdp/profiles
+```
+
+Sweep8521 actually waited exit0; the wrapper also exited0. The separately
+owned raw Firefox had an actual wait−15 after TERM, with no unknown or
+remaining group members. Protected desktop/helper identities and real state
+were unchanged. All344 launch attempts pair start/output. The410-profile
+baseline is conserved plus ten attributable retained profiles: nine matching
+launch outputs and ten exact product records. No live-owned profile leaked.
+All589 source inputs, Firefox110 inputs and eight binary pairs matched before
+and after; all six actual executable paths match the qualified producers,
+with no sweep recompilation. Legacy LiveFirefox native absence remains distinct
+from actual Child.wait evidence. `closing2/release.json` is SHA256
+`d9081cb1d230ef937fee1ab1bdc01ac08681eda56b5bb0a85b2f246e05857784`.
+
+Closing1 stays FAILED347/4, with its three unknown startup causes and measured
+timing failure preserved above. The focused occurrences and closing2 discharge
+the prospective validation requirement without rewriting those failures.
+Affected-plan reconciliation changes no other plan:275's merged prerequisite
+is satisfied;242/257's original BBC observations and203/277's references remain
+historical evidence;262 and279 acquire no new product-cause or timing-semantics
+claim. No product/Rust bytes or unrelated plans changed. Original attribution
+requirements remain explicitly unmet. No commit, PR or merge is claimed by
+this completion record; the supervisor owns those steps. Actual token usage
+is unavailable.
