@@ -488,6 +488,12 @@ ff-rdp launch
 # Launch headless Firefox with temporary profile
 ff-rdp launch --headless --temp-profile
 
+# Open a browser-owned diagnostic page at startup, keeping managed profile prefs
+ff-rdp launch --headless --url about:support
+# Launch waits for the debug port; use tabs to verify the requested page is ready.
+# requested_url means forwarded, not loaded. On an already-owned busy port,
+# --url requires a free --debug-port or explicit --replace.
+
 # Launch with a specific profile and debug port
 # (a --profile directory that does not exist yet is created)
 ff-rdp launch --profile /path/to/profile --debug-port 9222
@@ -533,6 +539,46 @@ ff-rdp reload --wait-idle --idle-ms 1000 --reload-timeout 30000
 ff-rdp completions zsh > ~/.zsh/completions/_ff-rdp
 eval "$(ff-rdp completions zsh)"          # or load straight into the current shell
 ```
+
+On a localized Firefox distribution, English locale preferences select available
+resources; they cannot supply a missing legacy English diagnostic bundle. To provide
+one explicitly, obtain the matching official en-US Firefox language-pack XPI yourself
+and use `ff-rdp launch --headless --english-language-pack /absolute/path/en-US.xpi`.
+This optional local input is inspected before profile creation or replacement and
+staged only in a fresh managed profile. Numeric release compatibility must be known;
+unsupported version syntax or missing application metadata fails before launch.
+Only bounded ordinary single-disk ZIP archives are supported; ZIP64 is rejected
+before archive entry allocation.
+It conflicts with `--profile` and `--auto-consent`. An owned busy port requires an
+explicit `--replace` or another free `--debug-port`; the option is never ignored.
+
+There is no automatic download or signature bypass. Only profile-scope sideload
+auto-disabling is excluded (`extensions.autoDisableScopes=14`); Firefox retains its
+signature and compatibility checks. `results.english_language_pack` reports ID,
+version, SHA-256 and `status: "staged"`, which does not attest activation or English
+console output. Default launch preferences and behavior remain unchanged.
+
+For an explicit installation lifecycle on Unix, add
+`--restart-after-language-pack-install`. This requires `--english-language-pack`
+and a loopback host. Firefox starts headless on `about:blank` using one fresh managed
+profile. ff-rdp waits for the signed, enabled profile-local provider, requests normal
+quit, waits for that actual child to exit successfully, and checks persisted addon
+state and owned-process/listener absence. Only then does it start Firefox once with
+the same profile and your original window/headless/URL options. Your URL is opened
+only on this final start. This costs two starts and allows no restart retry; the
+initializer is bounded to 120 seconds, with at most 20 seconds for failure cleanup.
+It does not alter the normal final launch timeout. Capability rejection or uncertain
+ownership fails; a profile with uncertain cleanup is retained for recovery.
+
+In this mode `results.english_language_pack` reports `mode: "install-then-relaunch"`,
+`status: "initialized-and-relaunched"`, `relaunch_count: 1`, and the initial child's
+PID/birth, normal-quit outcome, actual wait/exit code and persisted-file hashes. The
+main launch PID and record describe only the operational Firefox. A receive EOF is
+not a quit acknowledgement. Persisted hashes do not attest startup-cache contents.
+The mode does not promise that every engine diagnostic will be English: matching
+resources and locale preferences alone have not established that guarantee. No cache
+is fabricated/flushed, no signatures bypassed, and no extra preferences are added.
+
 
 The `.deb`/`.rpm` packages already install bash/zsh/fish completions system-wide, so `completions` is mainly for other shells or for refreshing the script after an upgrade.
 

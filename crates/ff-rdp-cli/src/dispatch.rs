@@ -869,6 +869,9 @@ fn dispatch_inner(
             },
         ),
         Command::Launch(LaunchArgs {
+            english_language_pack,
+            restart_after_language_pack_install,
+            url,
             headless,
             profile,
             temp_profile,
@@ -881,6 +884,9 @@ fn dispatch_inner(
         }) => commands::launch::run(
             cli,
             &commands::launch::LaunchOpts {
+                english_language_pack: english_language_pack.as_deref(),
+                restart_after_language_pack_install: *restart_after_language_pack_install,
+                url: url.as_deref(),
                 headless: *headless,
                 profile: profile.as_deref(),
                 temp_profile: *temp_profile,
