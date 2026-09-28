@@ -263,3 +263,13 @@ suggests running `ff-rdp doctor`. Since iteration 257, the suggestion to drop
 `--full-page` requires an explicit size-limit diagnostic and never accompanies a TypeError.
 `screenshot_errors_carry_no_headless_relaunch_hint` greps the module source so
 the hint cannot be reintroduced.
+
+## Iteration287 fixture correction — 2026-09-28
+
+The synthetic FF151 missing-actor unit fixture now reads the complete request
+and asserts `{"to":"root","type":"getRoot"}` before sending its reply and
+closing. Previously it could close with the client request unread; Windows CI
+reported a connection reset instead of the intended missing-field error. The
+exact OS-level cause of that saved reset was not traced. This is a test-only
+exchange correction: the synthetic fixture provenance, original missing-field
+assertion, screenshot product behavior and protocol contract are unchanged.

@@ -241,3 +241,34 @@ No unchanged mock replay is warranted.259 remains owner-deferred,266 dependent,
 286 preserved unmerged, and288–293 filed/unexecuted. No broader plan status is
 changed by this completion. The breaking-minor publication constraint above
 remains binding; no crate version or release is changed.
+
+## Windows CI fixture repair — 2026-09-28
+
+PR283 head4f45d28d95f2cc6c2d9feda36325ff6fb2347c17 had nine green checks and one
+Windows assertion failure in `get_actor_id_returns_error_when_screenshotactor_absent_ff151`:
+the core group reported570pass/1fail, receiving OS10054 instead of the asserted
+missing-field error. This is distinct from deferred259's hang. The full failed
+run36476246443/job109110565074 is preserved in `iter287/ci-windows1/`.
+
+The synthetic fixture previously sent its canned reply and closed without
+reading the client request. Three test-only lines now consume the complete frame
+and assert root/getRoot before replying. Original assertions, fixture payload,
+product code, timeouts and joins are unchanged. The unread-request defect is
+source-proven; the saved OS-level reset mechanism was not traced. No retry,
+sleep, weakened assertion or new native capture was used.
+
+Fresh independent review accepted with zero findings. One new ordered fmt,
+strict workspace Clippy and workspace-test batch passed2719reported/0failed/429ignored
+across38summaries, including exactly one named pass of the repaired case. Actual
+external tool27706 exited0. All590updated source inputs match the reviewed repair;
+the old whole-source hash is not claimed current. Protected/real state and all542
+prior profiles were conserved, with four new workspace fixtures and no survivors.
+
+The reviewer verified589of590C2 source pins unchanged and the remaining
+screenshot.rs product prefix byte-identical; only its cfg(test) fixture changed.
+C2's351/351 functional result is reused for those unchanged product/live-test
+contracts, not as proof of Windows repair or historical reset cause. No extra
+live sweep is warranted. Unaffected static checks are reused; affected source,
+plan/KB and committed-head checks are required for publication. Exact-head CI
+on the new repair commit remains a merge prerequisite. Evidence:
+`iter287/ci-repair1/`, `review-ci-fixture1/`, and `ci-repair1-gates/`.

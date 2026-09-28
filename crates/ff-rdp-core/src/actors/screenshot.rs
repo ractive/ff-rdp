@@ -1170,6 +1170,9 @@ mod tests {
         });
 
         let t = std::thread::spawn(move || {
+            // Consume getRoot before replying and closing this fixture's socket.
+            let request = server_read(&server);
+            assert_eq!(request, json!({ "to": "root", "type": "getRoot" }));
             server_reply(&server, ff151_root);
         });
 
