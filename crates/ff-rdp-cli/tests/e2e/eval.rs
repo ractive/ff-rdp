@@ -104,12 +104,16 @@ fn eval_undefined_result() {
 
 #[test]
 fn eval_object_result() {
-    let server = eval_server("eval_result_object.json");
+    let server = eval_server("eval_result_object.json").on(
+        "prototypeAndProperties",
+        load_fixture("prototype_and_properties_response.json"),
+    );
     let port = server.port();
+    let request_log = server.request_log();
     let handle = std::thread::spawn(move || server.serve_one());
 
     let mut args = base_args(port);
-    args.extend(["eval".to_owned(), "({a: 1})".to_owned()]);
+    args.extend(["eval".to_owned(), "({a: 1, b: [2,3]})".to_owned()]);
 
     let output = std::process::Command::new(ff_rdp_bin())
         .args(&args)
@@ -123,6 +127,24 @@ fn eval_object_result() {
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["results"]["type"], "object");
     assert_eq!(json["results"]["class"], "Object");
+    assert_eq!(
+        json["results"]["propertyNames"],
+        serde_json::json!(["a", "b"])
+    );
+
+    let requests = request_log.lock().unwrap();
+    let property_requests: Vec<_> = requests
+        .iter()
+        .filter(|request| request["type"] == "prototypeAndProperties")
+        .collect();
+    assert_eq!(property_requests.len(), 1);
+    assert_eq!(property_requests[0]["to"], json["results"]["actor"]);
+    assert!(
+        requests
+            .iter()
+            .all(|request| request["type"] != "ownPropertyNames"),
+        "object enrichment must use the supported property request"
+    );
 }
 
 #[test]

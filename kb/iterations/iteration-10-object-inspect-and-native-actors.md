@@ -28,6 +28,14 @@ An [[research/implementation-gap-analysis]] on 2026-04-06 compared our implement
 
 ## Part A: Object Grip Inspection
 
+> **Dated correction — 2026-09-28:** the implementation tasks below preserve
+> iteration 10's history. [[iteration-18-dogfooding-fixes]] repaired `eval` after
+> Firefox rejected `ownPropertyNames`, using `prototypeAndProperties` instead.
+> [[iteration-287-legacy-object-property-names-api]] removes the remaining
+> unused public Rust method, with an explicit breaking API decision and
+> migration guidance in [[rdp/actors/object]]. The old fixture is historical;
+> neither unchecked live test below is claimed to have run by this correction.
+
 ### Design
 
 Add an `inspect <grip_actor_id>` command that fetches properties of any object grip. When `eval` returns an object, the output already includes the grip's `actor` field — users can copy that ID into `inspect`.

@@ -51,6 +51,15 @@ The protocol supports inspecting remote objects via:
 
 **Status**: `inspect` command added. `eval` now auto-enriches object results with property names.
 
+**Dated correction — 2026-09-28 (iteration 287):** the `ownPropertyNames`
+checkmark above records the iteration 10 implementation, not current Firefox
+support. [[iteration-18-dogfooding-fixes]] already repaired `eval` to derive
+names through `prototypeAndProperties`. The unused public Rust sender was
+removed in [[iteration-287-legacy-object-property-names-api]] after verifying
+the packet is absent from Firefox 156.0.1's object spec/server. `eval` and
+`inspect` keep their existing supported operation. See [[rdp/actors/object]]
+for the breaking library API decision and migration limits.
+
 ### 3. **InspectorActor / WalkerActor / NodeActor — NOT IMPLEMENTED**
 The native DOM inspection actors provide:
 - Full DOM tree traversal

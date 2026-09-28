@@ -81,6 +81,13 @@ Direct JSON values: `42`, `true`, `"string"`
 ### Object Grips
 `{ "type": "object", "class": "Object", "actor": "server1.conn0.child2/obj123" }` — can be inspected via `prototypeAndProperties`, `property`, `ownPropertyNames`
 
+**Dated correction — 2026-09-28 (iteration 287):** the preceding list is
+historical. `ownPropertyNames` is absent from the qualified Firefox 156.0.1
+object spec/server. [[iteration-18-dogfooding-fixes]] already moved `eval`
+property-name enrichment to `prototypeAndProperties`; iteration 287 removes
+the unused public Rust sender. See [[rdp/actors/object]] for the current API,
+breaking compatibility decision and explicit migration semantics.
+
 ### Function Grips
 Extended object grip with `name`, `displayName`, `url`, `line`, `column`
 
