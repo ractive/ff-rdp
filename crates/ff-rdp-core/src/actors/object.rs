@@ -141,28 +141,6 @@ impl ObjectActor {
         let response = actor_request(transport, actor_id, "prototypeAndProperties", None)?;
         Ok(parse_prototype_and_properties(&response))
     }
-
-    /// Fetch the names of an object's own properties.
-    ///
-    /// Returns the `ownPropertyNames` array from the Firefox response.
-    pub fn own_property_names(
-        transport: &mut RdpTransport,
-        actor_id: &str,
-    ) -> Result<Vec<String>, ProtocolError> {
-        let response = actor_request(transport, actor_id, "ownPropertyNames", None)?;
-        // Response has {"ownPropertyNames": [...], "from": "..."}
-        let names = response
-            .get("ownPropertyNames")
-            .and_then(Value::as_array)
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(Value::as_str)
-                    .map(String::from)
-                    .collect()
-            })
-            .unwrap_or_default();
-        Ok(names)
-    }
 }
 
 /// A grip that auto-releases its server-side actor on [`Drop`] via a queue,
