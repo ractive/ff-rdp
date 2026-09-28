@@ -214,7 +214,7 @@ impl WatcherFront {
         obj.insert("to".into(), serde_json::json!(self.id.as_ref()));
         obj.insert("type".into(), serde_json::json!(method));
 
-        transport.send(&params)?;
+        transport.send_ordinary(&params)?;
 
         // Loop until we find the ACK: a packet from this actor with no `type`.
         loop {

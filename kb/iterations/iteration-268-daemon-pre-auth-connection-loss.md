@@ -451,3 +451,9 @@ The prerequisite is [[iteration-284-daemon-cancellation-and-joined-shutdown]]. I
 an old EOF cause nor discharges the separate original 224/240 validation and
 268 closing sweep. Missing historical attribution remains an honest blocker
 after 284 if no attributable failure or evidence is obtained.
+
+## Iteration259 integration boundary — 2026-09-28
+
+Iteration259's reviewed registered-Mio accept path replaces the pre-existing100ms wait while preserving its signal/idle-check ceiling and284 cancellation/supervision guarantees. Accepted sockets use the registered listener IO path, including Windows WouldBlock re-registration. Auth completion, greeting delivery and actual handler/worker return remain distinct observations. ReplyOwnership retirement now has explicit reasons and retained active/orphan debt; a controlled post-auth orphan_actor_reused refusal is not a pre-auth EOF/reset diagnosis. The original268 failed occurrences and original AC0/4 remain unresolved and unchanged.
+
+The qualified scalar-only observation established main/snapshot TCP completion within old accept waits, not a failed268 auth occurrence or the cause of the original20 delta. Its old wait-stage overlay cannot be reused unchanged against the new Mio accept loop. Rebase any future explicitly admitted attribution tool onto the current registration/wait/accept/cancellation boundaries with fresh source/producer and completeness review; do not install old diagnostics wholesale or infer return from process death.259's process pair,60-hop result and any later passing closing sweep are bounded evidence, not retrospective attribution of historical EOF/reset. No consumed268 capture is reset or new capture allocated by this adaptation. Verify284's already-integrated lifecycle contracts in the actual base rather than reopening its completed work from old plan wording.

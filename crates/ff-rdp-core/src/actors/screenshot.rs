@@ -2,7 +2,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::actor::actor_request;
-use crate::actor::actor_send;
+use crate::actor::actor_send_ordinary;
 use crate::actors::console::WebConsoleActor;
 use crate::actors::root::RootActor;
 use crate::actors::screenshot_content::PrepareCapture;
@@ -323,7 +323,7 @@ impl ScreenshotActor {
     ) -> Result<(), ProtocolError> {
         let args = ScreenshotArgsExt::from_prep(browsing_context_id, full_page, prep);
         let args_value = args.to_args_value()?;
-        actor_send(
+        actor_send_ordinary(
             transport,
             screenshot_actor,
             "capture",

@@ -1169,6 +1169,7 @@ enum AnyGripHandle {
 /// // When `guard` is dropped, all grips are released via the queue.
 /// ```
 pub struct ResourceGripGuard {
+    origin: Option<crate::ConnectionKey>,
     grips: Vec<AnyGripHandle>,
     release_tx: ReleaseQueueTx,
 }
@@ -1178,8 +1179,16 @@ impl ResourceGripGuard {
     pub fn new(release_tx: ReleaseQueueTx) -> Self {
         Self {
             grips: Vec::new(),
+            origin: None,
             release_tx,
         }
+    }
+
+    /// Construct a daemon guard with provenance captured before extraction.
+    pub fn new_for_connection(release_tx: ReleaseQueueTx, origin: crate::ConnectionKey) -> Self {
+        let mut guard = Self::new(release_tx);
+        guard.origin = Some(origin);
+        guard
     }
 
     /// Add a [`Grip`] to this guard with type-safe dispatch.
@@ -1189,11 +1198,13 @@ impl ResourceGripGuard {
     /// - Primitives → stored as `AnyGripHandle::Primitive` (no release).
     pub fn add_grip(&mut self, grip: Grip) {
         let handle = match grip {
-            Grip::Object { .. } => {
-                AnyGripHandle::Object(GripHandle::<ObjectGrip>::new(grip, self.release_tx.clone()))
-            }
+            Grip::Object { .. } => AnyGripHandle::Object(
+                GripHandle::<ObjectGrip>::new(grip, self.release_tx.clone())
+                    .with_origin(self.origin),
+            ),
             Grip::LongString { .. } => AnyGripHandle::LongString(
-                GripHandle::<LongStringGrip>::new(grip, self.release_tx.clone()),
+                GripHandle::<LongStringGrip>::new(grip, self.release_tx.clone())
+                    .with_origin(self.origin),
             ),
             _ => AnyGripHandle::Primitive,
         };
@@ -2220,5 +2231,41 @@ mod tests {
         assert_eq!(targets.len(), 1, "repeated actor must not duplicate");
         assert_eq!(targets[0].title.as_deref(), Some("new"));
         t.join().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod release_origin_tests {
+    use super::*;
+    #[test]
+    fn resource_grip_drop_preserves_creation_origin_for_same_actor_name() {
+        let (tx, rx) = crate::release_queue(3);
+        let mut a = ResourceGripGuard::new_for_connection(tx.clone(), crate::ConnectionKey(7));
+        let mut b = ResourceGripGuard::new_for_connection(tx.clone(), crate::ConnectionKey(8));
+        a.add_grip(Grip::Object {
+            actor: "same-actor".into(),
+            class: "Object".into(),
+            preview: None,
+        });
+        b.add_grip(Grip::LongString {
+            actor: "same-actor".into(),
+            initial: "text".into(),
+            length: 4,
+        });
+        drop(b);
+        drop(a);
+        let first = rx.try_recv().unwrap();
+        let second = rx.try_recv().unwrap();
+        assert_eq!(first.origin, Some(crate::ConnectionKey(8)));
+        assert_eq!(second.origin, Some(crate::ConnectionKey(7)));
+        assert_eq!(first.actor_id, second.actor_id);
+        let mut direct = ResourceGripGuard::new(tx);
+        direct.add_grip(Grip::Object {
+            actor: "same-actor".into(),
+            class: "Object".into(),
+            preview: None,
+        });
+        drop(direct);
+        assert_eq!(rx.try_recv().unwrap().origin, None);
     }
 }

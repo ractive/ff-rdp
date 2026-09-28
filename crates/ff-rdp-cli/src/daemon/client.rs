@@ -1017,13 +1017,14 @@ fn not_running_status() -> Value {
         "live_target_count": null,
         "dispatcher": null,
         "rpc_slot": null,
+        "reply_ownership": null,
         "clients_dropped_on_write": null,
         "client_write_deadline_ms": null,
     })
 }
 
 pub(crate) fn run_daemon_status(cli: &Cli) -> Result<(), AppError> {
-    let result = match registry::read_registry(cli.port)
+    let mut result = match registry::read_registry(cli.port)
         .map_err(|e| AppError::Internal(anyhow::anyhow!("reading daemon registry: {e}")))?
     {
         None => not_running_status(),
@@ -1060,11 +1061,17 @@ pub(crate) fn run_daemon_status(cli: &Cli) -> Result<(), AppError> {
                 // daemon log said nothing at all.
                 "dispatcher": field("dispatcher"),
                 "rpc_slot": field("rpc_slot"),
+                "reply_ownership": field("reply_ownership"),
                 "clients_dropped_on_write": number("clients_dropped_on_write"),
                 "client_write_deadline_ms": number("client_write_deadline_ms"),
             })
         }
     };
+
+    match registry::read_ownership_receipt(cli.port) {
+        Ok(receipt) => result["last_session_reply_ownership"] = receipt.unwrap_or(Value::Null),
+        Err(error) => result["last_session_reply_ownership_error"] = json!(error.to_string()),
+    }
 
     let meta = json!({});
     let envelope = output::envelope(&result, 1, &meta);
@@ -2589,6 +2596,8 @@ mod tests {
     /// landing is the precondition for the direct kill.
     fn plant_registry(dir: &std::path::Path, port: u16, start_token: Option<&str>) {
         let info = registry::DaemonInfo {
+            session_sequence: None,
+            session_id: None,
             pid: std::process::id(),
             proxy_port: 64_999,
             firefox_host: "127.0.0.1".to_owned(),

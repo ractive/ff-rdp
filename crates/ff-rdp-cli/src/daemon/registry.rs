@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::Write as _;
+
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -27,6 +27,10 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) session_sequence: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) session_id: Option<String>,
     pub(crate) pid: u32,
     pub(crate) proxy_port: u16,
     pub(crate) firefox_host: String,
@@ -85,7 +89,7 @@ fn spawn_lock_filename(port: u16) -> String {
 /// (e.g. `daemon.6000.write.lock`) — iter-172.
 ///
 /// A sibling of the published record, never the record itself. See
-/// [`acquire_registry_write_lock_in`] for why that distinction is the whole
+/// [`try_acquire_registry_write_lock_in`] for why that distinction is the whole
 /// point of this file existing.
 fn write_lock_filename(port: u16) -> String {
     format!("daemon.{port}.write.lock")
@@ -158,13 +162,15 @@ fn validate_registry(info: &DaemonInfo) -> Result<()> {
 /// The file is keyed by `info.firefox_port` so writes for one port never
 /// overwrite another port's record (iter-123 Theme B).  Writers are serialized
 /// against each other by an exclusive lock on the **sibling**
-/// `daemon.<port>.write.lock` — see [`acquire_registry_write_lock_in`] for why
+/// `daemon.<port>.write.lock` — see [`try_acquire_registry_write_lock_in`] for why
 /// the lock must not live on the published path (iter-172).
 ///
 /// The published record therefore only ever comes into existence via the
 /// `rename` below, so a concurrent reader sees either no file at all or a
 /// complete one — never a zero-byte record.
+#[cfg(test)]
 pub(crate) fn write_registry_in(dir: &Path, info: &DaemonInfo) -> Result<()> {
+    use std::io::Write as _;
     fs::create_dir_all(dir)
         .with_context(|| format!("creating registry directory {}", dir.display()))?;
 
@@ -279,16 +285,6 @@ pub fn read_registry(port: u16) -> Result<Option<DaemonInfo>> {
     read_registry_in(&registry_dir()?, port)
 }
 
-/// Write `info` to `~/.ff-rdp/daemon.<port>.json` atomically, keyed by
-/// `info.firefox_port` (iter-123 Theme B).
-pub fn write_registry(info: &DaemonInfo) -> Result<()> {
-    let dir = registry_dir()?;
-    // Opportunistically retire any stale legacy single-slot file so the
-    // per-port scheme is the only thing left in the directory.
-    remove_legacy_registry_in(&dir);
-    write_registry_in(&dir, info)
-}
-
 /// Remove `~/.ff-rdp/daemon.<port>.json` for the given Firefox `port` if it
 /// exists (iter-123 Theme B).
 pub fn remove_registry(port: u16) -> Result<()> {
@@ -310,18 +306,18 @@ pub fn log_path() -> Result<PathBuf> {
 /// The lock is released automatically when this guard is dropped (the
 /// underlying file handle is closed).  Two distinct lock files use it:
 /// `daemon.<port>.spawn.lock` ([`acquire_spawn_lock`]) and
-/// `daemon.<port>.write.lock` ([`acquire_registry_write_lock_in`]).
+/// `daemon.<port>.write.lock` ([`try_acquire_registry_write_lock_in`]).
 pub(crate) struct FileLock {
     // Kept alive purely for its lock; the `flock`/`LockFile` is released on
     // drop.  Never read directly.
     _file: fs::File,
 }
 
-/// Open `path` (creating it if absent, owner-only on Unix) and take a blocking
-/// exclusive advisory lock on it.
+/// Open the sibling lock file, creating it owner-only on Unix if absent.
+/// The caller chooses blocking or nonblocking acquisition.
 ///
 /// `what` names the lock in error context, e.g. `"spawn lock"`.
-fn acquire_file_lock(path: &Path, what: &str) -> Result<FileLock> {
+fn open_lock_file(path: &Path, what: &str) -> Result<fs::File> {
     let mut opts = fs::OpenOptions::new();
     opts.create(true).truncate(false).write(true);
     #[cfg(unix)]
@@ -332,6 +328,11 @@ fn acquire_file_lock(path: &Path, what: &str) -> Result<FileLock> {
     let file = opts
         .open(path)
         .with_context(|| format!("opening {what} file {}", path.display()))?;
+    Ok(file)
+}
+
+fn acquire_file_lock(path: &Path, what: &str) -> Result<FileLock> {
+    let file = open_lock_file(path, what)?;
     file.lock_exclusive()
         .with_context(|| format!("acquiring {what} {}", path.display()))?;
     Ok(FileLock { _file: file })
@@ -362,8 +363,23 @@ fn acquire_file_lock(path: &Path, what: &str) -> Result<FileLock> {
 /// spawn lock ("so the lock lifetime is independent of registry write/rename
 /// churn"); this is that treatment applied to the writer, which is where the
 /// zero-byte file actually came from.
+#[cfg(test)]
 pub(crate) fn acquire_registry_write_lock_in(dir: &Path, port: u16) -> Result<FileLock> {
     acquire_file_lock(&dir.join(write_lock_filename(port)), "registry write lock")
+}
+
+/// Take the same per-port registry lock without an unbounded shutdown wait.
+/// Contention is an explicit diagnostic failure; no packet or write is retried.
+pub(crate) fn try_acquire_registry_write_lock_in(dir: &Path, port: u16) -> Result<FileLock> {
+    let path = dir.join(write_lock_filename(port));
+    let file = open_lock_file(&path, "registry write lock")?;
+    file.try_lock_exclusive().with_context(|| {
+        format!(
+            "registry write lock busy or unavailable: {}",
+            path.display()
+        )
+    })?;
+    Ok(FileLock { _file: file })
 }
 
 /// Acquire the **per-port** daemon spawn lock, blocking until it is available.
@@ -416,7 +432,7 @@ fn parse_spawn_lock_port(filename: &str) -> Option<u16> {
 }
 
 /// Parse the Firefox port out of a `daemon.<PORT>.write.lock` filename
-/// (iter-172's registry write lock — see [`acquire_registry_write_lock_in`]).
+/// (iter-172's registry write lock — see [`try_acquire_registry_write_lock_in`]).
 ///
 /// Same exact-suffix discipline as [`parse_spawn_lock_port`]: the published
 /// record `daemon.<port>.json`, the iter-131 throttle file and the `.tmp`
@@ -571,6 +587,8 @@ mod tests {
             started_at: "2026-04-06T12:00:00Z".to_owned(),
             auth_token: "a".repeat(64),
             start_token: None,
+            session_sequence: None,
+            session_id: None,
         }
     }
 
@@ -714,6 +732,8 @@ mod tests {
             started_at: "2026-04-07T00:00:00Z".to_owned(),
             auth_token: "b".repeat(64),
             start_token: None,
+            session_sequence: None,
+            session_id: None,
         };
         write_registry_in(dir.path(), &updated).expect("second write");
 
@@ -1019,6 +1039,8 @@ mod tests {
             started_at: "2026-04-06T12:00:00Z".to_owned(),
             auth_token: "a".repeat(64),
             start_token: None,
+            session_sequence: None,
+            session_id: None,
         }
     }
 
@@ -1235,3 +1257,8 @@ mod tests {
         gc_legacy_spawn_lock_in(&dir.path().join("does-not-exist"));
     }
 }
+
+pub(super) mod reply_ownership;
+pub(crate) use reply_ownership::{
+    publish_session, read_ownership_receipt, remove_session, write_ownership_receipt_in,
+};

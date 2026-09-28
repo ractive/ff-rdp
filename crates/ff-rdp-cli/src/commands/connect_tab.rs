@@ -203,6 +203,8 @@ fn connect_to_firefox(
             }));
         }
 
+        transport.enable_proxy_v3();
+
         // Now wrap in RdpConnection. We already consumed the greeting; pass it
         // through so the Firefox version stays available for connection_meta.
         return Ok(RdpConnection::from_authenticated_transport(
@@ -570,6 +572,16 @@ pub(crate) fn resolve_target_snapshot(
         }
         match snapshot? {
             TargetSnapshot::Live(mut target) => {
+                // Availability can still name the outgoing document after the
+                // bound parent watcher announced its navigation. Do not create
+                // an uncorrelated listFrames obligation on that known outgoing
+                // actor. Existing handover polling owns the unchanged deadline.
+                if target
+                    .inner_window_id
+                    .is_some_and(|document| transport.is_retiring_document(document))
+                {
+                    return Ok(None);
+                }
                 // The immutable WindowGlobal actor identifies this document;
                 // its availability-time URL does not track pushState/hash.
                 // Use the existing main RPC path, under the same deadline.
@@ -1671,3 +1683,7 @@ mod stable_snapshot_tests {
         thread.join().unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "connect_tab_retiring_tests.rs"]
+mod retiring_document_tests;

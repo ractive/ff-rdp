@@ -27,7 +27,7 @@ impl DeviceActor {
         // first packet whose `from` equals `"root"`, which would happily
         // accept a push event as the response.
         let request = json!({"to": "root", "type": "getRoot"});
-        transport.send(&request)?;
+        transport.send_ordinary(&request)?;
 
         let response = loop {
             let msg = transport.recv()?;

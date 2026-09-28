@@ -2507,7 +2507,7 @@ pub fn run_core(
         // Send navigateTo raw (not via actor_request) so we don't lose
         // resources-available-array events that arrive before the ack.
         ctx.transport_mut()
-            .send(&json!({
+            .send_ordinary(&json!({
                 "to": target_actor.as_ref(),
                 "type": "navigateTo",
                 "url": url,
@@ -3069,7 +3069,7 @@ pub fn run_with_network(
         // the non-daemon path.  The daemon will forward the ack and also
         // stream watcher events directly to us.
         ctx.transport_mut()
-            .send(&json!({
+            .send_ordinary(&json!({
                 "to": target_actor.as_ref(),
                 "type": "navigateTo",
                 "url": url,
@@ -3294,7 +3294,7 @@ pub fn run_with_network(
     // arrive in between.  By sending raw, we let `drain_network_events`
     // collect those events (it skips non-network message types harmlessly).
     ctx.transport_mut()
-        .send(&json!({
+        .send_ordinary(&json!({
             "to": target_actor.as_ref(),
             "type": "navigateTo",
             "url": url,
@@ -4139,7 +4139,7 @@ mod tests {
             .unwrap();
 
         transport
-            .send(&json!({
+            .send_ordinary(&json!({
                 "to": target_actor.as_ref(),
                 "type": "navigateTo",
                 "url": "https://example.com/",

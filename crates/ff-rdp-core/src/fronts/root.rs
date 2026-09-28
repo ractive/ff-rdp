@@ -133,7 +133,7 @@ impl RootFront {
                 req_obj.insert(k.clone(), v.clone());
             }
         }
-        transport.send(&request)?;
+        transport.send_ordinary(&request)?;
 
         let response = loop {
             let msg = transport.recv()?;

@@ -120,3 +120,7 @@ The historical Task B “If not localized” inference is unsupported and is
 explicitly superseded by this clarification. Its text and checkbox remain
 unchanged as the original record; a passing current test cannot satisfy that
 chronological assertion. No speculative preference change is authorized.
+
+## Iteration259 integration boundary — 2026-09-28
+
+Iteration259 changes the shared daemon transport, ordinary/async attribution and accept readiness, not application locale or locale preferences. Preserve147's independently established locale/package/resources evidence and its named-test criterion; a controlled259 process-descriptor answer or German tab label is not locale acceptance. Reuse unchanged package/source research only with exact relevant-input binding. Any147 normal/daemon producer, end-to-end command-route or timing proof bound to the older server/core/transport generation does not automatically validate the new259 generation. Before eventual integration, rebind the current producer and identify which named147 validation is actually affected; do not repeat already answered locale captures merely because another iteration changed. Retain the clarification that a current English result cannot establish chronology or cause of the historical German report. No new147 runtime schedule or speculative preference change is proposed.

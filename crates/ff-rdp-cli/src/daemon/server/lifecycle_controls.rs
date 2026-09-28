@@ -274,7 +274,11 @@ impl Runtime {
             .cancellation
             .register_socket(&socket)
             .expect("socket wake");
+        let origin = state.origin(EventSource::Primary).expect("primary origin");
+        *origin.socket.lock().expect("origin socket") =
+            Some(socket.try_clone().expect("origin shutdown handle"));
         let writer = Arc::new(WriterSlot::new(FramedWriter::from_stream(socket)));
+        *origin.writer.lock().expect("origin writer") = Some(Arc::clone(&writer));
         let writer_registration = register_firefox_writer(&state.cancellation, &writer);
         let workers = WorkerOwner::new(Arc::clone(&state.cancellation));
         Self {
@@ -547,14 +551,14 @@ fn iter284_recovery_holding_rpc_is_woken_before_rpc_notification() {
 fn iter284_startup_replay_over_capacity_precedes_live_fifo() {
     let mut runtime = Runtime::new(super::tests::test_state());
     let initial: VecDeque<_> = (0..4097)
-        .map(|index| json!({"from":"ordinary","sequence":index}))
+        .map(|index| json!({"from":"ordinary","type":"ownership-control-event","sequence":index}))
         .collect();
     runtime
         .state
         .event_tx
         .send(DaemonEvent::Packet(
             EventSource::Primary,
-            json!({"from":"ordinary","sequence":4097}),
+            json!({"from":"ordinary","type":"ownership-control-event","sequence":4097}),
         ))
         .expect("one live frame");
     let received = runtime.dispatcher(initial);
@@ -689,6 +693,7 @@ fn iter284_full_release_queue_and_occupied_firefox_writer_stop_join() {
     for index in 0..4 {
         releases
             .try_send(ff_rdp_core::ReleaseRequest {
+                origin: Some(ff_rdp_core::ConnectionKey(0)),
                 actor_id: format!("grip{index}").into(),
                 method: "release",
             })
@@ -813,7 +818,7 @@ fn iter284_optional_setup_failure_returns_without_stopping_primary() {
         .event_tx
         .send(DaemonEvent::Packet(
             EventSource::Primary,
-            json!({"from":"ordinary","sequence":7}),
+            json!({"from":"ordinary","type":"ownership-control-event","sequence":7}),
         ))
         .expect("main remains admitted");
     let received = runtime.dispatcher(VecDeque::new());
@@ -915,7 +920,7 @@ fn iter284_continuous_initial_input_observes_stop_between_frames() {
         proceed: proceed_rx,
     });
     let initial = (0..128)
-        .map(|sequence| json!({"from":"ordinary","sequence":sequence}))
+        .map(|sequence| json!({"from":"ordinary","type":"ownership-control-event","sequence":sequence}))
         .collect();
     let received = runtime.dispatcher(initial);
     let reached = entered_rx.recv_timeout(CONTROL_BUDGET).is_ok();
@@ -1016,7 +1021,7 @@ fn iter284_occupied_client_writer_releases_actual_dispatcher_and_handler() {
         .event_tx
         .send(DaemonEvent::Packet(
             EventSource::Primary,
-            json!({"from":"ordinary","value":42}),
+            json!({"from":"ordinary","type":"ownership-control-event","value":42}),
         ))
         .expect("reply queued");
     runtime.dispatcher(VecDeque::new());
@@ -1056,7 +1061,7 @@ fn iter284_normal_handler_requests_and_primary_replies_remain_ordered() {
         FramedWriter::from_stream(runtime.peer.try_clone().expect("Firefox peer writer"));
     for sequence in 0..4 {
         let request = json!({"to":"root","type":"ordinary","sequence":sequence});
-        writer.send(&request).expect("ordinary request");
+        writer.send(&json!({"to":"daemon","type":"forward","reply_contract":"ordinary","packet":request})).expect("ordinary request");
         assert_eq!(
             firefox_reader.recv().expect("actual forwarded request"),
             request
@@ -1087,7 +1092,7 @@ fn iter284_owner_cannot_finish_before_actual_reader_return_and_join() {
     runtime.reader();
     // The first real frame proves the reader entered its body before stop.
     let mut peer = FramedWriter::from_stream(runtime.peer.try_clone().expect("peer"));
-    peer.send(&json!({"from":"ordinary","sequence":0}))
+    peer.send(&json!({"from":"ordinary","type":"ownership-control-event","sequence":0}))
         .expect("reader frame");
     assert!(
         runtime
@@ -1203,7 +1208,7 @@ fn iter284_completed_client_is_joined_and_releases_its_rpc_owner() {
     writer.send(&json!({"auth":"test-token"})).expect("auth");
     reader.recv().expect("greeting");
     writer
-        .send(&json!({"to":"root","type":"ordinary"}))
+        .send(&json!({"to":"daemon","type":"forward","reply_contract":"ordinary","packet":{"to":"root","type":"ordinary"}}))
         .expect("claim and forward");
     let mut firefox_peer = FramedReader::from_stream(runtime.peer.try_clone().expect("peer read"));
     assert_eq!(
@@ -1218,6 +1223,14 @@ fn iter284_completed_client_is_joined_and_releases_its_rpc_owner() {
             .expect("active RPC owner")
             .is_some()
     );
+    // This fixture now genuinely completes the forwarded ordinary obligation
+    // before testing empty-outstanding owner cleanup.
+    dispatch_firefox_message(
+        &runtime.state,
+        &json!({"from":"root","completed":true}),
+        None,
+    );
+    assert_eq!(reader.recv().expect("owned response")["completed"], true);
     drop(reader);
     drop(writer);
     let joined = runtime.workers.join_acquired().to_vec();

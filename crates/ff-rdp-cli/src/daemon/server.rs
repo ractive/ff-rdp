@@ -30,9 +30,11 @@ use super::lifecycle::{
 };
 use super::registry::{self, DaemonInfo};
 
+mod accept_ready;
+
 type FirefoxWriter = Arc<WriterSlot<FramedWriter>>;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum EventSource {
     Primary,
     Lazy(u64),
@@ -102,6 +104,10 @@ macro_rules! lock_or_recover {
     }};
 }
 
+mod reply_ownership;
+#[cfg(test)]
+mod reply_ownership_controls;
+
 /// Constant-time equality for auth-token bytes.
 ///
 /// Delegates to [`subtle::ConstantTimeEq`] so the byte-comparison phase does
@@ -142,7 +148,7 @@ const WATCHED_RESOURCE_TYPES: &[&str] = &[
 /// Increment this whenever the daemon ↔ CLI handshake format changes in a way
 /// that is NOT backward-compatible.  The CLI checks this on startup and exits
 /// with `error_type: "daemon_version_mismatch"` when the versions disagree.
-pub(crate) const DAEMON_PROTOCOL_VERSION: u32 = 2;
+pub(crate) const DAEMON_PROTOCOL_VERSION: u32 = 3;
 
 /// Per-tab ref store: maps stable `e<N>` handles to JS resolver expressions.
 ///
@@ -264,6 +270,7 @@ struct StreamSubscriber {
 }
 
 struct SharedState {
+    reply_origins: Mutex<HashMap<EventSource, Arc<reply_ownership::Origin>>>,
     #[cfg(test)]
     lifecycle_probes: lifecycle_controls::Probes,
     cancellation: Arc<Cancellation>,
@@ -482,26 +489,40 @@ impl SharedState {
     }
 
     fn invalidate_lazy(&self, generation: u64) {
-        // Generation gate -> snapshot locks. No writer/RPC acquisition or I/O.
-        let mut lazy = lock_or_recover!(self.lazy);
-        if lazy.active != Some(generation) {
-            return;
+        {
+            // Generation gate -> snapshot locks. No writer/RPC acquisition or I/O.
+            let mut lazy = lock_or_recover!(self.lazy);
+            if lazy.active == Some(generation) {
+                lazy.active = None;
+                if lazy.published == Some(generation) {
+                    lazy.published = None;
+                    lock_or_recover!(self.watcher_actor).clear();
+                }
+                let retired = std::mem::take(&mut lazy.optional_targets).forms;
+                publish_source_targets(self, &mut lazy);
+                for form in retired {
+                    if let Some(actor) = packet_target_actor(&form) {
+                        self.actor_registry.invalidate_target(&actor.into());
+                    }
+                }
+            }
         }
-        lazy.active = None;
-        if lazy.published == Some(generation) {
-            lazy.published = None;
-            lock_or_recover!(self.watcher_actor).clear();
-        }
-        let retired = std::mem::take(&mut lazy.optional_targets).forms;
-        publish_source_targets(self, &mut lazy);
-        for form in retired {
-            if let Some(actor) = packet_target_actor(&form) {
-                self.actor_registry.invalidate_target(&actor.into());
+        let origin = lock_or_recover!(self.reply_origins).remove(&EventSource::Lazy(generation));
+        if let Some(origin) = origin {
+            lock_or_recover!(origin.ledger)
+                .accounting
+                .retire("origin_connection_retired");
+            let socket = lock_or_recover!(origin.socket).take();
+            if let Some(socket) = socket {
+                let _ = socket.shutdown(std::net::Shutdown::Both);
+            }
+            let writer = lock_or_recover!(origin.writer).take();
+            if let Some(writer) = writer {
+                writer.close();
             }
         }
     }
 
-    /// Issue a fresh, never-reused client id (iter-100 Theme D).
     fn next_client_id(&self) -> ClientId {
         self.next_client_id.fetch_add(1, Ordering::Relaxed)
     }
@@ -883,6 +904,7 @@ fn background_establish_watcher_loop(
         validate_greeting(&transport.recv()?)?;
         let (early_tx, early_rx) = mpsc::channel::<Value>();
         transport.set_event_sink(Some(early_tx));
+        transport.track_reply_ownership();
         let deadline = Instant::now() + WATCHER_BACKGROUND_RETRY;
         let setup = loop {
             if state.is_stopping() {
@@ -903,6 +925,20 @@ fn background_establish_watcher_loop(
                 }
             }
         };
+        let accounting = transport.take_reply_accounting();
+        anyhow::ensure!(
+            accounting.pending() == 0 && accounting.reason().is_none(),
+            "unfinished lazy setup replies"
+        );
+        let origin_socket = transport.try_clone_stream()?;
+        let (mut reader, writer) = transport.split();
+        let writer = Arc::new(WriterSlot::new(writer));
+        let _writer_registration = register_firefox_writer(&state.cancellation, &writer);
+        let origin = Arc::new(reply_ownership::Origin::default());
+        lock_or_recover!(origin.ledger).accounting = accounting;
+        *lock_or_recover!(origin.writer) = Some(writer);
+        *lock_or_recover!(origin.socket) = Some(origin_socket);
+        lock_or_recover!(state.reply_origins).insert(EventSource::Lazy(generation), origin);
         let subscription = LazySubscription {
             generation,
             watcher: setup.watcher_actor.to_string(),
@@ -924,7 +960,6 @@ fn background_establish_watcher_loop(
                 return Ok(());
             }
         }
-        let (mut reader, _writer) = transport.split();
         loop {
             if state.is_stopping() {
                 return Ok(());
@@ -972,6 +1007,7 @@ fn queue_cancellation_wakes(
             let _ = releases.try_send(ff_rdp_core::ReleaseRequest {
                 actor_id: "".into(),
                 method: "",
+                origin: None,
             });
         }),
         cancellation.register(WakePhase::Rpc, move || {
@@ -993,10 +1029,10 @@ fn register_firefox_writer(
     })
 }
 
-struct RegistryLifetime(u16);
+struct RegistryLifetime(DaemonInfo);
 impl Drop for RegistryLifetime {
     fn drop(&mut self) {
-        let _ = registry::remove_registry(self.0);
+        let _ = registry::remove_session(&self.0);
     }
 }
 
@@ -1062,6 +1098,7 @@ pub(crate) fn run_daemon(
     // thread delivers live after the handshake) once that channel exists.
     let (early_tx, early_rx) = mpsc::channel::<Value>();
     transport.set_event_sink(Some(early_tx));
+    transport.track_reply_ownership();
 
     let established = establish_watcher_with_retry(&mut transport, WATCHER_STARTUP_RETRY);
     let primary_target = established.as_ref().map(|w| PrimaryTarget {
@@ -1093,7 +1130,9 @@ pub(crate) fn run_daemon(
     let auth_token = registry::generate_auth_token().context("generating auth token")?;
 
     // Publish the port so CLI clients can find us.
-    let info = DaemonInfo {
+    let mut info = DaemonInfo {
+        session_sequence: None,
+        session_id: None,
         pid: std::process::id(),
         proxy_port,
         firefox_host: firefox_host.to_owned(),
@@ -1105,10 +1144,15 @@ pub(crate) fn run_daemon(
         // signal a process that merely inherited the number.
         start_token: crate::daemon::process::process_start_token(std::process::id()),
     };
-    registry::write_registry(&info).context("writing registry")?;
-    let _registry_lifetime = RegistryLifetime(firefox_port);
+    registry::publish_session(&mut info).context("publishing daemon session")?;
+    let _registry_lifetime = RegistryLifetime(info.clone());
     eprintln!("daemon: listening on port {proxy_port}, PID {}", info.pid);
 
+    let setup_accounting = transport.take_reply_accounting();
+    anyhow::ensure!(
+        setup_accounting.pending() == 0 && setup_accounting.reason().is_none(),
+        "unfinished primary setup replies"
+    );
     // Split the transport so the reader and writer can live on separate threads.
     let (firefox_reader, firefox_writer) = transport.split();
 
@@ -1159,6 +1203,7 @@ pub(crate) fn run_daemon(
         cancellation: Arc::clone(&cancellation),
         _cancellation_wakes: cancellation_wakes,
         lazy: Mutex::new(LazyState::default()),
+        reply_origins: reply_ownership::origins(),
         buffer: Mutex::new(ResourceBuffer::new()),
         rpc_writer,
         rpc_slot_released,
@@ -1185,12 +1230,19 @@ pub(crate) fn run_daemon(
         clients_dropped_on_write: AtomicU64::new(0),
     });
 
+    let mut ownership_finalizer =
+        reply_ownership::Finalizer::new(Arc::clone(&state), info.clone())?;
     setup_signal_handler(&state);
 
     // The Firefox writer is shared: the main thread may forward CLI messages to
     // Firefox while the reader thread owns the read half exclusively.
     let firefox_writer = Arc::new(WriterSlot::new(firefox_writer));
     let _writer_registration = register_firefox_writer(&cancellation, &firefox_writer);
+    if let Some(origin) = state.origin(EventSource::Primary) {
+        lock_or_recover!(origin.ledger).accounting = setup_accounting;
+        *lock_or_recover!(origin.writer) = Some(Arc::clone(&firefox_writer));
+        *lock_or_recover!(origin.socket) = Some(primary_socket.try_clone()?);
+    }
     // Declared after registrations/registry: unwinding drops this owner first,
     // cancels and joins all acquired handles while wake registrations still live.
     let mut workers = WorkerOwner::new(Arc::clone(&cancellation));
@@ -1264,6 +1316,7 @@ pub(crate) fn run_daemon(
         tracing::info!(worker = record.name, outcome = ?record.outcome, supervision_returned = record.supervision_returned, "daemon: worker joined");
     }
     let joined_successfully = workers.completed_successfully();
+    ownership_finalizer.finish()?;
     result?;
     anyhow::ensure!(
         joined_successfully,
@@ -1277,7 +1330,8 @@ pub(crate) fn run_daemon(
 /// Drain the grip release queue and issue `release` packets to Firefox.
 ///
 /// This thread owns the `grip_release_rx` receiver.  For each enqueued
-/// [`ReleaseRequest`], it sends a one-way `{"to": <actor>, "type": "release"}`
+/// [`ReleaseRequest`], it installs an origin-bound terminal reply sink and sends
+/// `{"to": <actor>, "type": "release"}`
 /// packet to Firefox so the server-side actor can be freed.  Without this
 /// thread, grips accumulate indefinitely in long-lived daemon sessions.
 ///
@@ -1288,7 +1342,7 @@ pub(crate) fn run_daemon(
 fn grip_release_drainer_loop(
     state: &Arc<SharedState>,
     rx: ff_rdp_core::ReleaseQueueRx,
-    writer: FirefoxWriter,
+    _writer: FirefoxWriter,
 ) {
     loop {
         if state.is_stopping() {
@@ -1302,11 +1356,7 @@ fn grip_release_drainer_loop(
         if state.is_stopping() {
             return;
         }
-        let packet = serde_json::json!({"to": req.actor_id.as_ref(), "type": req.method});
-        let Some(mut writer) = writer.acquire_cancellable() else {
-            return;
-        };
-        let _ = writer.send(&packet);
+        state.release_on_origin(&req);
     }
 }
 
@@ -1526,7 +1576,7 @@ fn event_dispatcher_loop(
     initial_bus: Option<ResourceCommand>,
     initial_rx: Option<ResourceReceiver>,
     resource_setup: Arc<BoundedQueue<LazySubscription>>,
-    firefox_writer: FirefoxWriter,
+    _firefox_writer: FirefoxWriter,
 ) {
     mark_dispatcher_alive(state);
     let _alive = DispatcherAliveGuard { state };
@@ -1579,9 +1629,8 @@ fn event_dispatcher_loop(
         if let Some((owner, bus, _)) = subscription.as_mut()
             && state.source_active(*owner)
             && !state.is_stopping()
-            && let Some(mut writer) = firefox_writer.acquire_cancellable()
         {
-            bus.gc_fire_forget(&mut writer);
+            bus.gc_with_send(|packet| state.send_owned(*owner, packet, false));
         }
         state.dispatch_finished();
         #[cfg(test)]
@@ -1634,11 +1683,15 @@ fn dispatch_firefox_message_from(
     if !state.source_active(source) {
         return;
     }
-    if msg.get("type").is_none()
+    if source == EventSource::Primary
+        && msg.get("type").is_none()
         && let Some((watcher, sender)) = lock_or_recover!(state.startup_recovery_reply).as_ref()
         && msg["from"].as_str() == Some(watcher.as_str())
     {
         let _ = sender.try_send(msg.clone());
+        return;
+    }
+    if reply_ownership::route(state, source, msg) {
         return;
     }
     // Translate only the bound primary document's parent-process start into
@@ -1668,7 +1721,8 @@ fn dispatch_firefox_message_from(
         // guard is dropped at end-of-scope the grips are enqueued for release,
         // preventing actor accumulation in long-lived daemon sessions
         // (iter-76b Theme B — actually wired).
-        let mut grip_guard = ResourceGripGuard::new(state.grip_release_tx.clone());
+        let mut grip_guard =
+            ResourceGripGuard::new_for_connection(state.grip_release_tx.clone(), source.key());
         for grip in ff_rdp_core::extract_grips(msg) {
             grip_guard.add_grip(grip);
         }
@@ -2525,16 +2579,9 @@ fn notify_rpc_slot_released(state: &SharedState) {
 /// write shuts the socket down, which breaks the owner's `recv()` and ends its
 /// handler. Meanwhile the writer is latched failed, so the dispatcher's next
 /// forward to it returns instantly instead of spending another deadline.
+// Only ordinary event fan-out uses the current subscriber slot. All untyped
+// replies and evaluationResult packets must first pass reply_ownership::route.
 fn forward_to_rpc_client(state: &SharedState, msg: &Value) {
-    // Serialise first — no lock needed.
-    let json = match serde_json::to_string(msg) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("daemon: could not serialise Firefox message: {e}");
-            return;
-        }
-    };
-
     // Clone the writer handle out (an `Arc` bump) and release the slot lock
     // before writing.  Borrowing across the write is what made `daemon status`
     // block behind a stuck dispatch.
@@ -2547,6 +2594,18 @@ fn forward_to_rpc_client(state: &SharedState, msg: &Value) {
         return;
     };
 
+    send_to_recorded_client(state, msg, client_id, &writer);
+}
+
+fn send_to_recorded_client(
+    state: &SharedState,
+    msg: &Value,
+    client_id: ClientId,
+    writer: &ClientWriter,
+) {
+    let Ok(json) = serde_json::to_string(msg) else {
+        return;
+    };
     // `ClientWriter` latches its first failure, so only the write that latched
     // it is a *drop*; every later one is a fast no-op that must not be counted
     // again now that the slot is no longer cleared underneath us.
@@ -2623,6 +2682,8 @@ fn accept_loop(
     idle_timeout: Duration,
     workers: &mut WorkerOwner,
 ) -> Result<()> {
+    let mut listener = accept_ready::ReadyListener::new(listener, Arc::clone(&state.cancellation))
+        .context("registering CLI listener readiness")?;
     loop {
         workers.reap_finished();
         // A termination signal (iter-100 Theme C) or a worker panic
@@ -2676,10 +2737,17 @@ fn accept_loop(
                 }
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                state
-                    .cancellation
-                    .wait_until(Instant::now() + Duration::from_millis(100));
+                if listener
+                    .wait()
+                    .context("waiting for CLI listener readiness")?
+                    == accept_ready::Wake::Cancelled
+                {
+                    return Ok(());
+                }
             }
+            // Recheck signal/idle/cancellation after an interrupted syscall;
+            // readiness, not a shorter polling interval, drives the next wait.
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(e) => {
                 return Err(e).context("accepting CLI client connection");
             }
@@ -3044,6 +3112,15 @@ fn handle_client(
 
         match reader.recv() {
             Ok(msg) => {
+                let (msg, reply_contract) = match reply_ownership::unwrap(msg) {
+                    Ok(request) => request,
+                    Err(reason) => {
+                        break 'client ClientExit::Abandoned {
+                            reason,
+                            detail: "request refused before Firefox forwarding".into(),
+                        };
+                    }
+                };
                 // iter-100 Theme B: bump the idle deadline ONLY here — after
                 // the client has authenticated and we have a real request to
                 // handle.  This is the single legitimate "the daemon is being
@@ -3170,10 +3247,43 @@ fn handle_client(
                         ResourceTeardown::Forward(rewritten) => rewritten,
                         _ => msg,
                     };
-                    let Some(mut writer) = firefox_writer.acquire_cancellable() else {
+                    let Some(mut firefox_lease) = firefox_writer.acquire_cancellable() else {
                         break 'client ClientExit::DaemonShuttingDown;
                     };
-                    if let Err(error) = writer.send(&outbound) {
+                    let Some(origin) = state.origin(EventSource::Primary) else {
+                        drop(firefox_lease);
+                        state.retire_origin(EventSource::Primary, "primary_reply_origin_missing");
+                        break 'client ClientExit::Abandoned {
+                            reason: "primary_reply_origin_missing",
+                            detail: "forward refused before Firefox write".to_owned(),
+                        };
+                    };
+                    let Some(reply_contract) = reply_contract else {
+                        drop(firefox_lease);
+                        state.retire_origin(EventSource::Primary, "forward_reply_contract_missing");
+                        break 'client ClientExit::Abandoned {
+                            reason: "forward_reply_contract_missing",
+                            detail: "forward refused before Firefox write".to_owned(),
+                        };
+                    };
+                    let reserved = lock_or_recover!(origin.ledger).register(
+                        client_id,
+                        &writer,
+                        &outbound,
+                        reply_contract,
+                    );
+                    if let Err(reason) = reserved {
+                        drop(firefox_lease);
+                        state.retire_origin(EventSource::Primary, reason);
+                        break 'client ClientExit::DaemonShuttingDown;
+                    }
+                    if state.is_stopping() {
+                        break 'client ClientExit::DaemonShuttingDown;
+                    }
+                    let sent = firefox_lease.send(&outbound);
+                    drop(firefox_lease);
+                    if let Err(error) = sent {
+                        state.retire_origin(EventSource::Primary, "firefox_write_uncertain");
                         break 'client ClientExit::Abandoned {
                             reason: "firefox_write_failed",
                             detail: error.to_string(),
@@ -3396,12 +3506,19 @@ impl Drop for ClientCleanupGuard<'_> {
         // different, live client's writer.
         let mut guard = lock_or_recover!(self.state.rpc_writer);
         if guard.as_ref().is_some_and(|(id, ..)| *id == self.client_id) {
+            let retirement = self
+                .state
+                .origin(EventSource::Primary)
+                .and_then(|origin| lock_or_recover!(origin.ledger).depart(self.client_id));
             *guard = None;
             // iter-137 Theme B: wake every client queued behind this one.
             // Drop the guard first so a woken waiter can take the lock
             // immediately instead of bouncing off it.
             drop(guard);
             notify_rpc_slot_released(self.state);
+            if let Some(reason) = retirement {
+                self.state.retire_origin(EventSource::Primary, reason);
+            }
         }
     }
 }
@@ -3457,8 +3574,13 @@ fn recover_startup_target(
     *lock_or_recover!(state.startup_recovery_reply) = Some((watcher.clone(), Arc::clone(&mailbox)));
     #[cfg(test)]
     state.lifecycle_probes.before_recovery_writer();
-    let sent = send_startup_recovery(firefox_writer, &watcher, deadline);
+    let sent = send_startup_recovery_owned(state, firefox_writer, &watcher, deadline);
     drop(owner);
+    if let Err(error) = &sent {
+        // The helper has released its writer lease and RPC ownership is now
+        // released too. Preserve its named refusal without stopping under RPC.
+        tracing::warn!(%error, "daemon: startup recovery send refused or failed");
+    }
     let reply = sent.ok().and_then(|()| mailbox.recv_until(deadline));
     if !state.is_stopping()
         && reply
@@ -3477,7 +3599,25 @@ fn recover_startup_target(
     }
 }
 
+#[cfg(test)]
 fn send_startup_recovery(
+    firefox_writer: &WriterSlot<FramedWriter>,
+    watcher: &str,
+    deadline: Instant,
+) -> Result<(), ProtocolError> {
+    send_startup_recovery_inner(None, firefox_writer, watcher, deadline)
+}
+
+fn send_startup_recovery_owned(
+    state: &SharedState,
+    firefox_writer: &WriterSlot<FramedWriter>,
+    watcher: &str,
+    deadline: Instant,
+) -> Result<(), ProtocolError> {
+    send_startup_recovery_inner(Some(state), firefox_writer, watcher, deadline)
+}
+fn send_startup_recovery_inner(
+    state: Option<&SharedState>,
     firefox_writer: &WriterSlot<FramedWriter>,
     watcher: &str,
     deadline: Instant,
@@ -3490,6 +3630,19 @@ fn send_startup_recovery(
                 ProtocolError::ConnectionFailed(std::io::ErrorKind::Interrupted.into())
             }
         })?;
+    if let Some(state) = state {
+        let Some(origin) = state.origin(EventSource::Primary) else {
+            // Returning drops the writer lease; the caller retires only after
+            // releasing RPC ownership, preserving the cancellation lock order.
+            return Err(ProtocolError::InvalidPacket(
+                "primary_reply_origin_missing".into(),
+            ));
+        };
+        lock_or_recover!(origin.ledger)
+            .accounting
+            .reserve_recovery(watcher)
+            .map_err(|reason| ProtocolError::InvalidPacket(reason.into()))?;
+    }
     for method in ["unwatchTargets", "watchTargets"] {
         let packet =
             serde_json::to_string(&json!({"to":watcher,"type":method,"targetType":"frame"}))
@@ -3856,6 +4009,7 @@ fn handle_daemon_message(
                 // `rpc_slot.held_secs` names the client holding it.
                 "dispatcher": state.dispatcher_health(),
                 "rpc_slot": state.rpc_slot_health(),
+                "reply_ownership": state.ownership_health(),
                 "clients_dropped_on_write": state
                     .clients_dropped_on_write
                     .load(Ordering::Relaxed),
@@ -4089,6 +4243,7 @@ mod tests {
             cancellation,
             _cancellation_wakes: cancellation_wakes,
             lazy: Mutex::new(LazyState::default()),
+            reply_origins: reply_ownership::origins(),
             lifecycle_probes: lifecycle_controls::Probes::default(),
             dispatcher: DispatcherHealth::default(),
             clients_dropped_on_write: AtomicU64::new(0),
@@ -4451,7 +4606,7 @@ mod tests {
             thread::spawn(move || handle_client(&client_state, queued_socket, &client_writer));
         queued_writer.send(&json!({"auth":"test-token"})).unwrap();
         assert_eq!(queued_reader.recv().unwrap()["applicationType"], "browser");
-        queued_writer.send(&json!({"to":"watcher","type":"watchResources","resourceTypes":["console-message"]})).unwrap();
+        queued_writer.send(&json!({"to":"daemon","type":"forward","reply_contract":"ordinary","packet":{"to":"watcher","type":"watchResources","resourceTypes":["console-message"]}})).unwrap();
         // Positive synchronization: this comes only from inside the RPC queue,
         // rather than assuming a sleep means the second handler was scheduled.
         assert_eq!(queued_reader.recv().unwrap()["type"], "daemon-queued");

@@ -92,3 +92,16 @@ existing abandoned-reply mechanism. A delayed reply cannot supply a later
 request's URL. An actual actor error has already consumed its reply and is not
 retired again. Same-document fragment/history changes still use the current
 URL, not the stale availability form.
+
+## Iteration259: listFrames send contract
+
+`WindowGlobalTarget::current_url` now uses `actor_send_ordinary` for `listFrames`.
+Its existing actor-matched receive, top-frame selection, lifecycle guard and
+abandoned-reply handling remain unchanged. The descriptor enables daemon-v3
+ownership accounting even though this helper sends separately from receiving;
+it neither makes the request one-way nor changes the direct Firefox packet.
+
+Local abandoned-reply bookkeeping in the transport does not cancel daemon-side
+work. The daemon retains an unanswered `listFrames` obligation after client
+departure; only an attributable protocol completion discharges it. Navigation
+events and a useful replacement target do not constitute that completion.

@@ -667,7 +667,7 @@ pub fn wait_for_registry(
 /// "daemon started but did not register within 20s", which was not even true:
 /// nothing had waited 20 s.
 ///
-/// The writer fix (see [`registry::acquire_registry_write_lock_in`]) is what
+/// The writer fix (see [`registry::try_acquire_registry_write_lock_in`]) is what
 /// removes that file. Retrying here is defence in depth, and it earns its
 /// place on its own: this loop is polling a file another process is actively
 /// producing, so "cannot read it *yet*" is a normal intermediate state, not a
@@ -869,6 +869,8 @@ mod tests {
             started_at: "2026-08-17T00:00:00Z".to_owned(),
             auth_token: "a".repeat(64),
             start_token: None,
+            session_sequence: None,
+            session_id: None,
         }
     }
 

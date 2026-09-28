@@ -87,7 +87,9 @@ pub fn run(
         // --no-wait: dispatch without reading the ack and skip the commit
         // wait entirely, mirroring `navigate --no-wait`.
         let packet = build_packet(action);
-        ctx.transport_mut().send(&packet).map_err(AppError::from)?;
+        ctx.transport_mut()
+            .send_ordinary(&packet)
+            .map_err(AppError::from)?;
         // iter-169 Theme B: `--no-wait` returns before any resource can
         // arrive, so it cannot have observed a status — but it must still
         // emit both keys, or `--jq '.results.status'` is a bare `null` whose
@@ -111,7 +113,7 @@ pub fn run(
 
         wait_for_navigation_commit(&mut ctx, cli.timeout, &requested_url, move |transport| {
             transport
-                .send(&build_packet(action))
+                .send_ordinary(&build_packet(action))
                 .map_err(AppError::from)
         })?
     };
@@ -293,7 +295,7 @@ fn send_reload_tolerant(
     transport: &mut ff_rdp_core::RdpTransport,
     reload_packet: &serde_json::Value,
 ) -> Result<(), AppError> {
-    match transport.send(reload_packet) {
+    match transport.send_ordinary(reload_packet) {
         Ok(()) => Ok(()),
         Err(ProtocolError::SendFailed(ref e)) if is_conn_closed_kind(e.kind()) => Ok(()),
         Err(e) => Err(AppError::from(e)),

@@ -1,6 +1,6 @@
 use serde_json::json;
 
-use crate::actor::{actor_request, actor_send};
+use crate::actor::{actor_request, actor_send_ordinary};
 use crate::error::ProtocolError;
 use crate::transport::{RdpTransport, recv_reply_from};
 use crate::types::ActorId;
@@ -16,7 +16,7 @@ impl WindowGlobalTarget {
         transport: &mut RdpTransport,
         target_actor: &ActorId,
     ) -> Result<Option<String>, ProtocolError> {
-        actor_send(transport, target_actor.as_ref(), "listFrames", None)?;
+        actor_send_ordinary(transport, target_actor.as_ref(), "listFrames", None)?;
         let reply = match recv_reply_from(transport, target_actor.as_ref()) {
             Err(error @ (ProtocolError::Timeout | ProtocolError::EvalTargetDestroyed { .. })) => {
                 // listFrames has no correlation ID. A late reply to this

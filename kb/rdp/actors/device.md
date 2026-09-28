@@ -31,3 +31,10 @@ resolution, hardware concurrency, etc.). Used for diagnostics and responsive-mod
 ## Status
 
 Stub — backfilled in iter-73; expand on next touch.
+
+## Iteration259: device discovery reply contract
+
+`DeviceActor::get_actor_id` sends `root.getRoot` with `send_ordinary` before its
+existing reply-filtering loop. A root push cannot satisfy that ordinary reply.
+The explicit contract enables daemon-v3 ownership accounting; it does not add
+fields to the direct Firefox packet or alter device-description parsing.

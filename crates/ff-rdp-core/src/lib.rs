@@ -87,3 +87,6 @@ pub use util::terminal::sanitize_for_terminal;
 // the workspace `[workspace.lints.rust]` table this crate inherits, which is a
 // compile-time guarantee — strictly stronger than a runtime source scan, and it
 // cannot be silently dropped by a reformat.
+
+mod reply_ownership;
+pub use reply_ownership::{ConnectionKey, ReplyAccounting, ReplyContract, ReplyDisposition};

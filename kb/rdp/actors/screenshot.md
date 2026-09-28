@@ -263,3 +263,11 @@ suggests running `ff-rdp doctor`. Since iteration 257, the suggestion to drop
 `--full-page` requires an explicit size-limit diagnostic and never accompanies a TypeError.
 `screenshot_errors_carry_no_headless_relaunch_hint` greps the module source so
 the hint cannot be reintroduced.
+
+## Iteration259: capture's split send remains ordinary
+
+`ScreenshotActor::send_capture_request` uses `actor_send_ordinary`: separating
+send from receive does not make `capture` one-way. This gives an explicit reply
+contract without changing capture arguments, response parsing or direct Firefox
+wire bytes. The existing inactive-capture path remains direct-only; iteration259
+does not add a new daemon screenshot route.

@@ -57,6 +57,8 @@ impl GripKind for LongStringGrip {
 /// or by the next `actor_request` call (synchronous CLI mode).
 #[derive(Debug)]
 pub struct ReleaseRequest {
+    /// Original connection, if supplied by the owner of a deferred release.
+    pub origin: Option<crate::ConnectionKey>,
     /// The actor ID to send the release packet to.
     pub actor_id: ActorId,
     /// The Firefox RDP method name to invoke (e.g. `"release"`).
@@ -187,6 +189,7 @@ pub struct GripHandle<K: GripKind> {
     inner: Grip,
     /// Optional queue to enqueue release requests on drop.
     release_tx: Option<ReleaseQueueTx>,
+    origin: Option<crate::ConnectionKey>,
     _kind: std::marker::PhantomData<K>,
 }
 
@@ -209,8 +212,15 @@ impl<K: GripKind> GripHandle<K> {
             actor_id,
             inner: grip,
             release_tx: Some(release_tx),
+            origin: None,
             _kind: std::marker::PhantomData,
         }
+    }
+
+    /// Preserve the actual connection on a deferred release.
+    pub fn with_origin(mut self, origin: Option<crate::ConnectionKey>) -> Self {
+        self.origin = origin;
+        self
     }
 
     /// Wrap a [`Grip`] without a release queue — actor leaks on drop.
@@ -227,6 +237,7 @@ impl<K: GripKind> GripHandle<K> {
             actor_id,
             inner: grip,
             release_tx: None,
+            origin: None,
             _kind: std::marker::PhantomData,
         }
     }
@@ -295,6 +306,7 @@ impl<K: GripKind> Drop for GripHandle<K> {
             // Best-effort: if the queue is full or the receiver is gone, drop silently.
             let _ = tx.try_send(ReleaseRequest {
                 actor_id: id,
+                origin: self.origin,
                 method: K::RELEASE_METHOD,
             });
         }
@@ -305,6 +317,7 @@ impl<K: GripKind> std::fmt::Debug for GripHandle<K> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ScopedGrip")
             .field("actor_id", &self.actor_id)
+            .field("origin", &self.origin)
             .field("inner", &self.inner)
             .field("has_queue", &self.release_tx.is_some())
             .finish()

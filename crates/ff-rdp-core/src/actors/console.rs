@@ -195,7 +195,7 @@ impl WebConsoleActor {
                 obj.insert("innerWindowID".to_owned(), json!(iwid));
             }
         }
-        transport.send(&request)?;
+        transport.send_described(&request, crate::ReplyContract::AsyncEvaluation)?;
 
         // The immediate ack is a reply (no `type` field) from the console
         // actor; push events arriving in the gap are forwarded to the

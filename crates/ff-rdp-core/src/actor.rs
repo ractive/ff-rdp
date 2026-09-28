@@ -19,8 +19,24 @@ pub fn actor_send(
     })?;
     obj.insert("to".into(), json!(to));
     obj.insert("type".into(), json!(method));
-    transport.send(&request)?;
+    transport.send_described(&request, crate::ReplyContract::OneWay)?;
     Ok(())
+}
+
+/// Send an ordinary request without consuming its reply yet.
+pub fn actor_send_ordinary(
+    transport: &mut RdpTransport,
+    to: &str,
+    method: &str,
+    params: Option<&Value>,
+) -> Result<(), ProtocolError> {
+    let mut request = params.cloned().unwrap_or_else(|| json!({}));
+    let obj = request
+        .as_object_mut()
+        .ok_or_else(|| ProtocolError::InvalidPacket("actor params must be object".into()))?;
+    obj.insert("to".into(), json!(to));
+    obj.insert("type".into(), json!(method));
+    transport.send_ordinary(&request)
 }
 
 /// Send a request to a named actor and return the response.
@@ -43,7 +59,7 @@ pub fn actor_request(
     obj.insert("to".into(), json!(to));
     obj.insert("type".into(), json!(method));
 
-    transport.send(&request)?;
+    transport.send_ordinary(&request)?;
 
     // Per `kb/rdp/protocol/message-format.md`: replies have no `type` field;
     // any `from`+`type` packet is an event. `recv_reply_from` enforces that

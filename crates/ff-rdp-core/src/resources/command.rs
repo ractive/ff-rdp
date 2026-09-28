@@ -382,6 +382,12 @@ impl ResourceCommand {
     /// entries are removed.  On failure, `pending_unwatch` is kept so the next
     /// call can retry.
     pub fn gc_fire_forget(&mut self, writer: &mut FramedWriter) {
+        self.gc_with_send(|packet| writer.send(packet));
+    }
+
+    /// Send pending unwatch through a caller-owned origin/response boundary.
+    /// A daemon callback retires an uncertain origin; it must never replay on another.
+    pub fn gc_with_send(&mut self, mut send: impl FnMut(&Value) -> Result<(), ProtocolError>) {
         if self.pending_unwatch.is_empty() {
             return;
         }
@@ -411,7 +417,7 @@ impl ResourceCommand {
             "resourceTypes": types,
         });
 
-        match writer.send(&packet) {
+        match send(&packet) {
             Ok(()) => {
                 self.pending_unwatch.clear();
                 for t in &to_unwatch {

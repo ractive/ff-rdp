@@ -21,6 +21,7 @@ pub(super) enum StopReason {
     Idle,
     StartupFailure,
     RecoveryFailure,
+    ReplyOwnership,
     FirefoxConnectionLost,
     WorkerReturned(&'static str),
     WorkerPanicked(&'static str),

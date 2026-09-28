@@ -714,3 +714,21 @@ dom-complete and200 but fell back after21323ms with not_observed; with the same
 schedule it finished in1189ms with200. Installed Firefox remained unmodified.
 The separate sweep6 reload failure was21188ms and had no packet trace, so this
 controlled proof does not establish its exact internal scheduling retrospectively.
+
+## Iteration259: resource-grip release origins
+
+The daemon constructs `ResourceGripGuard::new_for_connection` with the event's
+connection identity before extracting grips. Both object and long-string handles
+retain it through deferred Drop releases. The same actor-name string on a later
+connection therefore cannot redirect an old release. `ResourceGripGuard::new`
+keeps the origin-free direct/library behavior. The daemon's resource GC callback
+is also bound to its subscription's immutable origin and records its declared
+one-way contract; resource events are not ordinary replies.
+
+The release drainer uses that exact origin's writer and terminal reply sink;
+retired/missing origins never fall back to the current primary connection.
+Iteration262's primary-only bounded recovery sink and normal resource/lifecycle
+routing remain in place. No generic ACK or cross-owner FIFO assumption is added,
+and direct Firefox wire formats are unchanged. This does not complete
+iteration266's final-consumer, extraction or queue-pressure work; see [[object]]
+for the narrower terminal-release contract.

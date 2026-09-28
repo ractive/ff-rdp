@@ -16,6 +16,7 @@ use crate::error::{ActorErrorKind, ProtocolError};
 const SENSITIVE_KEYS: &[&str] = &[
     "cookie",
     "set-cookie",
+    "auth",
     "authorization",
     "auth-token",
     "x-auth-token",
@@ -235,6 +236,8 @@ pub const MAX_FRAME_BYTES: usize = DEFAULT_MAX_FRAME_BYTES;
 /// - **Recv**: read ASCII digits until `:`, interpret as the byte count, then
 ///   read exactly that many bytes and parse as JSON.
 pub struct RdpTransport {
+    proxy_v3: bool,
+    reply_accounting: Option<crate::ReplyAccounting>,
     reader: BufReader<TcpStream>,
     read_deadline: Option<Instant>,
     abandoned_replies: Vec<String>,
@@ -261,6 +264,9 @@ pub struct RdpTransport {
     ///
     /// See [`take_navigation_started`](RdpTransport::take_navigation_started).
     navigation_started: Option<String>,
+    /// Exact outgoing document announced by the bound daemon's parent watcher.
+    /// Retained after the URL latch is consumed; scoped to this transport.
+    retiring_document: Option<u64>,
 }
 
 impl std::fmt::Debug for RdpTransport {
@@ -373,6 +379,9 @@ impl RdpTransport {
             event_sink: None,
             target_guard: None,
             navigation_started: None,
+            retiring_document: None,
+            proxy_v3: false,
+            reply_accounting: None,
         })
     }
 
@@ -412,6 +421,9 @@ impl RdpTransport {
             event_sink: None,
             target_guard: None,
             navigation_started: None,
+            retiring_document: None,
+            proxy_v3: false,
+            reply_accounting: None,
         }
     }
 
@@ -497,6 +509,12 @@ impl RdpTransport {
     /// has been announced since the last call.
     pub fn take_navigation_started(&mut self) -> Option<String> {
         self.navigation_started.take()
+    }
+
+    /// Whether a proxy-v3 document was positively announced as navigating away.
+    /// This is not a completion receipt and must never discharge reply ownership.
+    pub fn is_retiring_document(&self, inner_window_id: u64) -> bool {
+        self.proxy_v3 && self.retiring_document == Some(inner_window_id)
     }
 
     /// Internal accessor used by [`recv_reply_from`] / [`recv_event_from`].
@@ -590,13 +608,75 @@ impl RdpTransport {
         self.abandoned_replies.push(actor.to_owned());
     }
 
+    /// Select proxy envelopes only after successful authentication/version3 greeting.
+    pub fn enable_proxy_v3(&mut self) {
+        self.proxy_v3 = true;
+    }
+
+    /// Begin accounting before synchronous daemon setup sends any requests.
+    pub fn track_reply_ownership(&mut self) {
+        self.reply_accounting = Some(crate::ReplyAccounting::default());
+    }
+
+    /// Transfer setup accounting before splitting into the daemon's framed halves.
+    pub fn take_reply_accounting(&mut self) -> crate::ReplyAccounting {
+        self.reply_accounting.take().unwrap_or_default()
+    }
+
+    /// Send a request whose ordinary reply is owned even if the caller does not wait.
+    pub fn send_ordinary(&mut self, message: &Value) -> Result<(), ProtocolError> {
+        self.send_described(message, crate::ReplyContract::Ordinary)
+    }
+
+    /// Send using an explicit response contract. Direct transports send original RDP.
+    pub fn send_described(
+        &mut self,
+        message: &Value,
+        contract: crate::ReplyContract,
+    ) -> Result<(), ProtocolError> {
+        if let Some(accounting) = &mut self.reply_accounting {
+            accounting
+                .register(message["to"].as_str().unwrap_or_default(), contract)
+                .map_err(|e| ProtocolError::InvalidPacket(e.into()))?;
+        }
+        let envelope;
+        let packet = if self.proxy_v3 {
+            envelope = serde_json::json!({"to":"daemon", "type":"forward", "reply_contract":contract, "packet":message});
+            &envelope
+        } else {
+            message
+        };
+        let result = self.send_wire(packet);
+        if result.is_err()
+            && let Some(accounting) = &mut self.reply_accounting
+        {
+            accounting.retire("firefox_write_uncertain");
+        }
+        result
+    }
+
     /// Send a JSON message using Firefox RDP framing: `{len}:{json}`.
     pub fn send(&mut self, message: &Value) -> Result<(), ProtocolError> {
+        if self.proxy_v3 && message["to"] != "daemon" {
+            return Err(ProtocolError::InvalidPacket(
+                "proxy request requires an explicit reply contract".into(),
+            ));
+        }
+        self.send_wire(message)
+    }
+
+    fn send_wire(&mut self, message: &Value) -> Result<(), ProtocolError> {
         if self.read_deadline.is_some_and(|d| Instant::now() >= d) {
             return Err(ProtocolError::Timeout);
         }
         let json = serde_json::to_string(message)
             .map_err(|e| ProtocolError::InvalidPacket(e.to_string()))?;
+
+        if self.proxy_v3 && json.len() > max_frame_bytes() {
+            return Err(ProtocolError::InvalidPacket(
+                "proxy envelope exceeds frame bound".into(),
+            ));
+        }
 
         if tracing::enabled!(tracing::Level::TRACE) {
             tracing::trace!(
@@ -639,11 +719,25 @@ impl RdpTransport {
                 );
             }
 
+            if let Some(accounting) = &mut self.reply_accounting {
+                accounting
+                    .receive(&value)
+                    .map_err(|e| ProtocolError::InvalidPacket(e.into()))?;
+            }
             // iter-220: latch top-level navigation announcements here — the one
             // choke point every packet passes through, including the events the
             // reply/event loops forward to the sink or drop on the floor.
             if let Some(url) = navigation_start_url(&value) {
                 self.navigation_started = Some(url);
+                // The bound daemon emits this exact document identity only for
+                // its primary parent-process will-navigate resource. A generic
+                // URL latch, tabNavigated, or direct connection is insufficient.
+                if self.proxy_v3
+                    && value["type"] == "willNavigate"
+                    && let Some(document) = value["innerWindowId"].as_u64()
+                {
+                    self.retiring_document = Some(document);
+                }
             }
 
             if value.get("type").is_none()
@@ -701,7 +795,7 @@ impl RdpTransport {
         };
         obj.insert("to".into(), Value::String(to.to_owned()));
         obj.insert("type".into(), Value::String(type_.to_owned()));
-        self.send(&Value::Object(obj))
+        self.send_described(&Value::Object(obj), crate::ReplyContract::OneWay)
     }
 
     /// Receive a bulk packet from `actor` with kind `kind`, streaming bytes
@@ -1996,6 +2090,62 @@ impl Drop for RaisedFrameCap {
 #[cfg(test)]
 mod tests {
 
+    #[test]
+    fn retiring_document_survives_url_take_tracks_latest_and_is_connection_local() {
+        let (mut transport, peer) = make_transport_pair();
+        transport.enable_proxy_v3();
+        for document in [7_u64, 8] {
+            write_frame(
+                &peer,
+                &serde_json::json!({"from":"target", "type":"willNavigate",
+                "innerWindowId":document,"url":"https://next/"}),
+            );
+            transport
+                .with_read_deadline(Instant::now() + Duration::from_secs(2), RdpTransport::recv)
+                .unwrap();
+            assert_eq!(
+                transport.take_navigation_started().as_deref(),
+                Some("https://next/")
+            );
+            assert!(transport.take_navigation_started().is_none());
+            assert!(transport.is_retiring_document(document));
+        }
+        assert!(!transport.is_retiring_document(7));
+        let (mut fresh, _peer) = make_transport_pair();
+        fresh.enable_proxy_v3();
+        assert!(!fresh.is_retiring_document(8));
+    }
+
+    #[test]
+    fn retiring_document_requires_proxy_and_identified_will_navigate() {
+        for (proxy, event) in [
+            (
+                false,
+                serde_json::json!({"type":"willNavigate","innerWindowId":7,"url":"u"}),
+            ),
+            (
+                true,
+                serde_json::json!({"type":"tabNavigated","state":"start","innerWindowId":7,"url":"u"}),
+            ),
+            (true, serde_json::json!({"type":"willNavigate","url":"u"})),
+            (
+                true,
+                serde_json::json!({"type":"willNavigate","innerWindowId":"7","url":"u"}),
+            ),
+        ] {
+            let (mut transport, peer) = make_transport_pair();
+            if proxy {
+                transport.enable_proxy_v3();
+            }
+            write_frame(&peer, &event);
+            transport
+                .with_read_deadline(Instant::now() + Duration::from_secs(2), RdpTransport::recv)
+                .unwrap();
+            assert_eq!(transport.take_navigation_started().as_deref(), Some("u"));
+            assert!(!transport.is_retiring_document(7), "{event}");
+        }
+    }
+
     // ── iter-220: navigation latch + target guard ────────────────────────
 
     #[test]
@@ -2465,6 +2615,64 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
+    fn redact_daemon_auth_token_without_mutating_packet() {
+        // Force normal redaction without touching process environment/cache,
+        // and restore the previous override even if an assertion panics.
+        struct RestoreRaw(Option<bool>);
+        impl Drop for RestoreRaw {
+            fn drop(&mut self) {
+                set_trace_raw_for_test(self.0);
+            }
+        }
+        let _env_guard = ENV_LOCK.lock().unwrap();
+        let _threshold_lock = REDACT_LOCK.lock().unwrap();
+        let _threshold_restore = RedactThresholdGuard::new();
+        let _raw_restore = RestoreRaw(*TEST_TRACE_RAW_OVERRIDE.lock().unwrap());
+        set_trace_raw_for_test(Some(false));
+        set_redact_threshold(0);
+
+        // Synthetic 64-byte daemon handshake: below the default fallback cap.
+        let token = "a1".repeat(32);
+        assert_eq!(token.len(), 64);
+        assert!(token.len() < redact_threshold());
+        let handshake = serde_json::json!({"auth": token});
+        let original_handshake = handshake.clone();
+        assert_eq!(
+            redact(&handshake),
+            serde_json::json!({"auth": "<redacted len=64>"})
+        );
+        assert_eq!(handshake, original_handshake);
+
+        // Case-insensitive exact keys recurse through proxy-like objects/arrays.
+        // Similar names and ordinary short metadata must remain untouched.
+        let nested = serde_json::json!({
+            "messages": [{"AuTh": token, "AUTH": "short", "authentic": token}],
+            "metadata": {"auth": "x", "authenticated": true, "count": 2},
+            "type": "request"
+        });
+        let original_nested = nested.clone();
+        set_redact_threshold(512);
+        assert_eq!(
+            redact(&nested),
+            serde_json::json!({
+                "messages": [{
+                    "AuTh": "<redacted len=64>",
+                    "AUTH": "<redacted len=5>",
+                    "authentic": token
+                }],
+                "metadata": {"auth": "<redacted len=1>", "authenticated": true, "count": 2},
+                "type": "request"
+            })
+        );
+        assert_eq!(nested, original_nested);
+
+        // Explicit raw mode is deliberately unchanged, including the new key.
+        set_trace_raw_for_test(Some(true));
+        assert_eq!(redact(&handshake), original_handshake);
+        assert_eq!(redact(&nested), original_nested);
+    }
+
+    #[test]
     fn redact_sensitive_key_replaces_value() {
         // Hold ENV_LOCK: `redact()` reads the shared trace-raw override, which
         // `redact_noop_when_ff_rdp_trace_raw_set` mutates under that lock —
@@ -2570,6 +2778,9 @@ mod tests {
             event_sink: None,
             target_guard: None,
             navigation_started: None,
+            retiring_document: None,
+            proxy_v3: false,
+            reply_accounting: None,
         };
 
         let msg = serde_json::json!({"type": "listTabs", "to": "root"});

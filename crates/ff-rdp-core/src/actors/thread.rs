@@ -42,7 +42,7 @@ impl ThreadActor {
             "to": thread_actor,
             "type": "attach",
         });
-        transport.send(&request)?;
+        transport.send_ordinary(&request)?;
         recv_event_from(transport, thread_actor, |m| {
             m.get("type").and_then(Value::as_str) == Some("paused")
         })

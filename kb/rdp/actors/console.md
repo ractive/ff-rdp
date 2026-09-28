@@ -185,3 +185,14 @@ References:
 - The legacy `evaluate_js_async` is preserved as a thin delegate so all
   existing callers continue to work; only `commands::eval::run` opts in via
   the new `--frame` / `--node` / `--inner-window` CLI flags.
+
+## Iteration259: async reply ownership
+
+`evaluate_js_async_scoped` sends with `ReplyContract::AsyncEvaluation`.
+On the authenticated daemon-v3 route, the ordinary `{resultID}` acknowledgement
+changes the outstanding obligation into the matching `(actor, resultID)` result;
+it does not finish the evaluation. Ownership remains outstanding until that
+`evaluationResult` arrives. Unowned/duplicate result IDs retire the origin rather
+than assigning them to a new RPC owner. Other push/resource events retain their
+event routing. This descriptor is internal proxy metadata; the direct Firefox
+request and the caller's existing result-ID matching/deadlines are unchanged.

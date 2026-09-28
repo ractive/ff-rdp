@@ -36,7 +36,7 @@ impl RootActor {
         use serde_json::json;
 
         let request = json!({"to": "root", "type": "listTabs"});
-        transport.send(&request)?;
+        transport.send_ordinary(&request)?;
 
         // Read packets until we find the real listTabs reply: from root, no `type`.
         let mut response = loop {
