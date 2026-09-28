@@ -4,6 +4,70 @@ fn ff_rdp_bin() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_ff-rdp"))
 }
 
+/// The shared guard must reject the entire command before even opening a
+/// transport. No RDP replies are fabricated: an untouched listener is the
+/// sentinel, including when the blocked URL follows a valid perf compare URL.
+#[test]
+fn e2e_147_privileged_navigation_rejected_before_connect() {
+    use std::net::TcpListener;
+    for direct in [false, true] {
+        for blocked in [
+            "about:support",
+            "ABOUT:SUPPORT",
+            "about:support?details=1#application-basics",
+        ] {
+            let commands = [
+                vec!["navigate", blocked],
+                vec!["navigate", blocked, "--with-page"],
+                vec!["navigate", blocked, "--with-network"],
+                vec!["perf", "compare", blocked, "https://example.com/"],
+                vec!["perf", "compare", "https://example.com/", blocked],
+            ];
+            for args in commands {
+                let home = tempfile::tempdir().unwrap();
+                let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+                listener.set_nonblocking(true).unwrap();
+                let mut command = std::process::Command::new(ff_rdp_bin());
+                command.env("FF_RDP_HOME", home.path()).args([
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    &listener.local_addr().unwrap().port().to_string(),
+                    "--timeout",
+                    "100",
+                ]);
+                if direct {
+                    command.arg("--no-daemon");
+                }
+                let output = command
+                    .args(&args)
+                    .output()
+                    .expect("run rejected navigation");
+                assert!(!output.status.success(), "{args:?}");
+                let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+                assert_eq!(json["error_type"], "User", "{args:?}");
+                assert!(
+                    json["error"]
+                        .as_str()
+                        .unwrap()
+                        .contains("launch --url about:support"),
+                    "{args:?}"
+                );
+                assert_eq!(
+                    listener.accept().unwrap_err().kind(),
+                    std::io::ErrorKind::WouldBlock,
+                    "connection attempted: {args:?}"
+                );
+                // The default route must not have started a proxy daemon either.
+                assert!(
+                    !home.path().join(".ff-rdp").exists(),
+                    "daemon side effect: {args:?}"
+                );
+            }
+        }
+    }
+}
+
 fn base_args(port: u16) -> Vec<String> {
     vec![
         "--host".to_owned(),

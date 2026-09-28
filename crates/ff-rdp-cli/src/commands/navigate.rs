@@ -19,7 +19,7 @@ use super::js_helpers::{
     WaitForPredicate, escape_selector, eval_or_bail, poll_js_condition, wait_for_predicates,
 };
 use super::network_events::{build_network_entries, drain_network_events_timed, merge_updates};
-use super::url_validation::validate_url_with_opts;
+use super::url_validation::validate_content_navigation_url;
 
 /// Restore the socket read timeout to the value established at connect time.
 ///
@@ -2371,7 +2371,7 @@ pub fn run_core(
         tracing::enabled!(target: "ff_rdp_cli::navigation_timing", tracing::Level::DEBUG)
             .then(Instant::now);
     trace_navigation_timing("core", "entry", timing_origin, Instant::now());
-    validate_url_with_opts(url, cli.allow_file_urls, cli.allow_unsafe_urls)?;
+    validate_content_navigation_url(url, cli.allow_file_urls, cli.allow_unsafe_urls)?;
     let mut ctx = connect_and_get_target(cli)?;
     trace_navigation_timing("core", "connected", timing_origin, Instant::now());
     trace_navigation_timing("setup", "connected", timing_origin, Instant::now());
@@ -3050,7 +3050,7 @@ pub fn run_with_network(
     auto_consent: bool,
     page_args: &crate::cli::args::PageViewArgs,
 ) -> Result<(), AppError> {
-    validate_url_with_opts(url, cli.allow_file_urls, cli.allow_unsafe_urls)?;
+    validate_content_navigation_url(url, cli.allow_file_urls, cli.allow_unsafe_urls)?;
     let mut ctx = connect_and_get_target(cli)?;
     let target_actor = ctx.target().actor.clone();
 

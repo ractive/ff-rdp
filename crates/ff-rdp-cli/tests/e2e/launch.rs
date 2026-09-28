@@ -14,6 +14,30 @@ fn ff_rdp_bin() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_ff-rdp"))
 }
 
+#[test]
+fn e2e_147_launch_url_validation_precedes_replace_and_profile_creation() {
+    let home = tempfile::tempdir().unwrap();
+    let profile = home.path().join("must-not-exist");
+    for url in [
+        "https://",
+        "about:support\n",
+        "file:///private/report",
+        "javascript:void(0)",
+    ] {
+        let output = std::process::Command::new(ff_rdp_bin())
+            .env("FF_RDP_HOME", home.path())
+            .args(["launch", "--url", url, "--replace", "--profile"])
+            .arg(&profile)
+            .output()
+            .expect("run invalid startup URL");
+        assert!(!output.status.success());
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(json["error_type"], "User");
+        assert!(!profile.exists());
+        assert!(!home.path().join(".ff-rdp").exists());
+    }
+}
+
 // ---------------------------------------------------------------------------
 // CLI argument-parsing smoke tests (no Firefox needed)
 // ---------------------------------------------------------------------------

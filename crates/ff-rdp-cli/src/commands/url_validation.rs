@@ -24,6 +24,46 @@ const ALWAYS_ALLOWED_SCHEMES: &[&str] = &["http", "https", "about"];
 const FILE_SCHEME: &str = "file";
 const UNSAFE_SCHEMES: &[&str] = &["javascript", "data"];
 
+/// Validate a browser startup URL before creating a profile or stopping an
+/// existing instance. Firefox receives this as one --url argument, not shell text.
+pub fn validate_startup_url_with_opts(
+    url: &str,
+    allow_file_urls: bool,
+    allow_unsafe_urls: bool,
+) -> Result<(), AppError> {
+    if url.chars().any(|c| c.is_ascii_control()) {
+        return Err(AppError::User(
+            "startup URL must not contain control characters".to_owned(),
+        ));
+    }
+    validate_url_with_opts(url, allow_file_urls, allow_unsafe_urls)?;
+    url::Url::parse(url).map_err(|e| AppError::User(format!("invalid startup URL: {e}")))?;
+    Ok(())
+}
+
+/// Content-target navigation cannot enter about:support safely on Firefox156.
+/// Its parent process rejects that load with an IPC FatalError. Startup URL
+/// handling uses the browser's privileged route instead. Keep this restriction
+/// separate from the scheme policy: launch --url about:support is supported.
+pub fn validate_content_navigation_url(
+    url: &str,
+    allow_file_urls: bool,
+    allow_unsafe_urls: bool,
+) -> Result<(), AppError> {
+    validate_url_with_opts(url, allow_file_urls, allow_unsafe_urls)?;
+    // URL parsing removes query/fragment and normalizes the scheme. We only
+    // restrict the demonstrated module, not about:blank/neterror/reader.
+    if let Ok(parsed) = url::Url::parse(url)
+        && parsed.scheme() == "about"
+        && parsed.path().eq_ignore_ascii_case("support")
+    {
+        return Err(AppError::User(
+            "about:support cannot be opened through content navigation; Firefox can crash. Start a new owned instance with `ff-rdp launch --url about:support` instead".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 /// Validate that `url`'s scheme is permitted by the current flag combination.
 ///
 /// `allow_file_urls` opts into `file://`; `allow_unsafe_urls` opts into
@@ -80,6 +120,52 @@ fn validate_url(url: &str) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unit_147_support_startup_allowed_but_content_navigation_rejected() {
+        for url in [
+            "about:support",
+            "ABOUT:SUPPORT",
+            "about:support?details=1#application-basics",
+        ] {
+            validate_startup_url_with_opts(url, false, false).unwrap();
+            for (file, unsafe_urls) in [(false, false), (true, true)] {
+                let err = validate_content_navigation_url(url, file, unsafe_urls).unwrap_err();
+                assert!(matches!(err, AppError::User(_)));
+                assert!(err.to_string().contains("launch --url about:support"));
+            }
+        }
+        for url in [
+            "about:blank",
+            "about:neterror?e=dnsNotFound",
+            "about:reader?url=https%3A%2F%2Fexample.com",
+            "https://example.com/",
+        ] {
+            validate_content_navigation_url(url, false, false).unwrap();
+        }
+    }
+
+    #[test]
+    fn unit_147_startup_url_validation_keeps_optins_independent() {
+        for url in [
+            "--profile",
+            "https://",
+            "https://example.com/\n",
+            "about:support\0",
+        ] {
+            assert!(
+                validate_startup_url_with_opts(url, true, true).is_err(),
+                "{url:?}"
+            );
+        }
+        assert!(validate_startup_url_with_opts("file:///tmp/report", false, true).is_err());
+        validate_startup_url_with_opts("file:///tmp/report", true, false).unwrap();
+        for url in ["data:text/plain,hello", "javascript:void(0)"] {
+            assert!(validate_startup_url_with_opts(url, true, false).is_err());
+            validate_startup_url_with_opts(url, false, true).unwrap();
+        }
+        assert!(validate_startup_url_with_opts("chrome://global/content", true, true).is_err());
+    }
 
     #[test]
     fn allows_http() {

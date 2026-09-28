@@ -1,3 +1,4 @@
+mod language_initialization;
 mod startup;
 #[cfg(all(test, unix))]
 mod startup_controls;
@@ -115,7 +116,7 @@ const DEVTOOLS_PREFS: &[(&str, &str)] = &[
 /// is the same-UID plant the managed temp-profile path defeats with
 /// unpredictable directory names (see `build_command`). Refuse a symlinked leaf
 /// rather than following it.
-fn open_user_js_append(profile: &Path, what: &str) -> Result<std::fs::File, AppError> {
+pub(super) fn open_user_js_append(profile: &Path, what: &str) -> Result<std::fs::File, AppError> {
     std::fs::create_dir_all(profile).map_err(|e| {
         AppError::User(format!(
             "failed to create profile directory {}: {e}",
@@ -196,7 +197,7 @@ fn ensure_extension_autoinstall(profile: &Path) -> Result<(), AppError> {
 /// Firefox preferences written into every temporary profile to suppress
 /// first-run UI, telemetry prompts, and session-restore dialogs, and to
 /// enable the remote debugging server (required since Firefox ~149).
-const USER_JS: &str = r#"// Suppress first-run / onboarding pages
+pub(super) const USER_JS: &str = r#"// Suppress first-run / onboarding pages
 user_pref("browser.aboutwelcome.enabled", false);
 user_pref("browser.startup.homepage_override.mstone", "ignore");
 user_pref("startup.homepage_welcome_url", "about:blank");
@@ -242,6 +243,7 @@ pub(crate) fn build_command(
     profile: Option<&str>,
     auto_consent: bool,
     window_size: Option<(u32, u32)>,
+    url: Option<&str>,
 ) -> Result<(std::process::Command, Option<PathBuf>), AppError> {
     // iter-175: every `?` below the temp-profile creation used to return past a
     // directory this function had already created on disk. Arming this guard
@@ -249,27 +251,7 @@ pub(crate) fn build_command(
     // is disarmed only on the success return, where the caller takes over (see
     // `run`, which re-arms one of its own across the spawn).
     let mut managed_guard = crate::util::profile_dir::ManagedProfileGuard::disarmed();
-    let mut cmd = std::process::Command::new(firefox);
-
-    // Always launch as an independent instance.
-    cmd.arg("-no-remote");
-
-    cmd.arg("--start-debugger-server").arg(port.to_string());
-
-    if headless {
-        cmd.arg("--headless");
-    }
-
-    // iter-133 Theme A: `-width`/`-height` are real Firefox window-feature
-    // flags (not the headless-shell `--window-size` arg, which a
-    // `--start-debugger-server` instance ignores — see
-    // kb/research/viewport-emulation.md). Honored but clamped to a ~500px
-    // live floor below that width; the caller (`run`) reports the requested
-    // size and a below-floor warning in the envelope.
-    if let Some((width, height)) = window_size {
-        cmd.arg("-width").arg(width.to_string());
-        cmd.arg("-height").arg(height.to_string());
-    }
+    let mut cmd = browser_command(firefox, port, headless, window_size, None);
 
     // Resolve the effective profile path. `profile` and `temp_profile` are
     // mutually exclusive (enforced at the CLI level), so we handle them in
@@ -395,9 +377,55 @@ pub(crate) fn build_command(
         }
     }
 
-    // Pin the locale for the child process so Firefox console/error messages
-    // are in English regardless of the OS locale.  This makes error strings and
-    // DevTools output predictable for LLM agents.  On Windows the LANG env var
+    // Preserve the existing startup-URL argv position after --profile.
+    if let Some(url) = url {
+        cmd.arg("--url").arg(url);
+    }
+    // Nothing below can fail: hand the directory to the caller intact.
+    managed_guard.disarm();
+    Ok((cmd, profile_path))
+}
+
+// Pure command construction, shared by the explicit initializer and the final
+// launch. Profile creation/staging stays in build_command and happens once.
+fn browser_command(
+    firefox: &Path,
+    port: u16,
+    headless: bool,
+    window_size: Option<(u32, u32)>,
+    url: Option<&str>,
+) -> std::process::Command {
+    let mut cmd = std::process::Command::new(firefox);
+
+    // Always launch as an independent instance.
+    cmd.arg("-no-remote");
+
+    cmd.arg("--start-debugger-server").arg(port.to_string());
+
+    if headless {
+        cmd.arg("--headless");
+    }
+
+    // iter-133 Theme A: `-width`/`-height` are real Firefox window-feature
+    // flags (not the headless-shell `--window-size` arg, which a
+    // `--start-debugger-server` instance ignores — see
+    // kb/research/viewport-emulation.md). Honored but clamped to a ~500px
+    // live floor below that width; the caller (`run`) reports the requested
+    // size and a below-floor warning in the envelope.
+    if let Some((width, height)) = window_size {
+        cmd.arg("-width").arg(width.to_string());
+        cmd.arg("-height").arg(height.to_string());
+    }
+    if let Some(url) = url {
+        // Browser startup uses a privileged URL loader. Do not replace this
+        // with content-target navigateTo (about:support can crash Firefox).
+        // The public caller validates before any profile/replace side effects.
+        cmd.arg("--url").arg(url);
+    }
+
+    // Retain the existing locale environment hints. They do not guarantee the
+    // language of engine messages without the relevant Firefox providers.
+    // On Windows the LANG env var
     // is not meaningful (Windows uses code pages / ICU), but it is harmless to
     // set it there too.
     cmd.env("LANG", "en_US.UTF-8");
@@ -422,9 +450,7 @@ pub(crate) fn build_command(
     #[cfg(target_os = "macos")]
     crate::util::child_fds::exclude_inherited(&mut cmd);
 
-    // Nothing below can fail: hand the directory to the caller intact.
-    managed_guard.disarm();
-    Ok((cmd, profile_path))
+    cmd
 }
 
 /// Preserve the primary launch failure while making a failed managed-profile
@@ -631,7 +657,25 @@ impl PortWaitOutcome {
 /// stubs in tests. It exists so the two failure branches Theme A splits apart
 /// — port occupied before the spawn, and Firefox never binding after it — are
 /// testable without a real Firefox.
+type InitializeLanguagePack = fn(
+    &Path,
+    u16,
+    &Path,
+    &super::english_language_pack::Pack,
+    crate::util::profile_dir::ManagedProfileGuard,
+    &LaunchHooks,
+    &language_initialization::Runtime,
+) -> Result<
+    (
+        crate::util::profile_dir::ManagedProfileGuard,
+        serde_json::Value,
+    ),
+    AppError,
+>;
+
 pub(crate) struct LaunchHooks {
+    initialize_language_pack: InitializeLanguagePack,
+    emit_launch: fn(&Cli, &serde_json::Value) -> Result<(), AppError>,
     /// Fast probe: does *anything* accept TCP on `port` right now?
     pub(crate) is_port_in_use: fn(u16) -> bool,
     /// Identify the process listening on `port`, if the OS query succeeds.
@@ -670,6 +714,12 @@ impl LaunchHooks {
     /// Production hooks that call the real helpers.
     pub(crate) fn real() -> Self {
         Self {
+            initialize_language_pack: language_initialization::run,
+            emit_launch: |cli, envelope| {
+                let hint_ctx = HintContext::new(HintSource::Launch);
+                OutputPipeline::from_cli(cli)
+                    .and_then(|pipeline| pipeline.finalize_with_hints(envelope, Some(&hint_ctx)))
+            },
             is_port_in_use: port_owner::is_port_in_use,
             find_listener: |port| port_owner::find_listener(port).ok().flatten(),
             probe_port: wait_for_port,
@@ -904,6 +954,9 @@ fn should_write_owner_marker(profile: Option<&str>) -> bool {
 /// hook-injected entry point ([`run_with_hooks`]) does not carry a nine-argument
 /// signature.
 pub(crate) struct LaunchOpts<'a> {
+    pub(crate) english_language_pack: Option<&'a Path>,
+    pub(crate) restart_after_language_pack_install: bool,
+    pub(crate) url: Option<&'a str>,
     pub(crate) headless: bool,
     pub(crate) profile: Option<&'a str>,
     pub(crate) temp_profile: bool,
@@ -931,6 +984,9 @@ pub(crate) fn run_with_hooks(
     hooks: &LaunchHooks,
 ) -> Result<(), AppError> {
     let &LaunchOpts {
+        english_language_pack,
+        restart_after_language_pack_install,
+        url,
         headless,
         profile,
         temp_profile,
@@ -940,6 +996,41 @@ pub(crate) fn run_with_hooks(
         window_size,
         launch_timeout,
     } = opts;
+    language_initialization::validate_options(
+        restart_after_language_pack_install,
+        english_language_pack.is_some(),
+        &cli.host,
+    )?;
+    if let Some(url) = url {
+        super::url_validation::validate_startup_url_with_opts(
+            url,
+            cli.allow_file_urls,
+            cli.allow_unsafe_urls,
+        )?;
+    }
+    // Validate immutable local input and binary compatibility before housekeeping,
+    // port replacement/stop, or profile creation. The default path is unchanged.
+    let mut preflight_firefox = None;
+    let mut initialization_runtime = None;
+    let pack = if let Some(path) = english_language_pack {
+        if profile.is_some() || auto_consent {
+            return Err(AppError::User("--english-language-pack requires a fresh managed profile and conflicts with --profile and --auto-consent".to_owned()));
+        }
+        let pack = super::english_language_pack::Pack::read(path)?;
+        let firefox = (hooks.locate_firefox)()?;
+        pack.check_firefox(&firefox)?;
+        if restart_after_language_pack_install {
+            initialization_runtime = Some(
+                language_initialization::Runtime::read(&firefox).map_err(|e| {
+                    AppError::User(format!("language-pack initialization preflight: {e:#}"))
+                })?,
+            );
+        }
+        preflight_firefox = Some(firefox);
+        Some(pack)
+    } else {
+        None
+    };
     let port = debug_port.unwrap_or(cli.port);
     let host = &cli.host;
 
@@ -995,6 +1086,16 @@ pub(crate) fn run_with_hooks(
             // --replace / --force: stop the prior instance gracefully, then proceed.
             replaced = Some(crate::daemon::client::stop_prior_instance(cli, port)?);
         } else if let Some(instance) = identify_running_instance(port, hooks) {
+            if url.is_some() || pack.is_some() {
+                return Err(AppError::User(format!(
+                    "{} requires a new Firefox launch; the owned port is already running. Choose a free --debug-port or explicitly use --replace",
+                    if pack.is_some() {
+                        "--english-language-pack"
+                    } else {
+                        "--url"
+                    }
+                )));
+            }
             // iter-210 Theme D: the port is held by a Firefox ff-rdp launched.
             // The caller asked for a debuggable Firefox on this port and there
             // is one — report it and exit 0 instead of failing. `--replace`
@@ -1009,10 +1110,20 @@ pub(crate) fn run_with_hooks(
         }
     }
 
-    let firefox = (hooks.locate_firefox)()?;
+    let firefox = match preflight_firefox {
+        Some(path) => path,
+        None => (hooks.locate_firefox)()?,
+    };
 
-    let (mut cmd, profile_path) =
-        build_command(&firefox, port, headless, profile, auto_consent, window_size)?;
+    let (mut cmd, profile_path) = build_command(
+        &firefox,
+        port,
+        headless,
+        profile,
+        auto_consent,
+        window_size,
+        url,
+    )?;
 
     // iter-175: `build_command` handed the managed profile directory back
     // intact; take responsibility for it again until this launch is known to
@@ -1030,6 +1141,40 @@ pub(crate) fn run_with_hooks(
         _ => crate::util::profile_dir::ManagedProfileGuard::disarmed(),
     };
 
+    if let Some(pack) = &pack {
+        let staged = profile_path
+            .as_deref()
+            .ok_or_else(|| AppError::User("managed profile absent for language pack".to_owned()))
+            .and_then(|path| pack.stage(path, USER_JS));
+        if let Err(error) = staged {
+            return Err(report_failed_profile_cleanup(error, &mut profile_guard));
+        }
+    }
+    let initialization = if restart_after_language_pack_install {
+        let (Some(path), Some(selected_pack), Some(runtime)) = (
+            profile_path.as_deref(),
+            pack.as_ref(),
+            initialization_runtime.as_ref(),
+        ) else {
+            let error = AppError::Internal(anyhow::anyhow!(
+                "language-pack initialization preparation incomplete: managed profile, pack and runtime required"
+            ));
+            return Err(report_failed_profile_cleanup(error, &mut profile_guard));
+        };
+        let (guard, receipt) = (hooks.initialize_language_pack)(
+            &firefox,
+            port,
+            path,
+            selected_pack,
+            profile_guard,
+            hooks,
+            runtime,
+        )?;
+        profile_guard = guard;
+        Some(receipt)
+    } else {
+        None
+    };
     let child = (hooks.spawn)(&mut cmd).map_err(|e| {
         let error = AppError::User(format!(
             "failed to start Firefox at {}: {e}",
@@ -1112,6 +1257,16 @@ pub(crate) fn run_with_hooks(
             // `launch` is fire-and-forget (it spawns Firefox and returns), so
             // no Ctrl-C cleanup is needed here — the record is cleaned up by
             // whichever stop path runs next.
+            let final_start_token = crate::daemon::process::process_start_token(pid);
+            if let Some(initializer) = &initialization
+                && (final_start_token.is_none()
+                    || (initializer["pid"].as_u64() == Some(u64::from(pid))
+                        && initializer["start_token"].as_str() == final_start_token.as_deref()))
+            {
+                return Err(pending.fail(AppError::User(
+                    "operational Firefox identity is unqualified".into(),
+                )));
+            }
             let daemon_rec = crate::daemon_record::DaemonRecord {
                 pid,
                 port,
@@ -1127,7 +1282,7 @@ pub(crate) fn run_with_hooks(
                 // to. `None` here (unsupported platform, or the process
                 // already gone) degrades to the owner-PID marker check, the
                 // pre-iter-191 fallback.
-                start_token: crate::daemon::process::process_start_token(pid),
+                start_token: final_start_token,
             };
             // `temp_profile` is true when the caller requested --temp-profile
             // OR when we auto-created one because no profile flag was given.
@@ -1180,6 +1335,20 @@ pub(crate) fn run_with_hooks(
                 "auto_consent_extension_installed": auto_consent,
                 "window_size": window_size_json,
             });
+            if let Some(pack) = &pack {
+                result["english_language_pack"] = pack.staged_result();
+                if let Some(receipt) = &initialization {
+                    result["english_language_pack"]["mode"] = json!("install-then-relaunch");
+                    result["english_language_pack"]["status"] = json!("initialized-and-relaunched");
+                    result["english_language_pack"]["initialization"] = receipt.clone();
+                    result["english_language_pack"]["relaunch_count"] = json!(1);
+                }
+            }
+            if let Some(url) = url {
+                // Forwarded request only; port readiness does not attest that
+                // the requested document has loaded.
+                result["requested_url"] = json!(url);
+            }
             if below_floor && let (Some((w, h)), Some(obj)) = (window_size, result.as_object_mut())
             {
                 let floor = crate::util::window_size::LIVE_VIEWPORT_FLOOR_PX;
@@ -1223,9 +1392,7 @@ pub(crate) fn run_with_hooks(
                 cli.is_verbose(),
             );
             let envelope = output::envelope(&result, 1, &meta);
-            let hint_ctx = HintContext::new(HintSource::Launch);
-            let emitted = OutputPipeline::from_cli(cli)
-                .and_then(|pipeline| pipeline.finalize_with_hints(&envelope, Some(&hint_ctx)));
+            let emitted = (hooks.emit_launch)(cli, &envelope);
             if let Err(error) = emitted {
                 return Err(pending.fail(error));
             }
@@ -1248,6 +1415,50 @@ pub(crate) fn run_with_hooks(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unit_147_startup_url_is_one_argument_and_managed_prefs_stay_unchanged() {
+        // Inspect actual prepared commands without spawning a browser. Metacharacters
+        // must remain inside one URL, never extra argv or a shell invocation.
+        let url = "https://example.com/a path?x=1&y=2|literal#--profile";
+        let executable = Path::new("owned-fixture-firefox");
+        let (default, default_profile) =
+            build_command(executable, 7347, true, None, false, None, None).unwrap();
+        let (with_url, url_profile) =
+            build_command(executable, 7347, true, None, false, None, Some(url)).unwrap();
+        let default_profile = default_profile.unwrap();
+        let url_profile = url_profile.unwrap();
+        let args: Vec<_> = with_url.get_args().collect();
+        let position = args.iter().position(|a| *a == "--url").unwrap();
+        assert_eq!(args[position + 1], url);
+        assert_eq!(args.iter().filter(|a| **a == "--url").count(), 1);
+        let normalized = |cmd: &std::process::Command, profile: &Path| {
+            cmd.get_args()
+                .map(|a| {
+                    if a == profile.as_os_str() {
+                        "<profile>".to_owned()
+                    } else {
+                        a.to_string_lossy().into_owned()
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut changed = normalized(&with_url, &url_profile);
+        drop(changed.drain(position..position + 2));
+        assert_eq!(changed, normalized(&default, &default_profile));
+        assert_eq!(default.get_program(), with_url.get_program());
+        assert_eq!(
+            default.get_envs().collect::<Vec<_>>(),
+            with_url.get_envs().collect::<Vec<_>>()
+        );
+        for profile in [&default_profile, &url_profile] {
+            assert_eq!(
+                std::fs::read_to_string(profile.join("user.js")).unwrap(),
+                USER_JS
+            );
+            std::fs::remove_dir_all(profile).unwrap();
+        }
+    }
 
     /// Extract all arguments that would be passed to the spawned process,
     /// including the program name as the first element.
@@ -1428,7 +1639,7 @@ mod tests {
         std::fs::create_dir_all(&user_profile).unwrap();
         let user_profile_str = user_profile.to_str().unwrap();
         let (_, returned) =
-            build_command(&tmp, 6000, false, Some(user_profile_str), false, None).unwrap();
+            build_command(&tmp, 6000, false, Some(user_profile_str), false, None, None).unwrap();
         cleanup_fake_firefox(&tmp);
 
         assert_eq!(returned.as_deref(), Some(user_profile.as_path()));
@@ -1549,6 +1760,9 @@ mod tests {
         let cli = <Cli as clap::Parser>::try_parse_from(["ff-rdp", "launch"])
             .expect("parse a bare `launch`");
         let opts = LaunchOpts {
+            english_language_pack: None,
+            restart_after_language_pack_install: false,
+            url: None,
             headless: true,
             profile: None,
             temp_profile: false,
@@ -1637,7 +1851,7 @@ mod tests {
     #[test]
     fn build_command_always_includes_no_remote() {
         let tmp = fake_firefox();
-        let (cmd, _) = build_command(&tmp, 6000, false, None, false, None).unwrap();
+        let (cmd, _) = build_command(&tmp, 6000, false, None, false, None, None).unwrap();
         let args = command_args(&cmd);
         cleanup_fake_firefox(&tmp);
         assert!(
@@ -1649,7 +1863,7 @@ mod tests {
     #[test]
     fn build_command_includes_debugger_server_port() {
         let tmp = fake_firefox();
-        let (cmd, profile) = build_command(&tmp, 6000, false, None, false, None).unwrap();
+        let (cmd, profile) = build_command(&tmp, 6000, false, None, false, None, None).unwrap();
         let args = command_args(&cmd);
         cleanup_fake_firefox(&tmp);
         assert!(
@@ -1672,7 +1886,8 @@ mod tests {
     #[test]
     fn build_command_no_profile_auto_creates_temp_profile() {
         let tmp = fake_firefox();
-        let (cmd, profile_path) = build_command(&tmp, 6000, false, None, false, None).unwrap();
+        let (cmd, profile_path) =
+            build_command(&tmp, 6000, false, None, false, None, None).unwrap();
         let args = command_args(&cmd);
         cleanup_fake_firefox(&tmp);
         let profile = profile_path.expect("auto-created temp profile should be returned");
@@ -1701,7 +1916,7 @@ mod tests {
     #[test]
     fn build_command_headless_flag() {
         let tmp = fake_firefox();
-        let (cmd, _) = build_command(&tmp, 6000, true, None, false, None).unwrap();
+        let (cmd, _) = build_command(&tmp, 6000, true, None, false, None, None).unwrap();
         let args = command_args(&cmd);
         cleanup_fake_firefox(&tmp);
         assert!(
@@ -1713,7 +1928,7 @@ mod tests {
     #[test]
     fn build_command_no_headless_by_default() {
         let tmp = fake_firefox();
-        let (cmd, _) = build_command(&tmp, 6000, false, None, false, None).unwrap();
+        let (cmd, _) = build_command(&tmp, 6000, false, None, false, None, None).unwrap();
         let args = command_args(&cmd);
         cleanup_fake_firefox(&tmp);
         assert!(
@@ -1729,7 +1944,7 @@ mod tests {
         std::fs::create_dir_all(&profile_dir).unwrap();
         let profile_str = profile_dir.to_str().unwrap();
         let (cmd, profile_path) =
-            build_command(&tmp, 6000, false, Some(profile_str), false, None).unwrap();
+            build_command(&tmp, 6000, false, Some(profile_str), false, None, None).unwrap();
         let args = command_args(&cmd);
         cleanup_fake_firefox(&tmp);
         let _ = std::fs::remove_dir_all(&profile_dir);
@@ -1746,7 +1961,8 @@ mod tests {
     #[test]
     fn build_command_temp_profile_creates_dir_and_sets_profile_arg() {
         let tmp = fake_firefox();
-        let (cmd, profile_path) = build_command(&tmp, 6000, false, None, false, None).unwrap();
+        let (cmd, profile_path) =
+            build_command(&tmp, 6000, false, None, false, None, None).unwrap();
         let args = command_args(&cmd);
         cleanup_fake_firefox(&tmp);
         assert!(
@@ -1765,7 +1981,7 @@ mod tests {
     #[test]
     fn build_command_temp_profile_writes_user_js() {
         let tmp = fake_firefox();
-        let (_, profile_path) = build_command(&tmp, 6000, false, None, false, None).unwrap();
+        let (_, profile_path) = build_command(&tmp, 6000, false, None, false, None, None).unwrap();
         cleanup_fake_firefox(&tmp);
         let profile = profile_path.expect("temp_profile should set a profile path");
         let user_js = profile.join("user.js");
@@ -1793,7 +2009,7 @@ mod tests {
     #[test]
     fn build_command_non_standard_port() {
         let tmp = fake_firefox();
-        let (cmd, _) = build_command(&tmp, 9222, false, None, false, None).unwrap();
+        let (cmd, _) = build_command(&tmp, 9222, false, None, false, None, None).unwrap();
         let args = command_args(&cmd);
         cleanup_fake_firefox(&tmp);
         assert!(
@@ -1806,7 +2022,7 @@ mod tests {
     fn build_command_window_size_forwards_width_and_height() {
         let tmp = fake_firefox();
         let (cmd, profile) =
-            build_command(&tmp, 6000, true, None, false, Some((390, 844))).unwrap();
+            build_command(&tmp, 6000, true, None, false, Some((390, 844)), None).unwrap();
         let args = command_args(&cmd);
         cleanup_fake_firefox(&tmp);
         if let Some(p) = profile {
@@ -1833,7 +2049,7 @@ mod tests {
     #[test]
     fn build_command_no_window_size_omits_width_height_flags() {
         let tmp = fake_firefox();
-        let (cmd, profile) = build_command(&tmp, 6000, false, None, false, None).unwrap();
+        let (cmd, profile) = build_command(&tmp, 6000, false, None, false, None, None).unwrap();
         let args = command_args(&cmd);
         cleanup_fake_firefox(&tmp);
         if let Some(p) = profile {
@@ -1853,7 +2069,7 @@ mod tests {
         // The extension download may fail in CI (no network), so we accept both
         // Ok and a User-level error; we just verify it is not an Internal error.
         let tmp = fake_firefox();
-        let result = build_command(&tmp, 6000, false, None, true, None);
+        let result = build_command(&tmp, 6000, false, None, true, None, None);
         cleanup_fake_firefox(&tmp);
         match result {
             Ok((_, profile_path)) => {
@@ -1873,7 +2089,7 @@ mod tests {
         // doesn't panic when given a temp profile. The download will fail in
         // offline test environments, so we just verify the error is reasonable
         // or it succeeds if network is available.
-        let result = build_command(&tmp, 6000, false, None, true, None);
+        let result = build_command(&tmp, 6000, false, None, true, None, None);
         cleanup_fake_firefox(&tmp);
         // Either succeeds (network available) or gives a user error (no network)
         match result {
@@ -1948,6 +2164,9 @@ mod iter_175_tests {
 
     fn managed_opts(port: u16) -> LaunchOpts<'static> {
         LaunchOpts {
+            english_language_pack: None,
+            restart_after_language_pack_install: false,
+            url: None,
             headless: true,
             // `None` is the managed-profile case — the only one that ever
             // creates (and so can leak) a directory of ours.
@@ -1959,6 +2178,200 @@ mod iter_175_tests {
             window_size: None,
             launch_timeout: Some(0),
         }
+    }
+
+    #[test]
+    fn unit_147_langpack_conflicts_and_invalid_input_precede_side_effects() {
+        let root = tempfile::tempdir().unwrap();
+        let invalid = root.path().join("invalid.xpi");
+        std::fs::write(&invalid, b"not a ZIP").unwrap();
+        let hooks = LaunchHooks {
+            is_port_in_use: |_| panic!("invalid pack reached port / replacement"),
+            locate_firefox: || panic!("invalid pack reached Firefox lookup"),
+            spawn: |_| panic!("invalid pack reached spawn"),
+            ..LaunchHooks::none_running()
+        };
+        for (profile, auto_consent) in [
+            (None, false),
+            (Some("uncreated-profile"), false),
+            (None, true),
+        ] {
+            let opts = LaunchOpts {
+                english_language_pack: Some(&invalid),
+                restart_after_language_pack_install: false,
+                profile,
+                auto_consent,
+                replace: true,
+                ..managed_opts(7350)
+            };
+            assert!(run_with_hooks(&bare_launch_cli(), &opts, &hooks).is_err());
+        }
+        for conflicting in ["--auto-consent", "--profile=uncreated-profile"] {
+            assert!(
+                <Cli as clap::Parser>::try_parse_from([
+                    "ff-rdp",
+                    "launch",
+                    "--english-language-pack",
+                    "local.xpi",
+                    conflicting
+                ])
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn unit_147_langpack_owned_port_and_stage_failure_preserve_ownership() {
+        use super::super::english_language_pack::{fixture, fixture_manifest};
+        thread_local! { static BINARY: std::cell::RefCell<PathBuf> = const { std::cell::RefCell::new(PathBuf::new()) }; }
+        let root = tempfile::tempdir().unwrap();
+        let binary = root.path().join("firefox");
+        std::fs::write(&binary, b"never executed").unwrap();
+        std::fs::write(
+            root.path().join("application.ini"),
+            "[App]\nVersion=156.0.1\n",
+        )
+        .unwrap();
+        BINARY.with(|p| *p.borrow_mut() = binary);
+        let xpi = root.path().join("local.xpi");
+        std::fs::write(&xpi, fixture(&fixture_manifest(), &[])).unwrap();
+        let hooks = LaunchHooks {
+            locate_firefox: || BINARY.with(|p| Ok(p.borrow().clone())),
+            is_port_in_use: |_| true,
+            read_launch_record: |port| {
+                Some(crate::daemon_record::DaemonRecord {
+                    pid: 17350,
+                    port,
+                    profile_dir: PathBuf::from("/owned/example"),
+                    launched_at: chrono::Utc::now(),
+                    headless: true,
+                    start_token: Some("owned-token".to_owned()),
+                })
+            },
+            is_pid_alive: |_| true,
+            record_pid_is_ours: |_| true,
+            spawn: |_| panic!("occupied pack launch must not spawn"),
+            ..LaunchHooks::none_running()
+        };
+        let opts = LaunchOpts {
+            english_language_pack: Some(&xpi),
+            restart_after_language_pack_install: false,
+            ..managed_opts(7350)
+        };
+        assert!(
+            run_with_hooks(&bare_launch_cli(), &opts, &hooks)
+                .unwrap_err()
+                .to_string()
+                .contains("--english-language-pack requires a new Firefox launch")
+        );
+        thread_local! { static STAGED: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) }; }
+        let failed_spawn = LaunchHooks {
+            is_port_in_use: |_| false,
+            spawn: |cmd| {
+                let args: Vec<_> = cmd.get_args().collect();
+                let index = args.iter().position(|a| *a == "--profile").unwrap();
+                let profile = PathBuf::from(args[index + 1]);
+                assert!(
+                    profile
+                        .join("extensions/langpack-en-US@firefox.mozilla.org.xpi")
+                        .is_file()
+                );
+                assert_eq!(
+                    std::fs::read_to_string(profile.join("user.js")).unwrap(),
+                    format!(
+                        "{USER_JS}{}",
+                        super::super::english_language_pack::PROFILE_ACTIVATION
+                    )
+                );
+                STAGED.with(|p| *p.borrow_mut() = Some(profile));
+                Err(std::io::Error::other(
+                    "injected failure after actual staging",
+                ))
+            },
+            ..hooks
+        };
+        assert!(run_with_hooks(&bare_launch_cli(), &opts, &failed_spawn).is_err());
+        assert!(!STAGED.with(|p| p.borrow().clone().unwrap()).exists());
+        // The actual cleanup helper used by the pre-spawn staging failure path
+        // removes only the freshly guarded profile, retaining its neighbor.
+        let (_, profile) = build_command(
+            &BINARY.with(|p| p.borrow().clone()),
+            7350,
+            true,
+            None,
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+        let profile = profile.unwrap();
+        std::fs::create_dir(profile.join("extensions")).unwrap();
+        let mut guard = crate::util::profile_dir::ManagedProfileGuard::armed(&profile);
+        let pack = super::super::english_language_pack::Pack::read(&xpi).unwrap();
+        let error = pack.stage(&profile, USER_JS).unwrap_err();
+        let _ = report_failed_profile_cleanup(error, &mut guard);
+        assert!(!profile.exists());
+        assert!(xpi.is_file());
+    }
+
+    #[test]
+    fn unit_147_invalid_startup_url_precedes_replace_and_profile_side_effects() {
+        let root = tempfile::tempdir().unwrap();
+        let profile = root.path().join("must-not-exist");
+        let hooks = LaunchHooks {
+            is_port_in_use: |_| panic!("invalid URL reached a port probe or replace"),
+            locate_firefox: || panic!("invalid URL reached Firefox lookup"),
+            spawn: |_| panic!("invalid URL reached spawn"),
+            ..LaunchHooks::none_running()
+        };
+        for url in [
+            "--profile",
+            "about:support\n",
+            "file:///private/report",
+            "javascript:void(0)",
+        ] {
+            let opts = LaunchOpts {
+                url: Some(url),
+                profile: profile.to_str(),
+                replace: true,
+                ..managed_opts(7348)
+            };
+            let err = run_with_hooks(&bare_launch_cli(), &opts, &hooks).unwrap_err();
+            assert!(matches!(err, AppError::User(_)));
+            assert!(!profile.exists());
+        }
+    }
+
+    #[test]
+    fn unit_147_owned_existing_launch_cannot_silently_ignore_startup_url() {
+        let hooks = LaunchHooks {
+            is_port_in_use: |_| true,
+            read_launch_record: |port| {
+                Some(crate::daemon_record::DaemonRecord {
+                    pid: 17347,
+                    port,
+                    profile_dir: PathBuf::from("/owned/example"),
+                    launched_at: chrono::Utc::now(),
+                    headless: true,
+                    start_token: Some("owned-test-token".to_owned()),
+                })
+            },
+            is_pid_alive: |_| true,
+            record_pid_is_ours: |_| true,
+            locate_firefox: || panic!("existing instance should not spawn"),
+            spawn: |_| panic!("existing instance should not spawn"),
+            ..LaunchHooks::none_running()
+        };
+        let opts = LaunchOpts {
+            url: Some("about:support"),
+            ..managed_opts(7349)
+        };
+        let err = run_with_hooks(&bare_launch_cli(), &opts, &hooks).unwrap_err();
+        assert!(matches!(err, AppError::User(_)));
+        assert!(
+            err.to_string()
+                .contains("--url requires a new Firefox launch")
+        );
     }
 
     #[cfg(unix)]
@@ -2300,7 +2713,7 @@ mod iter_175_tests {
     #[test]
     fn unit_175_build_command_marks_profile_with_own_pid_before_spawn() {
         let firefox = fake_firefox_for_175();
-        let (_cmd, profile_path) = build_command(&firefox, 6000, false, None, false, None)
+        let (_cmd, profile_path) = build_command(&firefox, 6000, false, None, false, None, None)
             .expect("build_command with a managed profile must succeed");
         let _ = std::fs::remove_file(&firefox);
 
@@ -2325,5 +2738,499 @@ mod iter_175_tests {
         let path = std::env::temp_dir().join(name);
         std::fs::write(&path, b"#!/bin/sh\nexit 0\n").expect("write the fake firefox");
         path
+    }
+    #[cfg(unix)]
+    #[test]
+    fn unit_147_restart_rejects_before_external_effects() {
+        let hooks = LaunchHooks {
+            is_port_in_use: |_| panic!("invalid restart reached port"),
+            locate_firefox: || panic!("invalid restart reached binary"),
+            initialize_language_pack: |_, _, _, _, _, _, _| {
+                panic!("invalid restart reached initializer")
+            },
+            spawn: |_| panic!("invalid restart reached spawn"),
+            ..LaunchHooks::none_running()
+        };
+        let opts = LaunchOpts {
+            restart_after_language_pack_install: true,
+            replace: true,
+            ..managed_opts(7350)
+        };
+        assert!(
+            run_with_hooks(&bare_launch_cli(), &opts, &hooks)
+                .unwrap_err()
+                .to_string()
+                .contains("requires --english-language-pack")
+        );
+        let mut cli = bare_launch_cli();
+        cli.host = "example.invalid".into();
+        let opts = LaunchOpts {
+            english_language_pack: Some(std::path::Path::new("unread.xpi")),
+            ..opts
+        };
+        assert!(
+            run_with_hooks(&cli, &opts, &hooks)
+                .unwrap_err()
+                .to_string()
+                .contains("loopback")
+        );
+        assert!(
+            <Cli as clap::Parser>::try_parse_from([
+                "ff-rdp",
+                "launch",
+                "--restart-after-language-pack-install"
+            ])
+            .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unit_147_restart_handoff_reuses_profile_and_never_retries() {
+        use super::super::english_language_pack::{fixture, fixture_manifest};
+        thread_local! {
+            static BINARY: std::cell::RefCell<PathBuf> = const { std::cell::RefCell::new(PathBuf::new()) };
+            static PROFILE: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+            static INITIALIZATIONS: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+            static FINAL_ATTEMPTS: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+        }
+        let root = tempfile::tempdir().unwrap();
+        let binary = root.path().join("firefox");
+        std::fs::write(&binary, b"fixture only").unwrap();
+        std::fs::write(
+            root.path().join("application.ini"),
+            "[App]\nVersion=156.0.1\nBuildID=test\n",
+        )
+        .unwrap();
+        BINARY.with(|v| *v.borrow_mut() = binary);
+        let xpi = root.path().join("pack.xpi");
+        std::fs::write(&xpi, fixture(&fixture_manifest(), &[])).unwrap();
+        let hooks = LaunchHooks {
+            locate_firefox: || BINARY.with(|v| Ok(v.borrow().clone())),
+            is_port_in_use: |_| false,
+            initialize_language_pack: |_, _, profile, pack, guard, _, _| {
+                INITIALIZATIONS.with(|v| {
+                    v.set(v.get() + 1);
+                    assert_eq!(v.get(), 1);
+                });
+                pack.verify_staged(profile, USER_JS).unwrap();
+                PROFILE.with(|v| *v.borrow_mut() = Some(profile.to_owned()));
+                Ok((guard, json!({"pid":1,"start_token":"fixture"})))
+            },
+            spawn: |cmd| {
+                FINAL_ATTEMPTS.with(|v| {
+                    v.set(v.get() + 1);
+                    assert_eq!(v.get(), 1);
+                });
+                let args: Vec<_> = cmd.get_args().collect();
+                let i = args.iter().position(|v| *v == "--profile").unwrap();
+                PROFILE.with(|v| assert_eq!(Path::new(args[i + 1]), v.borrow().as_ref().unwrap()));
+                assert!(args.iter().any(|v| *v == "https://example.invalid/final"));
+                Err(std::io::Error::other("deliberate final spawn failure"))
+            },
+            ..LaunchHooks::none_running()
+        };
+        let opts = LaunchOpts {
+            english_language_pack: Some(&xpi),
+            restart_after_language_pack_install: true,
+            url: Some("https://example.invalid/final"),
+            ..managed_opts(7350)
+        };
+        assert!(
+            run_with_hooks(&bare_launch_cli(), &opts, &hooks)
+                .unwrap_err()
+                .to_string()
+                .contains("deliberate final spawn failure")
+        );
+        PROFILE.with(|v| assert!(!v.borrow().as_ref().unwrap().exists()));
+        INITIALIZATIONS.with(|v| assert_eq!(v.get(), 1));
+        FINAL_ATTEMPTS.with(|v| assert_eq!(v.get(), 1));
+        let hooks = LaunchHooks {
+            initialize_language_pack: |_, _, _, _, _guard, _, _| {
+                Err(AppError::User("initializer refused".into()))
+            },
+            spawn: |_| panic!("failed initializer reached final spawn"),
+            ..hooks
+        };
+        assert!(
+            run_with_hooks(&bare_launch_cli(), &opts, &hooks)
+                .unwrap_err()
+                .to_string()
+                .contains("initializer refused")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "isolated restart-control executor; parent supplies private state"]
+    #[allow(unsafe_code)]
+    fn restart_success_isolated_executor() {
+        use super::super::english_language_pack::{fixture, fixture_manifest};
+        let isolated =
+            PathBuf::from(std::env::var_os("FF_RDP_147_CONTROL_HOME").expect("owned control home"));
+        assert!(isolated.is_absolute());
+        assert_eq!(
+            std::env::var_os("FF_RDP_HOME"),
+            Some(isolated.clone().into_os_string()),
+            "147 isolation home mismatch before launch"
+        );
+        assert_eq!(
+            crate::daemon_record::record_base_dir().unwrap(),
+            isolated.join(".ff-rdp")
+        );
+        assert_eq!(
+            std::fs::read(isolated.join("147-control-owner")).unwrap(),
+            b"owned restart control"
+        );
+        thread_local! {
+            static BINARY: std::cell::RefCell<PathBuf> = const { std::cell::RefCell::new(PathBuf::new()) };
+            static PROFILE: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+            static SPAWNS: std::cell::RefCell<Vec<u32>> = const { std::cell::RefCell::new(Vec::new()) };
+            static ENVELOPES: std::cell::RefCell<Vec<serde_json::Value>> = const { std::cell::RefCell::new(Vec::new()) };
+        }
+        let root = tempfile::tempdir().unwrap();
+        let binary = root.path().join("firefox");
+        std::fs::write(&binary, b"never executed").unwrap();
+        std::fs::write(
+            root.path().join("application.ini"),
+            "[App]\nVersion=156.0.1\nBuildID=test\n",
+        )
+        .unwrap();
+        BINARY.with(|v| *v.borrow_mut() = binary);
+        let xpi = root.path().join("pack.xpi");
+        std::fs::write(&xpi, fixture(&fixture_manifest(), &[])).unwrap();
+        let hooks = LaunchHooks {
+            locate_firefox: || BINARY.with(|v| Ok(v.borrow().clone())),
+            is_port_in_use: |_| false,
+            probe_port: |_, _, _, _| PortWaitOutcome::Opened,
+            emit_launch: |_, value| {
+                ENVELOPES.with(|v| v.borrow_mut().push(value.clone()));
+                Ok(())
+            },
+            initialize_language_pack: |firefox, port, profile, pack, guard, hooks, _| {
+                pack.verify_staged(profile, USER_JS).unwrap();
+                PROFILE.with(|v| *v.borrow_mut() = Some(profile.to_owned()));
+                let mut cmd = browser_command(firefox, port, true, None, Some("about:blank"));
+                cmd.arg("--profile").arg(profile);
+                let mut child = (hooks.spawn)(&mut cmd).unwrap();
+                let pid = child.id();
+                let status = child.wait().unwrap();
+                assert!(status.success());
+                // This hook models the independently tested readiness/state gates;
+                // the harmless initializer Child really ran and was waited here.
+                pack.verify_staged(profile, USER_JS).unwrap();
+                Ok((
+                    guard,
+                    json!({"pid":pid,"start_token":"test-initializer","actual_child_wait":true,"exit_code":0}),
+                ))
+            },
+            spawn: |cmd| {
+                let args: Vec<_> = cmd.get_args().collect();
+                let i = args.iter().position(|v| *v == "--profile").unwrap();
+                PROFILE.with(|v| assert_eq!(Path::new(args[i + 1]), v.borrow().as_ref().unwrap()));
+                let first = SPAWNS.with(|v| v.borrow().is_empty());
+                if first {
+                    assert!(args.iter().any(|v| *v == "about:blank"));
+                    assert!(!args.iter().any(|v| *v == "https://example.invalid/final"));
+                } else {
+                    assert!(args.iter().any(|v| *v == "https://example.invalid/final"));
+                }
+                let child = if first {
+                    std::process::Command::new("/bin/sh")
+                        .args(["-c", "exit 0"])
+                        .spawn()?
+                } else {
+                    std::process::Command::new("/bin/sleep").arg("2").spawn()?
+                };
+                SPAWNS.with(|v| v.borrow_mut().push(child.id()));
+                Ok(child)
+            },
+            ..LaunchHooks::none_running()
+        };
+        let opts = LaunchOpts {
+            english_language_pack: Some(&xpi),
+            restart_after_language_pack_install: true,
+            url: Some("https://example.invalid/final"),
+            ..managed_opts(7363)
+        };
+        let result = run_with_hooks(&bare_launch_cli(), &opts, &hooks);
+        let pids = SPAWNS.with(|v| v.borrow().clone());
+        let last = *pids.last().unwrap();
+        let native = i32::try_from(last).unwrap();
+        let record = crate::daemon_record::read(7363);
+        let birth = crate::daemon::process::process_start_token(last);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut status = 0;
+        let mut waited = loop {
+            // SAFETY: last is our direct harmless child, never a foreign PID.
+            // WNOHANG never blocks. The production success path intentionally
+            // drops its Child; this test still owns the parent wait obligation.
+            let observed = unsafe { libc::waitpid(native, &raw mut status, libc::WNOHANG) };
+            if observed != 0 {
+                break observed;
+            }
+            if std::time::Instant::now() >= deadline {
+                break 0;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        if waited == 0 {
+            if birth.is_some() && crate::daemon::process::process_start_token(last) == birth {
+                // SAFETY: matching birth and unreaped direct-child identity bind
+                // this timeout cleanup to the exact harmless test child.
+                unsafe {
+                    libc::kill(native, libc::SIGKILL);
+                }
+            }
+            let cleanup = std::time::Instant::now() + Duration::from_secs(2);
+            while waited == 0 && std::time::Instant::now() < cleanup {
+                // SAFETY: same direct child, nonblocking actual wait.
+                waited = unsafe { libc::waitpid(native, &raw mut status, libc::WNOHANG) };
+                if waited == 0 {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+        }
+        assert_ne!(
+            waited, 0,
+            "owned child cleanup uncertain; retain profile for recovery, PID {last}"
+        );
+        // We have an actual wait; remove only this test's final launch record.
+        crate::daemon_record::remove(7363).unwrap();
+        PROFILE.with(|v| std::fs::remove_dir_all(v.borrow().as_ref().unwrap()).unwrap());
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(pids.len(), 2);
+        assert_ne!(pids[0], pids[1]);
+        assert_eq!(
+            waited, native,
+            "final harmless child was not actually waited"
+        );
+        assert_eq!(status, 0);
+        assert_eq!(record.unwrap().unwrap().pid, last);
+        ENVELOPES.with(|v| {
+            let values = v.borrow();
+            assert_eq!(values.len(), 1);
+            assert_eq!(values[0]["results"]["pid"], last);
+            assert_eq!(
+                values[0]["results"]["english_language_pack"]["initialization"]["pid"],
+                pids[0]
+            );
+            assert_eq!(
+                values[0]["results"]["english_language_pack"]["relaunch_count"],
+                1
+            );
+        });
+        let receipt = json!({"pids":pids,"initial_actual_wait":true,"initial_exit":0,
+            "final_actual_wait_pid":waited,"final_wait_status":status,"envelope_count":1,
+            "final_record_pid":last,"profile_removed":true,"home":isolated});
+        std::fs::write(
+            isolated.join("147-success-control.json"),
+            serde_json::to_vec_pretty(&receipt).unwrap(),
+        )
+        .unwrap();
+    }
+
+    // Test-only ownership of the isolated executor, including assertion/I/O
+    // unwinding. No blocking wait occurs until try_wait has actually reaped it.
+    #[cfg(unix)]
+    struct RestartExecutor {
+        child: std::process::Child,
+        reaped: bool,
+        cleanup_attempted: bool,
+    }
+
+    #[cfg(unix)]
+    impl RestartExecutor {
+        fn new(child: std::process::Child) -> Self {
+            Self {
+                child,
+                reaped: false,
+                cleanup_attempted: false,
+            }
+        }
+
+        fn poll_until(
+            &mut self,
+            deadline: std::time::Instant,
+        ) -> std::io::Result<Option<std::process::ExitStatus>> {
+            while std::time::Instant::now() < deadline {
+                if let Some(found) = self.child.try_wait()? {
+                    // try_wait already reaped this exact direct child. wait is
+                    // now a cached actual outcome, not an unbounded live wait.
+                    self.reaped = true;
+                    let waited = self.child.wait()?;
+                    assert_eq!(waited, found);
+                    return Ok(Some(waited));
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(None)
+        }
+
+        fn cleanup(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+            self.cleanup_attempted = true;
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            // Check actual exit before signalling; a reaped PID must never be
+            // treated as a live owned child. This child owns its process group.
+            if let Ok(Some(_)) = self.child.try_wait() {
+                self.reaped = true;
+                return self.child.wait().map(Some);
+            }
+            // A polling error must not skip the owned kill/reap attempt. Any
+            // subsequent wait error is propagated as uncertainty, never success.
+            let pid = self.child.id();
+            let group = crate::daemon::process::get_process_group_id(pid)
+                .filter(|g| i64::from(*g) == i64::from(pid));
+            crate::daemon::process::kill_process_tree(pid, group);
+            let _ = self.child.kill();
+            self.poll_until(deadline)
+        }
+
+        fn finish(
+            mut self,
+            active: Duration,
+        ) -> std::io::Result<(Option<std::process::ExitStatus>, bool)> {
+            if let Some(status) = self.poll_until(std::time::Instant::now() + active)? {
+                return Ok((Some(status), false));
+            }
+            // Exactly one cleanup reserve; Drop must not start a second one.
+            self.cleanup().map(|status| (status, true))
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for RestartExecutor {
+        fn drop(&mut self) {
+            if !self.reaped && !self.cleanup_attempted {
+                // An I/O error/assertion cannot silently drop the owned child.
+                // Uncertain cleanup is never converted into a successful wait.
+                let pid = self.child.id();
+                let outcome = self.cleanup();
+                // stderr-ok: test-only cleanup outcome, not a success claim.
+                eprintln!("147 executor guard drop pid={pid} actual_cleanup_outcome={outcome:?}");
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unit_147_restart_success_has_two_owned_starts_and_one_final_envelope() {
+        use std::io::{Read, Seek};
+        use std::os::unix::process::CommandExt;
+        // Exercise the guard's actual timeout/kill/reap path without a browser,
+        // profile or socket. A zero active deadline forces cleanup, not a sleep.
+        let timeout_executor = RestartExecutor::new(
+            std::process::Command::new("/bin/sleep")
+                .arg("30")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .process_group(0)
+                .spawn()
+                .unwrap(),
+        );
+        let timeout_pid = timeout_executor.child.id();
+        let (timeout_status, timed_out) = timeout_executor.finish(Duration::ZERO).unwrap();
+        assert!(timed_out);
+        assert!(
+            timeout_status.is_some_and(|status| !status.success()),
+            "forced cleanup did not actually reap owned executor {timeout_pid}"
+        );
+        // stderr-ok: owned harmless-child actual-wait evidence only.
+        eprintln!(
+            "147 executor guard timeout pid={timeout_pid} actual_wait=true status={timeout_status:?}"
+        );
+        let parent_override = std::env::var_os("FF_RDP_HOME");
+        let root = tempfile::tempdir().unwrap().keep();
+        let private = root.join("executor-home");
+        std::fs::create_dir(&private).unwrap();
+        std::fs::write(private.join("147-control-owner"), b"owned restart control").unwrap();
+        // Model an external state home without writing any actual user's record.
+        // The executor also checks its exact state root before invoking launch.
+        let external_home = root.join("external-home");
+        let external = external_home.join(".ff-rdp");
+        std::fs::create_dir_all(&external).unwrap();
+        let sentinel = external.join("launch-record.7363.json");
+        let sentinel_bytes = b"external launch record must survive unchanged";
+        std::fs::write(&sentinel, sentinel_bytes).unwrap();
+        // Negative arm gives the executor the external record home but a
+        // mismatching ownership token. It must fail before invoking product code.
+        // Removing that check would reach the real fixed-port write and corrupt
+        // the sentinel, so this is not an unrelated-file survival assertion.
+        for (case, selected_home, success_expected) in [
+            ("reject-unisolated", &external_home, false),
+            ("isolated", &private, true),
+        ] {
+            let mut log = std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .read(true)
+                .open(root.join(format!("{case}.log")))
+                .unwrap();
+            let executor = RestartExecutor::new(
+                std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "commands::launch::iter_175_tests::restart_success_isolated_executor",
+                        "--ignored",
+                        "--nocapture",
+                    ])
+                    .env("FF_RDP_HOME", selected_home)
+                    .env("FF_RDP_147_CONTROL_HOME", &private)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(log.try_clone().unwrap())
+                    .stderr(log.try_clone().unwrap())
+                    .process_group(0)
+                    .spawn()
+                    .unwrap(),
+            );
+            let (status, timed_out) = executor.finish(Duration::from_secs(15)).unwrap();
+            assert_eq!(std::fs::read(&sentinel).unwrap(), sentinel_bytes);
+            log.rewind().unwrap();
+            let mut text = String::new();
+            log.take(65537).read_to_string(&mut text).unwrap();
+            assert!(
+                !timed_out && status.is_some_and(|s| s.success() == success_expected),
+                "isolated restart control failed; actual executor wait {status:?}; retained {}: {text}",
+                root.display()
+            );
+            assert!(
+                if success_expected {
+                    text.contains("test result: ok. 1 passed; 0 failed;")
+                } else {
+                    text.contains("test result: FAILED. 0 passed; 1 failed;")
+                },
+                "executor selection/outcome mismatch: {text}"
+            );
+            if !success_expected {
+                assert!(
+                    text.contains("147 isolation home mismatch before launch"),
+                    "wrong negative path: {text}"
+                );
+                assert!(!private.join("147-success-control.json").exists());
+            }
+            // stderr-ok: finite test-only actual-wait outcomes; no user record content.
+            eprintln!(
+                "147 isolation case={case} actual_executor_wait=true exit={:?} sentinel_unchanged=true",
+                status.and_then(|s| s.code())
+            );
+        }
+        let receipt: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(private.join("147-success-control.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(receipt["pids"].as_array().unwrap().len(), 2);
+        assert_eq!(receipt["initial_actual_wait"], true);
+        assert_eq!(receipt["initial_exit"], 0);
+        assert_eq!(receipt["final_actual_wait_pid"], receipt["pids"][1]);
+        assert_eq!(receipt["final_record_pid"], receipt["pids"][1]);
+        assert_eq!(receipt["final_wait_status"], 0);
+        assert_eq!(receipt["envelope_count"], 1);
+        assert_eq!(receipt["profile_removed"], true);
+        assert_eq!(receipt["home"], json!(private));
+        assert!(!private.join(".ff-rdp/launch-record.7363.json").exists());
+        assert_eq!(std::fs::read(&sentinel).unwrap(), sentinel_bytes);
+        assert_eq!(std::env::var_os("FF_RDP_HOME"), parent_override);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

@@ -516,6 +516,11 @@ Output: {\"results\": [{\"url\": \"...\", \"title\": \"...\", \"actor\": \"...\"
     /// Navigate to a URL
     #[command(long_about = "Navigate to a URL.
 
+about:support is a browser-owned diagnostic page and cannot be entered through
+content navigation safely on Firefox156. Start a new instance with
+`ff-rdp launch --url about:support` instead. Other about: URLs keep their
+existing policy.
+
 By default, navigate blocks until the new document is committed (URL changes and
 readyState reaches 'interactive' or 'complete'), or the --timeout budget expires.
 The result includes 'committed_url', 'ready_state', 'elapsed_ms', and 'status' so
@@ -1367,6 +1372,18 @@ By default a temporary profile is created with the necessary devtools prefs
 enabled. Use --profile to reuse an existing profile, or --temp-profile to
 make the temporary profile explicit.
 
+--url URL opens an initial page through Firefox's browser startup handler,
+including about:support. This retains the temporary profile's English locale
+preferences. Launch waits only for the debug port; use tabs and page commands
+to verify that the requested document is ready. results.requested_url is present
+only when --url was supplied and means forwarded, not loaded.
+
+URL schemes follow the normal policy: http, https and about are allowed;
+file requires --allow-file-urls, and data/javascript require --allow-unsafe-urls.
+Invalid URLs fail before profile creation or --replace side effects. If an
+owned instance is already running, --url requires a free --debug-port or explicit
+--replace; it is never silently ignored or applied as content navigation.
+
 --window-size WxH (iter-133) forwards `-width`/`-height` to Firefox, giving
 this launched instance a real window size. Widths >= ~500px CSS pixels get
 TRUE viewport emulation: real `window.innerWidth`, real `@media` query
@@ -1417,6 +1434,7 @@ FF_RDP_PROFILE_PRUNE_DAYS.
 Examples:
   ff-rdp launch                          # launch with temp profile on port 6000
   ff-rdp launch --headless               # headless mode (no visible window)
+  ff-rdp launch --headless --url about:support   # browser-owned diagnostic page
   ff-rdp launch --headless               # again: exit 0, already_running: true
   ff-rdp launch --port 9222              # use a different debug port
   ff-rdp launch --launch-timeout 45      # allow 45 s for the debug port to open
@@ -2654,6 +2672,19 @@ pub struct CascadeArgs {
 
 #[derive(clap::Args)]
 pub struct LaunchArgs {
+    /// Stage a matching local en-US Firefox language pack in a fresh managed profile.
+    /// No download or signature bypass. Firefox decides activation; staged does not
+    /// mean active. English prefs alone cannot supply missing legacy resources.
+    #[arg(long, value_name = "LOCAL_XPI", conflicts_with_all = ["profile", "auto_consent"])]
+    pub english_language_pack: Option<std::path::PathBuf>,
+    /// Explicitly initialize the local language pack, quit and wait for Firefox,
+    /// then launch once more with the same managed profile. Two starts, no retry.
+    #[arg(long, requires = "english_language_pack")]
+    pub restart_after_language_pack_install: bool,
+    /// Initial URL opened by Firefox's browser startup handler.
+    /// Launch waits for the debug port, not for this document to finish loading.
+    #[arg(long, value_name = "URL")]
+    pub url: Option<String>,
     /// Run Firefox in headless mode
     #[arg(long)]
     pub headless: bool,

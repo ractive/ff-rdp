@@ -15,7 +15,7 @@ use super::perf::{
     compute_cls, compute_fcp, compute_lcp, compute_tbt, compute_ttfb, entry_type_supported,
     is_lcp_approximate, round2,
 };
-use super::url_validation::validate_url_with_opts;
+use super::url_validation::validate_content_navigation_url;
 
 const POLL_INTERVAL_MS: u64 = 100;
 
@@ -346,11 +346,11 @@ fn collect_page_perf(ctx: &mut ConnectedTab, label: &str) -> Result<Value, AppEr
 pub fn run(cli: &Cli, urls: &[String], labels: Option<&[String]>) -> Result<(), AppError> {
     validate_labels(urls, labels)?;
 
-    // Validate all URLs before connecting. The validator enforces the
-    // file:// gate independently of --allow-unsafe-urls — see
-    // `url_validation` module docs.
+    // Validate the entire list before connecting or navigating to even its
+    // first URL. A later unsupported privileged URL must not leave earlier
+    // navigations partially executed.
     for url in urls {
-        validate_url_with_opts(url, cli.allow_file_urls, cli.allow_unsafe_urls)?;
+        validate_content_navigation_url(url, cli.allow_file_urls, cli.allow_unsafe_urls)?;
     }
 
     let mut ctx = connect_and_get_target(cli)?;

@@ -203,6 +203,9 @@ fn run_case(case: &'static str) {
     };
     let cli = <Cli as clap::Parser>::try_parse_from(["ff-rdp", "launch"]).unwrap();
     let opts = LaunchOpts {
+        english_language_pack: None,
+        restart_after_language_pack_install: false,
+        url: None,
         headless: true,
         profile: None,
         temp_profile: true,
