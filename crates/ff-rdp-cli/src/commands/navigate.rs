@@ -452,7 +452,7 @@ struct ReadyStateProbe<'a> {
     /// commits, which invalidates this ID (`noSuchActor` on every eval). The
     /// wait loop refreshes it via `tab_actor` as soon as `dom-loading` is
     /// observed (see the `noSuchActor` fix, iter-124).
-    console_actor: ff_rdp_core::ActorId,
+    console_actor: Option<ff_rdp_core::ActorId>,
     /// Tab descriptor actor used to re-resolve `console_actor` once the new
     /// docshell has committed (`getTarget` returns fresh actor IDs).
     tab_actor: &'a ff_rdp_core::ActorId,
@@ -634,10 +634,9 @@ fn probe_readystate_complete(
 /// `AppError::Timeout` (exit 124) even though `location.href` confirmed it
 /// had already succeeded.
 ///
-/// Because the document is never torn down, `console_actor` never goes
-/// stale for this check — unlike the cross-document paths elsewhere in this
-/// module, no `refresh_probe_console_actor` call is needed before evaluating
-/// this condition.
+/// A same-document navigation keeps its console, but this check cannot know
+/// in advance whether navigation will replace the document. Watched callers
+/// must revalidate the console before evaluating this condition.
 ///
 /// Returns the new `location.href` once it differs from `pre_href` AND
 /// `document.readyState === 'complete'` (the document was already fully
@@ -812,8 +811,10 @@ fn must_reresolve_href(
 /// instead of failing silently for the rest of the wait (iter-124 fix for
 /// the iter-122 Theme A regression).
 ///
-/// Best-effort: a failed refresh leaves the stale actor in place and returns
-/// `false` so the caller does NOT latch `probe_refreshed` — the new docshell
+/// Watched Pending or a failed watched lookup retires the cached console; only
+/// a current live snapshot admits another probe. Direct lookup failures retain
+/// their existing best-effort actor. A failed refresh returns `false` so the
+/// caller does NOT latch `probe_refreshed` — the new docshell
 /// may not have finished registering server-side yet (a transient
 /// `getTarget` failure), so the next probe-timer tick should retry rather
 /// than permanently stranding the probe on the stale actor (iter-124 review
@@ -831,15 +832,21 @@ fn refresh_probe_console_actor(
         deadline.min(Instant::now() + Duration::from_millis(100)),
     ) {
         Ok(Some(fresh)) => {
-            probe.console_actor = fresh.console_actor;
+            probe.console_actor = Some(fresh.console_actor);
             true
         }
-        Ok(None) => false,
+        Ok(None) => {
+            probe.console_actor = None;
+            false
+        }
         Err(e) => {
+            if probe.target_endpoint.is_some() {
+                probe.console_actor = None;
+            }
             tracing::debug!(
                 error = %e,
                 "navigate: readystate probe console actor refresh failed; \
-                 probe will keep using the stale actor and retry on the next attempt"
+                 probe will retry target resolution on the next attempt"
             );
             false
         }
@@ -1222,16 +1229,13 @@ fn wait_for_doc_complete_retaining_status(
                             // well-formed `url` looks — it may be a subframe's.
                             let committed_url =
                                 if must_reresolve_href(probe.as_deref(), &url, requested_url) {
-                                    match probe.as_deref() {
-                                        Some(p) => {
-                                            let actor = p.console_actor.clone();
-                                            with_event_replay(
-                                                transport,
-                                                bus_arc,
-                                                retained.as_deref_mut(),
-                                                |t| eval_location_href(t, &actor),
-                                            )
-                                        }
+                                    match probe.as_deref().and_then(|p| p.console_actor.clone()) {
+                                        Some(actor) => with_event_replay(
+                                            transport,
+                                            bus_arc,
+                                            retained.as_deref_mut(),
+                                            |t| eval_location_href(t, &actor),
+                                        ),
                                         None => String::new(),
                                     }
                                 } else {
@@ -1272,16 +1276,13 @@ fn wait_for_doc_complete_retaining_status(
                             // for `trust_event_url: false` probes.
                             let committed_url =
                                 if must_reresolve_href(probe.as_deref(), &eff_url, requested_url) {
-                                    match probe.as_deref() {
-                                        Some(p) => {
-                                            let actor = p.console_actor.clone();
-                                            with_event_replay(
-                                                transport,
-                                                bus_arc,
-                                                retained.as_deref_mut(),
-                                                |t| eval_location_href(t, &actor),
-                                            )
-                                        }
+                                    match probe.as_deref().and_then(|p| p.console_actor.clone()) {
+                                        Some(actor) => with_event_replay(
+                                            transport,
+                                            bus_arc,
+                                            retained.as_deref_mut(),
+                                            |t| eval_location_href(t, &actor),
+                                        ),
                                         None => String::new(),
                                     }
                                 } else {
@@ -1328,18 +1329,16 @@ fn wait_for_doc_complete_retaining_status(
                         // unmodified because it looks like a perfectly valid
                         // (non-empty, non-"about:blank") URL.
                         if must_reresolve_href(probe.as_deref(), &committed, requested_url) {
-                            let mut href = match probe.as_deref() {
-                                Some(p) => {
-                                    let actor = p.console_actor.clone();
-                                    with_event_replay(
+                            let mut href =
+                                match probe.as_deref().and_then(|p| p.console_actor.clone()) {
+                                    Some(actor) => with_event_replay(
                                         transport,
                                         bus_arc,
                                         retained.as_deref_mut(),
                                         |t| eval_location_href(t, &actor),
-                                    )
-                                }
-                                None => String::new(),
-                            };
+                                    ),
+                                    None => String::new(),
+                                };
                             // iter-130 Theme A hardening (comparis.ch live-Firefox
                             // repro, not caught by any mock-based unit test): this
                             // `dom-complete` may be Firefox's transient
@@ -1365,9 +1364,9 @@ fn wait_for_doc_complete_retaining_status(
                                     retained.as_deref_mut(),
                                     |t| refresh_probe_console_actor(t, p, deadline),
                                 )
+                                && let Some(actor) = p.console_actor.clone()
                             {
                                 probe_refreshed = true;
-                                let actor = p.console_actor.clone();
                                 href = with_event_replay(
                                     transport,
                                     bus_arc,
@@ -1433,22 +1432,22 @@ fn wait_for_doc_complete_retaining_status(
         if wait_level == WaitLevel::Complete
             && let (Some(p), Some(when)) = (probe.as_deref_mut(), same_doc_next_check_at)
             && Instant::now() >= when
+            && (!p.pre_href.is_empty() || unresolved_watched_complete)
         {
-            // History verbs disable the eager readiness poll below. Their
-            // scheduled readiness sample must still use the current watched
-            // target: a pending/expired refresh at dom-complete otherwise
-            // leaves every later sample addressing the destroyed outgoing
-            // actor. This is a snapshot read, never a navigation retry; the
-            // existing deadline and complete-and-changed URL check still apply.
-            let watched_history_refreshed = if p.target_endpoint.is_some() && !p.poll_enabled {
+            // A same-document check is still speculative: a cross-document
+            // navigation may have invalidated the outgoing console. Reacquire
+            // watched identity on every attempt, including plain navigate.
+            let watched_refreshed = if p.target_endpoint.is_some() {
                 with_event_replay(transport, bus_arc, retained.as_deref_mut(), |t| {
                     refresh_probe_console_actor(t, p, deadline)
                 })
             } else {
-                false
+                true
             };
-            if let Some(href) =
-                probe_same_document_commit_safe(transport, bus_arc, &p.console_actor, &p.pre_href, retained.as_deref_mut())
+            if watched_refreshed
+                && let Some(actor) = p.console_actor.as_ref()
+                && let Some(href) =
+                probe_same_document_commit_safe(transport, bus_arc, actor, &p.pre_href, retained.as_deref_mut())
                 // A changed URL is not necessarily a same-document commit:
                 // a cross-process transition can expose a complete blank
                 // document. For a known destination, apply the same ambiguity
@@ -1456,7 +1455,7 @@ fn wait_for_doc_complete_retaining_status(
                 // has no requested URL and may legitimately return to blank.
                 && (requested_url.is_empty() || !needs_href_fallback(&href, requested_url))
             {
-                tracing::debug!(branch = "same-document", %href, pre_href = %p.pre_href, console_actor = %p.console_actor, "navigate: completion selected");
+                tracing::debug!(branch = "same-document", %href, pre_href = %p.pre_href, console_actor = ?p.console_actor, "navigate: completion selected");
                 let elapsed_ms = u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(u64::MAX);
                 break 'wait CommitInfo {
                     committed_url: href,
@@ -1473,8 +1472,10 @@ fn wait_for_doc_complete_retaining_status(
             // A fresh navigation epoch is required even for same-URL reload.
             // This only resumes a previously observed terminal event; it
             // does not turn history's event wait into an eager poll.
-            if watched_history_refreshed && unresolved_watched_complete {
-                let actor = p.console_actor.clone();
+            if watched_refreshed
+                && unresolved_watched_complete
+                && let Some(actor) = p.console_actor.clone()
+            {
                 let sample_deadline = deadline.min(Instant::now() + poll_interval);
                 let href = with_event_replay(transport, bus_arc, retained.as_deref_mut(), |t| {
                     t.with_read_deadline(sample_deadline, |t| {
@@ -1529,25 +1530,27 @@ fn wait_for_doc_complete_retaining_status(
             // each is wrapped so a `resources-updated-array` caught in the
             // middle is replayed into the bus rather than dropped.
             if p.target_endpoint.is_some() || !probe_refreshed {
-                with_event_replay(transport, bus_arc, retained.as_deref_mut(), |t| {
-                    refresh_probe_console_actor(t, p, deadline)
-                });
+                probe_refreshed =
+                    with_event_replay(transport, bus_arc, retained.as_deref_mut(), |t| {
+                        refresh_probe_console_actor(t, p, deadline)
+                    });
             }
-            let probe_actor = p.console_actor.clone();
             let check = ReadinessCheck {
                 pre_epoch: p.pre_epoch,
                 pre_href: &p.pre_href,
                 requested_url,
             };
-            if let Some(committed) =
-                with_event_replay(transport, bus_arc, retained.as_deref_mut(), |t| {
-                    t.with_read_deadline(deadline, |t| {
-                        Ok(probe_readystate_complete(t, &probe_actor, check))
+            if (p.target_endpoint.is_none() || probe_refreshed)
+                && let Some(probe_actor) = p.console_actor.clone()
+                && let Some(committed) =
+                    with_event_replay(transport, bus_arc, retained.as_deref_mut(), |t| {
+                        t.with_read_deadline(deadline, |t| {
+                            Ok(probe_readystate_complete(t, &probe_actor, check))
+                        })
+                        .unwrap_or_default()
                     })
-                    .unwrap_or_default()
-                })
             {
-                tracing::debug!(branch = "readiness-sample", committed_url = %committed, console_actor = %p.console_actor, "navigate: completion selected");
+                tracing::debug!(branch = "readiness-sample", committed_url = %committed, console_actor = ?p.console_actor, "navigate: completion selected");
                 let elapsed_ms = u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(u64::MAX);
                 break 'wait CommitInfo {
                     committed_url: committed,
@@ -2108,7 +2111,7 @@ pub(crate) fn wait_for_navigation_commit(
     // `ReadyStateProbe::trust_event_url`'s doc comment for the full story.
     let mut readystate_probe = Some(ReadyStateProbe {
         target_endpoint: ctx.target_endpoint.clone(),
-        console_actor: ctx.target().console_actor.clone(),
+        console_actor: Some(ctx.target().console_actor.clone()),
         tab_actor: &tab_actor,
         pre_epoch: pre_nav_epoch,
         first_probe_at: nav_start + Duration::from_millis(300),
@@ -2557,7 +2560,7 @@ pub fn run_core(
         let mut readystate_probe = if wait_opts.wait_strategy == WaitStrategy::Both {
             Some(ReadyStateProbe {
                 target_endpoint: ctx.target_endpoint.clone(),
-                console_actor: ctx.target().console_actor.clone(),
+                console_actor: Some(ctx.target().console_actor.clone()),
                 tab_actor: &tab_actor,
                 pre_epoch: pre_nav_epoch,
                 // Give dom-complete a 300 ms head start on pages that fire it
@@ -4443,7 +4446,7 @@ mod tests {
             target_endpoint: None,
             // Deliberately stale — the pre-navigation actor — to prove the
             // refresh (via `tab_actor`) is what makes the probe usable.
-            console_actor: ff_rdp_core::ActorId::from("conn0/stale-console"),
+            console_actor: Some(ff_rdp_core::ActorId::from("conn0/stale-console")),
             tab_actor: &tab,
             pre_epoch: Some(1.0),
             // Probe almost immediately so the test does not wait 300 ms.
@@ -4565,7 +4568,7 @@ mod tests {
         let nav_start = Instant::now();
         let mut probe = ReadyStateProbe {
             target_endpoint: None,
-            console_actor: ff_rdp_core::ActorId::from("conn0/stale-console"),
+            console_actor: Some(ff_rdp_core::ActorId::from("conn0/stale-console")),
             tab_actor: &tab,
             pre_epoch: Some(1.0),
             // Probe almost immediately, then again after a short interval so
@@ -4695,7 +4698,7 @@ mod tests {
         let nav_start = Instant::now();
         let mut probe = ReadyStateProbe {
             target_endpoint: None,
-            console_actor: ff_rdp_core::ActorId::from("conn0/stale-console"),
+            console_actor: Some(ff_rdp_core::ActorId::from("conn0/stale-console")),
             tab_actor: &tab,
             pre_epoch: Some(1.0),
             first_probe_at: nav_start,
@@ -4819,7 +4822,7 @@ mod tests {
         let nav_start = Instant::now();
         let mut probe = ReadyStateProbe {
             target_endpoint: None,
-            console_actor: ff_rdp_core::ActorId::from("conn0/stale-console"),
+            console_actor: Some(ff_rdp_core::ActorId::from("conn0/stale-console")),
             tab_actor: &tab,
             pre_epoch: Some(1.0),
             // Push the probe far into the future so only the dom-complete
@@ -4925,7 +4928,7 @@ mod tests {
         // stay silent because wait_level is `Loading`, not `Complete`.
         let mut probe = ReadyStateProbe {
             target_endpoint: None,
-            console_actor: ff_rdp_core::ActorId::from("conn0/stale-console"),
+            console_actor: Some(ff_rdp_core::ActorId::from("conn0/stale-console")),
             tab_actor: &tab,
             pre_epoch: Some(1.0),
             first_probe_at: nav_start,
@@ -5002,7 +5005,7 @@ mod tests {
             Box::leak(Box::new(ff_rdp_core::ActorId::from("conn0/tabDescriptor1")));
         let probe = ReadyStateProbe {
             target_endpoint: None,
-            console_actor: ff_rdp_core::ActorId::from("conn0/console1"),
+            console_actor: Some(ff_rdp_core::ActorId::from("conn0/console1")),
             tab_actor: tab,
             pre_epoch: Some(1.0),
             first_probe_at: Instant::now(),
@@ -5537,7 +5540,7 @@ mod tests {
         let nav_start = Instant::now();
         let mut probe = ReadyStateProbe {
             target_endpoint: None,
-            console_actor: ff_rdp_core::ActorId::from("conn0/stale-console"),
+            console_actor: Some(ff_rdp_core::ActorId::from("conn0/stale-console")),
             tab_actor: &tab,
             pre_epoch: Some(1.0),
             // Push the probe far into the future — only the dom-complete
@@ -5574,6 +5577,10 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "navigate_pending_probe_tests.rs"]
+mod pending_probe_tests;
 
 #[cfg(test)]
 mod snapshot_probe_tests {
@@ -5641,6 +5648,11 @@ mod snapshot_probe_tests {
                         scripted_readiness(43.0, "https://new.test/", "complete"),
                     ),
                 ] {
+                    if initially_pending && actor == "a/console" {
+                        // Pending invalidates a; the next wire request must
+                        // come from the subsequent live b snapshot.
+                        continue;
+                    }
                     let mut request = recv_from(&mut reader).unwrap();
                     if request["type"] == "listFrames" {
                         send(
@@ -5669,7 +5681,7 @@ mod snapshot_probe_tests {
             let start = Instant::now();
             let mut probe = ReadyStateProbe {
                 target_endpoint: Some(endpoint),
-                console_actor: "a/console".into(),
+                console_actor: Some("a/console".into()),
                 tab_actor: &tab,
                 pre_epoch: Some(42.0),
                 first_probe_at: start,
@@ -5693,7 +5705,13 @@ mod snapshot_probe_tests {
             )
             .unwrap();
             assert_eq!(result.committed_url, "https://new.test/");
-            assert_eq!(probe.console_actor.as_ref(), "b/console");
+            assert_eq!(
+                probe
+                    .console_actor
+                    .as_ref()
+                    .map(std::convert::AsRef::as_ref),
+                Some("b/console")
+            );
             snapshots.join().unwrap();
             evaluations.join().unwrap();
         }
@@ -6551,7 +6569,7 @@ mod snapshot_probe_tests {
             let start = Instant::now();
             let mut probe = ReadyStateProbe {
                 target_endpoint: Some(endpoint),
-                console_actor: "a/console".into(),
+                console_actor: Some("a/console".into()),
                 tab_actor: &tab,
                 pre_epoch: Some(42.0),
                 first_probe_at: start + Duration::from_millis(30),
@@ -6749,7 +6767,7 @@ mod snapshot_probe_tests {
         let start = Instant::now();
         let mut probe = ReadyStateProbe {
             target_endpoint: Some(endpoint),
-            console_actor: "a/console".into(),
+            console_actor: Some("a/console".into()),
             tab_actor: &tab,
             pre_epoch: Some(42.0),
             first_probe_at: start + Duration::from_millis(30),
@@ -6954,7 +6972,7 @@ mod blank_shortcut_tests {
             let start = Instant::now();
             let mut probe = ReadyStateProbe {
                 target_endpoint: None,
-                console_actor: "console".into(),
+                console_actor: Some("console".into()),
                 tab_actor: &tab,
                 pre_epoch: Some(42.0),
                 first_probe_at: start,
