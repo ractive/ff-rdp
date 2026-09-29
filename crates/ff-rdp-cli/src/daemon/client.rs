@@ -104,6 +104,12 @@ impl TargetEndpoint {
                     .map_err(|error| snapshot_write_error(&error))
             };
         send(&mut reader, json!({"auth": self.token}))?;
+        #[cfg(test)]
+        snapshot_query_boundary::auth_sent(
+            self.port,
+            reader.get_ref().stream.local_addr().unwrap(),
+            deadline,
+        );
         let greeting = ff_rdp_core::transport::recv_from(&mut reader)?;
         let version = greeting
             .get("protocol_version")
@@ -2961,6 +2967,7 @@ pub(crate) mod snapshot_query_boundary {
     struct Probe {
         port: u16,
         callback: Box<dyn FnMut(Instant)>,
+        auth_callback: Box<dyn FnMut(std::net::SocketAddr, Instant)>,
     }
     thread_local! {
         static PROBE: RefCell<Option<Probe>> = const { RefCell::new(None) };
@@ -2968,6 +2975,15 @@ pub(crate) mod snapshot_query_boundary {
 
     pub(crate) fn with<T>(
         port: u16,
+        callback: impl FnMut(Instant) + 'static,
+        operation: impl FnOnce() -> T,
+    ) -> T {
+        with_auth(port, |_, _| {}, callback, operation)
+    }
+
+    pub(crate) fn with_auth<T>(
+        port: u16,
+        auth_callback: impl FnMut(std::net::SocketAddr, Instant) + 'static,
         callback: impl FnMut(Instant) + 'static,
         operation: impl FnOnce() -> T,
     ) -> T {
@@ -2982,10 +2998,21 @@ pub(crate) mod snapshot_query_boundary {
             *slot.borrow_mut() = Some(Probe {
                 port,
                 callback: Box::new(callback),
+                auth_callback: Box::new(auth_callback),
             });
         });
         let _clear = Clear;
         operation()
+    }
+
+    pub(super) fn auth_sent(port: u16, peer: std::net::SocketAddr, deadline: Instant) {
+        PROBE.with(|slot| {
+            if let Some(probe) = slot.borrow_mut().as_mut()
+                && probe.port == port
+            {
+                (probe.auth_callback)(peer, deadline);
+            }
+        });
     }
 
     pub(super) fn observe(port: u16, deadline: Instant) {

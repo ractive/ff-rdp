@@ -240,3 +240,52 @@ Final scoped closing/documentation review accepted these results and disposition
 with zero actionable findings. Applicable final plan, Firefox-reference, Hyalo
 and whitespace checks passed; unchanged static-gate evidence is reused. The
 post-commit actor/KB check and exact-head CI remain publication gates.
+
+## Publication gate reopened — 2026-09-29
+
+PR284 head `d3bc6a3a6331fd3e7215428eaba77dfae7379115` failed its macOS unit
+job in workflow36550437216. The existing long-string watched-terminal mock
+panicked while receiving a snapshot connection (`UnexpectedEof`); the stale
+caller separately returned its expected803ms timeout. Cause and repair are
+under investigation. Closing task3/AC3 are reopened pending repair and final
+validation; prior passing live evidence and the failed CI output are retained.
+
+## Publication fixture repair — 2026-09-29
+
+The CI log cannot distinguish an empty query from a partial frame, so its exact
+EOF cause remains unknown. A separate deterministic control established a fixture
+contract mismatch: authentication and greeting do not commit a snapshot query;
+the client's actual100ms sub-deadline may expire before query submission. The
+cfg(test)-only observer now binds the successful auth write, accepted peer and
+actual deadline. The byte-aware fixture accepts only a zero-byte close observed
+after that matched deadline, recording it separately from completed queries.
+Early closes, partial frames, malformed requests and unrelated errors still fail.
+All original readiness assertions, real worker joins and product budgets remain.
+
+One forced baseline returned101 with the old fixture; the single corrected module
+run passed13/13. The forced boundary is a counterfactual, not attribution of the
+historical CI EOF. Independent scoped review accepted the repair with zero
+findings. N5 retained successful fmt0 followed by an outer formatting-reconciliation
+failure, then Clippy101 for similar local names; workspace tests were not started.
+A three-reference alpha rename resolved the name finding and passed a fresh
+independent review. No suppression, timing change or additional experiment was used.
+
+Independent cfg(test)-erasure comparison found unchanged non-test code and all429
+core/integration inputs unchanged. Consequently C1 and its three supplemental
+passes remain applicable with their existing provenance limitations; no full
+live sweep or answered focused experiment was repeated. Evidence: private
+`iter288/ci-repair1/implementation1`, `review-ci-fixture-repair1`, `nonlive5`,
+`ci-style1` and `review-ci-style1`. Every failed result remains preserved.
+
+Final N6 gates then passed in order: fmt0, strict workspace Clippy0, workspace
+**2725 passed / 0 failed / 429 ignored**, across38 summaries. Actual child waits
+and enclosing exit0 are recorded; qualified final census preserved prior profiles,
+real and protected state with no unexpected survivors. Four dead-owned fixture
+profiles remain in the sole private workspace home (567→571); an initial offline
+all-profiles equality assertion rejected those additions and was reconciled without
+rerunning any gate. All four carry owner35152, absent from the post census; the
+directories remain preserved. This is not proof of native worker return.
+Source-invariant and live-layout gates passed. The fixture mismatch and Clippy
+finding are closed; the historical CI EOF remains unclassified. Original task3/AC3
+are complete based on reviewed repair, final gates and applicable closing evidence.
+Exact-head green CI and GitHub merge remain publication requirements.

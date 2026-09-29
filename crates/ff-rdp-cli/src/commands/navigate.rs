@@ -5870,6 +5870,13 @@ mod snapshot_probe_tests {
     fn snapshot_boundary_query(
         reader: &mut impl std::io::BufRead,
     ) -> std::result::Result<Value, (std::io::ErrorKind, Instant)> {
+        snapshot_boundary_query_for_descriptor(reader, "conn0/tab1")
+    }
+
+    fn snapshot_boundary_query_for_descriptor(
+        reader: &mut impl std::io::BufRead,
+        descriptor: &str,
+    ) -> std::result::Result<Value, (std::io::ErrorKind, Instant)> {
         use std::io::ErrorKind;
         match reader.fill_buf() {
             Ok([]) => {
@@ -5887,7 +5894,7 @@ mod snapshot_probe_tests {
             .unwrap_or_else(|error| panic!("incomplete/invalid boundary query: {error}"));
         assert_eq!(query["to"], "daemon");
         assert_eq!(query["type"], "resolve-tab-target");
-        assert_eq!(query["descriptor"], "conn0/tab1");
+        assert_eq!(query["descriptor"], descriptor);
         Ok(query)
     }
 
@@ -6399,6 +6406,66 @@ mod snapshot_probe_tests {
         }
     }
 
+    fn retained_auth_deadline(
+        auth: Option<(std::net::SocketAddr, Instant)>,
+        peer: std::net::SocketAddr,
+    ) -> Instant {
+        let (auth_peer, deadline) =
+            auth.expect("decoded auth requires its real auth-sent deadline");
+        assert_eq!(auth_peer, peer, "auth deadline belongs to this socket");
+        deadline
+    }
+
+    fn assert_retained_query_cancelled(close: (std::io::ErrorKind, Instant), deadline: Instant) {
+        assert!(matches!(
+            close.0,
+            std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset
+        ));
+        assert!(
+            close.1 >= deadline,
+            "pre-query close before actual query deadline: {close:?}"
+        );
+    }
+
+    #[test]
+    fn retained_snapshot_requires_matching_auth_and_expired_empty_query() {
+        use std::io::{Cursor, ErrorKind};
+        let peer = "127.0.0.1:1234".parse().unwrap();
+        let other = "127.0.0.1:1235".parse().unwrap();
+        let deadline = Instant::now();
+        assert_eq!(
+            retained_auth_deadline(Some((peer, deadline)), peer),
+            deadline
+        );
+        for record in [None, Some((other, deadline))] {
+            assert!(std::panic::catch_unwind(|| retained_auth_deadline(record, peer)).is_err());
+        }
+        let close =
+            snapshot_boundary_query_for_descriptor(&mut Cursor::new(Vec::<u8>::new()), "tab")
+                .unwrap_err();
+        assert_retained_query_cancelled(close, deadline);
+        for (invalid_close, bound) in [
+            (close, close.1 + Duration::from_secs(1)),
+            ((ErrorKind::TimedOut, close.1), deadline),
+        ] {
+            assert!(
+                std::panic::catch_unwind(|| assert_retained_query_cancelled(invalid_close, bound))
+                    .is_err()
+            );
+        }
+        let query = json!({"to":"daemon", "type":"resolve-tab-target", "descriptor":"tab"});
+        assert_eq!(
+            snapshot_boundary_query_for_descriptor(
+                &mut Cursor::new(encode_frame(&query.to_string()).into_bytes()),
+                "tab"
+            )
+            .unwrap(),
+            query
+        );
+        // Partial EOF/reset, malformed/wrong requests and unrelated I/O errors
+        // use the same byte-aware helper's existing negative controls above.
+    }
+
     #[test]
     fn reload_retains_terminal_event_until_watched_readiness_is_fresh() {
         retained_terminal_readiness(false);
@@ -6409,7 +6476,16 @@ mod snapshot_probe_tests {
         retained_terminal_readiness(true);
     }
 
+    #[test]
+    fn long_string_watched_terminal_query_deadline_control() {
+        retained_terminal_readiness_with_boundary(true, true);
+    }
+
     fn retained_terminal_readiness(long_string: bool) {
+        retained_terminal_readiness_with_boundary(long_string, false);
+    }
+
+    fn retained_terminal_readiness_with_boundary(long_string: bool, force_expiry: bool) {
         static LONG_HREF: std::sync::OnceLock<String> = std::sync::OnceLock::new();
         let href = if long_string {
             LONG_HREF
@@ -6426,16 +6502,20 @@ mod snapshot_probe_tests {
         for (always_stale, terminal_event) in [(false, true), (true, true), (false, false)] {
             let side = TcpListener::bind("127.0.0.1:0").unwrap();
             side.set_nonblocking(true).unwrap();
-            let endpoint = crate::daemon::client::TargetEndpoint::new(
-                side.local_addr().unwrap().port(),
-                "token",
-            );
+            let side_port = side.local_addr().unwrap().port();
+            let endpoint = crate::daemon::client::TargetEndpoint::new(side_port, "token");
+            let (auth_tx, auth_rx) = std::sync::mpsc::channel();
+            let released = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let evaluator_released = Arc::clone(&released);
+            let forced = Arc::new(Mutex::new(Vec::new()));
+            let forced_observer = Arc::clone(&forced);
             let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let done = Arc::clone(&stop);
             let snapshots = std::thread::spawn(move || {
                 let mut queries = 0;
+                let mut cancellations = Vec::new();
                 while !done.load(std::sync::atomic::Ordering::Relaxed) {
-                    let Ok((mut stream, _)) = side.accept() else {
+                    let Ok((mut stream, peer)) = side.accept() else {
                         std::thread::sleep(Duration::from_millis(1));
                         continue;
                     };
@@ -6445,14 +6525,22 @@ mod snapshot_probe_tests {
                         .unwrap();
                     let mut reader = BufReader::new(stream.try_clone().unwrap());
                     assert_eq!(recv_from(&mut reader).unwrap()["auth"], "token");
+                    let auth_deadline = retained_auth_deadline(
+                        auth_rx.recv_timeout(Duration::from_secs(1)).ok(),
+                        peer,
+                    );
                     send(
                         &mut stream,
                         &json!({"protocol_version":crate::daemon::server::DAEMON_PROTOCOL_VERSION}),
                     );
-                    assert_eq!(
-                        recv_from(&mut reader).unwrap()["type"],
-                        "resolve-tab-target"
-                    );
+                    if let Err(close) = snapshot_boundary_query_for_descriptor(&mut reader, "tab") {
+                        // Auth/greeting does not commit the client to a query:
+                        // its own 100ms sub-deadline can expire before the write.
+                        // This helper only returns a close before ANY query byte.
+                        assert_retained_query_cancelled(close, auth_deadline);
+                        cancellations.push((close, auth_deadline, peer));
+                        continue;
+                    }
                     queries += 1;
                     let response = if queries == 1 {
                         json!({"from":"daemon","type":"resolve-tab-target","state":"pending"})
@@ -6462,7 +6550,7 @@ mod snapshot_probe_tests {
                     };
                     send(&mut stream, &response);
                 }
-                queries
+                (queries, cancellations)
             });
             let main = TcpListener::bind("127.0.0.1:0").unwrap();
             let port = main.local_addr().unwrap().port();
@@ -6550,6 +6638,8 @@ mod snapshot_probe_tests {
                             assert!(long_string);
                             assert_eq!(request["to"], format!("sample-{fresh_evaluations}"));
                             release_count += 1;
+                            evaluator_released
+                                .store(release_count, std::sync::atomic::Ordering::SeqCst);
                             send(&mut stream, &json!({"from":request["to"]}));
                         }
                         other => {
@@ -6610,16 +6700,38 @@ mod snapshot_probe_tests {
                 .unwrap();
             }
             let bus = Arc::new(Mutex::new(ResourceCommand::new("watcher".into())));
-            let result = wait_for_doc_complete(
-                &mut transport,
-                &bus,
-                &rx,
-                700,
-                WaitLevel::Complete,
-                start,
-                Some(&mut probe),
-                "",
-                true,
+            let result = crate::daemon::client::snapshot_query_boundary::with_auth(
+                side_port,
+                move |peer, deadline| auth_tx.send((peer, deadline)).unwrap(),
+                move |deadline| {
+                    let completed_samples = released.load(std::sync::atomic::Ordering::SeqCst);
+                    let mut records = forced_observer.lock().unwrap();
+                    if force_expiry
+                        && always_stale
+                        && terminal_event
+                        && completed_samples > 0
+                        && records.is_empty()
+                    {
+                        let entered = Instant::now();
+                        if let Some(remaining) = deadline.checked_duration_since(entered) {
+                            std::thread::sleep(remaining);
+                        }
+                        records.push((entered, deadline, Instant::now(), completed_samples));
+                    }
+                },
+                || {
+                    wait_for_doc_complete(
+                        &mut transport,
+                        &bus,
+                        &rx,
+                        700,
+                        WaitLevel::Complete,
+                        start,
+                        Some(&mut probe),
+                        "",
+                        true,
+                    )
+                },
             );
             let returned = Instant::now();
             // End the fixture's request stream explicitly, retaining a socket
@@ -6641,7 +6753,29 @@ mod snapshot_probe_tests {
                 returned.duration_since(start),
                 joined_at.duration_since(start),
             );
-            let queries = snapshot_join.unwrap();
+            let forced_records = forced.lock().unwrap();
+            // stderr-ok: preserve actual forced-boundary timing even when the worker panics.
+            eprintln!("retained-forced-boundaries={forced_records:?}");
+            assert_eq!(
+                forced_records.len(),
+                usize::from(force_expiry && always_stale && terminal_event)
+            );
+            for &(entered, deadline, exited, releases) in forced_records.iter() {
+                assert!(entered < deadline && exited >= deadline);
+                assert!(
+                    releases > 0,
+                    "force only after a complete longString sample"
+                );
+            }
+            let (queries, cancellations) = snapshot_join.unwrap();
+            for &(_, deadline, _, _) in forced_records.iter() {
+                assert!(
+                    cancellations
+                        .iter()
+                        .any(|(_, actual, _)| *actual == deadline),
+                    "forced cancellation must be observed before any query byte"
+                );
+            }
             let fresh = evaluation_join.unwrap();
             shutdown.expect("fixture evaluator send shutdown");
             if always_stale || !terminal_event {
