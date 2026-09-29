@@ -452,7 +452,7 @@ struct ReadyStateProbe<'a> {
     /// commits, which invalidates this ID (`noSuchActor` on every eval). The
     /// wait loop refreshes it via `tab_actor` as soon as `dom-loading` is
     /// observed (see the `noSuchActor` fix, iter-124).
-    console_actor: ff_rdp_core::ActorId,
+    console_actor: Option<ff_rdp_core::ActorId>,
     /// Tab descriptor actor used to re-resolve `console_actor` once the new
     /// docshell has committed (`getTarget` returns fresh actor IDs).
     tab_actor: &'a ff_rdp_core::ActorId,
@@ -634,10 +634,9 @@ fn probe_readystate_complete(
 /// `AppError::Timeout` (exit 124) even though `location.href` confirmed it
 /// had already succeeded.
 ///
-/// Because the document is never torn down, `console_actor` never goes
-/// stale for this check — unlike the cross-document paths elsewhere in this
-/// module, no `refresh_probe_console_actor` call is needed before evaluating
-/// this condition.
+/// A same-document navigation keeps its console, but this check cannot know
+/// in advance whether navigation will replace the document. Watched callers
+/// must revalidate the console before evaluating this condition.
 ///
 /// Returns the new `location.href` once it differs from `pre_href` AND
 /// `document.readyState === 'complete'` (the document was already fully
@@ -812,8 +811,10 @@ fn must_reresolve_href(
 /// instead of failing silently for the rest of the wait (iter-124 fix for
 /// the iter-122 Theme A regression).
 ///
-/// Best-effort: a failed refresh leaves the stale actor in place and returns
-/// `false` so the caller does NOT latch `probe_refreshed` — the new docshell
+/// Watched Pending or a failed watched lookup retires the cached console; only
+/// a current live snapshot admits another probe. Direct lookup failures retain
+/// their existing best-effort actor. A failed refresh returns `false` so the
+/// caller does NOT latch `probe_refreshed` — the new docshell
 /// may not have finished registering server-side yet (a transient
 /// `getTarget` failure), so the next probe-timer tick should retry rather
 /// than permanently stranding the probe on the stale actor (iter-124 review
@@ -831,15 +832,21 @@ fn refresh_probe_console_actor(
         deadline.min(Instant::now() + Duration::from_millis(100)),
     ) {
         Ok(Some(fresh)) => {
-            probe.console_actor = fresh.console_actor;
+            probe.console_actor = Some(fresh.console_actor);
             true
         }
-        Ok(None) => false,
+        Ok(None) => {
+            probe.console_actor = None;
+            false
+        }
         Err(e) => {
+            if probe.target_endpoint.is_some() {
+                probe.console_actor = None;
+            }
             tracing::debug!(
                 error = %e,
                 "navigate: readystate probe console actor refresh failed; \
-                 probe will keep using the stale actor and retry on the next attempt"
+                 probe will retry target resolution on the next attempt"
             );
             false
         }
@@ -1222,16 +1229,13 @@ fn wait_for_doc_complete_retaining_status(
                             // well-formed `url` looks — it may be a subframe's.
                             let committed_url =
                                 if must_reresolve_href(probe.as_deref(), &url, requested_url) {
-                                    match probe.as_deref() {
-                                        Some(p) => {
-                                            let actor = p.console_actor.clone();
-                                            with_event_replay(
-                                                transport,
-                                                bus_arc,
-                                                retained.as_deref_mut(),
-                                                |t| eval_location_href(t, &actor),
-                                            )
-                                        }
+                                    match probe.as_deref().and_then(|p| p.console_actor.clone()) {
+                                        Some(actor) => with_event_replay(
+                                            transport,
+                                            bus_arc,
+                                            retained.as_deref_mut(),
+                                            |t| eval_location_href(t, &actor),
+                                        ),
                                         None => String::new(),
                                     }
                                 } else {
@@ -1272,16 +1276,13 @@ fn wait_for_doc_complete_retaining_status(
                             // for `trust_event_url: false` probes.
                             let committed_url =
                                 if must_reresolve_href(probe.as_deref(), &eff_url, requested_url) {
-                                    match probe.as_deref() {
-                                        Some(p) => {
-                                            let actor = p.console_actor.clone();
-                                            with_event_replay(
-                                                transport,
-                                                bus_arc,
-                                                retained.as_deref_mut(),
-                                                |t| eval_location_href(t, &actor),
-                                            )
-                                        }
+                                    match probe.as_deref().and_then(|p| p.console_actor.clone()) {
+                                        Some(actor) => with_event_replay(
+                                            transport,
+                                            bus_arc,
+                                            retained.as_deref_mut(),
+                                            |t| eval_location_href(t, &actor),
+                                        ),
                                         None => String::new(),
                                     }
                                 } else {
@@ -1328,18 +1329,16 @@ fn wait_for_doc_complete_retaining_status(
                         // unmodified because it looks like a perfectly valid
                         // (non-empty, non-"about:blank") URL.
                         if must_reresolve_href(probe.as_deref(), &committed, requested_url) {
-                            let mut href = match probe.as_deref() {
-                                Some(p) => {
-                                    let actor = p.console_actor.clone();
-                                    with_event_replay(
+                            let mut href =
+                                match probe.as_deref().and_then(|p| p.console_actor.clone()) {
+                                    Some(actor) => with_event_replay(
                                         transport,
                                         bus_arc,
                                         retained.as_deref_mut(),
                                         |t| eval_location_href(t, &actor),
-                                    )
-                                }
-                                None => String::new(),
-                            };
+                                    ),
+                                    None => String::new(),
+                                };
                             // iter-130 Theme A hardening (comparis.ch live-Firefox
                             // repro, not caught by any mock-based unit test): this
                             // `dom-complete` may be Firefox's transient
@@ -1365,9 +1364,9 @@ fn wait_for_doc_complete_retaining_status(
                                     retained.as_deref_mut(),
                                     |t| refresh_probe_console_actor(t, p, deadline),
                                 )
+                                && let Some(actor) = p.console_actor.clone()
                             {
                                 probe_refreshed = true;
-                                let actor = p.console_actor.clone();
                                 href = with_event_replay(
                                     transport,
                                     bus_arc,
@@ -1433,22 +1432,22 @@ fn wait_for_doc_complete_retaining_status(
         if wait_level == WaitLevel::Complete
             && let (Some(p), Some(when)) = (probe.as_deref_mut(), same_doc_next_check_at)
             && Instant::now() >= when
+            && (!p.pre_href.is_empty() || unresolved_watched_complete)
         {
-            // History verbs disable the eager readiness poll below. Their
-            // scheduled readiness sample must still use the current watched
-            // target: a pending/expired refresh at dom-complete otherwise
-            // leaves every later sample addressing the destroyed outgoing
-            // actor. This is a snapshot read, never a navigation retry; the
-            // existing deadline and complete-and-changed URL check still apply.
-            let watched_history_refreshed = if p.target_endpoint.is_some() && !p.poll_enabled {
+            // A same-document check is still speculative: a cross-document
+            // navigation may have invalidated the outgoing console. Reacquire
+            // watched identity on every attempt, including plain navigate.
+            let watched_refreshed = if p.target_endpoint.is_some() {
                 with_event_replay(transport, bus_arc, retained.as_deref_mut(), |t| {
                     refresh_probe_console_actor(t, p, deadline)
                 })
             } else {
-                false
+                true
             };
-            if let Some(href) =
-                probe_same_document_commit_safe(transport, bus_arc, &p.console_actor, &p.pre_href, retained.as_deref_mut())
+            if watched_refreshed
+                && let Some(actor) = p.console_actor.as_ref()
+                && let Some(href) =
+                probe_same_document_commit_safe(transport, bus_arc, actor, &p.pre_href, retained.as_deref_mut())
                 // A changed URL is not necessarily a same-document commit:
                 // a cross-process transition can expose a complete blank
                 // document. For a known destination, apply the same ambiguity
@@ -1456,7 +1455,7 @@ fn wait_for_doc_complete_retaining_status(
                 // has no requested URL and may legitimately return to blank.
                 && (requested_url.is_empty() || !needs_href_fallback(&href, requested_url))
             {
-                tracing::debug!(branch = "same-document", %href, pre_href = %p.pre_href, console_actor = %p.console_actor, "navigate: completion selected");
+                tracing::debug!(branch = "same-document", %href, pre_href = %p.pre_href, console_actor = ?p.console_actor, "navigate: completion selected");
                 let elapsed_ms = u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(u64::MAX);
                 break 'wait CommitInfo {
                     committed_url: href,
@@ -1473,8 +1472,10 @@ fn wait_for_doc_complete_retaining_status(
             // A fresh navigation epoch is required even for same-URL reload.
             // This only resumes a previously observed terminal event; it
             // does not turn history's event wait into an eager poll.
-            if watched_history_refreshed && unresolved_watched_complete {
-                let actor = p.console_actor.clone();
+            if watched_refreshed
+                && unresolved_watched_complete
+                && let Some(actor) = p.console_actor.clone()
+            {
                 let sample_deadline = deadline.min(Instant::now() + poll_interval);
                 let href = with_event_replay(transport, bus_arc, retained.as_deref_mut(), |t| {
                     t.with_read_deadline(sample_deadline, |t| {
@@ -1529,25 +1530,27 @@ fn wait_for_doc_complete_retaining_status(
             // each is wrapped so a `resources-updated-array` caught in the
             // middle is replayed into the bus rather than dropped.
             if p.target_endpoint.is_some() || !probe_refreshed {
-                with_event_replay(transport, bus_arc, retained.as_deref_mut(), |t| {
-                    refresh_probe_console_actor(t, p, deadline)
-                });
+                probe_refreshed =
+                    with_event_replay(transport, bus_arc, retained.as_deref_mut(), |t| {
+                        refresh_probe_console_actor(t, p, deadline)
+                    });
             }
-            let probe_actor = p.console_actor.clone();
             let check = ReadinessCheck {
                 pre_epoch: p.pre_epoch,
                 pre_href: &p.pre_href,
                 requested_url,
             };
-            if let Some(committed) =
-                with_event_replay(transport, bus_arc, retained.as_deref_mut(), |t| {
-                    t.with_read_deadline(deadline, |t| {
-                        Ok(probe_readystate_complete(t, &probe_actor, check))
+            if (p.target_endpoint.is_none() || probe_refreshed)
+                && let Some(probe_actor) = p.console_actor.clone()
+                && let Some(committed) =
+                    with_event_replay(transport, bus_arc, retained.as_deref_mut(), |t| {
+                        t.with_read_deadline(deadline, |t| {
+                            Ok(probe_readystate_complete(t, &probe_actor, check))
+                        })
+                        .unwrap_or_default()
                     })
-                    .unwrap_or_default()
-                })
             {
-                tracing::debug!(branch = "readiness-sample", committed_url = %committed, console_actor = %p.console_actor, "navigate: completion selected");
+                tracing::debug!(branch = "readiness-sample", committed_url = %committed, console_actor = ?p.console_actor, "navigate: completion selected");
                 let elapsed_ms = u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(u64::MAX);
                 break 'wait CommitInfo {
                     committed_url: committed,
@@ -2108,7 +2111,7 @@ pub(crate) fn wait_for_navigation_commit(
     // `ReadyStateProbe::trust_event_url`'s doc comment for the full story.
     let mut readystate_probe = Some(ReadyStateProbe {
         target_endpoint: ctx.target_endpoint.clone(),
-        console_actor: ctx.target().console_actor.clone(),
+        console_actor: Some(ctx.target().console_actor.clone()),
         tab_actor: &tab_actor,
         pre_epoch: pre_nav_epoch,
         first_probe_at: nav_start + Duration::from_millis(300),
@@ -2557,7 +2560,7 @@ pub fn run_core(
         let mut readystate_probe = if wait_opts.wait_strategy == WaitStrategy::Both {
             Some(ReadyStateProbe {
                 target_endpoint: ctx.target_endpoint.clone(),
-                console_actor: ctx.target().console_actor.clone(),
+                console_actor: Some(ctx.target().console_actor.clone()),
                 tab_actor: &tab_actor,
                 pre_epoch: pre_nav_epoch,
                 // Give dom-complete a 300 ms head start on pages that fire it
@@ -4443,7 +4446,7 @@ mod tests {
             target_endpoint: None,
             // Deliberately stale — the pre-navigation actor — to prove the
             // refresh (via `tab_actor`) is what makes the probe usable.
-            console_actor: ff_rdp_core::ActorId::from("conn0/stale-console"),
+            console_actor: Some(ff_rdp_core::ActorId::from("conn0/stale-console")),
             tab_actor: &tab,
             pre_epoch: Some(1.0),
             // Probe almost immediately so the test does not wait 300 ms.
@@ -4565,7 +4568,7 @@ mod tests {
         let nav_start = Instant::now();
         let mut probe = ReadyStateProbe {
             target_endpoint: None,
-            console_actor: ff_rdp_core::ActorId::from("conn0/stale-console"),
+            console_actor: Some(ff_rdp_core::ActorId::from("conn0/stale-console")),
             tab_actor: &tab,
             pre_epoch: Some(1.0),
             // Probe almost immediately, then again after a short interval so
@@ -4695,7 +4698,7 @@ mod tests {
         let nav_start = Instant::now();
         let mut probe = ReadyStateProbe {
             target_endpoint: None,
-            console_actor: ff_rdp_core::ActorId::from("conn0/stale-console"),
+            console_actor: Some(ff_rdp_core::ActorId::from("conn0/stale-console")),
             tab_actor: &tab,
             pre_epoch: Some(1.0),
             first_probe_at: nav_start,
@@ -4819,7 +4822,7 @@ mod tests {
         let nav_start = Instant::now();
         let mut probe = ReadyStateProbe {
             target_endpoint: None,
-            console_actor: ff_rdp_core::ActorId::from("conn0/stale-console"),
+            console_actor: Some(ff_rdp_core::ActorId::from("conn0/stale-console")),
             tab_actor: &tab,
             pre_epoch: Some(1.0),
             // Push the probe far into the future so only the dom-complete
@@ -4925,7 +4928,7 @@ mod tests {
         // stay silent because wait_level is `Loading`, not `Complete`.
         let mut probe = ReadyStateProbe {
             target_endpoint: None,
-            console_actor: ff_rdp_core::ActorId::from("conn0/stale-console"),
+            console_actor: Some(ff_rdp_core::ActorId::from("conn0/stale-console")),
             tab_actor: &tab,
             pre_epoch: Some(1.0),
             first_probe_at: nav_start,
@@ -5002,7 +5005,7 @@ mod tests {
             Box::leak(Box::new(ff_rdp_core::ActorId::from("conn0/tabDescriptor1")));
         let probe = ReadyStateProbe {
             target_endpoint: None,
-            console_actor: ff_rdp_core::ActorId::from("conn0/console1"),
+            console_actor: Some(ff_rdp_core::ActorId::from("conn0/console1")),
             tab_actor: tab,
             pre_epoch: Some(1.0),
             first_probe_at: Instant::now(),
@@ -5537,7 +5540,7 @@ mod tests {
         let nav_start = Instant::now();
         let mut probe = ReadyStateProbe {
             target_endpoint: None,
-            console_actor: ff_rdp_core::ActorId::from("conn0/stale-console"),
+            console_actor: Some(ff_rdp_core::ActorId::from("conn0/stale-console")),
             tab_actor: &tab,
             pre_epoch: Some(1.0),
             // Push the probe far into the future — only the dom-complete
@@ -5574,6 +5577,10 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "navigate_pending_probe_tests.rs"]
+mod pending_probe_tests;
 
 #[cfg(test)]
 mod snapshot_probe_tests {
@@ -5641,6 +5648,11 @@ mod snapshot_probe_tests {
                         scripted_readiness(43.0, "https://new.test/", "complete"),
                     ),
                 ] {
+                    if initially_pending && actor == "a/console" {
+                        // Pending invalidates a; the next wire request must
+                        // come from the subsequent live b snapshot.
+                        continue;
+                    }
                     let mut request = recv_from(&mut reader).unwrap();
                     if request["type"] == "listFrames" {
                         send(
@@ -5669,7 +5681,7 @@ mod snapshot_probe_tests {
             let start = Instant::now();
             let mut probe = ReadyStateProbe {
                 target_endpoint: Some(endpoint),
-                console_actor: "a/console".into(),
+                console_actor: Some("a/console".into()),
                 tab_actor: &tab,
                 pre_epoch: Some(42.0),
                 first_probe_at: start,
@@ -5693,7 +5705,13 @@ mod snapshot_probe_tests {
             )
             .unwrap();
             assert_eq!(result.committed_url, "https://new.test/");
-            assert_eq!(probe.console_actor.as_ref(), "b/console");
+            assert_eq!(
+                probe
+                    .console_actor
+                    .as_ref()
+                    .map(std::convert::AsRef::as_ref),
+                Some("b/console")
+            );
             snapshots.join().unwrap();
             evaluations.join().unwrap();
         }
@@ -5852,6 +5870,13 @@ mod snapshot_probe_tests {
     fn snapshot_boundary_query(
         reader: &mut impl std::io::BufRead,
     ) -> std::result::Result<Value, (std::io::ErrorKind, Instant)> {
+        snapshot_boundary_query_for_descriptor(reader, "conn0/tab1")
+    }
+
+    fn snapshot_boundary_query_for_descriptor(
+        reader: &mut impl std::io::BufRead,
+        descriptor: &str,
+    ) -> std::result::Result<Value, (std::io::ErrorKind, Instant)> {
         use std::io::ErrorKind;
         match reader.fill_buf() {
             Ok([]) => {
@@ -5869,7 +5894,7 @@ mod snapshot_probe_tests {
             .unwrap_or_else(|error| panic!("incomplete/invalid boundary query: {error}"));
         assert_eq!(query["to"], "daemon");
         assert_eq!(query["type"], "resolve-tab-target");
-        assert_eq!(query["descriptor"], "conn0/tab1");
+        assert_eq!(query["descriptor"], descriptor);
         Ok(query)
     }
 
@@ -6381,6 +6406,66 @@ mod snapshot_probe_tests {
         }
     }
 
+    fn retained_auth_deadline(
+        auth: Option<(std::net::SocketAddr, Instant)>,
+        peer: std::net::SocketAddr,
+    ) -> Instant {
+        let (auth_peer, deadline) =
+            auth.expect("decoded auth requires its real auth-sent deadline");
+        assert_eq!(auth_peer, peer, "auth deadline belongs to this socket");
+        deadline
+    }
+
+    fn assert_retained_query_cancelled(close: (std::io::ErrorKind, Instant), deadline: Instant) {
+        assert!(matches!(
+            close.0,
+            std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset
+        ));
+        assert!(
+            close.1 >= deadline,
+            "pre-query close before actual query deadline: {close:?}"
+        );
+    }
+
+    #[test]
+    fn retained_snapshot_requires_matching_auth_and_expired_empty_query() {
+        use std::io::{Cursor, ErrorKind};
+        let peer = "127.0.0.1:1234".parse().unwrap();
+        let other = "127.0.0.1:1235".parse().unwrap();
+        let deadline = Instant::now();
+        assert_eq!(
+            retained_auth_deadline(Some((peer, deadline)), peer),
+            deadline
+        );
+        for record in [None, Some((other, deadline))] {
+            assert!(std::panic::catch_unwind(|| retained_auth_deadline(record, peer)).is_err());
+        }
+        let close =
+            snapshot_boundary_query_for_descriptor(&mut Cursor::new(Vec::<u8>::new()), "tab")
+                .unwrap_err();
+        assert_retained_query_cancelled(close, deadline);
+        for (invalid_close, bound) in [
+            (close, close.1 + Duration::from_secs(1)),
+            ((ErrorKind::TimedOut, close.1), deadline),
+        ] {
+            assert!(
+                std::panic::catch_unwind(|| assert_retained_query_cancelled(invalid_close, bound))
+                    .is_err()
+            );
+        }
+        let query = json!({"to":"daemon", "type":"resolve-tab-target", "descriptor":"tab"});
+        assert_eq!(
+            snapshot_boundary_query_for_descriptor(
+                &mut Cursor::new(encode_frame(&query.to_string()).into_bytes()),
+                "tab"
+            )
+            .unwrap(),
+            query
+        );
+        // Partial EOF/reset, malformed/wrong requests and unrelated I/O errors
+        // use the same byte-aware helper's existing negative controls above.
+    }
+
     #[test]
     fn reload_retains_terminal_event_until_watched_readiness_is_fresh() {
         retained_terminal_readiness(false);
@@ -6391,7 +6476,16 @@ mod snapshot_probe_tests {
         retained_terminal_readiness(true);
     }
 
+    #[test]
+    fn long_string_watched_terminal_query_deadline_control() {
+        retained_terminal_readiness_with_boundary(true, true);
+    }
+
     fn retained_terminal_readiness(long_string: bool) {
+        retained_terminal_readiness_with_boundary(long_string, false);
+    }
+
+    fn retained_terminal_readiness_with_boundary(long_string: bool, force_expiry: bool) {
         static LONG_HREF: std::sync::OnceLock<String> = std::sync::OnceLock::new();
         let href = if long_string {
             LONG_HREF
@@ -6408,16 +6502,20 @@ mod snapshot_probe_tests {
         for (always_stale, terminal_event) in [(false, true), (true, true), (false, false)] {
             let side = TcpListener::bind("127.0.0.1:0").unwrap();
             side.set_nonblocking(true).unwrap();
-            let endpoint = crate::daemon::client::TargetEndpoint::new(
-                side.local_addr().unwrap().port(),
-                "token",
-            );
+            let side_port = side.local_addr().unwrap().port();
+            let endpoint = crate::daemon::client::TargetEndpoint::new(side_port, "token");
+            let (auth_tx, auth_rx) = std::sync::mpsc::channel();
+            let released = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let evaluator_released = Arc::clone(&released);
+            let forced = Arc::new(Mutex::new(Vec::new()));
+            let forced_observer = Arc::clone(&forced);
             let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let done = Arc::clone(&stop);
             let snapshots = std::thread::spawn(move || {
                 let mut queries = 0;
+                let mut cancellations = Vec::new();
                 while !done.load(std::sync::atomic::Ordering::Relaxed) {
-                    let Ok((mut stream, _)) = side.accept() else {
+                    let Ok((mut stream, peer)) = side.accept() else {
                         std::thread::sleep(Duration::from_millis(1));
                         continue;
                     };
@@ -6427,14 +6525,22 @@ mod snapshot_probe_tests {
                         .unwrap();
                     let mut reader = BufReader::new(stream.try_clone().unwrap());
                     assert_eq!(recv_from(&mut reader).unwrap()["auth"], "token");
+                    let auth_deadline = retained_auth_deadline(
+                        auth_rx.recv_timeout(Duration::from_secs(1)).ok(),
+                        peer,
+                    );
                     send(
                         &mut stream,
                         &json!({"protocol_version":crate::daemon::server::DAEMON_PROTOCOL_VERSION}),
                     );
-                    assert_eq!(
-                        recv_from(&mut reader).unwrap()["type"],
-                        "resolve-tab-target"
-                    );
+                    if let Err(close) = snapshot_boundary_query_for_descriptor(&mut reader, "tab") {
+                        // Auth/greeting does not commit the client to a query:
+                        // its own 100ms sub-deadline can expire before the write.
+                        // This helper only returns a close before ANY query byte.
+                        assert_retained_query_cancelled(close, auth_deadline);
+                        cancellations.push((close, auth_deadline, peer));
+                        continue;
+                    }
                     queries += 1;
                     let response = if queries == 1 {
                         json!({"from":"daemon","type":"resolve-tab-target","state":"pending"})
@@ -6444,7 +6550,7 @@ mod snapshot_probe_tests {
                     };
                     send(&mut stream, &response);
                 }
-                queries
+                (queries, cancellations)
             });
             let main = TcpListener::bind("127.0.0.1:0").unwrap();
             let port = main.local_addr().unwrap().port();
@@ -6532,6 +6638,8 @@ mod snapshot_probe_tests {
                             assert!(long_string);
                             assert_eq!(request["to"], format!("sample-{fresh_evaluations}"));
                             release_count += 1;
+                            evaluator_released
+                                .store(release_count, std::sync::atomic::Ordering::SeqCst);
                             send(&mut stream, &json!({"from":request["to"]}));
                         }
                         other => {
@@ -6551,7 +6659,7 @@ mod snapshot_probe_tests {
             let start = Instant::now();
             let mut probe = ReadyStateProbe {
                 target_endpoint: Some(endpoint),
-                console_actor: "a/console".into(),
+                console_actor: Some("a/console".into()),
                 tab_actor: &tab,
                 pre_epoch: Some(42.0),
                 first_probe_at: start + Duration::from_millis(30),
@@ -6592,16 +6700,38 @@ mod snapshot_probe_tests {
                 .unwrap();
             }
             let bus = Arc::new(Mutex::new(ResourceCommand::new("watcher".into())));
-            let result = wait_for_doc_complete(
-                &mut transport,
-                &bus,
-                &rx,
-                700,
-                WaitLevel::Complete,
-                start,
-                Some(&mut probe),
-                "",
-                true,
+            let result = crate::daemon::client::snapshot_query_boundary::with_auth(
+                side_port,
+                move |peer, deadline| auth_tx.send((peer, deadline)).unwrap(),
+                move |deadline| {
+                    let completed_samples = released.load(std::sync::atomic::Ordering::SeqCst);
+                    let mut records = forced_observer.lock().unwrap();
+                    if force_expiry
+                        && always_stale
+                        && terminal_event
+                        && completed_samples > 0
+                        && records.is_empty()
+                    {
+                        let entered = Instant::now();
+                        if let Some(remaining) = deadline.checked_duration_since(entered) {
+                            std::thread::sleep(remaining);
+                        }
+                        records.push((entered, deadline, Instant::now(), completed_samples));
+                    }
+                },
+                || {
+                    wait_for_doc_complete(
+                        &mut transport,
+                        &bus,
+                        &rx,
+                        700,
+                        WaitLevel::Complete,
+                        start,
+                        Some(&mut probe),
+                        "",
+                        true,
+                    )
+                },
             );
             let returned = Instant::now();
             // End the fixture's request stream explicitly, retaining a socket
@@ -6623,7 +6753,29 @@ mod snapshot_probe_tests {
                 returned.duration_since(start),
                 joined_at.duration_since(start),
             );
-            let queries = snapshot_join.unwrap();
+            let forced_records = forced.lock().unwrap();
+            // stderr-ok: preserve actual forced-boundary timing even when the worker panics.
+            eprintln!("retained-forced-boundaries={forced_records:?}");
+            assert_eq!(
+                forced_records.len(),
+                usize::from(force_expiry && always_stale && terminal_event)
+            );
+            for &(entered, deadline, exited, releases) in forced_records.iter() {
+                assert!(entered < deadline && exited >= deadline);
+                assert!(
+                    releases > 0,
+                    "force only after a complete longString sample"
+                );
+            }
+            let (queries, cancellations) = snapshot_join.unwrap();
+            for &(_, deadline, _, _) in forced_records.iter() {
+                assert!(
+                    cancellations
+                        .iter()
+                        .any(|(_, actual, _)| *actual == deadline),
+                    "forced cancellation must be observed before any query byte"
+                );
+            }
             let fresh = evaluation_join.unwrap();
             shutdown.expect("fixture evaluator send shutdown");
             if always_stale || !terminal_event {
@@ -6749,7 +6901,7 @@ mod snapshot_probe_tests {
         let start = Instant::now();
         let mut probe = ReadyStateProbe {
             target_endpoint: Some(endpoint),
-            console_actor: "a/console".into(),
+            console_actor: Some("a/console".into()),
             tab_actor: &tab,
             pre_epoch: Some(42.0),
             first_probe_at: start + Duration::from_millis(30),
@@ -6954,7 +7106,7 @@ mod blank_shortcut_tests {
             let start = Instant::now();
             let mut probe = ReadyStateProbe {
                 target_endpoint: None,
-                console_actor: "console".into(),
+                console_actor: Some("console".into()),
                 tab_actor: &tab,
                 pre_epoch: Some(42.0),
                 first_probe_at: start,
