@@ -41,7 +41,7 @@ pub struct OutputPipeline {
 }
 
 impl OutputPipeline {
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn new(jq_filter: Option<String>) -> Self {
         Self {
             jq_filter,

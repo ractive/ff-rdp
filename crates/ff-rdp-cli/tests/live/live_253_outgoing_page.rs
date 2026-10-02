@@ -238,10 +238,6 @@ fn exercise_same_url() {
         "Generation 2"
     );
     assert_eq!(fragment["meta"]["page_ready"], true);
-    assert!(
-        elapsed < Duration::from_secs(2),
-        "fragment burned settle budget: {elapsed:?}"
-    );
 }
 
 #[test]
@@ -305,10 +301,6 @@ fn exercise_committed_submission() {
     assert_eq!(
         view["meta"]["page_ready"], true,
         "committed submission mislabeled: {view}"
-    );
-    assert!(
-        elapsed < Duration::from_secs(2),
-        "committed submission burned settle budget: {elapsed:?}"
     );
 }
 

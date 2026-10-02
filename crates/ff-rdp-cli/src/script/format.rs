@@ -159,12 +159,6 @@ impl ElementTarget {
             ),
         }
     }
-
-    /// Check if a page-map or field target is used (requires a loaded PageMap to resolve).
-    #[allow(dead_code)]
-    pub fn uses_deferred_iter62(&self) -> bool {
-        self.page_map.is_some() || self.field.is_some()
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -628,7 +622,7 @@ mod tests {
         let script = parse_script_str(json, ScriptFormat::Json).unwrap();
         assert_eq!(script.steps.len(), 1);
         if let Step::Click(s) = &script.steps[0] {
-            assert!(s.target.uses_deferred_iter62());
+            assert!(s.target.page_map.is_some());
         } else {
             panic!("expected click step");
         }

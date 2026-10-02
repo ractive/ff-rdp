@@ -29,32 +29,21 @@ use crate::output_pipeline::OutputPipeline;
 use super::connect_tab::{ConnectedTab, connect_and_get_target};
 use super::js_helpers::{JSON_SENTINEL, escape_selector, eval_or_bail};
 
-/// CSS origin bucket: lower numbers cascade earlier (lose by default).
-///
-/// The cascade order (least-to-most important, for *normal* declarations) is:
-/// `UA → User → Author → Inline`.  For `!important` declarations the order
-/// reverses between User Agent and the user/author origins (UA-important is
-/// the strongest in the spec, but UA stylesheets are not user-modifiable
-/// anyway).  We use this enum only for ordering of normal declarations and
-/// flip the comparison for `!important` rules.
+/// CSS origin of a rule. ff-rdp only sees user-agent and author rules: user
+/// stylesheets are not reported and inline `style="…"` declarations are
+/// filtered out by the actor parser. For normal declarations author beats UA;
+/// for `!important` ones UA beats author.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Origin {
     UserAgent,
-    #[allow(dead_code)] // distinguishing user-stylesheet origin is future work
-    User,
     Author,
-    #[allow(dead_code)]
-    // Inline style="…" entries are filtered by the actor today; variant kept for future support.
-    Inline,
 }
 
 impl Origin {
     fn as_str(self) -> &'static str {
         match self {
             Origin::UserAgent => "ua",
-            Origin::User => "user",
             Origin::Author => "author",
-            Origin::Inline => "inline",
         }
     }
 }
@@ -65,8 +54,7 @@ impl Origin {
 /// `<style>` blocks embedded in the document have no href but are still
 /// author-origin rules.  True inline `style="…"` declarations (rule
 /// `type == 0` in the RDP response) are filtered out by the actor
-/// parser today, so we never see them here — the `Origin::Inline`
-/// variant is reserved for when that parsing is extended.
+/// parser today, so we never see them here.
 fn classify_origin(source: Option<&str>) -> Origin {
     match source {
         Some(href)
@@ -149,25 +137,11 @@ impl CascadeEntry {
 fn cascade_rank(e: &CascadeEntry) -> (u8, u8, Specificity, usize) {
     // Importance tier: 1 if important, 0 otherwise — important always beats normal.
     let importance = u8::from(e.important);
-    // Origin tier within the group.
-    //   Normal:    Inline(4) > Author(3) > User(2) > UA(1)
-    //   Important: UA(4) > User(3) > Author(2) ≈ Inline(2)
-    // Inline declarations belong to the author origin in the cascade; when
-    // !important they keep the same tier as other author rules (and win
-    // ties via their higher specificity in practice).
-    let origin_rank = if e.important {
-        match e.origin {
-            Origin::UserAgent => 4,
-            Origin::User => 3,
-            Origin::Author | Origin::Inline => 2,
-        }
-    } else {
-        match e.origin {
-            Origin::UserAgent => 1,
-            Origin::User => 2,
-            Origin::Author => 3,
-            Origin::Inline => 4,
-        }
+    // Origin tier within the group: author beats UA for normal
+    // declarations, UA beats author for `!important` ones.
+    let origin_rank = match (e.important, e.origin) {
+        (true, Origin::UserAgent) | (false, Origin::Author) => 2,
+        (true, Origin::Author) | (false, Origin::UserAgent) => 1,
     };
     (importance, origin_rank, e.specificity, e.source_order)
 }
@@ -955,47 +929,6 @@ mod tests {
         // selector string — we check the selector text is preserved.
         assert_eq!(arr[0]["selector"], ":is(.a, .b)");
         assert_eq!(arr[0]["specificity"], json!([0, 1, 0]));
-    }
-
-    #[test]
-    fn cascade_inline_important_keeps_author_tier() {
-        // An inline-origin !important must NOT be demoted below author
-        // !important.  Equal specificity → document order breaks the tie
-        // (here: same source_order=0 for both, but the inline rule's
-        // higher implicit specificity would win in practice).
-        // This test asserts that Origin::Inline + important does not sink
-        // to the lowest origin rank.
-        let inline_important = CascadeEntry {
-            selector: "dialog".into(),
-            specificity: (0, 0, 1),
-            origin: Origin::Inline,
-            media: vec![],
-            stylesheet: None,
-            line: None,
-            rule_actor_id: None,
-            value: "block".into(),
-            important: true,
-            source_order: 0,
-        };
-        let ua_normal = CascadeEntry {
-            specificity: (1, 0, 0),
-            origin: Origin::UserAgent,
-            important: false,
-            ..inline_important.clone()
-        };
-        // Inline-important must rank higher than UA-normal (different
-        // importance tiers).
-        assert!(cascade_rank(&inline_important) > cascade_rank(&ua_normal));
-        // And not below author-important (author-important should equal
-        // or tie inline-important on the origin axis).
-        let author_important = CascadeEntry {
-            origin: Origin::Author,
-            ..inline_important.clone()
-        };
-        // Both should land in the same origin rank for important.
-        let (_, r1, _, _) = cascade_rank(&inline_important);
-        let (_, r2, _, _) = cascade_rank(&author_important);
-        assert_eq!(r1, r2);
     }
 
     #[test]

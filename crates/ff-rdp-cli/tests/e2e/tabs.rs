@@ -73,6 +73,63 @@ fn tabs_outputs_json_envelope() {
     );
 }
 
+/// `FF_RDP_PORT` supplies the port when `--port` is absent, so a browser
+/// launched with `FF_RDP_PORT=N ff-rdp launch` is found by every later command
+/// without repeating the flag.
+#[test]
+fn tabs_reads_port_from_ff_rdp_port_env() {
+    let server = MockRdpServer::new().on("listTabs", load_fixture("list_tabs_response.json"));
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(["--host", "127.0.0.1", "tabs"])
+        .env("FF_RDP_PORT", port.to_string())
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "FF_RDP_PORT must select the mock server's port: {}",
+        support::output_note(&output)
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+    assert_eq!(json["total"], 2, "got: {json}");
+}
+
+/// An explicit `--port` wins over `FF_RDP_PORT`.
+#[test]
+fn tabs_port_flag_beats_ff_rdp_port_env() {
+    let server = MockRdpServer::new().on("listTabs", load_fixture("list_tabs_response.json"));
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    // A port nothing listens on: if the env var won, the command would fail.
+    let dead = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let mut args = base_args(port);
+    args.push("tabs".to_owned());
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .env("FF_RDP_PORT", dead.to_string())
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "--port must override FF_RDP_PORT: {}",
+        support::output_note(&output)
+    );
+}
+
 /// With `--verbose`, `meta.connection` is restored to the pre-iter-60 shape.
 #[test]
 fn tabs_verbose_restores_connection_meta() {

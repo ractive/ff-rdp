@@ -362,47 +362,24 @@ pub fn kill_process_tree(pid_for_windows: u32, pgid: Option<Pgid>) {
     }
 }
 
-/// Send SIGTERM (Unix) or TerminateProcess (Windows) to `pid`.
+/// TerminateProcess on `pid` — the Windows fallback of `kill_process_group`
+/// and `kill_process_group_force`, which have no process groups to signal.
 ///
 /// Errors are silently ignored — the caller checks PID liveness separately
 /// to decide whether the termination succeeded.
-///
-/// Also used internally by `kill_process_group` and `kill_process_group_force`
-/// as the Windows fallback path inside `#[cfg(windows)]` blocks.
-#[allow(dead_code)]
-pub fn kill_process(pid: u32) {
-    #[cfg(unix)]
-    {
-        // SAFETY: `kill(pid, SIGTERM)` sends a signal to another process.
-        // This is a well-defined POSIX operation with no memory-safety implications.
-        // The cast from u32 to pid_t is safe for any PID the OS hands us.
-        #[allow(clippy::cast_possible_wrap)]
-        unsafe {
-            libc::kill(pid as libc::pid_t, libc::SIGTERM);
+#[cfg(windows)]
+fn kill_process(pid: u32) {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE, TerminateProcess};
+
+    // SAFETY: Standard Windows API call to open and terminate a process.
+    // The handle is closed immediately after use.
+    unsafe {
+        let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+        if !handle.is_null() {
+            TerminateProcess(handle, 1);
+            CloseHandle(handle);
         }
-    }
-
-    #[cfg(windows)]
-    {
-        use windows_sys::Win32::Foundation::CloseHandle;
-        use windows_sys::Win32::System::Threading::{
-            OpenProcess, PROCESS_TERMINATE, TerminateProcess,
-        };
-
-        // SAFETY: Standard Windows API call to open and terminate a process.
-        // The handle is closed immediately after use.
-        unsafe {
-            let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
-            if !handle.is_null() {
-                TerminateProcess(handle, 1);
-                CloseHandle(handle);
-            }
-        }
-    }
-
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = pid;
     }
 }
 

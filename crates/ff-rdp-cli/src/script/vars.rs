@@ -14,9 +14,6 @@ pub struct VarContext<'a> {
     pub vars: &'a HashMap<String, String>,
     /// Results from completed steps, indexed 0-based (step 1 → index 0).
     pub step_results: &'a [Value],
-    /// Show secrets in output (from `--show-secrets`). Reserved for future use.
-    #[allow(dead_code)]
-    pub show_secrets: bool,
     /// Policy controlling which `{{env.X}}` references are allowed.
     pub env_policy: &'a EnvPolicy,
 }
@@ -286,7 +283,6 @@ mod tests {
         VarContext {
             vars,
             step_results: results,
-            show_secrets: false,
             env_policy: &EMPTY_POLICY,
         }
     }
@@ -299,7 +295,6 @@ mod tests {
         VarContext {
             vars,
             step_results: results,
-            show_secrets: false,
             env_policy: policy,
         }
     }

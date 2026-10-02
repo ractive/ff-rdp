@@ -488,8 +488,7 @@ fn run_native_opt_in(
     // limitation, not a bug in ff-rdp, but an expected limitation still has
     // to be reported rather than silently leaving the service enabled.
     let restore_outcome = if we_enabled {
-        let disable_target = force_restore_failure_target(&parent_actor);
-        if let Err(e) = AccessibilityActor::disable_service(ctx.transport_mut(), &disable_target) {
+        if let Err(e) = AccessibilityActor::disable_service(ctx.transport_mut(), &parent_actor) {
             // stderr-ok: (c) duplicate of meta.service_restore_error in the
             // envelope — unconditional per iter-149 Theme C (see above).
             eprintln!(
@@ -513,29 +512,6 @@ fn run_native_opt_in(
     };
 
     walk_result.map(|tree| (tree, restore_outcome))
-}
-
-/// Test-only actor-boundary fault injection for iter-149's
-/// `live_149_restore_failure_reported_in_meta` live test.
-///
-/// Forcing a real `disable()` failure against a live Firefox is otherwise
-/// only reachable on Windows with an active screen reader blocking the call
-/// (`kb/rdp/actors/accessibility.md`) — not reproducible in this project's
-/// macOS/Linux live-test environment (`kb/iterations/iteration-149-a11y-restore-honesty.md`
-/// Notes). When `FF_RDP_A11Y_FORCE_RESTORE_FAILURE=1` is set, the *restore*
-/// call targets a deliberately-invalid actor ID instead of the real
-/// `parentAccessibilityActor`, so Firefox genuinely answers with a
-/// `noSuchActor`-style error over the wire — a real protocol failure, not a
-/// mock. `enable_service` above is never affected by this: the service really
-/// is turned on, and — because the disable call is the one being corrupted —
-/// really is left on afterward. Never set in normal use; not documented in
-/// `--help`.
-fn force_restore_failure_target(real: &ActorId) -> ActorId {
-    if std::env::var("FF_RDP_A11Y_FORCE_RESTORE_FAILURE").as_deref() == Ok("1") {
-        ActorId::from(format!("{}-ff-rdp-149-force-failure", real.as_ref()))
-    } else {
-        real.clone()
-    }
 }
 
 /// Walk the native accessibility tree (walker → root → recursive children),
@@ -1233,15 +1209,5 @@ mod tests {
         RestoreOutcome::Failed("disable() timed out".to_string()).merge_into(&mut meta);
         assert_eq!(meta["service_left_enabled"], true);
         assert_eq!(meta["service_restore_error"], "disable() timed out");
-    }
-
-    #[test]
-    fn force_restore_failure_target_defaults_to_real_actor() {
-        // No env mutation here: this crate denies `unsafe_code`, and
-        // `std::env::set_var`/`remove_var` require `unsafe` since the 2024
-        // edition. The flag is not set by the test harness, so this simply
-        // asserts the default (unset) behaviour.
-        let real: ActorId = "conn0/accessibility1".into();
-        assert_eq!(force_restore_failure_target(&real), real);
     }
 }
