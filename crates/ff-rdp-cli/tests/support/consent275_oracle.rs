@@ -131,12 +131,12 @@ pub fn qualify_before(before: &Value, case: &str, base: &str) -> Check {
 // arbitrary titles or partially consumed records are accepted as fixture proof.
 static BEGIN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-    r"^[0-9TZ:.+-]+ DEBUG ff_rdp_cli::frame_targets: FRAME_TARGETS_BEGIN pid=([0-9]+)(?: via_daemon=(?:true|false))?$"
+    r"^[0-9TZ:.+-]+ DEBUG ff_rdp_cli::frame_targets: FRAME_TARGETS_BEGIN pid=([0-9]+)$"
 ).unwrap()
 });
 static END: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-    r"^[0-9TZ:.+-]+ DEBUG ff_rdp_cli::frame_targets: FRAME_TARGETS_END pid=([0-9]+)(?: via_daemon=(?:true|false))? elapsed_ns=([0-9]+) result=Ok\(\[(.*)\]\)$"
+    r"^[0-9TZ:.+-]+ DEBUG ff_rdp_cli::frame_targets: FRAME_TARGETS_END pid=([0-9]+) elapsed_ns=([0-9]+) result=Ok\(\[(.*)\]\)$"
 ).unwrap()
 });
 static TARGET: LazyLock<Regex> = LazyLock::new(|| {

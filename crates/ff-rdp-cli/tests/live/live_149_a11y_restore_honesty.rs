@@ -13,20 +13,8 @@
 //! present (iter-128 always-present-nullable-key convention) on every `a11y`
 //! response.
 //!
-//! # Actor-boundary fault injection
-//!
-//! Forcing a real `disable()` failure against Firefox is otherwise only
-//! reachable on Windows with an active screen reader blocking the call
-//! (`kb/rdp/actors/accessibility.md`) — not reproducible against the
-//! headless macOS/Linux Firefox this suite runs against. Per the iteration
-//! plan's Notes, `live_149_restore_failure_reported_in_meta` and
-//! `live_149_service_already_on_is_not_touched` set
-//! `FF_RDP_A11Y_FORCE_RESTORE_FAILURE=1` on the child process, which makes
-//! `run_native_opt_in` target the *restore* call at a deliberately-invalid
-//! actor ID. Firefox still genuinely answers with a `noSuchActor`-style wire
-//! error — this is a real protocol failure, not a mocked one — while
-//! `enable_service` is unaffected, so the service really is left enabled
-//! afterward.
+//! The failed-restore path (only reachable on Windows with an active screen
+//! reader) is covered by the `RestoreOutcome` unit tests in `a11y.rs`.
 //!
 //! # Running
 //!
@@ -41,11 +29,6 @@ use serde_json::Value;
 
 use crate::common::{LiveFirefox, base_args, ff_rdp_bin, live_tests_enabled};
 
-/// Env var `run_native_opt_in`'s restore step reads to corrupt its own
-/// disable-target actor ID (see module doc). Mirrors the constant name used
-/// in `crates/ff-rdp-cli/src/commands/a11y.rs`.
-const FORCE_RESTORE_FAILURE_ENV: &str = "FF_RDP_A11Y_FORCE_RESTORE_FAILURE";
-
 fn parse_json(output: &Output) -> Value {
     let s = String::from_utf8_lossy(&output.stdout);
     serde_json::from_str(s.trim()).unwrap_or_else(|e| {
@@ -56,64 +39,24 @@ fn parse_json(output: &Output) -> Value {
     })
 }
 
-fn run_a11y(port: u16, extra: &[&str], force_restore_failure: bool) -> Output {
+fn run_a11y(port: u16, extra: &[&str]) -> Output {
     let mut args = base_args(port);
     args.push("a11y".to_owned());
     args.extend(extra.iter().map(|s| (*s).to_owned()));
-    let mut cmd = Command::new(ff_rdp_bin());
-    cmd.args(&args);
-    if force_restore_failure {
-        cmd.env(FORCE_RESTORE_FAILURE_ENV, "1");
-    } else {
-        cmd.env_remove(FORCE_RESTORE_FAILURE_ENV);
-    }
-    cmd.output().expect("ff-rdp a11y")
+    Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("ff-rdp a11y")
 }
 
-fn run_a11y_json(port: u16, extra: &[&str], force_restore_failure: bool) -> Value {
-    let out = run_a11y(port, extra, force_restore_failure);
+fn run_a11y_json(port: u16, extra: &[&str]) -> Value {
+    let out = run_a11y(port, extra);
     assert!(
         out.status.success(),
-        "ff-rdp a11y {extra:?} (force_restore_failure={force_restore_failure}) failed: {}",
+        "ff-rdp a11y {extra:?} failed: {}",
         crate::common::output_note(&out)
     );
     parse_json(&out)
-}
-
-/// AC: `live_149_restore_failure_reported_in_meta` — when `disable_service`
-/// fails after ff-rdp enabled the service, the JSON envelope carries the
-/// left-enabled signal and the reason, and the walked tree is still returned
-/// in `results`.
-#[test]
-#[ignore = "requires Firefox + FF_RDP_LIVE_TESTS=1"]
-fn live_149_restore_failure_reported_in_meta() {
-    if !live_tests_enabled() {
-        eprintln!("live_149_restore_failure_reported_in_meta: set FF_RDP_LIVE_TESTS=1 to run");
-        return;
-    }
-    let ff = LiveFirefox::headless_on_random_port();
-
-    let json = run_a11y_json(ff.port(), &["--native"], true);
-
-    assert_eq!(
-        json["meta"]["service_left_enabled"], true,
-        "a failed restore must set meta.service_left_enabled = true: {json}"
-    );
-    let error = json["meta"]["service_restore_error"]
-        .as_str()
-        .unwrap_or_else(|| {
-            panic!(
-                "meta.service_restore_error must be a non-null string on a failed restore: {json}"
-            )
-        });
-    assert!(
-        !error.is_empty(),
-        "meta.service_restore_error must not be empty: {json}"
-    );
-    assert_eq!(
-        json["results"]["role"], "document",
-        "the walked native tree must still be returned even though the restore failed: {json}"
-    );
 }
 
 /// AC: `live_149_successful_restore_reports_clean` — a normal `--native` run
@@ -128,7 +71,7 @@ fn live_149_successful_restore_reports_clean() {
     }
     let ff = LiveFirefox::headless_on_random_port();
 
-    let opted_in = run_a11y_json(ff.port(), &["--native"], false);
+    let opted_in = run_a11y_json(ff.port(), &["--native"]);
     assert_eq!(
         opted_in["meta"]["service_left_enabled"], false,
         "a successful restore must report service_left_enabled = false: {opted_in}"
@@ -140,7 +83,7 @@ fn live_149_successful_restore_reports_clean() {
 
     // Observably disabled afterwards: a plain (non-`--native`) call must take
     // the JS-fallback path again, same technique as live_143's restore check.
-    let after = run_a11y_json(ff.port(), &[], false);
+    let after = run_a11y_json(ff.port(), &[]);
     assert_eq!(
         after["meta"]["source"], "js-fallback",
         "the accessibility service must be restored to disabled after a clean \
@@ -153,12 +96,7 @@ fn live_149_successful_restore_reports_clean() {
 /// by returning it (the caller must hold it until the "already enabled"
 /// precondition is no longer needed).
 ///
-/// This suite initially tried to establish "already enabled" by leaving a
-/// *single* `ff-rdp` CLI invocation's own connection enabled via the
-/// actor-boundary injection (same technique as
-/// `live_149_restore_failure_reported_in_meta`) and then checking a second,
-/// separate CLI invocation. That failed: verified on the wire, Firefox
-/// re-disables the platform accessibility service once the connection that
+/// Verified on the wire: Firefox re-disables the platform accessibility service once the connection that
 /// enabled it disconnects, regardless of whether an explicit `disable()`
 /// call ran — a *new* connection always observes the service off again. So
 /// "already enabled, from another consumer's point of view" only holds while
@@ -197,7 +135,7 @@ fn live_149_service_already_on_is_not_touched() {
 
     // A --native call now finds the service already on (was_enabled=true):
     // it must not call enable() or disable() at all — RestoreOutcome::NotNeeded.
-    let native = run_a11y_json(port, &["--native"], false);
+    let native = run_a11y_json(port, &["--native"]);
     assert_eq!(
         native["meta"]["service_left_enabled"], false,
         "ff-rdp did not enable the service this call, so it must not claim to \
@@ -211,7 +149,7 @@ fn live_149_service_already_on_is_not_touched() {
     // Confirm the service is still enabled afterward (not disabled by the
     // call above) — a plain a11y call takes the native path only while the
     // service is on.
-    let after = run_a11y_json(port, &[], false);
+    let after = run_a11y_json(port, &[]);
     assert_eq!(
         after["meta"]["source"], "native",
         "the service must still be enabled after a --native call that found it \

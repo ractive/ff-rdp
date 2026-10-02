@@ -14,8 +14,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-const TEST: &str = "util::child_fds::tests::unit_282_inherited_fd_exclusion";
-const ROLE: &str = "FF_RDP_282_FD_FIXTURE_ROLE";
+const TEST: &str = "util::child_fds::tests::inherited_fd_exclusion";
+const ROLE: &str = "CHILD_FDS_TEST_ROLE";
 const BOUND: Duration = Duration::from_secs(5);
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -70,10 +70,10 @@ fn readable(fd: i32, timeout_ms: i32) -> io::Result<bool> {
 }
 
 fn fixture_child() -> Result<()> {
-    let mut control = TcpStream::connect(std::env::var("FF_RDP_282_FD_CONTROL")?)?;
+    let mut control = TcpStream::connect(std::env::var("CHILD_FDS_TEST_CONTROL")?)?;
     control.set_read_timeout(Some(BOUND))?;
     control.set_write_timeout(Some(BOUND))?;
-    eprintln!("282-stderr-preserved");
+    eprintln!("child-fds-stderr-preserved");
     control.write_all(b"ready")?;
     let mut message = [0; 4];
     control.read_exact(&mut message)?;
@@ -132,7 +132,7 @@ fn isolated_parent() -> Result<()> {
     }
 
     let mut cmd = command("child")?;
-    cmd.env("FF_RDP_282_FD_CONTROL", listener.local_addr()?.to_string())
+    cmd.env("CHILD_FDS_TEST_CONTROL", listener.local_addr()?.to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -178,17 +178,17 @@ fn isolated_parent() -> Result<()> {
         .take()
         .ok_or("missing stderr")?
         .read_to_string(&mut stderr)?;
-    eprintln!("282 owned child actual wait: {status}; stderr={stderr}");
+    eprintln!("child_fds owned child actual wait: {status}; stderr={stderr}");
     let (eof, alive_and_group) = observation?;
     eprintln!(
-        "282 observed eof={eof}, alive_and_group={alive_and_group}, inherited_fd={high}, soft_limit={}",
+        "child_fds observed eof={eof}, alive_and_group={alive_and_group}, inherited_fd={high}, soft_limit={}",
         limit.rlim_cur
     );
     assert!(
         status.success(),
         "fixture child status={status}, stderr={stderr}"
     );
-    assert!(stderr.contains("282-stderr-preserved"), "stderr={stderr}");
+    assert!(stderr.contains("child-fds-stderr-preserved"), "stderr={stderr}");
     assert!(
         alive_and_group,
         "child must respond while alive in its own group"
@@ -198,7 +198,7 @@ fn isolated_parent() -> Result<()> {
         "inheritable writer prevented EOF while child was positively alive; child now waited"
     );
 
-    let mut missing = Command::new("/ff-rdp-282-missing-executable");
+    let mut missing = Command::new("/ff-rdp-missing-executable");
     exclude_inherited(&mut missing);
     let error = match missing.spawn() {
         Err(error) => error,
@@ -216,7 +216,7 @@ fn isolated_parent() -> Result<()> {
 }
 
 #[test]
-fn unit_282_inherited_fd_exclusion() -> Result<()> {
+fn inherited_fd_exclusion() -> Result<()> {
     match std::env::var(ROLE).as_deref() {
         Ok("child") => fixture_child(),
         Ok("parent") => isolated_parent(),

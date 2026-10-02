@@ -134,38 +134,12 @@ fn pages() -> HashMap<String, String> {
 }
 
 fn output(command: &mut Command, label: &str) -> Output {
-    let dir = std::env::var_os("FF_RDP_275_SELECTION_DIR").map(std::path::PathBuf::from);
-    let temporary = dir
-        .is_none()
-        .then(|| tempfile::tempdir().expect("capture directory"));
-    let dir = dir
-        .as_deref()
-        .unwrap_or_else(|| temporary.as_ref().unwrap().path());
-    let stdout = dir.join(format!("{label}.stdout"));
-    let stderr = dir.join(format!("{label}.stderr"));
-    let open = |p: &std::path::Path| {
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(p)
-            .expect("exclusive command output")
-    };
-    command
-        .stdout(Stdio::from(open(&stdout)))
-        .stderr(Stdio::from(open(&stderr)));
     eprintln!("275 command stage={label} command={command:?}");
-    let mut child = command.spawn().expect("spawn command");
-    eprintln!("275 command stage={label} pid={}", child.id());
-    let status = child.wait().expect("actual command wait");
-    let result = Output {
-        status,
-        stdout: std::fs::read(stdout).expect("read stdout"),
-        stderr: std::fs::read(stderr).expect("read stderr"),
-    };
-    eprintln!(
-        "275 command stage={label} actual_wait={status} {}",
-        output_note(&result)
-    );
+    let result = command
+        .stdin(Stdio::null())
+        .output()
+        .expect("spawn command");
+    eprintln!("275 command stage={label} {}", output_note(&result));
     result
 }
 
