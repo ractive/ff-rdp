@@ -8,7 +8,7 @@ dogfood_path: >-
   with exact process ownership and the existing launch deadline. Filing does not
   authorize another capture or sweep.
 first_call_sites: []
-status: planned
+status: obsolete
 type: iteration
 title: "Iteration 294: Attribute managed Firefox startup timeouts"
 tags:
@@ -16,6 +16,8 @@ tags:
   - startup
   - carry-over
 ---
+
+Closed 2026-10-02 by [[step-back-2026-10-02]]: startup-timeout assertion failing at load average 150–250 under the sweep's own contention; the fix is in the process (§5: retry once then quarantine, sweep nightly), not in the product.
 
 # Iteration 294: Attribute managed Firefox startup timeouts
 

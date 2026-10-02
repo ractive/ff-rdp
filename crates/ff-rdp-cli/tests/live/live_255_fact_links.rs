@@ -346,8 +346,14 @@ fn live_255_fact_link_budgets_direct() {
 }
 
 #[test]
-#[ignore = "requires live Firefox and network — set FF_RDP_LIVE_TESTS=1 and FF_RDP_LIVE_NETWORK_TESTS=1"]
+#[ignore = "requires live Firefox and network — set FF_RDP_LIVE_TESTS=1 and FF_RDP_LIVE_NETWORK_TESTS=1 + FF_RDP_LIVE_SITES_TESTS=1 (third-party site)"]
 fn live_255_python_fact_click_reaches_psf_formation() {
+    if !crate::common::live_sites_tests_enabled() {
+        eprintln!(
+            "live_255_python_fact_click_reaches_psf_formation: set FF_RDP_LIVE_SITES_TESTS=1 to run (third-party site)"
+        );
+        return;
+    }
     assert!(live_tests_enabled() && live_network_tests_enabled());
     let ff = LiveFirefox::headless_on_random_port();
     assert!(ff.with_daemon().is_some());

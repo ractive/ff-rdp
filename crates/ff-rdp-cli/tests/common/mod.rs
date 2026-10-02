@@ -101,6 +101,19 @@ pub fn live_network_tests_enabled() -> bool {
     std::env::var("FF_RDP_LIVE_NETWORK_TESTS").as_deref() == Ok("1")
 }
 
+/// True when tests that drive real third-party sites (BBC, Guardian, HN,
+/// Wikipedia, MDN, …) are enabled (`FF_RDP_LIVE_SITES_TESTS=1`), in addition
+/// to the live and network gates.
+///
+/// Only the weekly `sites` job in `.github/workflows/live.yml` sets it: those
+/// pages change and go down on their own schedule, so they are a canary, never
+/// part of the nightly sweep (2026-10-02 reset, `kb/research/step-back-2026-10-02.md` §5).
+pub fn live_sites_tests_enabled() -> bool {
+    live_tests_enabled()
+        && live_network_tests_enabled()
+        && std::env::var("FF_RDP_LIVE_SITES_TESTS").as_deref() == Ok("1")
+}
+
 /// Build the common CLI arguments that point at a specific Firefox RDP port
 /// with `--no-daemon` so tests don't accidentally spin up a background daemon.
 pub fn base_args(port: u16) -> Vec<String> {
@@ -1760,9 +1773,7 @@ pub fn daemon_route_note(stdout: &[u8]) -> String {
 /// iteration 179 lost the `diagnostics.events_in_buffer: 0` field that was the
 /// most informative fact about `live_62`'s failure. Three iterations have now
 /// fixed one instance of this each (169, 172, 179); `output_note` is the shared
-/// form so there is no fourth, and
-/// `tests/iter_179_harness_stdout_evidence.rs` fails the build if a live
-/// assertion goes back to naming only `stderr`.
+/// form so there is no fourth.
 ///
 /// Both streams are trimmed and included unconditionally — an empty one is
 /// itself evidence (it says the tool wrote nothing there).

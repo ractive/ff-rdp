@@ -2,7 +2,7 @@
 title: "Stability Roadmap (iter-61m → iter-61y) — derived from kb/rdp/ wiki + 3-agent architectural review"
 type: roadmap
 date: 2026-05-24
-status: in-progress
+status: done
 tags: [roadmap, stability, architecture, iter-61m, iter-61n, iter-61o, iter-61p, iter-61q, iter-61r, iter-61s, iter-61t, iter-61u, iter-61v, iter-61w, iter-61x, iter-61y]
 ---
 

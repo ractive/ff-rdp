@@ -1,7 +1,7 @@
 ---
 title: "Iteration 293: Attribute cancelled-submit timing excess"
 date: 2026-09-28
-status: planned
+status: obsolete
 type: iteration
 tags:
   - iteration
@@ -12,6 +12,9 @@ branch: iter-293/cancelled-submit-timing-attribution
 first_call_sites: []
 dogfood_path: "Offline first: preserve iteration287 closing1 exact cancelled-submit failure and map its external timed region and current type/connection/submission paths. No runtime or capture is authorized by filing; any necessary focused occurrence requires its own reviewed finite schedule and ownership proof."
 ---
+
+Closed 2026-10-02 by [[step-back-2026-10-02]]: timing assertion failing at load average 150–250 under the sweep's own contention; the fix is in the process (§5: bound removed, sweep nightly), not in the product.
+
 # Iteration 293: Attribute cancelled-submit timing excess
 
 Carry-over from iteration287 closing1, outside the current execution queue.

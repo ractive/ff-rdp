@@ -146,3 +146,27 @@ naming a filed Mozilla Bugzilla issue. This makes the drift reviewable for the `
 agent and pairs every drift with an upstream-fix tracker (iter-77). `bug TBD (<rationale>)` is for
 the initial landing of a newly-discovered drift only; replace `TBD` with the real number in a
 follow-up before the next release cut. The agent flags any `TBD` it sees.
+
+## 2026-10-02 reset
+
+The process described above cost one iteration 1.5–4 hours, most of it outside the product:
+the per-PR live sweep (≈350 real-Firefox tests including third-party sites, on one laptop at
+load average 100–350) generated reds that the attribution rules then made impossible to close,
+and every gate ran several times per iteration. [[step-back-2026-10-02]] §1 and §5 have the
+numbers. The reset removed, in one PR:
+
+- the per-PR live sweep — it now runs nightly on `main` (`.github/workflows/live.yml`); per PR
+  only the live tests for touched modules run;
+- the flake-attribution rules ("every red gets an owner plan", "an isolated pass is not
+  evidence", "no retry, no timeout widening") — replaced by: fails, passes on one re-run →
+  `#[ignore = "flaky: issue #N"]` plus a GitHub issue;
+- the carry-over sweep, the `iteration-close` skill, the dogfood-script gate
+  (`check-dogfood-script`, `tools/lint-dogfood-script.sh`) and the ralph-loop mirror rule;
+- the `tests/iter_*_harness_*.rs` honesty scans and the wall-clock-vs-reported timing bounds in
+  live tests (they measured host load, not the product);
+- the `dogfood_path` / `first_call_sites` plan requirements (now optional warnings in
+  `check-iteration-plan`; the duplicate-number check stays);
+- the Codex supervisor policy in `AGENTS.md`.
+
+Third-party-site tests moved behind `FF_RDP_LIVE_SITES_TESTS=1` into a weekly `sites` canary.
+The review rules above (`pub` consumer, TODO annotation, spec-drift comment) are unchanged.

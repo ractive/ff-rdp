@@ -271,9 +271,13 @@ fn live_144_no_consent_o_matic_tab_leak() {
 ///
 /// Network-gated: navigates to the real `www.bbc.com`.
 #[test]
-#[ignore = "requires Firefox + FF_RDP_LIVE_TESTS=1 + FF_RDP_LIVE_NETWORK_TESTS=1"]
+#[ignore = "requires Firefox + FF_RDP_LIVE_TESTS=1 + FF_RDP_LIVE_NETWORK_TESTS=1 + FF_RDP_LIVE_SITES_TESTS=1 (third-party site)"]
 fn live_144_bbc_cmp_dismissed() {
     const TEST: &str = "live_144_bbc_cmp_dismissed";
+    if !crate::common::live_sites_tests_enabled() {
+        eprintln!("{TEST}: set FF_RDP_LIVE_SITES_TESTS=1 to run (third-party site)");
+        return;
+    }
     if !live_tests_enabled() {
         eprintln!("{TEST}: set FF_RDP_LIVE_TESTS=1 to run");
         return;

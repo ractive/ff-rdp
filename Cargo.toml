@@ -96,6 +96,10 @@ missing_panics_doc = "allow"
 too_many_lines = "allow"
 module_name_repetitions = "allow"
 struct_excessive_bools = "allow"
+# Rust 1.99 (2026-09-28) added `assert_is_empty`; its suggested rewrite
+# (`assert_eq!(v, [] as [T; 0])`) reads worse than `assert!(v.is_empty())`
+# and ~30 existing test sites trip it. Allowed rather than churned.
+assert_is_empty = "allow"
 
 [profile.release]
 codegen-units = 1

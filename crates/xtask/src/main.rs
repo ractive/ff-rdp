@@ -1,5 +1,4 @@
 mod check_actor_kb_sync;
-mod check_dogfood_script;
 mod check_firefox_refs;
 mod check_help_idioms;
 mod check_iteration_plan;
@@ -39,9 +38,6 @@ enum Commands {
     /// Fail if any top-level crates/ff-rdp-cli/tests/live_*.rs binary exists
     /// (live suites must be modules of the consolidated tests/live/ target).
     CheckLiveTestLayout(check_live_test_layout::Args),
-    /// Lint and execute the iteration plan's dogfood_script, verifying the sentinel is written.
-    /// Skips gracefully if FF_RDP_LIVE_TESTS != "1" or no dogfood_script field is set.
-    CheckDogfoodScript(check_dogfood_script::Args),
     /// Resolve a branch name (iter-N/slug) to the absolute path of its iteration plan.
     FindIterationPlan(find_iteration_plan::Args),
     /// Run the live-Firefox test suite so an unmet env gate reports `ignored`
@@ -87,7 +83,6 @@ fn main() -> Result<()> {
         Commands::CheckActorKbSync(args) => check_actor_kb_sync::run(args),
         Commands::CheckLiveTestLayout(args) => check_live_test_layout::run(args),
         Commands::FindIterationPlan(args) => find_iteration_plan::run(args),
-        Commands::CheckDogfoodScript(args) => check_dogfood_script::run(args),
         Commands::LiveSweep(args) => live_sweep::run(args),
         Commands::GenSkill(args) => skill_drift::run_gen(args),
         Commands::CheckSkillDrift(args) => skill_drift::run_check(args),

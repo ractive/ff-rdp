@@ -41,8 +41,12 @@ fn parse_json(output: &Output) -> serde_json::Value {
 /// - `results` equals `"Hacker News"`.
 /// - `meta` has no `eval_path` key (removed in iter-161 Theme E).
 #[test]
-#[ignore = "requires Firefox, network access (news.ycombinator.com), and FF_RDP_LIVE_NETWORK_TESTS=1"]
+#[ignore = "requires Firefox, network access (news.ycombinator.com), and FF_RDP_LIVE_NETWORK_TESTS=1 + FF_RDP_LIVE_SITES_TESTS=1 (third-party site)"]
 fn live_eval_on_hn() {
+    if !crate::common::live_sites_tests_enabled() {
+        eprintln!("live_eval_on_hn: set FF_RDP_LIVE_SITES_TESTS=1 to run (third-party site)");
+        return;
+    }
     if std::env::var("FF_RDP_LIVE_NETWORK_TESTS").is_err() {
         eprintln!("live_eval_on_hn: set FF_RDP_LIVE_NETWORK_TESTS=1 to run");
         return;

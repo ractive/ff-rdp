@@ -14,7 +14,9 @@
 //!    be added to [`DECLARED_HOSTS`] below, with a note saying what the suite
 //!    asserts about it. Silent growth is how the class got to fourteen files
 //!    without anyone having decided it should.
-//! 2. **Every file that navigates to one gates on `FF_RDP_LIVE_NETWORK_TESTS`.**
+//! 2. **Every file that navigates to one gates on `FF_RDP_LIVE_SITES_TESTS`**
+//!    (`common::live_sites_tests_enabled`; since the 2026-10-02 reset — before
+//!    that, `FF_RDP_LIVE_NETWORK_TESTS`).
 //!    A third-party page reached from the plain `FF_RDP_LIVE_TESTS` tier would
 //!    red the sweep on a machine with no network at all.
 //!
@@ -139,7 +141,8 @@ fn is_comment(line: &str) -> bool {
 }
 
 /// AC (iter-242 Part C): the suite's third-party dependencies are declared,
-/// and every one of them is reached only behind `FF_RDP_LIVE_NETWORK_TESTS`.
+/// and every one of them is reached only behind `FF_RDP_LIVE_SITES_TESTS`
+/// (`common::live_sites_tests_enabled`, which also requires the network gate).
 #[test]
 fn iter_242_third_party_hosts_are_declared_and_network_gated() {
     let declared: Vec<&str> = DECLARED_HOSTS.iter().map(|(h, _)| *h).collect();
@@ -154,8 +157,10 @@ fn iter_242_third_party_hosts_are_declared_and_network_gated() {
             .unwrap_or_default()
             .to_owned();
         let src = std::fs::read_to_string(&path).expect("read live test source");
-        let gated =
-            src.contains("FF_RDP_LIVE_NETWORK_TESTS") || src.contains("live_network_tests_enabled");
+        // 2026-10-02 reset: third-party pages run only in the weekly `sites`
+        // job, so a file that reaches one must gate on the sites helper, which
+        // also requires the live and network gates.
+        let gated = src.contains("live_sites_tests_enabled");
 
         for (idx, line) in src.lines().enumerate() {
             if is_comment(line) {
@@ -186,7 +191,7 @@ fn iter_242_third_party_hosts_are_declared_and_network_gated() {
     );
     assert!(
         ungated.is_empty(),
-        "third-party navigations outside the FF_RDP_LIVE_NETWORK_TESTS gate ({}):\n  {}",
+        "third-party navigations outside the FF_RDP_LIVE_SITES_TESTS gate (`common::live_sites_tests_enabled`) ({}):\n  {}",
         ungated.len(),
         ungated.join("\n  ")
     );
