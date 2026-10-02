@@ -13,8 +13,9 @@ use super::js_helpers::eval_or_bail;
 
 /// JavaScript fallback for listing script sources via the DOM and Performance API.
 ///
-/// Used when the thread actor's `sources` method is unavailable (Firefox 149+
-/// returns `undefined passed where a value is required`).
+/// Used for recognized native actor failures. An `undefined` error does not
+/// establish that the sources method is unavailable: missing attach options
+/// produced that error before enumeration on Firefox 156 (iteration 286).
 ///
 /// Collects script URLs from:
 /// 1. `document.querySelectorAll('script[src]')` — external scripts
@@ -80,8 +81,8 @@ pub fn run(cli: &Cli, filter: Option<&str>, pattern: Option<&str>) -> Result<(),
         .ok_or_else(|| AppError::User("target does not expose a thread actor".into()))?;
 
     // Attempt native thread-actor source listing; fall back to JS eval on errors
-    // that indicate Firefox 149+ protocol changes (unrecognized method or
-    // `undefined passed where a value is required`).
+    // that match the retained compatibility policy. The fallback is reported
+    // explicitly; it is not evidence that native enumeration succeeded.
     let (sources, fallback_method) =
         match ThreadActor::list_sources(ctx.transport_mut(), thread_actor.as_ref()) {
             Ok(s) => {
@@ -189,7 +190,13 @@ pub fn run(cli: &Cli, filter: Option<&str>, pattern: Option<&str>) -> Result<(),
     let envelope = output::envelope_with_truncation(&result_json, shown, total, truncated, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Sources);
-    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
+    // Native source actors make this three-column table wider than the old
+    // fallback rows. Bound presentation only; retain complete JSON identities.
+    OutputPipeline::from_cli(cli)?.finalize_with_hints_and_text_width(
+        &envelope,
+        Some(&hint_ctx),
+        120,
+    )
 }
 
 /// Probe whether the page CSP allows `eval()` by attempting a no-op eval.
@@ -300,8 +307,9 @@ fn list_sources_via_walker(
 /// Returns `true` for errors that should trigger the JS DOM fallback.
 ///
 /// Matches `unrecognizedPacketType` (method renamed/removed) and
-/// `undefined passed where a value is required` (Firefox 149+ bug where the
-/// thread actor's `sources` method returns undefined internally).
+/// `undefined` / `not available` actor messages retained for compatibility.
+/// These messages do not identify which native operation failed; in particular,
+/// missing attach options produced `undefined` before sources was requested.
 fn should_use_js_fallback(err: &ff_rdp_core::ProtocolError) -> bool {
     if err.is_unrecognized_packet_type() {
         return true;

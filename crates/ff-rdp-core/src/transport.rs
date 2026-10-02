@@ -1303,8 +1303,9 @@ pub fn recv_reply_from(transport: &mut RdpTransport, actor: &str) -> Result<Valu
 ///
 /// If the target actor emits an `error`-bearing reply (no `type` field, per
 /// the protocol) it is surfaced as [`ProtocolError::ActorError`] rather than
-/// silently skipped — otherwise callers like [`ThreadActor::attach`] would
-/// block until the socket timeout instead of seeing the real failure.
+/// silently skipped, which would hide the real failure until the socket timeout.
+/// The former ThreadActor attach waiter used this path; current attach instead
+/// consumes an ordinary reply through `recv_reply_from` (iteration 286).
 pub fn recv_event_from(
     transport: &mut RdpTransport,
     actor: &str,
@@ -3170,8 +3171,8 @@ mod tests {
     }
 
     /// `recv_event_from` must surface an error reply from the target actor
-    /// instead of silently skipping it — otherwise callers like
-    /// `ThreadActor::attach` would hang until the socket timeout.
+    /// instead of silently skipping it. This regression was originally exposed
+    /// by the old ThreadActor attach event waiter (replaced in iteration 286).
     #[test]
     fn recv_event_from_surfaces_error_reply() {
         let (mut transport, server) = make_transport_pair();

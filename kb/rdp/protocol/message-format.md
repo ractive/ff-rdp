@@ -217,3 +217,12 @@ The fix is `with_event_replay` in `commands/navigate.rs`: swap in a
 temporary sink, run the round-trip, swap the previous sink back, replay
 the captured packets through `ResourceCommand::dispatch_event`. Use it
 for *every* blocking call made from inside a drain loop. See DEC-041.
+
+## Current thread attach is an ordinary reply — 2026-09-28
+
+The qualified Firefox 156.0.1 thread spec requires `options` and declares an empty
+ordinary attach response. Its `paused` notification is not attach completion.
+`ThreadActor::attach` uses `actor_request` / `recv_reply_from`; existing sinks
+receive interleaved events. A caller needing those events must install its sink
+before the request, as described above. See [[rdp/actors/thread]] for evidence; historical attach-event claims are
+not the current contract.

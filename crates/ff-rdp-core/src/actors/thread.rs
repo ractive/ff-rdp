@@ -2,7 +2,7 @@ use serde_json::Value;
 
 use crate::actor::actor_request;
 use crate::error::ProtocolError;
-use crate::transport::{RdpTransport, recv_event_from};
+use crate::transport::RdpTransport;
 use serde_json::json;
 
 /// Information about a loaded JavaScript/WASM source.
@@ -16,41 +16,36 @@ pub struct SourceInfo {
     pub is_black_boxed: bool,
 }
 
-/// Operations on a ThreadActor (source listing, attach/resume/detach lifecycle).
+/// Source enumeration and explicit debugger operations on a ThreadActor.
 ///
-/// Thread state machine:
-///   Detached → attach → Paused → resume → Running → detach
-///
-/// IMPORTANT: After attaching and reading sources, always resume before
-/// detaching. Skipping resume leaves the page frozen.
+/// On current Firefox, attaching enables debugging without pausing execution.
+/// Enumerating sources must not resume a pause owned by another debugger.
 pub struct ThreadActor;
 
 impl ThreadActor {
-    /// Attach to the thread actor, transitioning it from Detached to Paused.
+    /// Enable the thread and consume its ordinary method reply.
     ///
-    /// Per `kb/rdp/protocol/message-format.md` the `attach` reply has no `type`
-    /// field; the transition is announced separately via a `paused` event from
-    /// the thread actor. Older mock fixtures / legacy Firefox builds may emit
-    /// only the `paused` event without a preceding empty reply, so we wait for
-    /// the `paused` event using [`recv_event_from`] (which also tolerates a
-    /// real reply arriving first — it is silently skipped).
+    /// Firefox requires an `options` object, even when no options are requested.
+    /// A fresh thread becomes running; an already attached thread keeps its
+    /// state, including an independently established pause. A `paused` event is
+    /// not attach completion. Interleaved events go to the transport's existing
+    /// event sink, which callers consuming events must install before this call.
     pub fn attach(
         transport: &mut RdpTransport,
         thread_actor: &str,
     ) -> Result<Value, ProtocolError> {
-        let request = json!({
-            "to": thread_actor,
-            "type": "attach",
-        });
-        transport.send(&request)?;
-        recv_event_from(transport, thread_actor, |m| {
-            m.get("type").and_then(Value::as_str) == Some("paused")
-        })
+        actor_request(
+            transport,
+            thread_actor,
+            "attach",
+            Some(&json!({"options": {}})),
+        )
     }
 
     /// List all sources loaded in the thread.
     ///
-    /// The thread must be in the Paused state (call [`Self::attach`] first).
+    /// The thread must be attached (call [`Self::attach`] first). Both running
+    /// and paused threads can enumerate sources; this method changes neither state.
     pub fn sources(
         transport: &mut RdpTransport,
         thread_actor: &str,
@@ -66,8 +61,8 @@ impl ThreadActor {
 
     /// Resume the thread, transitioning from Paused to Running.
     ///
-    /// MUST be called after [`Self::attach`] + [`Self::sources`] to avoid
-    /// freezing the page.
+    /// Only call this when the caller owns the pause. Attaching or enumerating
+    /// sources does not create a pause that needs resuming.
     pub fn resume(
         transport: &mut RdpTransport,
         thread_actor: &str,
@@ -75,7 +70,11 @@ impl ThreadActor {
         actor_request(transport, thread_actor, "resume", None)
     }
 
-    /// Detach from the thread, transitioning to Detached.
+    /// Legacy detach request, unsupported by current Firefox.
+    ///
+    /// Source enumeration does not call this method. Close an owned direct
+    /// connection to release its actors instead of sending unsupported detach.
+    #[deprecated(note = "current Firefox has no thread detach method; close the owned connection")]
     pub fn detach(
         transport: &mut RdpTransport,
         thread_actor: &str,
@@ -83,36 +82,16 @@ impl ThreadActor {
         actor_request(transport, thread_actor, "detach", None)
     }
 
-    /// Convenience: attach, list sources, resume, detach — with cleanup on error.
+    /// Attach and enumerate sources without changing debugger pause ownership.
     ///
-    /// Ensures resume + detach are called even when `sources` fails, so the
-    /// page is never left in a frozen Paused state.
+    /// Neither success nor failure resumes the thread or sends unsupported
+    /// detach. The caller owns the transport and its connection lifetime.
     pub fn list_sources(
         transport: &mut RdpTransport,
         thread_actor: &str,
     ) -> Result<Vec<SourceInfo>, ProtocolError> {
         Self::attach(transport, thread_actor)?;
-
-        let sources = match Self::sources(transport, thread_actor) {
-            Ok(s) => s,
-            Err(e) => {
-                // Best-effort cleanup: resume then detach to avoid leaving the
-                // page frozen. Errors from cleanup are intentionally discarded.
-                let _ = Self::resume(transport, thread_actor);
-                let _ = Self::detach(transport, thread_actor);
-                return Err(e);
-            }
-        };
-
-        // Resume first (Paused → Running) — critical to avoid freezing the page.
-        // If resume fails, still attempt detach as best-effort cleanup.
-        let resume_result = Self::resume(transport, thread_actor);
-        // Best-effort detach: a Running thread without detach is far less
-        // harmful than a Paused one, so we prioritise the resume error.
-        let _ = Self::detach(transport, thread_actor);
-        resume_result?;
-
-        Ok(sources)
+        Self::sources(transport, thread_actor)
     }
 }
 
@@ -145,6 +124,157 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    // Synthetic protocol peer, not a recorded Firefox fixture. Replies are
+    // preloaded so restoring the old paused-event wait fails within the socket
+    // bound; packet assertions independently detect resume/detach restoration.
+    type Exchange = (
+        Vec<Result<Vec<SourceInfo>, ProtocolError>>,
+        Vec<Value>,
+        Vec<Value>,
+    );
+
+    fn exchange(replies: &[Value], calls: usize) -> Exchange {
+        use std::io::{BufReader, Write};
+        use std::net::{TcpListener, TcpStream};
+        use std::time::Duration;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_millis(250)))
+            .unwrap();
+        let (mut peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        let mut transport =
+            RdpTransport::from_parts(BufReader::new(client.try_clone().unwrap()), client);
+        let (tx, rx) = std::sync::mpsc::channel();
+        transport.set_event_sink(Some(tx));
+        for reply in replies {
+            peer.write_all(crate::transport::encode_frame(&reply.to_string()).as_bytes())
+                .unwrap();
+        }
+        let results = (0..calls)
+            .map(|_| ThreadActor::list_sources(&mut transport, "thread1"))
+            .collect();
+        drop(transport);
+        let mut requests = Vec::new();
+        let mut reader = BufReader::new(peer);
+        loop {
+            match crate::transport::recv_from(&mut reader) {
+                Ok(packet) => requests.push(packet),
+                Err(ProtocolError::RecvFailed(err))
+                    if err.kind() == std::io::ErrorKind::UnexpectedEof =>
+                {
+                    break;
+                }
+                Err(err) => panic!("unexpected peer receive error: {err}"),
+            }
+        }
+        (results, requests, rx.try_iter().collect())
+    }
+
+    fn assert_native_requests(requests: &[Value]) {
+        assert_eq!(
+            requests,
+            &[
+                json!({"to": "thread1", "type": "attach", "options": {}}),
+                json!({"to": "thread1", "type": "sources"}),
+            ]
+        );
+    }
+
+    #[test]
+    fn list_sources_ordinary_attach_without_paused_or_cleanup() {
+        let (results, requests, events) = exchange(
+            &[
+                json!({"from": "thread1"}),
+                json!({"from": "thread1", "sources": [
+                    {"actor": "source1", "url": "http://fixture/iteration286.js"}
+                ]}),
+            ],
+            1,
+        );
+        let sources = results[0].as_ref().unwrap();
+        assert_eq!(sources[0].actor, "source1");
+        assert_eq!(sources[0].url, "http://fixture/iteration286.js");
+        assert_native_requests(&requests);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn list_sources_already_attached_running_is_repeatable() {
+        let (results, requests, events) = exchange(
+            &[
+                json!({"from": "thread1"}),
+                json!({"from": "thread1", "sources": []}),
+                json!({"from": "thread1"}),
+                json!({"from": "thread1", "sources": []}),
+            ],
+            2,
+        );
+        assert!(results.iter().all(Result::is_ok));
+        assert_eq!(requests.len(), 4);
+        assert_native_requests(&requests[..2]);
+        assert_native_requests(&requests[2..]);
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn list_sources_preserves_external_pause_and_interleaved_events() {
+        let paused =
+            json!({"from": "thread1", "type": "paused", "why": {"type": "debuggerStatement"}});
+        let sibling = json!({"from": "watcher1", "type": "resources-available-array", "array": []});
+        let source =
+            json!({"from": "thread1", "type": "newSource", "source": {"actor": "source1"}});
+        let (results, requests, events) = exchange(
+            &[
+                paused.clone(),
+                sibling.clone(),
+                json!({"from": "thread1"}),
+                source.clone(),
+                json!({"from": "thread1", "sources": []}),
+            ],
+            1,
+        );
+        assert!(results[0].is_ok());
+        assert_native_requests(&requests);
+        assert_eq!(events, vec![paused, sibling, source]);
+    }
+
+    #[test]
+    fn list_sources_attach_error_is_returned_without_sources_or_cleanup() {
+        let (results, requests, events) = exchange(
+            &[json!({"from": "thread1", "error": "wrongState", "message": "exited"})],
+            1,
+        );
+        assert!(
+            matches!(&results[0], Err(ProtocolError::ActorError { error, .. }) if error == "wrongState")
+        );
+        assert_eq!(
+            requests,
+            vec![json!({"to": "thread1", "type": "attach", "options": {}})]
+        );
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn list_sources_source_error_preserves_pause_without_cleanup() {
+        let paused = json!({"from": "thread1", "type": "paused", "why": {"type": "breakpoint"}});
+        let (results, requests, events) = exchange(
+            &[
+                json!({"from": "thread1"}),
+                paused.clone(),
+                json!({"from": "thread1", "error": "sourceUnavailable", "message": "fixture failure"}),
+            ],
+            1,
+        );
+        assert!(
+            matches!(&results[0], Err(ProtocolError::ActorError { error, message, .. }) if error == "sourceUnavailable" && message == "fixture failure")
+        );
+        assert_native_requests(&requests);
+        assert_eq!(events, vec![paused]);
+    }
 
     #[test]
     fn parse_source_info_valid() {

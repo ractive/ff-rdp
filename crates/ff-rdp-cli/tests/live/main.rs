@@ -157,3 +157,5 @@ mod live_wait_timeout_ms_canonical;
 mod live_272_autowait_deadline;
 
 mod live_275_consent_selection;
+
+mod live_286_native_sources;

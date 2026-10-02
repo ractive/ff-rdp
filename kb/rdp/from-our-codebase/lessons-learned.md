@@ -125,3 +125,15 @@ All three now route through `specs::types::resolve_long_string_slot`, which disp
 ## fixtures-must-be-recorded
 
 **Hand-crafted JSON test fixtures drift from reality.** `.claude/CLAUDE.md` mandates: all e2e test fixtures must be recorded from live Firefox via `crates/ff-rdp-core/tests/live_record_fixtures.rs` with `FF_RDP_LIVE_TESTS_RECORD=1`. Fixtures are auto-normalized (`conn\d+` → `conn0`). Memory: `feedback_recorded_fixtures.md`.
+
+## Thread attach correction — 2026-09-28 (iteration 286)
+
+The historical description above of `paused` as attach's reply does not describe
+the qualified Firefox 156.0.1 contract. Attach requires an options object and has
+an ordinary reply; paused is a separate event. The server leaves an already
+attached thread's state unchanged and sources remains supported. The native
+sources flow now requests attach with `{options:{}}`, consumes its completion,
+and enumerates without resume/detach cleanup. See [[rdp/actors/thread]] for exact
+package/source qualification and the consumed H1 observation. This dated
+correction preserves the original historical claims. Native enumeration is
+verified against live Firefox by `live_286_native_sources`.
