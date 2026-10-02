@@ -128,15 +128,6 @@ impl WaitAfterNav<'_> {
     }
 }
 
-// Diagnostic offsets share an origin only within the named scope of one PID.
-// They do not redefine public elapsed_ms or account for process startup/exit.
-fn trace_navigation_timing(scope: &str, stage: &str, origin: Option<Instant>, at: Instant) {
-    if let Some(origin) = origin {
-        tracing::debug!(target: "ff_rdp_cli::navigation_timing", "NAV_TIMING pid={} scope={} stage={} elapsed_ns={}",
-            std::process::id(), scope, stage, at.duration_since(origin).as_nanos());
-    }
-}
-
 /// Navigate to `url` and return the result value without printing.
 ///
 /// Called by the script runner, which handles its own NDJSON output.
@@ -159,10 +150,6 @@ pub fn run_core(
     conditions: &crate::cli::args::NetworkConditionsArgs,
     page_args: &crate::cli::args::PageViewArgs,
 ) -> Result<serde_json::Value, AppError> {
-    let timing_origin =
-        tracing::enabled!(target: "ff_rdp_cli::navigation_timing", tracing::Level::DEBUG)
-            .then(Instant::now);
-    trace_navigation_timing("core", "entry", timing_origin, Instant::now());
     validate_content_navigation_url(url, cli.allow_file_urls, cli.allow_unsafe_urls)?;
     if wait_opts.no_wait && super::network_conditions::is_requested(conditions) {
         return Err(AppError::User(
@@ -172,8 +159,6 @@ pub fn run_core(
         ));
     }
     let mut ctx = connect_and_get_target(cli)?;
-    trace_navigation_timing("core", "connected", timing_origin, Instant::now());
-    trace_navigation_timing("setup", "connected", timing_origin, Instant::now());
     let target_actor = ctx.target().actor.clone();
     let tab_actor = ctx.target_tab_actor().clone();
 
@@ -187,7 +172,6 @@ pub fn run_core(
     // `--wait-strategy events` timed out unconditionally. See
     // `get_navigation_watcher`.
     let watcher_actor = get_navigation_watcher(&mut ctx, &tab_actor)?;
-    trace_navigation_timing("setup", "watcher_ready", timing_origin, Instant::now());
     // `--throttle`/`--block`: set on this connection's watcher before
     // `navigateTo`, so they govern the load this command waits for.
     let conditions_applied =
@@ -200,7 +184,6 @@ pub fn run_core(
         capture_pre_nav_epoch(&mut ctx, "navigate: pre-nav epoch eval")
     };
 
-    trace_navigation_timing("setup", "epoch_sampled", timing_origin, Instant::now());
     // `window.location.href` captured before dispatch (iter-138 Themes B/C)
     // — see `wait_for_navigation_commit`'s identical capture for why: it's
     // the baseline `probe_same_document_commit` needs to detect a same-page
@@ -212,7 +195,6 @@ pub fn run_core(
         let console_actor = ctx.target().console_actor.clone();
         eval_location_href(ctx.transport_mut(), &console_actor)
     };
-    trace_navigation_timing("setup", "href_sampled", timing_origin, Instant::now());
     tracing::debug!(requested_url = url, pre_href = %pre_nav_href, pre_epoch = ?pre_nav_epoch, target = ?ctx.target(), "navigate: baseline captured");
 
     let commit_info = if wait_opts.no_wait {
@@ -226,7 +208,6 @@ pub fn run_core(
         // Sending navigateTo + immediately polling document.readyState avoids
         // the full event-wait timeout cost that the default Events path pays.
         let nav_start = Instant::now();
-        trace_navigation_timing("core", "dispatch", timing_origin, nav_start);
         WindowGlobalTarget::navigate_to(ctx.transport_mut(), &target_actor, url)
             .map_err(AppError::from)?;
         refresh_console_actor(&mut ctx);
@@ -256,7 +237,6 @@ pub fn run_core(
         WatcherActor::watch_targets(ctx.transport_mut(), &watcher_actor, "frame")
             .map_err(AppError::from)?;
 
-        trace_navigation_timing("setup", "targets_watched", timing_origin, Instant::now());
         // Obtain (or create) the ResourceCommand bus via the session so it can
         // be reused by other command helpers without constructing a new bus each
         // time.  The Arc clone detaches ownership from `ctx` so we can still
@@ -279,13 +259,10 @@ pub fn run_core(
                 &[ResourceType::DocumentEvent, ResourceType::NetworkEvent],
             )
             .map_err(|e| AppError::from(anyhow::anyhow!("document-event subscribe: {e:#}")))?;
-        trace_navigation_timing("setup", "subscribed", timing_origin, Instant::now());
 
-        trace_navigation_timing("setup", "ready_to_dispatch", timing_origin, Instant::now());
         // Record the wall-clock instant before sending navigateTo so we can
         // compute the remaining budget for the Both readystate fallback.
         let nav_start = Instant::now();
-        trace_navigation_timing("core", "dispatch", timing_origin, nav_start);
 
         // Send navigateTo raw (not via actor_request) so we don't lose
         // resources-available-array events that arrive before the ack.
@@ -359,7 +336,6 @@ pub fn run_core(
         // wait_for_doc_complete acquires the lock only during dispatch_event,
         // not across the full recv() wait — see its lock-discipline doc-comment.
         let mut fallback_status = FallbackStatusEvidence::new(ctx.target());
-        fallback_status.trace_diagnostic("events_begin");
         let event_result = wait_for_doc_complete_retaining_status(
             ctx.transport_mut(),
             &bus_arc,
@@ -377,17 +353,6 @@ pub fn run_core(
             (wait_opts.wait_strategy == WaitStrategy::Both).then_some(&mut fallback_status),
         );
 
-        tracing::debug!(
-            target: "ff_rdp_cli::navigation_166_diagnostic",
-            phase = "events_end_before_teardown",
-            result = ?event_result,
-            elapsed_ms = nav_start.elapsed().as_millis(),
-            "166 event wait outcome"
-        );
-        fallback_status.trace_diagnostic("events_end_before_teardown");
-
-        fallback_status.trace_diagnostic("after_stream_stop_before_gc");
-
         // Flush any pending `unwatchResources` from dead-channel pruning that
         // occurred inside `wait_for_doc_complete` before we unsubscribe.
         let _ = bus_arc
@@ -395,15 +360,11 @@ pub fn run_core(
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .gc(ctx.transport_mut());
 
-        fallback_status.trace_diagnostic("after_gc_before_unsubscribe");
-
         // Unsubscribe regardless of outcome so Firefox cleans up server state.
         let _ = bus_arc
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .unsubscribe(ctx.transport_mut(), sub_id);
-
-        fallback_status.trace_diagnostic("after_unsubscribe_before_unwatch_targets");
 
         // Pair the prelude's `watchTargets("frame")` with `unwatchTargets`
         // (oneway, no reply) so the server-side frame-target subscription is
@@ -415,8 +376,6 @@ pub fn run_core(
         // Restore the original timeout so subsequent RDP round-trips (e.g.
         // wait-text / wait-selector polling) use the configured timeout.
         restore_timeout(ctx.transport_mut(), cli.timeout);
-
-        fallback_status.trace_diagnostic("after_teardown_and_timeout_restore");
 
         // Apply wait_strategy.  `Readystate` was handled by the early branch
         // above and never reaches this code.  Only `Events` and `Both` run here.
@@ -431,9 +390,7 @@ pub fn run_core(
                 // Events timed out — give readystate the reserved 30% slice,
                 // capped to whatever is actually left of cli.timeout so the
                 // total wall time stays inside the user's budget.
-                fallback_status.trace_diagnostic("fallback_before_direct_refresh");
                 refresh_console_actor(&mut ctx);
-                fallback_status.trace_diagnostic("fallback_after_direct_refresh");
                 let elapsed_ms =
                     u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(cli.timeout);
                 let remaining = cli.timeout.saturating_sub(elapsed_ms);
@@ -457,15 +414,6 @@ pub fn run_core(
             }
             Err(e) => Err(e),
         };
-
-        tracing::debug!(
-            target: "ff_rdp_cli::navigation_166_diagnostic",
-            phase = "readiness_before_neterror_check",
-            used_fallback,
-            result = ?result,
-            "166 readiness outcome"
-        );
-        fallback_status.trace_diagnostic("readiness_before_neterror_check");
         let commit = reclassify_timeout_as_neterror(&mut ctx, url, result)?;
 
         // iter-174: the same check on the SUCCESS path, gated on "no HTTP
@@ -503,21 +451,9 @@ pub fn run_core(
             (commit.http_status, commit.status_reason) =
                 fallback_status.resolve(&commit.committed_url);
         }
-
-        fallback_status.trace_diagnostic("final_after_resolution");
-        tracing::debug!(
-            target: "ff_rdp_cli::navigation_166_diagnostic",
-            phase = "final_after_resolution",
-            used_fallback,
-            committed_url = %commit.committed_url,
-            status = ?commit.http_status,
-            reason = ?commit.status_reason,
-            "166 final status outcome"
-        );
         Some(commit)
     };
 
-    trace_navigation_timing("core", "commit_resolved", timing_origin, Instant::now());
     // This connection's target and navigation latch do not escape run_core.
     // Refresh only when a postcommit consumer will use them; plain committed
     // navigation can return its captured result and drop the connection. Keep
@@ -527,16 +463,7 @@ pub fn run_core(
         || !wait_opts.wait_for.is_empty()
         || page_args.with_page
     {
-        trace_navigation_timing("postcommit_refresh", "begin", timing_origin, Instant::now());
         refresh_console_actor(&mut ctx);
-        trace_navigation_timing("postcommit_refresh", "end", timing_origin, Instant::now());
-    } else {
-        trace_navigation_timing(
-            "postcommit_refresh",
-            "skipped",
-            timing_origin,
-            Instant::now(),
-        );
     }
 
     let wait_result = wait_after_navigate(&mut ctx, wait_opts)?;
@@ -588,7 +515,6 @@ pub fn run_core(
     }
 
     super::network_conditions::insert_echo(&mut result, conditions_applied.as_ref());
-    trace_navigation_timing("core", "return_before_drop", timing_origin, Instant::now());
     Ok(result)
 }
 
@@ -600,10 +526,6 @@ pub fn run(
     conditions: &crate::cli::args::NetworkConditionsArgs,
     page_args: &crate::cli::args::PageViewArgs,
 ) -> Result<(), AppError> {
-    let timing_origin =
-        tracing::enabled!(target: "ff_rdp_cli::navigation_timing", tracing::Level::DEBUG)
-            .then(Instant::now);
-    trace_navigation_timing("run", "entry", timing_origin, Instant::now());
     // iter-210: `--with-page` promises the page it returns describes the
     // document *this command* produced. `--auto-consent`'s dismiss click
     // runs after `run_core` returns (on a fresh connection — see
@@ -623,14 +545,7 @@ pub fn run(
     } else {
         std::borrow::Cow::Borrowed(page_args)
     };
-    trace_navigation_timing("run", "core_call", timing_origin, Instant::now());
     let mut result = run_core(cli, url, wait_opts, conditions, core_args.as_ref())?;
-    trace_navigation_timing(
-        "run",
-        "core_return_after_drop",
-        timing_origin,
-        Instant::now(),
-    );
     if auto_consent {
         merge_auto_consent(cli, &mut result);
     }
@@ -640,12 +555,6 @@ pub fn run(
     }
     let mut meta = json!({});
     let page_text = super::page_view::lift_meta(cli, &mut result, &mut meta);
-    trace_navigation_timing(
-        "postcore",
-        "connection_meta_begin",
-        timing_origin,
-        Instant::now(),
-    );
     crate::connection_meta::merge_into_if_verbose(
         &mut meta,
         &cli.host,
@@ -653,19 +562,11 @@ pub fn run(
         None,
         cli.is_verbose(),
     );
-    trace_navigation_timing(
-        "postcore",
-        "connection_meta_end",
-        timing_origin,
-        Instant::now(),
-    );
     let envelope = output::envelope(&result, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Navigate);
-    trace_navigation_timing("run", "output_begin", timing_origin, Instant::now());
     OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))?;
     super::page_view::render_text_section(page_text.as_ref());
-    trace_navigation_timing("run", "output_end", timing_origin, Instant::now());
     Ok(())
 }
 

@@ -235,21 +235,6 @@ impl FallbackStatusEvidence {
         }
     }
 
-    // Private one-capture diagnostic: observes existing retained state only.
-    // Raw receives (including teardown packets outside this observer) are
-    // captured by the existing ff_rdp_core::transport TRACE target.
-    pub(crate) fn trace_diagnostic(&self, phase: &'static str) {
-        tracing::debug!(
-            target: "ff_rdp_cli::navigation_166_diagnostic",
-            phase,
-            context = ?self.context,
-            outgoing_window = ?self.outgoing_window,
-            requests = ?self.requests,
-            statuses = ?self.statuses,
-            "166 retained status evidence"
-        );
-    }
-
     pub(crate) fn observe(&mut self, packet: &Value) {
         for update in parse_network_resource_updates(packet) {
             if let Some(status) = update.status.and_then(|s| s.parse::<u16>().ok()) {

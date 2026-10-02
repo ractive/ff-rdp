@@ -26,14 +26,6 @@ enum Scenario {
     Home,
     WrongHeading,
     Unready,
-    Events,
-    Fallback,
-}
-
-impl Scenario {
-    fn is_navigation(self) -> bool {
-        matches!(self, Self::Events | Self::Fallback)
-    }
 }
 
 fn send(stream: &mut TcpStream, packet: &Value) {
@@ -82,7 +74,6 @@ impl Peer {
         let worker = std::thread::spawn(move || {
             let mut actions = 0;
             let mut destination = false;
-            let mut teardown = false;
             let mut sequence = 0;
             let mut transcript = Vec::new();
             loop {
@@ -118,7 +109,7 @@ impl Peer {
                             // Transition seam on a direct connection: the first
                             // target acquisition after the click dispatched hands
                             // over the destination document.
-                            if actions > 0 && !scenario.is_navigation() && !destination {
+                            if actions > 0 && !destination {
                                 destination = true;
                                 transcript.push("destination-acquired".into());
                             }
@@ -138,7 +129,6 @@ impl Peer {
                         }
                         "watchResources" => send(&mut stream, &json!({"from":"watcher"})),
                         "unwatchResources" | "unwatchTargets" => {
-                            teardown = true;
                             transcript.push(kind.to_owned());
                             // Both protocol requests are one-way; invent no reply.
                         }
@@ -147,7 +137,7 @@ impl Peer {
                             // metadata acquisition after dispatch releases takeover.
                             // A bare click reaches the next home's listTabs first;
                             // --with-page acquires before that home invocation.
-                            if actions > 0 && !scenario.is_navigation() && !destination {
+                            if actions > 0 && !destination {
                                 destination = true;
                                 transcript.push("destination-acquired".into());
                             }
@@ -157,56 +147,10 @@ impl Peer {
                             "url":if destination {DESTINATION} else {ORIGIN}}]}),
                             );
                         }
-                        "navigateTo" => {
-                            assert!(scenario.is_navigation());
-                            actions += 1;
-                            assert_eq!(actions, 1, "dispatch is never retried");
-                            assert_eq!(request["url"], DESTINATION);
-                            destination = scenario == Scenario::Events;
-                            transcript.push("navigate".into());
-                            send(&mut stream, &json!({"from":"target"}));
-                            send(
-                                &mut stream,
-                                &json!({"from":"watcher","type":"resources-available-array",
-                            "array":[["network-event",[{"resourceId":7,"actor":"network7",
-                            "url":DESTINATION,"method":"GET","cause":{"type":"document"},
-                            "isNavigationRequest":true,"browsingContextID":16,"innerWindowId":1}]]]}),
-                            );
-                            send(
-                                &mut stream,
-                                &json!({"from":"watcher","type":"resources-updated-array",
-                            "array":[["network-event",[{"resourceId":7,"resourceUpdates":{"status":"200"}}]]]}),
-                            );
-                            if scenario == Scenario::Events {
-                                send(
-                                    &mut stream,
-                                    &json!({"from":"watcher","type":"resources-available-array",
-                                "array":[["document-event",[{"name":"dom-complete","url":DESTINATION}]]]}),
-                                );
-                            }
-                        }
                         "evaluateJSAsync" => {
                             sequence += 1;
                             let js = request["text"].as_str().expect("evaluation source");
-                            let value = if scenario.is_navigation() {
-                                let committed = destination || teardown;
-                                if js.contains("readyState: document.readyState") {
-                                    json!(json!({"readyState":"complete","href":if committed {DESTINATION} else {ORIGIN},
-                                    "epoch":if committed {2.0} else {1.0}}).to_string())
-                                } else if js.contains("var h = window.location.href") {
-                                    if committed {
-                                        json!(DESTINATION)
-                                    } else {
-                                        Value::Null
-                                    }
-                                } else if js.contains("performance.timing.navigationStart") {
-                                    json!(if committed { 2.0 } else { 1.0 })
-                                } else if js.contains("window.location.href") {
-                                    json!(if committed { DESTINATION } else { ORIGIN })
-                                } else {
-                                    panic!("unhandled navigation eval: {js}");
-                                }
-                            } else if js.contains("headings") && js.contains("interactive") {
+                            let value = if js.contains("headings") && js.contains("interactive") {
                                 let heading = if destination {
                                     if scenario == Scenario::WrongHeading {
                                         "Wrong destination"
@@ -354,25 +298,6 @@ fn run_command(command: &mut Command, label: &str, index: usize) -> Output {
     output
 }
 
-// Keep raw stderr intact in the archive; strip only terminal decoration for
-// field assertions, since production installs the real formatter.
-fn plain_trace(text: &str) -> String {
-    let mut result = String::new();
-    let mut escape = false;
-    for ch in text.chars() {
-        if ch == '\u{1b}' {
-            escape = true;
-        } else if escape {
-            if ch == 'm' {
-                escape = false;
-            }
-        } else {
-            result.push(ch);
-        }
-    }
-    result
-}
-
 fn panic_text(error: &(dyn std::any::Any + Send)) -> &str {
     error
         .downcast_ref::<String>()
@@ -469,97 +394,4 @@ fn home_ref_rejects_unready_destination() {
         Scenario::Unready,
         Some("the destination must be ready before the subsequent home observation"),
     );
-}
-
-#[test]
-fn navigate_diagnostics_execute_real_event_and_fallback_paths() {
-    for scenario in [Scenario::Events, Scenario::Fallback] {
-        let label = format!("166-{scenario:?}");
-        let home = tempfile::tempdir().unwrap();
-        let mut peer = Peer::start(scenario);
-        // A real CLI child installs main's tracing subscriber. RUST_LOG on the
-        // surrounding libtest process alone is deliberately not our evidence.
-        let output = run_command(command(peer.port, home.path())
-            .env("RUST_LOG", "ff_rdp_core::transport=trace,ff_rdp_cli::navigation_166_diagnostic=debug,ff_rdp_cli::commands::navigate=debug")
-            .args(["navigate",DESTINATION]), &label, 0);
-        let transcript = peer.finish();
-        archive(
-            &label,
-            "peer.json",
-            serde_json::to_vec_pretty(&transcript).unwrap().as_slice(),
-        );
-        archive(
-            &label,
-            "joins.json",
-            b"{\"command_waited\":true,\"peer_joined\":true}\n",
-        );
-        assert!(
-            output.status.success(),
-            "actual navigate failed: {output:?}"
-        );
-        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(value["results"]["status"], 200);
-        assert_eq!(value["results"]["committed_url"], DESTINATION);
-        let stderr = plain_trace(&String::from_utf8_lossy(&output.stderr));
-        for phase in [
-            "events_begin",
-            "events_end_before_teardown",
-            "after_stream_stop_before_gc",
-            "after_gc_before_unsubscribe",
-            "after_unsubscribe_before_unwatch_targets",
-            "after_teardown_and_timeout_restore",
-            "readiness_before_neterror_check",
-            "final_after_resolution",
-        ] {
-            assert!(
-                stderr.contains(phase),
-                "missing real diagnostic {phase}: {}",
-                super::support::output_note(&output)
-            );
-        }
-        assert!(
-            stderr.contains("166 retained status evidence"),
-            "missing retained status evidence: {}",
-            super::support::output_note(&output)
-        );
-        assert!(
-            stderr.contains("context=Some(16)") && stderr.contains("outgoing_window=Some(1)"),
-            "ownership: {}",
-            super::support::output_note(&output)
-        );
-        assert!(
-            stderr.contains("resources-available-array") && stderr.contains("resourceId"),
-            "raw receive trace: {}",
-            super::support::output_note(&output)
-        );
-        if scenario == Scenario::Fallback {
-            assert!(
-                stderr.contains("fallback_before_direct_refresh")
-                    && stderr.contains("fallback_after_direct_refresh"),
-                "missing fallback phases: {}",
-                super::support::output_note(&output)
-            );
-            assert!(
-                stderr.contains("used_fallback=true"),
-                "fallback branch: {}",
-                super::support::output_note(&output)
-            );
-            assert!(
-                stderr.contains("requests=[(7,") && stderr.contains("statuses=[(7, 200)]"),
-                "retained candidates: {}",
-                super::support::output_note(&output)
-            );
-        } else {
-            assert!(
-                stderr.contains("used_fallback=false"),
-                "event branch: {}",
-                super::support::output_note(&output)
-            );
-            assert!(
-                !stderr.contains("fallback_before_direct_refresh"),
-                "unexpected fallback phase: {}",
-                super::support::output_note(&output)
-            );
-        }
-    }
 }

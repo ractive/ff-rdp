@@ -1,4 +1,3 @@
-
 use super::*;
 
 fn default_wait_opts<'a>() -> WaitAfterNav<'a> {
