@@ -442,7 +442,7 @@ ff-rdp type "input[name=email]" "new@example.com" --clear
 ff-rdp wait --selector ".results"
 
 # Wait for text to appear on the page
-ff-rdp wait --text "Success" --wait-timeout 10000
+ff-rdp wait --text "Success" --timeout-ms 10000
 
 # Wait for a JavaScript expression to become truthy
 ff-rdp wait --eval "document.readyState === 'complete'"

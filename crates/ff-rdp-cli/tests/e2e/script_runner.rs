@@ -615,7 +615,7 @@ fn dry_run_stdout_is_pure_ndjson() {
     }
 }
 
-/// A3: Verify --vars-file populates vars correctly (replaces --env-file).
+/// A3: Verify --vars-file populates vars correctly.
 #[test]
 fn vars_file_populates_vars() {
     use std::io::Write as _;
@@ -642,31 +642,14 @@ fn vars_file_populates_vars() {
     );
 }
 
-/// A3: --env-file (deprecated) still works and prints a warning.
+/// The removed `--env-file` alias is a usage error, not a silent no-op.
 #[test]
-fn env_file_deprecated_alias_warns() {
-    use std::io::Write as _;
-    let mut vars_tmp = tempfile::NamedTempFile::new().expect("temp vars file");
-    writeln!(vars_tmp, "url=https://example.com").expect("write");
-    let vars_path = vars_tmp.path().to_owned();
-    let _vars_tmp = vars_tmp;
-
-    let script = r#"{
-        "version": 1,
-        "steps": [
-            {"navigate": {"url": "{{vars.url}}"}}
-        ]
-    }"#;
-    let output = run_dry(script, &["--env-file", vars_path.to_str().unwrap()]);
-    assert!(
-        output.status.success(),
-        "--env-file alias should still work: {}",
-        support::output_note(&output)
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("deprecated") || stderr.contains("--vars-file"),
-        "deprecated warning should mention --vars-file: {stderr} ({})",
+fn env_file_alias_is_rejected() {
+    let output = run_dry(r#"{"version": 1, "steps": []}"#, &["--env-file", "vars.env"]);
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "--env-file must be rejected: {}",
         support::output_note(&output)
     );
 }

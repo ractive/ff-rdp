@@ -202,7 +202,7 @@ fn exit_124_wait_timeout() {
         "wait".to_owned(),
         "--selector".to_owned(),
         ".never-appears".to_owned(),
-        "--wait-timeout".to_owned(),
+        "--timeout-ms".to_owned(),
         "150".to_owned(), // Short so the test is fast.
     ]);
 
@@ -259,7 +259,7 @@ fn exit_1_wait_js_exception() {
         "wait".to_owned(),
         "--selector".to_owned(),
         ".never-appears".to_owned(),
-        "--wait-timeout".to_owned(),
+        "--timeout-ms".to_owned(),
         "5000".to_owned(),
     ]);
 

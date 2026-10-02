@@ -1009,7 +1009,6 @@ fn dispatch_inner(
             script,
             vars,
             vars_file,
-            env_file,
             continue_on_failure,
             dry_run,
             show_secrets,
@@ -1033,19 +1032,8 @@ fn dispatch_inner(
                 }
             }
 
-            // Resolve vars file: --vars-file takes priority; --env-file is deprecated alias.
-            let effective_vars_file = vars_file.as_deref().or_else(|| {
-                if env_file.is_some() {
-                    eprintln!(
-                        "warning: --env-file is deprecated; use --vars-file instead \
-                         (values go to {{{{vars.X}}}}, not the process environment)"
-                    );
-                }
-                env_file.as_deref()
-            });
-
-            // Load --vars-file / --env-file if provided.
-            if let Some(vars_path) = effective_vars_file {
+            // Load --vars-file if provided.
+            if let Some(vars_path) = vars_file.as_deref() {
                 let content = std::fs::read_to_string(vars_path).map_err(|e| {
                     AppError::User(format!(
                         "reading --vars-file '{}': {e}",

@@ -19,7 +19,7 @@ COMMAND REFERENCE:
     ff-rdp navigate <URL> [--with-page] [--with-network] [--wait-text T | --wait-selector S] [--wait-timeout MS]
     ff-rdp reload [--with-page] [--wait-idle [--idle-ms MS] [--reload-timeout MS]]
     ff-rdp back | forward [--with-page]
-    ff-rdp wait --selector S | --text T | --eval JS [--wait-timeout MS]
+    ff-rdp wait --selector S | --text T | --eval JS [--timeout-ms MS]
 
   Page content:
     ff-rdp eval <SCRIPT> | --file PATH | --stdin [--stringify] [--no-isolate]
@@ -361,8 +361,8 @@ pub struct Cli {
     #[arg(long, default_value = "localhost", global = true)]
     pub host: String,
 
-    /// Firefox debug server port
-    #[arg(long, default_value_t = 6000, global = true)]
+    /// Firefox debug server port (also read from `FF_RDP_PORT`; the flag wins)
+    #[arg(long, default_value_t = 6000, global = true, env = "FF_RDP_PORT")]
     pub port: u16,
 
     /// Target tab by index (1-based) or URL substring
@@ -783,13 +783,11 @@ Source (--source watcher, the default):
   --source watcher          the RDP resource watcher — the only source with
                             method/status/content_type/transfer_size. An empty
                             buffer reports 0 watcher rows; it is never swapped
-                            for a different dataset. (`auto` is a deprecated
-                            alias of `watcher`.)
+                            for a different dataset.
   --source performance-api  only Resource Timing; no method/status, no
                             headers/security detail
 
-There is no implicit fallback (iter-159): an empty watcher capture is reported
-as zero watcher rows. `meta.source` names the source that was actually read.
+`meta.source` names the source that was actually read.
 
 Field fidelity by source:
   watcher:         method, status, content_type, duration_ms, size_bytes, transfer_size all available.
@@ -1947,23 +1945,17 @@ pub struct NetworkArgs {
     /// in the page instead — fewer fields, but it can see requests that
     /// finished before ff-rdp connected.
     ///
-    /// There is no automatic substitution: an empty watcher buffer is reported
-    /// as zero watcher rows, never silently swapped for a different dataset
-    /// with different fields (iter-159). `auto` is accepted as a deprecated
-    /// alias of `watcher`.
+    /// An empty watcher buffer is reported as zero watcher rows, never swapped
+    /// for a different dataset with different fields.
     #[arg(long, value_enum, default_value_t = NetworkSource::Watcher)]
     pub source: NetworkSource,
 }
 
-/// Capture source for `ff-rdp network` (iter-137 Theme C, narrowed in iter-159).
+/// Capture source for `ff-rdp network`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum NetworkSource {
     /// The RDP resource watcher. Reports zero rows rather than silently
     /// substituting a different dataset.
-    ///
-    /// `auto` is a deprecated alias: until iter-159 it meant "watcher if
-    /// non-empty, else performance-api".
-    #[value(alias = "auto")]
     Watcher,
     /// Only `performance.getEntriesByType('resource')`, evaluated in the page.
     /// No method/status, headers or security detail.
@@ -2180,10 +2172,9 @@ pub struct WaitArgs {
         group = "condition"
     )]
     pub sleep_ms: Option<u64>,
-    /// Timeout in milliseconds before giving up (canonical flag — use this one).
-    /// The legacy spelling `--wait-timeout` is also accepted as a hidden alias.
+    /// Timeout in milliseconds before giving up.
     /// Not used by --sleep-ms, which always runs for exactly its own duration.
-    #[arg(long = "timeout-ms", alias = "wait-timeout", default_value_t = 5000)]
+    #[arg(long = "timeout-ms", default_value_t = 5000)]
     pub wait_timeout: u64,
 }
 
@@ -2565,9 +2556,6 @@ pub struct RunArgs {
     /// Load variables from a dotenv-style file (values go to {{vars.X}}, not the process env)
     #[arg(long = "vars-file", value_name = "PATH")]
     pub vars_file: Option<std::path::PathBuf>,
-    /// Deprecated alias for --vars-file (will be removed in a future release)
-    #[arg(long = "env-file", value_name = "PATH", hide = true)]
-    pub env_file: Option<std::path::PathBuf>,
     /// Continue running steps after a failure (default: stop on first failure)
     #[arg(long = "continue-on-failure")]
     pub continue_on_failure: bool,
