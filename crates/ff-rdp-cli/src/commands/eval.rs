@@ -2,8 +2,8 @@ use std::io::Read;
 
 use anyhow::Context as _;
 use ff_rdp_core::{
-    ActorId, EvaluateScope, Grip, LongStringActor, ObjectActor, ScopedGrip, TargetEvent,
-    WebConsoleActor, sanitize_for_terminal,
+    ActorId, EvaluateScope, Grip, LongStringActor, ObjectActor, TargetEvent, WebConsoleActor,
+    sanitize_for_terminal,
 };
 use serde_json::json;
 
@@ -1536,34 +1536,22 @@ pub fn run(
         return Err(AppError::User(sanitize_for_terminal(msg).into_owned()));
     }
 
-    // Compute the JSON representation before we potentially move the grip into
-    // a ScopedGrip.  `to_json()` borrows `result`, so this must come first.
     let mut result_json = eval_result.result.to_json();
-
-    // Wrap object/long-string grips in ScopedGrip so we can release them
-    // before the process exits.  Firefox allocates a server-side actor for
-    // each such grip returned by evaluateJSAsync.  We send `release` after
-    // printing output so Firefox can free the actor immediately.
-    let scoped_grip: Option<ScopedGrip> = match eval_result.result {
-        g @ (Grip::Object { .. } | Grip::LongString { .. }) => Some(ScopedGrip::new(g)),
-        _ => None,
-    };
 
     // iter-161 Theme C: a string longer than Firefox's ~1000-char inline
     // limit arrives as a `longString` grip carrying only a preview. Every
     // other command resolves that through `js_helpers::resolve_result`;
     // `eval` did not, so it printed the preview as if it were the value —
-    // with no `meta.truncated`, no hint, and (because the grip is released a
-    // few lines below) no way for the caller to fetch the rest afterwards.
-    // Fetch the full string here, while the actor is still alive.
+    // with no `meta.truncated`, no hint, and no way for the caller to fetch the
+    // rest afterwards (the actor dies with this connection). Fetch the full
+    // string here, while the actor is still alive.
     //
     // `full_string` enforces `LongStringActor::MAX_FETCH` (16 MiB) and its
     // error becomes an `AppError`, so an oversized payload surfaces through
     // the normal JSON error envelope rather than a panic.
-    if let Some(ref sg) = scoped_grip
-        && let Grip::LongString {
-            ref actor, length, ..
-        } = *sg.grip()
+    if let Grip::LongString {
+        ref actor, length, ..
+    } = eval_result.result
     {
         let full = LongStringActor::full_string(ctx.transport_mut(), actor.as_ref(), length)
             .map_err(AppError::from)?;
@@ -1575,9 +1563,7 @@ pub fn run(
     //
     // Firefox 149 removed the `ownPropertyNames` packet type, so we use
     // `prototypeAndProperties` and extract the keys from the result.
-    if let Some(ref sg) = scoped_grip
-        && let Grip::Object { ref actor, .. } = *sg.grip()
-    {
+    if let Grip::Object { ref actor, .. } = eval_result.result {
         match ObjectActor::prototype_and_properties(ctx.transport_mut(), actor.as_ref()) {
             Ok(pap) => {
                 let names: Vec<&str> = pap.own_properties.keys().map(String::as_str).collect();
@@ -1649,21 +1635,7 @@ pub fn run(
     } else {
         pipeline
     };
-    let pipeline_result = pipeline.finalize_with_hints(&envelope, Some(&hint_ctx));
-
-    // Release the server-side object actor after output is flushed.
-    //
-    // We intentionally release *after* printing so the caller sees the full
-    // output even if release fails.  Release failures are logged at WARN and
-    // never propagate — a failed release means the actor leaks until the
-    // connection closes, which is acceptable for one-shot CLI invocations.
-    if let Some(sg) = scoped_grip
-        && let Err(e) = sg.release(ctx.transport_mut())
-    {
-        tracing::warn!("eval: failed to release object actor: {e}");
-    }
-
-    pipeline_result
+    pipeline.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
 /// `--unwrap` helper: if `value` is a string whose contents parse as a JSON

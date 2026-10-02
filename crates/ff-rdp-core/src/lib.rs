@@ -37,7 +37,7 @@ pub use actors::network::{
 pub use actors::network_parent::{NetworkParentFront, ThrottleProfile};
 pub use actors::object::{
     GripHandle, GripKind, LongStringGrip, LongStringScopedGrip, ObjectActor, PropertyDescriptor,
-    PrototypeAndProperties, ScopedGrip, descriptor_to_json,
+    PrototypeAndProperties, descriptor_to_json,
 };
 pub use actors::page_style::{
     AppliedRule, BoxModelLayout, BoxSides, ComputedProperty, PageStyleActor, RuleProperty,

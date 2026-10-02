@@ -24,8 +24,7 @@ use crate::types::{ActorId, Grip};
 /// reset/structure-core collapse: once the release-queue machinery below it
 /// (`release_queue`/`ReleaseQueueTx`/`ReleaseRequest`, also removed — see that
 /// commit) had no non-test consumer, `GripHandle<ObjectGrip>` and its
-/// `ObjectScopedGrip` alias had none either. The synchronous [`ScopedGrip`]
-/// below is what `ff-rdp-cli`'s `eval` command actually uses for object grips.
+/// `ObjectScopedGrip` alias had none either.
 pub trait GripKind: sealed::Sealed {
     /// The Firefox RDP method name to invoke when releasing this kind.
     const RELEASE_METHOD: &'static str;
@@ -175,63 +174,6 @@ impl<K: GripKind> std::fmt::Debug for GripHandle<K> {
             .field("actor_id", &self.actor_id)
             .field("inner", &self.inner)
             .finish()
-    }
-}
-
-/// Backward-compatible `ScopedGrip` for short-lived synchronous CLI connections.
-///
-/// This is the original API from before iter-76.  It wraps any grip (object,
-/// long-string, or primitive) and provides an explicit [`release`] method that
-/// sends the release packet immediately over the transport.  Drop does NOT
-/// enqueue a release — callers must call `release` explicitly.
-///
-/// `GripHandle<K>`'s release-queue variant (automatic cleanup on drop) was
-/// removed in the reset/structure-core collapse for having no non-test
-/// consumer; `GripHandle::without_queue` + explicit `.release()` is now
-/// equivalent to this type for the one grip kind (`LongStringGrip`) that still
-/// uses it.
-#[derive(Debug)]
-pub struct ScopedGrip {
-    inner: Grip,
-}
-
-impl ScopedGrip {
-    /// Wrap a [`Grip`] in a scoped release wrapper.
-    pub fn new(grip: Grip) -> Self {
-        Self { inner: grip }
-    }
-
-    /// Access the inner grip.
-    pub fn grip(&self) -> &Grip {
-        &self.inner
-    }
-
-    /// Consume the wrapper and release the server-side actor.
-    ///
-    /// For `Grip::Object` and `Grip::LongString` variants, sends `release` to
-    /// the grip actor so Firefox can free the associated server-side memory
-    /// immediately.  Primitive variants (`Null`, `Undefined`, `NaN`,
-    /// `Value(_)`, …) carry no actor and so are a no-op.
-    ///
-    /// `unknownActor` errors from Firefox are silently swallowed; the actor
-    /// may already be gone if the tab was closed or the connection reset.
-    /// Other actor errors and transport-level errors are returned to the
-    /// caller — silently swallowing them would mask real protocol failures.
-    ///
-    /// Returns the inner grip so the caller can still inspect it after release.
-    pub fn release(self, transport: &mut RdpTransport) -> Result<Grip, ProtocolError> {
-        let actor_id: Option<&str> = match &self.inner {
-            Grip::Object { actor, .. } | Grip::LongString { actor, .. } => Some(actor.as_ref()),
-            _ => None,
-        };
-        if let Some(id) = actor_id {
-            match ObjectActor::release(transport, id) {
-                Ok(()) => {}
-                Err(e) if e.is_unknown_actor() => {}
-                Err(e) => return Err(e),
-            }
-        }
-        Ok(self.inner)
     }
 }
 
@@ -589,8 +531,8 @@ mod tests {
 
     /// AC: `grip_release_sends_release_request` — `without_queue(grip).release(transport)`
     /// sends `release` to the grip's actor and surfaces `unknownActor` as a
-    /// silent no-op (mirrors `ScopedGrip::release`'s swallow behaviour, see
-    /// `commands/navigate.rs`'s LongString header fetch-back path).
+    /// silent no-op (see `commands/navigate/readiness.rs`'s LongString header
+    /// fetch-back path).
     #[test]
     fn grip_release_sends_release_request() {
         use std::io::{BufReader, Write as _};
