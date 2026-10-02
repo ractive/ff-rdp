@@ -76,3 +76,13 @@ historical data, not evidence that the packet is supported.
 - `ScopedGrip<K: GripKind>` (markers `ObjectGrip`, `LongStringGrip`) wraps an actor ID and a release-queue handle. Drop enqueues a `ReleaseRequest { actor_id, method }` rather than sending from the destructor (avoids re-entrant transport calls; same rationale as iter-71 `gc()`).
 - The release queue is drained by the demux reader in daemon mode and by the next `actor_request` in synchronous mode.
 - For long-string actors the release method is `release` per `devtools/server/actors/string.js`; for object actors it is `release` per `devtools/shared/specs/object.js:213`.
+
+## Reset 2026-10 update — release queue removed
+
+The Drop-driven release queue above (`release_queue`, `ReleaseQueueTx/Rx`,
+`ReleaseRequest`, the `ObjectGrip` marker and `ResourceGripGuard`) only had a
+consumer in the daemon, which DEC-056 removed. It was deleted in phase 4b.
+What remains: `GripHandle<LongStringGrip>` with `without_queue()` +
+explicit `release(transport)` (used by `navigate` for long-string bodies), and
+the non-generic `ScopedGrip` used by `eval` for its explicit post-print
+release. Nothing is released from a destructor any more.

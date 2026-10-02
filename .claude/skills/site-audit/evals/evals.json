@@ -3,7 +3,7 @@
     {
       "name": "wohnungsdirekt-fixture",
       "url": "http://127.0.0.1:8787",
-      "setup": "(cd tests/fixtures/wohnungsdirekt && python3 -m http.server --bind 127.0.0.1 8787 &) && sleep 1 && ff-rdp navigate 'http://127.0.0.1:8787' --wait-timeout 10000",
+      "setup": "(cd tests/fixtures/wohnungsdirekt && python3 -m http.server --bind 127.0.0.1 8787 &) && sleep 1 && ff-rdp navigate 'http://127.0.0.1:8787' --timeout-ms 10000",
       "assertions": [
         {"category": "seo", "check": "missing_title", "desc": "No <title> tag detected", "command": "ff-rdp dom 'head title' --jq '.total'", "expected": "^0$"},
         {"category": "seo", "check": "missing_description", "desc": "No meta description detected", "command": "ff-rdp dom 'head meta[name=description]' --jq '.total'", "expected": "^0$"},
@@ -31,7 +31,7 @@
     {
       "name": "comparis-search-results",
       "url": "https://www.comparis.ch/immobilien/result/list?requestobject=%7B%22DealType%22%3A10%7D",
-      "setup": "ff-rdp navigate 'https://www.comparis.ch/immobilien/result/list?requestobject=%7B%22DealType%22%3A10%7D' --wait-timeout 15000",
+      "setup": "ff-rdp navigate 'https://www.comparis.ch/immobilien/result/list?requestobject=%7B%22DealType%22%3A10%7D' --timeout-ms 15000",
       "assertions": [
         {"category": "perf", "check": "ttfb_measured", "desc": "TTFB value is a positive number", "command": "ff-rdp perf vitals --jq '.results.ttfb_ms'", "expected": "^[1-9][0-9]*$"},
         {"category": "perf", "check": "fcp_measured", "desc": "FCP value is a positive number", "command": "ff-rdp perf vitals --jq '.results.fcp_ms'", "expected": "^[1-9][0-9]*$"},

@@ -538,7 +538,7 @@ fn navigate_wait_text_reresolves_console_actor_after_navigate() {
         "https://example.com".to_owned(),
         "--wait-text".to_owned(),
         "Success".to_owned(),
-        "--wait-timeout".to_owned(),
+        "--timeout-ms".to_owned(),
         "5000".to_owned(),
     ]);
 
@@ -569,101 +569,6 @@ fn navigate_wait_text_reresolves_console_actor_after_navigate() {
         "expected getTarget to be re-resolved after navigation; got {} calls",
         get_target_calls.load(Ordering::SeqCst)
     );
-}
-
-/// Same-operation records must survive a real CLI/mock-RDP invocation and
-/// identify its PID, ordering and monotonic offsets without changing JSON.
-#[test]
-fn e2e_279_navigation_timing_records_same_command() {
-    let server = navigate_server();
-    let port = server.port();
-    let handle = std::thread::spawn(move || server.serve_one());
-    let child = std::process::Command::new(ff_rdp_bin())
-        .args(base_args(port))
-        .args(["navigate", "https://example.com"])
-        .env("RUST_LOG", "ff_rdp_cli::navigation_timing=debug")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("spawn navigate");
-    let pid = child.id();
-    let output = child.wait_with_output().expect("wait navigate");
-    handle.join().unwrap();
-    assert!(output.status.success(), "{}", support::output_note(&output));
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(json["results"]["navigated"], "https://example.com");
-    assert!(json["results"]["elapsed_ms"].is_number());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    for (scope, stages) in [
-        (
-            "core",
-            &[
-                "entry",
-                "connected",
-                "dispatch",
-                "commit_resolved",
-                "return_before_drop",
-            ][..],
-        ),
-        (
-            "run",
-            &[
-                "entry",
-                "core_call",
-                "core_return_after_drop",
-                "output_begin",
-                "output_end",
-            ][..],
-        ),
-        ("connect", &["entry", "greeted", "attached"][..]),
-        ("list_tabs", &["entry", "parsed"][..]),
-        (
-            "attach",
-            &[
-                "entry",
-                "version_resolved",
-                "tab_selected",
-                "target_acquired",
-                "registered",
-            ][..],
-        ),
-        (
-            "setup",
-            &[
-                "connected",
-                "watcher_ready",
-                "epoch_sampled",
-                "href_sampled",
-                "targets_watched",
-                "subscribed",
-                "ready_to_dispatch",
-            ][..],
-        ),
-        (
-            "postcore",
-            &["connection_meta_begin", "connection_meta_end"][..],
-        ),
-    ] {
-        let prefix = format!("NAV_TIMING pid={pid} scope={scope} stage=");
-        let rows: Vec<_> = stderr
-            .lines()
-            .filter_map(|line| line.split_once(&prefix).map(|(_, row)| row))
-            .collect();
-        assert_eq!(
-            rows.len(),
-            stages.len(),
-            "{}",
-            support::output_note(&output)
-        );
-        let mut previous = 0;
-        for (row, stage) in rows.iter().zip(stages) {
-            let (actual, ns) = row.split_once(" elapsed_ns=").expect("timing fields");
-            assert_eq!(actual, *stage);
-            let ns: u128 = ns.trim().parse().expect("monotonic nanoseconds");
-            assert!(ns >= previous);
-            previous = ns;
-        }
-    }
 }
 
 /// A completed plain navigation owns no further target consumer. Preserve the

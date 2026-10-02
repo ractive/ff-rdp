@@ -43,11 +43,10 @@ fn cli_args(port: u16) -> Vec<String> {
 /// iter-242 Part B Theme C: built from `common::ff_rdp_launch_command()`
 /// rather than a bare `Command::new(ff_rdp_bin())`. This helper carries the
 /// suite's only `"launch"` invocation that was still spawned without
-/// `FF_RDP_LIVE_TEST_NAME` set, so a profile leaked through it recorded
-/// `spawned by unknown test` — the signature that sent iteration 176 hunting
-/// through the whole live suite for an orphan five hours old. The env var is
-/// harmless for the non-launch commands that also go through here: ff-rdp only
-/// reads it when it creates a managed profile.
+/// an owner tag. It now sets this test thread's isolated `FF_RDP_HOME`
+/// (`common::ff_rdp_launch_command`) for every command routed through here,
+/// so non-launch commands also read state from that temp root, not the
+/// user's; none of the commands this suite runs depends on the user's root.
 fn run(port: u16, args: &[&str]) -> Output {
     ff_rdp_launch_command()
         .args(cli_args(port))

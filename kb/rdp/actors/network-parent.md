@@ -44,8 +44,9 @@ Parent-process network configuration actor. Created by [[watcher]] via `getNetwo
 
 ## ff-rdp wiring (iter-109)
 
-`NetworkParentFront` (`crates/ff-rdp-core/src/fronts/network_parent.rs`) is the
-typed handle. It is obtained from `WatcherFront::get_network_parent_actor`
+`NetworkParentFront` (`crates/ff-rdp-core/src/actors/network_parent.rs`, moved
+from `fronts/network_parent.rs` in the 2026-10 reset/structure-core collapse)
+is the typed handle. It is obtained from `WatcherFront::get_network_parent_actor`
 (nested `{network: {actor}}` reply — the key is `network`, NOT `networkParent`;
 iter-109 guessed `networkParent` and shipped a decode bug caught by iter-110's
 live sweep and fixed after capturing the real Firefox 152 reply
@@ -57,8 +58,11 @@ that needs them (`navigate` / `reload`), not a standalone command:
 | Front method | Wire call | CLI surface |
 |---|---|---|
 | `set_network_throttling(profile)` | `setNetworkThrottling({latency, downloadThroughput, uploadThroughput})` | `navigate`/`reload --throttle slow-3g\|fast-3g` |
-| `clear_network_throttling()` | `setNetworkThrottling(null)` | none (connection end resets it) |
 | `set_blocked_urls(urls)` | `setBlockedUrls({urls})` | `navigate`/`reload --block <pat>` |
+
+`clear_network_throttling()` (`setNetworkThrottling(null)`) had no non-test
+consumer — nothing calls it; the connection ending already resets throttling —
+and was removed in the 2026-10 reset/structure-core collapse.
 
 `ThrottleProfile` presets (bytes/sec, ms latency): **slow-3g** = 50 000 / 50 000
 / 400 ms; **fast-3g** = 200 000 / 93 750 / 150 ms (canonical DevTools tiers).

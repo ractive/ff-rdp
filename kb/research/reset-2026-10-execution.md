@@ -22,10 +22,12 @@ investigate a historical flake.
 | 2 | Process cut: CLAUDE.md, skills, plan template, `live.yml` nightly, quarantine rule, timing assertions removed, AGENTS.md reset, close 259/266/268/293/294 + PR #281, roadmap done | agent (process) | done | #286 (4def27f4) |
 | 3 | Daemon deletion; refs in-page; throttle/emulate per-call or removed; capture-mode docs | agent (Rust) | done | #287 (fcb4a439) |
 | 4a | Env-var and iteration-hook purge; help drift; deprecated aliases; `allow(dead_code)` | agent (Rust) | done | #290 (b9ccc091) |
-| 4b | `actors`/`fronts` collapse; launch/profile simplification | agent (Rust) | in-progress | |
+| 4b | `actors`/`fronts` collapse; launch/profile simplification | agent (Rust) | in-review | #291 |
 | 5 | Watch nightly live run for a week; then product features | session | planned | |
 
 ## Log
+
+- 2026-10-02: phase 4b PR #291 opened: fronts collapsed into actors (15,429 -> 12,347 lines), navigate split (5,539 -> 5,427), launch+profile files 9,045 -> 8,042; launch waits for a listable tab; `navigate --timeout-ms`; 4a hooks, eval grip release, EvaluateScope frame/node fields and the owner-approved 166/279 diagnostics deleted. Language pack kept (de_CH console text stays German without it).
 
 - 2026-10-02: 4a follow-ups for 4b: delete hooks `FF_RDP_147_CONTROL_HOME` (`launch.rs`), `FF_RDP_147_PIPE_PEER` (`launch/language_initialization/tests.rs`), `FF_RDP_284_*` (`launch/startup_controls.rs`), `FF_RDP_277_CAPTURE` (`live_166_navigate_document_status.rs`), `FF_RDP_ENGLISH_PACK_TEST_XPI` (`english_language_pack.rs`); resolve `allow(dead_code)` at `navigate.rs:1772` and `actors/watcher.rs:1110`; rename `navigate --wait-timeout` to `--timeout-ms` (with the "increase with --wait-timeout" error text); `EvaluateScope::{frame_actor, selected_node_actor}` has no CLI consumer after #290; `launch` returns before the first tab is listable (`tabs` right after saw 0 tabs).
 

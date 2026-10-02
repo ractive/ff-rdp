@@ -10,10 +10,7 @@ mod support;
 
 use std::time::Duration;
 
-use ff_rdp_core::{
-    ActorId, ConsoleFront, FrontKind, RdpConnection, RdpError, Registry, RootActor, TabActor,
-    TargetFront,
-};
+use ff_rdp_core::{ActorId, FrontKind, RdpConnection, RdpError, Registry, RootActor, TabActor};
 use support::recording::{firefox_port, should_run_live};
 
 const TIMEOUT: Duration = Duration::from_secs(15);
@@ -69,10 +66,13 @@ fn live_dead_actor_error_type() {
 /// AC: the registry holds exactly one TargetFront per browsing-context-id at
 /// any given time.
 ///
-/// We connect to Firefox, list tabs, open the first tab's target, register a
-/// TargetFront, then assert there is exactly one TargetFront-kind entry for
-/// that actor.  We also verify that attempting to register a second TargetFront
-/// for the same actor ID replaces the first (registry.register overwrites).
+/// We connect to Firefox, list tabs, open the first tab's target, register it
+/// in the registry directly (the `TargetFront`/`ConsoleFront` wrapper types
+/// were removed in the reset/structure-core collapse — they had no non-test
+/// consumer; `registry.register` is all they ever did), then assert there is
+/// exactly one TargetFront-kind entry for that actor.  We also verify that
+/// attempting to register a second TargetFront for the same actor ID replaces
+/// the first (registry.register overwrites).
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
 fn live_single_target_per_browsing_context() {
@@ -88,15 +88,15 @@ fn live_single_target_per_browsing_context() {
 
     let target_info = TabActor::get_target(transport, &tab.actor).expect("getTarget failed");
 
-    // Build a shared registry and register the target front.
+    // Build a shared registry and register the target.
     let reg = Registry::new();
-    let _target_front = TargetFront::new(target_info.actor.clone(), reg.clone());
+    reg.register(target_info.actor.clone(), FrontKind::Target, None);
 
-    // Also register the console front as owned by the target.
-    let _console_front = ConsoleFront::new(
+    // Also register the console actor as owned by the target.
+    reg.register(
         target_info.console_actor.clone(),
-        reg.clone(),
-        target_info.actor.clone(),
+        FrontKind::Console,
+        Some(target_info.actor.clone()),
     );
 
     // Verify the TargetFront is registered and alive.

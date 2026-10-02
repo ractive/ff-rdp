@@ -28,19 +28,13 @@ pub struct EvalException {
 /// Optional scoping for [`WebConsoleActor::evaluate_js_async_scoped`].
 ///
 /// Mirrors the spec-declared `evaluateJSAsync` request fields at
-/// `devtools/shared/specs/webconsole.js:149-164` (Firefox 149+).  The
-/// server consults these to scope the eval against a specific iframe
-/// (`frame_actor`), pre-bind `$0` to a selected DOM node
-/// (`selected_node_actor`), or pin the inner-window ID when multiple
-/// windows share the same actor — see
+/// `devtools/shared/specs/webconsole.js:149-164` (Firefox 149+).  Only
+/// `innerWindowID` is sent: it pins the inner window when multiple windows
+/// share the same actor (the spec's `frameActor` / `selectedNodeActor`
+/// have no CLI consumer) — see
 /// `devtools/server/actors/webconsole.js:761-870` for the consuming code.
 #[derive(Debug, Default, Clone)]
 pub struct EvaluateScope {
-    /// Frame actor — eval inside this iframe rather than the top-level
-    /// document.
-    pub frame_actor: Option<ActorId>,
-    /// Pre-bind `$0` to the given DOM node actor.
-    pub selected_node_actor: Option<ActorId>,
     /// Constrain the eval to a specific inner window.
     pub inner_window_id: Option<u64>,
 }
@@ -182,18 +176,10 @@ impl WebConsoleActor {
             // instead of the actual JS result.
             "mapped": { "await": true },
         });
-        if let Some(scope) = scope
+        if let Some(iwid) = scope.and_then(|s| s.inner_window_id)
             && let Some(obj) = request.as_object_mut()
         {
-            if let Some(ref frame) = scope.frame_actor {
-                obj.insert("frameActor".to_owned(), json!(frame.as_ref()));
-            }
-            if let Some(ref node) = scope.selected_node_actor {
-                obj.insert("selectedNodeActor".to_owned(), json!(node.as_ref()));
-            }
-            if let Some(iwid) = scope.inner_window_id {
-                obj.insert("innerWindowID".to_owned(), json!(iwid));
-            }
+            obj.insert("innerWindowID".to_owned(), json!(iwid));
         }
         transport.send(&request)?;
 
@@ -1076,8 +1062,8 @@ mod tests {
         let srv = std::thread::spawn(move || {
             let mut reader = BufReader::new(server.try_clone().unwrap());
             let req = transport_recv_from(&mut reader).unwrap();
-            assert_eq!(req["frameActor"], "conn0/frame17");
-            assert_eq!(req["selectedNodeActor"], "conn0/node42");
+            assert!(req.get("frameActor").is_none());
+            assert!(req.get("selectedNodeActor").is_none());
             assert_eq!(req["innerWindowID"], 21_474_836_481_u64);
 
             let ack = json!({"from": &actor_str, "resultID": "scope-test"});
@@ -1093,8 +1079,6 @@ mod tests {
         });
 
         let scope = EvaluateScope {
-            frame_actor: Some("conn0/frame17".into()),
-            selected_node_actor: Some("conn0/node42".into()),
             inner_window_id: Some(21_474_836_481),
         };
         let eval_result = WebConsoleActor::evaluate_js_async_scoped(

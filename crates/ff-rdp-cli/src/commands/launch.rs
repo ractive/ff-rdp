@@ -1,8 +1,6 @@
 mod language_initialization;
 mod replace;
 mod startup;
-#[cfg(all(test, unix))]
-mod startup_controls;
 
 use std::net::ToSocketAddrs as _;
 use std::path::{Path, PathBuf};
@@ -611,6 +609,10 @@ pub(crate) enum PortWaitOutcome {
     Opened,
     /// The bound elapsed with the port still refusing connections.
     TimedOut,
+    /// The port opened but `listTabs` returned no tab before the bound
+    /// elapsed, so a command run right after `launch` would find nothing to
+    /// attach to. Carries the last `listTabs` error, if any attempt failed.
+    NoTab(Option<String>),
     /// `host:port` could not be resolved at all — a configuration error, not a
     /// timing one.
     Unresolvable(String),
@@ -633,6 +635,12 @@ impl PortWaitOutcome {
                 "Firefox (pid {pid}) did not open debug port {port} within {}s — \
                  raise --launch-timeout or set {LAUNCH_TIMEOUT_ENV}",
                 bound.as_secs()
+            ))),
+            Self::NoTab(last_error) => Some(AppError::User(format!(
+                "Firefox (pid {pid}) opened debug port {port} but listed no tab within {}s{} — \
+                 raise --launch-timeout or set {LAUNCH_TIMEOUT_ENV}",
+                bound.as_secs(),
+                last_error.map_or_else(String::new, |e| format!(" (last listTabs error: {e})"))
             ))),
             Self::Unresolvable(msg) => Some(AppError::User(msg)),
             Self::Exited(status) => Some(AppError::User(format!(
@@ -677,6 +685,11 @@ pub(crate) struct LaunchHooks {
     /// Poll `host:port` until it accepts a connection or the bound elapses.
     pub(crate) probe_port:
         fn(&str, u16, Duration, &mut startup::Observation<'_>) -> PortWaitOutcome,
+    /// After the port opened: poll `listTabs` on `port` until it returns at
+    /// least one tab or the deadline passes, so `launch` never reports success
+    /// before a follow-up command can attach.
+    pub(crate) wait_for_tab:
+        fn(u16, std::time::Instant, &mut startup::Observation<'_>) -> PortWaitOutcome,
     /// Spawn the prepared Firefox command.
     pub(crate) spawn: fn(&mut std::process::Command) -> std::io::Result<std::process::Child>,
     /// Read the owned child's status; injectable for the OS error branch.
@@ -709,6 +722,7 @@ impl LaunchHooks {
             is_port_in_use: port_owner::is_port_in_use,
             find_listener: |port| port_owner::find_listener(port).ok().flatten(),
             probe_port: wait_for_port,
+            wait_for_tab: wait_for_listable_tab,
             spawn: std::process::Command::spawn,
             try_wait: std::process::Child::try_wait,
             locate_firefox: find_firefox,
@@ -729,6 +743,7 @@ impl LaunchHooks {
     fn none_running() -> Self {
         Self {
             pid_is_ff_rdp_spawned: |_pid| false,
+            wait_for_tab: |_port, _deadline, _observation| PortWaitOutcome::Opened,
             ..Self::real()
         }
     }
@@ -895,6 +910,59 @@ fn wait_for_port(
     // cleanup check records any natural exit racing with this observation.
     observation.terminal("port_wait", "alive_when_deadline_checked");
     PortWaitOutcome::TimedOut
+}
+
+/// Poll `listTabs` on `localhost:port` until it returns at least one tab, the
+/// child exits, or `deadline` passes. Each attempt opens a fresh connection.
+fn wait_for_listable_tab(
+    port: u16,
+    deadline: std::time::Instant,
+    observation: &mut startup::Observation<'_>,
+) -> PortWaitOutcome {
+    let poll_interval = Duration::from_millis(100);
+    loop {
+        observation.stderr.pump(Some(deadline));
+        match observation.status() {
+            Ok(Some(status)) => {
+                observation.terminal("tab_wait", "natural_exit");
+                return PortWaitOutcome::Exited(status);
+            }
+            Err(error) => {
+                observation.terminal("tab_wait", "status_unknown");
+                return PortWaitOutcome::StatusFailed(error.to_string());
+            }
+            Ok(None) => {}
+        }
+        // At least one attempt even when the port opened right at the
+        // deadline: a browser whose tab already exists must not be killed
+        // for lack of budget.
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let attempt_timeout = remaining.clamp(Duration::from_secs(1), Duration::from_secs(2));
+        // 127.0.0.1, like the language-pack initializer: Firefox binds IPv4
+        // loopback, and `localhost` may try ::1 first and burn the timeout.
+        let last_error = match count_tabs("127.0.0.1", port, attempt_timeout) {
+            Ok(n) if n > 0 => {
+                observation.terminal("tab_wait", "tab_listed");
+                return PortWaitOutcome::Opened;
+            }
+            Ok(_) => None,
+            Err(error) => Some(error),
+        };
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            observation.terminal("tab_wait", "no_tab_at_deadline");
+            return PortWaitOutcome::NoTab(last_error);
+        }
+        std::thread::sleep(poll_interval.min(remaining));
+    }
+}
+
+/// Number of tabs one `listTabs` round trip reports.
+fn count_tabs(host: &str, port: u16, timeout: Duration) -> Result<usize, String> {
+    ff_rdp_core::RdpConnection::connect(host, port, timeout)
+        .and_then(|mut connection| ff_rdp_core::RootActor::list_tabs(connection.transport_mut()))
+        .map(|tabs| tabs.len())
+        .map_err(|e| e.to_string())
 }
 
 /// Whether `launch` should drop an [`OWNER_PID_MARKER`](crate::util::profile_dir::OWNER_PID_MARKER)
@@ -1146,18 +1214,6 @@ pub(crate) fn run_with_hooks(
         && let Some(dir) = profile_path.as_deref()
     {
         crate::util::profile_dir::write_owner_pid_marker(dir, child.id());
-
-        // iter-151 Theme A: if the caller identifies itself (the live-test
-        // harness sets this env var on every `ff-rdp launch` it spawns — see
-        // `tests/common/mod.rs`), record it alongside the owner PID so a
-        // leaked profile can be traced back to the exact test that spawned
-        // it, instead of a bisection hunt across ~200 live tests. Absent for
-        // a normal interactive `ff-rdp launch` — no marker is written.
-        if let Ok(test_name) = std::env::var(crate::util::profile_dir::SPAWNING_TEST_ENV)
-            && !test_name.trim().is_empty()
-        {
-            crate::util::profile_dir::write_owner_test_marker(dir, test_name.trim());
-        }
     }
 
     let mut observation = startup::Observation {
@@ -1177,7 +1233,15 @@ pub(crate) fn run_with_hooks(
             // before reporting success. Always probe localhost since we
             // just spawned a local Firefox, regardless of --host.
             let pid = observation.child.id();
+            let deadline = std::time::Instant::now() + port_wait_bound;
             let outcome = (hooks.probe_port)("localhost", port, port_wait_bound, &mut observation);
+            if let Some(e) = outcome.into_error(pid, port, port_wait_bound) {
+                return Err(pending.fail(e));
+            }
+            // An open port is not yet a usable browser: the first tab can
+            // appear a moment later, and `tabs` run right after `launch` then
+            // saw none. Same bound as the port wait, measured from its start.
+            let outcome = (hooks.wait_for_tab)(port, deadline, &mut observation);
             if let Some(e) = outcome.into_error(pid, port, port_wait_bound) {
                 return Err(pending.fail(e));
             }
@@ -2495,6 +2559,72 @@ mod iter_175_tests {
         );
     }
 
+    /// The port opened but no tab was ever listed: `launch` fails with its own
+    /// message (not the bind-timeout one) and reclaims the profile.
+    #[test]
+    fn launch_fails_when_no_tab_is_listed_before_the_deadline() {
+        static PROFILE: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+        let hooks = LaunchHooks {
+            is_port_in_use: |_port| false,
+            find_listener: |_port| None,
+            probe_port: |_host, _port, _timeout, _observation| PortWaitOutcome::Opened,
+            wait_for_tab: |_port, _deadline, _observation| PortWaitOutcome::NoTab(None),
+            spawn: |cmd| {
+                *PROFILE.lock().expect("profile slot") = profile_arg_of(cmd);
+                spawn_lingering_child()
+            },
+            locate_firefox: || Ok(PathBuf::from("/nonexistent/ff-rdp-fake-firefox")),
+            ..LaunchHooks::none_running()
+        };
+
+        let err = run_with_hooks(&bare_launch_cli(), &managed_opts(7604), &hooks)
+            .expect_err("a browser that never lists a tab must fail the launch");
+        assert!(
+            err.to_string().contains("listed no tab within"),
+            "expected the no-tab message, got {err:?}"
+        );
+        let dir = PROFILE.lock().expect("profile slot").clone().unwrap();
+        assert!(!dir.exists(), "profile left behind: {}", dir.display());
+    }
+
+    /// `count_tabs` reports what one `listTabs` round trip returned, and 0
+    /// when nothing answers.
+    #[test]
+    fn count_tabs_reads_one_list_tabs_reply() {
+        use std::io::{BufReader, Write as _};
+        fn serve(tabs: serde_json::Value) -> (u16, std::thread::JoinHandle<()>) {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let handle = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let send = |stream: &mut std::net::TcpStream, value: serde_json::Value| {
+                    let body = value.to_string();
+                    write!(stream, "{}:{body}", body.len()).unwrap();
+                };
+                send(
+                    &mut stream,
+                    json!({"from":"root","applicationType":"browser","traits":{}}),
+                );
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let request = ff_rdp_core::transport::recv_from(&mut reader).unwrap();
+                assert_eq!(request["type"], "listTabs");
+                send(&mut stream, json!({"from":"root","tabs":tabs}));
+            });
+            (port, handle)
+        }
+        let (port, handle) = serve(json!([]));
+        assert_eq!(count_tabs("127.0.0.1", port, Duration::from_secs(5)), Ok(0));
+        handle.join().unwrap();
+        let (port, handle) = serve(json!([{"actor":"tab1","url":"about:blank","title":""}]));
+        assert_eq!(count_tabs("127.0.0.1", port, Duration::from_secs(5)), Ok(1));
+        handle.join().unwrap();
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = closed.local_addr().unwrap().port();
+        drop(closed);
+        assert!(count_tabs("127.0.0.1", port, Duration::from_secs(1)).is_err());
+    }
+
     /// A user-supplied `--profile` directory is never ours to delete, however
     /// the launch fails. The guard must stay disarmed for that whole branch.
     #[test]
@@ -2689,367 +2819,5 @@ mod iter_175_tests {
                 .to_string()
                 .contains("initializer refused")
         );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    #[ignore = "isolated restart-control executor; parent supplies private state"]
-    #[allow(unsafe_code)]
-    fn restart_success_isolated_executor() {
-        use super::super::english_language_pack::{fixture, fixture_manifest};
-        let isolated =
-            PathBuf::from(std::env::var_os("FF_RDP_147_CONTROL_HOME").expect("owned control home"));
-        assert!(isolated.is_absolute());
-        assert_eq!(
-            std::env::var_os("FF_RDP_HOME"),
-            Some(isolated.clone().into_os_string()),
-            "147 isolation home mismatch before launch"
-        );
-        assert_eq!(
-            std::fs::read(isolated.join("147-control-owner")).unwrap(),
-            b"owned restart control"
-        );
-        thread_local! {
-            static BINARY: std::cell::RefCell<PathBuf> = const { std::cell::RefCell::new(PathBuf::new()) };
-            static PROFILE: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
-            static SPAWNS: std::cell::RefCell<Vec<u32>> = const { std::cell::RefCell::new(Vec::new()) };
-            static ENVELOPES: std::cell::RefCell<Vec<serde_json::Value>> = const { std::cell::RefCell::new(Vec::new()) };
-        }
-        let root = tempfile::tempdir().unwrap();
-        let binary = root.path().join("firefox");
-        std::fs::write(&binary, b"never executed").unwrap();
-        std::fs::write(
-            root.path().join("application.ini"),
-            "[App]\nVersion=156.0.1\nBuildID=test\n",
-        )
-        .unwrap();
-        BINARY.with(|v| *v.borrow_mut() = binary);
-        let xpi = root.path().join("pack.xpi");
-        std::fs::write(&xpi, fixture(&fixture_manifest(), &[])).unwrap();
-        let hooks = LaunchHooks {
-            locate_firefox: || BINARY.with(|v| Ok(v.borrow().clone())),
-            is_port_in_use: |_| false,
-            probe_port: |_, _, _, _| PortWaitOutcome::Opened,
-            emit_launch: |_, value| {
-                ENVELOPES.with(|v| v.borrow_mut().push(value.clone()));
-                Ok(())
-            },
-            initialize_language_pack: |firefox, port, profile, pack, guard, hooks, _| {
-                pack.verify_staged(profile, USER_JS).unwrap();
-                PROFILE.with(|v| *v.borrow_mut() = Some(profile.to_owned()));
-                let mut cmd = browser_command(firefox, port, true, None, Some("about:blank"));
-                cmd.arg("--profile").arg(profile);
-                let mut child = (hooks.spawn)(&mut cmd).unwrap();
-                let pid = child.id();
-                let status = child.wait().unwrap();
-                assert!(status.success());
-                // This hook models the independently tested readiness/state gates;
-                // the harmless initializer Child really ran and was waited here.
-                pack.verify_staged(profile, USER_JS).unwrap();
-                Ok((
-                    guard,
-                    json!({"pid":pid,"start_token":"test-initializer","actual_child_wait":true,"exit_code":0}),
-                ))
-            },
-            spawn: |cmd| {
-                let args: Vec<_> = cmd.get_args().collect();
-                let i = args.iter().position(|v| *v == "--profile").unwrap();
-                PROFILE.with(|v| assert_eq!(Path::new(args[i + 1]), v.borrow().as_ref().unwrap()));
-                let first = SPAWNS.with(|v| v.borrow().is_empty());
-                if first {
-                    assert!(args.iter().any(|v| *v == "about:blank"));
-                    assert!(!args.iter().any(|v| *v == "https://example.invalid/final"));
-                } else {
-                    assert!(args.iter().any(|v| *v == "https://example.invalid/final"));
-                }
-                let child = if first {
-                    std::process::Command::new("/bin/sh")
-                        .args(["-c", "exit 0"])
-                        .spawn()?
-                } else {
-                    std::process::Command::new("/bin/sleep").arg("2").spawn()?
-                };
-                SPAWNS.with(|v| v.borrow_mut().push(child.id()));
-                Ok(child)
-            },
-            ..LaunchHooks::none_running()
-        };
-        let opts = LaunchOpts {
-            english_language_pack: Some(&xpi),
-            restart_after_language_pack_install: true,
-            url: Some("https://example.invalid/final"),
-            ..managed_opts(7363)
-        };
-        let result = run_with_hooks(&bare_launch_cli(), &opts, &hooks);
-        let pids = SPAWNS.with(|v| v.borrow().clone());
-        let last = *pids.last().unwrap();
-        let native = i32::try_from(last).unwrap();
-        let birth = crate::util::process::process_start_token(last);
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        let mut status = 0;
-        let mut waited = loop {
-            // SAFETY: last is our direct harmless child, never a foreign PID.
-            // WNOHANG never blocks. The production success path intentionally
-            // drops its Child; this test still owns the parent wait obligation.
-            let observed = unsafe { libc::waitpid(native, &raw mut status, libc::WNOHANG) };
-            if observed != 0 {
-                break observed;
-            }
-            if std::time::Instant::now() >= deadline {
-                break 0;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        };
-        if waited == 0 {
-            if birth.is_some() && crate::util::process::process_start_token(last) == birth {
-                // SAFETY: matching birth and unreaped direct-child identity bind
-                // this timeout cleanup to the exact harmless test child.
-                unsafe {
-                    libc::kill(native, libc::SIGKILL);
-                }
-            }
-            let cleanup = std::time::Instant::now() + Duration::from_secs(2);
-            while waited == 0 && std::time::Instant::now() < cleanup {
-                // SAFETY: same direct child, nonblocking actual wait.
-                waited = unsafe { libc::waitpid(native, &raw mut status, libc::WNOHANG) };
-                if waited == 0 {
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-            }
-        }
-        assert_ne!(
-            waited, 0,
-            "owned child cleanup uncertain; retain profile for recovery, PID {last}"
-        );
-        PROFILE.with(|v| std::fs::remove_dir_all(v.borrow().as_ref().unwrap()).unwrap());
-        assert!(result.is_ok(), "{result:?}");
-        assert_eq!(pids.len(), 2);
-        assert_ne!(pids[0], pids[1]);
-        assert_eq!(
-            waited, native,
-            "final harmless child was not actually waited"
-        );
-        assert_eq!(status, 0);
-        ENVELOPES.with(|v| {
-            let values = v.borrow();
-            assert_eq!(values.len(), 1);
-            assert_eq!(values[0]["results"]["pid"], last);
-            assert_eq!(
-                values[0]["results"]["english_language_pack"]["initialization"]["pid"],
-                pids[0]
-            );
-            assert_eq!(
-                values[0]["results"]["english_language_pack"]["relaunch_count"],
-                1
-            );
-        });
-        let receipt = json!({"pids":pids,"initial_actual_wait":true,"initial_exit":0,
-            "final_actual_wait_pid":waited,"final_wait_status":status,"envelope_count":1,
-            "profile_removed":true,"home":isolated});
-        std::fs::write(
-            isolated.join("147-success-control.json"),
-            serde_json::to_vec_pretty(&receipt).unwrap(),
-        )
-        .unwrap();
-    }
-
-    // Test-only ownership of the isolated executor, including assertion/I/O
-    // unwinding. No blocking wait occurs until try_wait has actually reaped it.
-    #[cfg(unix)]
-    struct RestartExecutor {
-        child: std::process::Child,
-        reaped: bool,
-        cleanup_attempted: bool,
-    }
-
-    #[cfg(unix)]
-    impl RestartExecutor {
-        fn new(child: std::process::Child) -> Self {
-            Self {
-                child,
-                reaped: false,
-                cleanup_attempted: false,
-            }
-        }
-
-        fn poll_until(
-            &mut self,
-            deadline: std::time::Instant,
-        ) -> std::io::Result<Option<std::process::ExitStatus>> {
-            while std::time::Instant::now() < deadline {
-                if let Some(found) = self.child.try_wait()? {
-                    // try_wait already reaped this exact direct child. wait is
-                    // now a cached actual outcome, not an unbounded live wait.
-                    self.reaped = true;
-                    let waited = self.child.wait()?;
-                    assert_eq!(waited, found);
-                    return Ok(Some(waited));
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Ok(None)
-        }
-
-        fn cleanup(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
-            self.cleanup_attempted = true;
-            let deadline = std::time::Instant::now() + Duration::from_secs(3);
-            // Check actual exit before signalling; a reaped PID must never be
-            // treated as a live owned child. This child owns its process group.
-            if let Ok(Some(_)) = self.child.try_wait() {
-                self.reaped = true;
-                return self.child.wait().map(Some);
-            }
-            // A polling error must not skip the owned kill/reap attempt. Any
-            // subsequent wait error is propagated as uncertainty, never success.
-            let pid = self.child.id();
-            let group = crate::util::process::get_process_group_id(pid)
-                .filter(|g| i64::from(*g) == i64::from(pid));
-            crate::util::process::kill_process_tree(pid, group);
-            let _ = self.child.kill();
-            self.poll_until(deadline)
-        }
-
-        fn finish(
-            mut self,
-            active: Duration,
-        ) -> std::io::Result<(Option<std::process::ExitStatus>, bool)> {
-            if let Some(status) = self.poll_until(std::time::Instant::now() + active)? {
-                return Ok((Some(status), false));
-            }
-            // Exactly one cleanup reserve; Drop must not start a second one.
-            self.cleanup().map(|status| (status, true))
-        }
-    }
-
-    #[cfg(unix)]
-    impl Drop for RestartExecutor {
-        fn drop(&mut self) {
-            if !self.reaped && !self.cleanup_attempted {
-                // An I/O error/assertion cannot silently drop the owned child.
-                // Uncertain cleanup is never converted into a successful wait.
-                let pid = self.child.id();
-                let outcome = self.cleanup();
-                // stderr-ok: test-only cleanup outcome, not a success claim.
-                eprintln!("147 executor guard drop pid={pid} actual_cleanup_outcome={outcome:?}");
-            }
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn unit_147_restart_success_has_two_owned_starts_and_one_final_envelope() {
-        use std::io::{Read, Seek};
-        use std::os::unix::process::CommandExt;
-        // Exercise the guard's actual timeout/kill/reap path without a browser,
-        // profile or socket. A zero active deadline forces cleanup, not a sleep.
-        let timeout_executor = RestartExecutor::new(
-            std::process::Command::new("/bin/sleep")
-                .arg("30")
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .process_group(0)
-                .spawn()
-                .unwrap(),
-        );
-        let timeout_pid = timeout_executor.child.id();
-        let (timeout_status, timed_out) = timeout_executor.finish(Duration::ZERO).unwrap();
-        assert!(timed_out);
-        assert!(
-            timeout_status.is_some_and(|status| !status.success()),
-            "forced cleanup did not actually reap owned executor {timeout_pid}"
-        );
-        // stderr-ok: owned harmless-child actual-wait evidence only.
-        eprintln!(
-            "147 executor guard timeout pid={timeout_pid} actual_wait=true status={timeout_status:?}"
-        );
-        let parent_override = std::env::var_os("FF_RDP_HOME");
-        let root = tempfile::tempdir().unwrap().keep();
-        let private = root.join("executor-home");
-        std::fs::create_dir(&private).unwrap();
-        std::fs::write(private.join("147-control-owner"), b"owned restart control").unwrap();
-        // Model an external state home without touching any actual user's.
-        // The executor also checks its exact state root before invoking launch.
-        let external_home = root.join("external-home");
-        let external = external_home.join(".ff-rdp");
-        std::fs::create_dir_all(&external).unwrap();
-        let sentinel = external.join("external-state.7363.json");
-        let sentinel_bytes = b"external state must survive unchanged";
-        std::fs::write(&sentinel, sentinel_bytes).unwrap();
-        // Negative arm gives the executor the external home but a mismatching
-        // ownership token. It must fail before invoking product code.
-        for (case, selected_home, success_expected) in [
-            ("reject-unisolated", &external_home, false),
-            ("isolated", &private, true),
-        ] {
-            let mut log = std::fs::OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .read(true)
-                .open(root.join(format!("{case}.log")))
-                .unwrap();
-            let executor = RestartExecutor::new(
-                std::process::Command::new(std::env::current_exe().unwrap())
-                    .args([
-                        "--exact",
-                        "commands::launch::iter_175_tests::restart_success_isolated_executor",
-                        "--ignored",
-                        "--nocapture",
-                    ])
-                    .env("FF_RDP_HOME", selected_home)
-                    .env("FF_RDP_147_CONTROL_HOME", &private)
-                    .stdin(std::process::Stdio::null())
-                    .stdout(log.try_clone().unwrap())
-                    .stderr(log.try_clone().unwrap())
-                    .process_group(0)
-                    .spawn()
-                    .unwrap(),
-            );
-            let (status, timed_out) = executor.finish(Duration::from_secs(15)).unwrap();
-            assert_eq!(std::fs::read(&sentinel).unwrap(), sentinel_bytes);
-            log.rewind().unwrap();
-            let mut text = String::new();
-            log.take(65537).read_to_string(&mut text).unwrap();
-            assert!(
-                !timed_out && status.is_some_and(|s| s.success() == success_expected),
-                "isolated restart control failed; actual executor wait {status:?}; retained {}: {text}",
-                root.display()
-            );
-            assert!(
-                if success_expected {
-                    text.contains("test result: ok. 1 passed; 0 failed;")
-                } else {
-                    text.contains("test result: FAILED. 0 passed; 1 failed;")
-                },
-                "executor selection/outcome mismatch: {text}"
-            );
-            if !success_expected {
-                assert!(
-                    text.contains("147 isolation home mismatch before launch"),
-                    "wrong negative path: {text}"
-                );
-                assert!(!private.join("147-success-control.json").exists());
-            }
-            // stderr-ok: finite test-only actual-wait outcomes; no user record content.
-            eprintln!(
-                "147 isolation case={case} actual_executor_wait=true exit={:?} sentinel_unchanged=true",
-                status.and_then(|s| s.code())
-            );
-        }
-        let receipt: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(private.join("147-success-control.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(receipt["pids"].as_array().unwrap().len(), 2);
-        assert_eq!(receipt["initial_actual_wait"], true);
-        assert_eq!(receipt["initial_exit"], 0);
-        assert_eq!(receipt["final_actual_wait_pid"], receipt["pids"][1]);
-        assert_eq!(receipt["final_wait_status"], 0);
-        assert_eq!(receipt["envelope_count"], 1);
-        assert_eq!(receipt["profile_removed"], true);
-        assert_eq!(receipt["home"], json!(private));
-        assert_eq!(std::fs::read(&sentinel).unwrap(), sentinel_bytes);
-        assert_eq!(std::env::var_os("FF_RDP_HOME"), parent_override);
-        std::fs::remove_dir_all(&root).unwrap();
     }
 }

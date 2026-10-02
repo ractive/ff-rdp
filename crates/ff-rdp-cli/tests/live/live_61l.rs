@@ -441,7 +441,7 @@ fn live_navigate_dnsfail() {
 /// Navigate to example.com; even with a tight timeout the URL-match recovery
 /// should succeed (Firefox commits quickly for simple pages).  The test
 /// just asserts that navigating to example.com returns success; the race
-/// scenario is best demonstrated by the unit tests for `urls_match_scheme_host_path`.
+/// scenario itself has no deterministic live reproduction.
 #[test]
 #[ignore = "requires live Firefox — set FF_RDP_LIVE_TESTS=1"]
 fn live_navigate_cross_origin_url_match() {

@@ -185,3 +185,10 @@ References:
 - The legacy `evaluate_js_async` is preserved as a thin delegate so all
   existing callers continue to work; only `commands::eval::run` opts in via
   the new `--frame` / `--node` / `--inner-window` CLI flags.
+
+## Reset 2026-10 update — EvaluateScope narrowed
+
+- `EvaluateScope` now carries only `inner_window_id` (sent as `innerWindowID`). The
+  `frame_actor` / `selected_node_actor` fields had no CLI consumer after #290 (`eval --frame`
+  selects a frame's console actor instead), so the phase-4b PR deleted them. `eval` also no longer sends `release` for its result grip: the connection closes
+  when the command returns, which frees the actor.

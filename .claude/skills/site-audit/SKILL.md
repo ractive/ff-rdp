@@ -25,7 +25,7 @@ score card, key metrics, top issues (severity-sorted), and recommendations.
 
 If a URL is provided, navigate first:
 ```bash
-ff-rdp navigate <url> --wait-timeout 10000
+ff-rdp navigate <url> --timeout-ms 10000
 ```
 
 ## Audit Categories

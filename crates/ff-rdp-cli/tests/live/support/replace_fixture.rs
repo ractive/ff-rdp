@@ -1,6 +1,6 @@
 //! Iter153 paired ownership fixture. Every home and command receipt survives unwind.
 //! Native start-token lookup mirrors src/util/process.rs because the CLI has no lib target.
-use crate::common::{self, LIVE_LAUNCH_LOG_ENV, OWNER_PID_MARKER, OWNER_TEST_MARKER};
+use crate::common::{self, LIVE_LAUNCH_LOG_ENV, OWNER_PID_MARKER};
 use serde_json::{Value, json};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -490,7 +490,7 @@ pub fn launch(home: &Path) -> Browser {
             .to_string_lossy()
             .starts_with("ff-rdp-profile-")
     );
-    let markers = [OWNER_PID_MARKER, ".ff-rdp-owner-start", OWNER_TEST_MARKER]
+    let markers = [OWNER_PID_MARKER, ".ff-rdp-owner-start"]
         .iter()
         .map(|n| {
             (

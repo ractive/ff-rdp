@@ -690,23 +690,6 @@ mod tests {
         }
     }
 
-    /// Opt-in resource control: reads a local fixture only, never launches Firefox.
-    /// Separate from live locale acceptance; absence fails explicit selection.
-    #[test]
-    #[ignore = "requires explicitly supplied official Firefox 156.0.1 en-US XPI fixture"]
-    fn unit_147_official_pack_preflight() {
-        let path = std::env::var_os("FF_RDP_ENGLISH_PACK_TEST_XPI")
-            .expect("local official fixture required");
-        let pack = Pack::read(Path::new(&path)).unwrap();
-        assert_eq!(pack.bytes.len(), 689_787);
-        assert_eq!(
-            pack.sha256,
-            "6a1f941b8748d312799d4c4fd432c963cac03a17573f8fd125686643ce5743a3"
-        );
-        assert_eq!(pack.version, "156.0.20260921.121718");
-        pack.check_version("156.0.1").unwrap();
-    }
-
     #[test]
     fn unit_147_langpack_compressed_and_expanded_bounds() {
         assert!(Pack::parse(vec![0; usize::try_from(MAX_XPI).unwrap() + 1]).is_err());

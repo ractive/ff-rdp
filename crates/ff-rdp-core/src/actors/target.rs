@@ -54,42 +54,6 @@ impl WindowGlobalTarget {
         )?;
         Ok(())
     }
-
-    /// Reload the current page.
-    ///
-    /// When `force` is true, sends `{options: {force: true}}` so Firefox
-    /// bypasses the HTTP cache (equivalent to a hard reload / Cmd-Shift-R).
-    pub fn reload(
-        transport: &mut RdpTransport,
-        target_actor: &ActorId,
-        force: bool,
-    ) -> Result<(), ProtocolError> {
-        if force {
-            let params = json!({"options": {"force": true}});
-            actor_request(transport, target_actor.as_ref(), "reload", Some(&params))?;
-        } else {
-            actor_request(transport, target_actor.as_ref(), "reload", None)?;
-        }
-        Ok(())
-    }
-
-    /// Go back in browser history.
-    pub fn go_back(
-        transport: &mut RdpTransport,
-        target_actor: &ActorId,
-    ) -> Result<(), ProtocolError> {
-        actor_request(transport, target_actor.as_ref(), "goBack", None)?;
-        Ok(())
-    }
-
-    /// Go forward in browser history.
-    pub fn go_forward(
-        transport: &mut RdpTransport,
-        target_actor: &ActorId,
-    ) -> Result<(), ProtocolError> {
-        actor_request(transport, target_actor.as_ref(), "goForward", None)?;
-        Ok(())
-    }
 }
 
 #[cfg(test)]

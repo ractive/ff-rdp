@@ -24,7 +24,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crate::common::{
-    LIVE_LAUNCH_LOG_ENV, LiveFirefox, assert_no_managed_profiles, ff_rdp_bin,
+    LIVE_LAUNCH_LOG_ENV, LiveFirefox, assert_no_managed_profiles, current_live_home, ff_rdp_bin,
     ff_rdp_launch_command, live_tests_enabled, recorded_launch_output, retained_failed_launch_home,
 };
 
@@ -158,11 +158,14 @@ fn live_175_successful_launch_keeps_its_profile_dir() {
         return;
     }
 
-    // Deliberately the *real* root: this direction identifies its profile by
-    // the owning PID, which is unique per test, so it is already safe under a
-    // concurrent tier and is worth keeping on the path a user actually uses.
+    // `LiveFirefox` now launches every test thread's Firefox under that
+    // thread's own isolated `FF_RDP_HOME` (2026-10-02 reset phase 4b, second
+    // pass) rather than the developer's real per-user root, so ask for the
+    // exact same root `ff` was launched under. This still identifies its
+    // profile by the owning PID, which is unique per test, so it is already
+    // safe under a concurrent tier.
     let ff = LiveFirefox::headless_on_random_port();
-    let root = profile_root(None);
+    let root = profile_root(Some(&current_live_home()));
 
     let owned: Vec<PathBuf> = managed_profiles(&root)
         .into_iter()

@@ -24,8 +24,7 @@ use std::time::Duration;
 
 use crate::common::{
     FirefoxGuard, LIVE_LAUNCH_LOG_ENV, LiveFirefox, base_args, current_test_name, ff_rdp_bin,
-    ff_rdp_launch_command, ff_rdp_launch_command_for, live_tests_enabled, pid_alive,
-    recorded_launch_output,
+    ff_rdp_launch_command, live_tests_enabled, pid_alive, recorded_launch_output,
 };
 
 /// Parse a `ff-rdp` stdout buffer into JSON, with the raw text in the panic
@@ -56,11 +55,14 @@ fn live_158_launch_survives_contended_bind() {
     // Four at once: enough contention to reproduce the >5 s bind, launched in
     // parallel threads so they genuinely compete rather than queue.
     //
-    // iter-171: the owner-test name is captured *here*, on the test's own
-    // thread. Historically the unnamed workers stamped profiles `unknown`;
-    // iteration 282 also gives each worker this name for its outcome ledger.
-    // The iteration-168 postmortem could not attribute four abandoned profiles.
+    // The owning test's name is captured *here*, on the test's own thread,
+    // and given to each worker thread via `Builder::name` below so its
+    // outcome ledger (iteration 282) reads as this test rather than
+    // `unknown`. The workers share THIS thread's isolated `FF_RDP_HOME`:
+    // a worker's own thread-local home is deleted when the worker exits,
+    // which would remove the profile of a Firefox that is still running.
     let owner = current_test_name();
+    let home = crate::common::current_live_home();
     let ledger = std::env::var_os(LIVE_LAUNCH_LOG_ENV).map_or_else(
         || ff_rdp_bin().parent().unwrap().join("../live-launches.log"),
         std::path::PathBuf::from,
@@ -68,6 +70,7 @@ fn live_158_launch_survives_contended_bind() {
     let handles: Vec<_> = (0..4u8)
         .map(|i| {
             let owner = owner.clone();
+            let home = home.clone();
             // One writer per sibling ledger: even a partial append cannot
             // interleave with another worker. Never lock across piped output.
             let ledger = ledger.with_extension(format!("158-{i}.attempts.jsonl"));
@@ -76,7 +79,8 @@ fn live_158_launch_survives_contended_bind() {
                 .spawn(move || {
                     let port = 7101 + u16::from(i);
                     let out = recorded_launch_output(
-                        ff_rdp_launch_command_for(&owner)
+                        ff_rdp_launch_command()
+                            .env("FF_RDP_HOME", &home)
                             .args(["launch", "--headless"])
                             .args(["--debug-port", &port.to_string()]),
                         &ledger,

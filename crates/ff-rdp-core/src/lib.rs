@@ -14,7 +14,6 @@ pub(crate) mod actors;
 pub mod connection;
 pub mod css;
 pub mod error;
-pub mod fronts;
 pub mod registry;
 pub mod resources;
 pub mod session;
@@ -31,13 +30,14 @@ pub use actors::console::{
 pub use actors::device::DeviceActor;
 pub use actors::dom_walker::{DomAttr, DomNode, DomWalkerActor};
 pub use actors::inspector::InspectorActor;
+pub use actors::manifest::{CanonicalManifest, ManifestFront};
 pub use actors::network::{
     CertSummary, EventTimings, Header, NetworkEventActor, ResponseContent, SecurityInfo,
 };
+pub use actors::network_parent::{NetworkParentFront, ThrottleProfile};
 pub use actors::object::{
-    GripHandle, GripKind, LongStringGrip, LongStringScopedGrip, ObjectActor, ObjectGrip,
-    ObjectScopedGrip, PropertyDescriptor, PrototypeAndProperties, ReleaseQueueRx, ReleaseQueueTx,
-    ReleaseRequest, ScopedGrip, descriptor_to_json, release_queue,
+    GripHandle, GripKind, LongStringGrip, LongStringScopedGrip, ObjectActor, PropertyDescriptor,
+    PrototypeAndProperties, descriptor_to_json,
 };
 pub use actors::page_style::{
     AppliedRule, BoxModelLayout, BoxSides, ComputedProperty, PageStyleActor, RuleProperty,
@@ -62,19 +62,13 @@ pub use actors::target::WindowGlobalTarget;
 pub use actors::thread::{SourceInfo, ThreadActor};
 pub use actors::watcher::{
     ConsoleResource, DEFAULT_FRAME_TARGETS_SETTLE, NetworkResource, NetworkResourceUpdate,
-    ResourceGripGuard, TargetEvent, WatcherActor, WatcherEvent, dispatch_watcher_event,
-    enumerate_frame_targets, extract_grips, parse_console_resources,
-    parse_network_resource_updates, parse_network_resources, parse_target_event,
+    TargetEvent, WatcherActor, WatcherEvent, WatcherFront, dispatch_watcher_event,
+    enumerate_frame_targets, parse_console_resources, parse_network_resource_updates,
+    parse_network_resources, parse_target_event,
 };
 pub use connection::{COMPATIBLE_FIREFOX_MAX, COMPATIBLE_FIREFOX_MIN, RdpConnection};
 pub use error::{ActorErrorKind, NavCause, ProtocolError, RdpError, RdpResult};
-pub use fronts::{
-    CanonicalManifest, ConsoleFront, DescriptorFront, ManifestFront, NetworkContentFront,
-    NetworkParentFront, PageStyleFront, ProcessDescriptorFront, ProcessTarget, RootFront,
-    ScreenshotFront, TargetConfigurationFront, TargetFront, ThrottleProfile, WalkerFront,
-    WatcherFront,
-};
-pub use registry::{Front, FrontKind, IsActorGone, Registry, call_with_refresh};
+pub use registry::{Front, FrontKind, Registry};
 pub use resources::{Resource, ResourceCommand, ResourceType, SubscriptionId};
 pub use session::Session;
 pub use transport::{FramedReader, FramedWriter, RdpTransport};
