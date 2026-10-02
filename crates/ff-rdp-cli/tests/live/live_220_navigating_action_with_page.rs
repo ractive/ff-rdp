@@ -32,7 +32,7 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::process::{Command, Output};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde_json::Value;
 
@@ -44,13 +44,6 @@ use crate::common::{FixtureRoute, FixtureServer, LiveFirefox, ff_rdp_bin, live_t
 /// short enough that four tests paying it twice each stay comfortable inside a
 /// live-suite budget.
 const DESTINATION_DELAY: Duration = Duration::from_millis(700);
-
-/// Upper bound on a `--with-page` call that has NO navigation to wait for.
-///
-/// `page_view::NAV_SETTLE_BUDGET_MS` is 3 s. A non-navigating click must not
-/// come anywhere near it: this bound fails if the settle loop ever runs on a
-/// click that did not navigate.
-const NO_NAVIGATION_BUDGET: Duration = Duration::from_millis(2_500);
 
 fn cli_args(port: u16) -> Vec<String> {
     vec![
@@ -255,77 +248,56 @@ fn live_slow_destination_view_is_the_heavy_one() {
 }
 
 // ---------------------------------------------------------------------------
-// The cost side — waiting must be free when there is nothing to wait for
+// Nothing to wait for — the action reports the page it stayed on
 // ---------------------------------------------------------------------------
 
-/// A click that does NOT navigate must not pay the settle budget.
+/// A click that does NOT navigate reports the page it is still on.
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
-fn live_non_navigating_click_with_page_is_not_delayed() {
+fn live_non_navigating_click_with_page_stays_on_page() {
     if !live_tests_enabled() {
-        eprintln!("live_non_navigating_click_with_page_is_not_delayed: set FF_RDP_LIVE_TESTS=1");
+        eprintln!("live_non_navigating_click_with_page_stays_on_page: set FF_RDP_LIVE_TESTS=1");
         return;
     }
     let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(slow_link_fixture()) else {
-        eprintln!("live_non_navigating_click_with_page_is_not_delayed: no fixture HTTP — skipping");
+        eprintln!("live_non_navigating_click_with_page_stays_on_page: no fixture HTTP — skipping");
         return;
     };
 
     run_json(port, &["navigate", &server.base_url()]);
-    let started = Instant::now();
     let click = run_json(port, &["click", "#noop", "--with-page"]);
-    let elapsed = started.elapsed();
-    let load = crate::common::timing_load_note();
-    eprintln!(
-        "TIMING_SAMPLE test=live_non_navigating_click_with_page_is_not_delayed elapsed_ms={} {load}",
-        elapsed.as_millis()
-    );
 
     assert_eq!(
         first_heading(&click),
         "Ada Lovelace",
         "a click that navigates nowhere must report the page it is still on: {click}"
     );
-    assert!(
-        elapsed < NO_NAVIGATION_BUDGET,
-        "a non-navigating click --with-page took {elapsed:?}, over the {NO_NAVIGATION_BUDGET:?} \
-         bound — the navigation settle loop must not run when nothing navigated; {load}: {click}"
-    );
 }
 
 /// A same-document `#fragment` click announces a navigation but never changes
-/// `innerWindowId`, so waiting on the id alone would burn the whole budget. The
-/// settle loop's URL exit is what keeps this fast.
+/// `innerWindowId`; the view must still be the same document.
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
-fn live_fragment_click_with_page_is_not_delayed() {
+fn live_fragment_click_with_page_stays_on_document() {
     if !live_tests_enabled() {
-        eprintln!("live_fragment_click_with_page_is_not_delayed: set FF_RDP_LIVE_TESTS=1");
+        eprintln!("live_fragment_click_with_page_stays_on_document: set FF_RDP_LIVE_TESTS=1");
         return;
     }
     let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(slow_link_fixture()) else {
-        eprintln!("live_fragment_click_with_page_is_not_delayed: no fixture HTTP — skipping");
+        eprintln!("live_fragment_click_with_page_stays_on_document: no fixture HTTP — skipping");
         return;
     };
 
     run_json(port, &["navigate", &server.base_url()]);
-    let started = Instant::now();
     let click = run_json(port, &["click", "#frag", "--with-page"]);
-    let elapsed = started.elapsed();
 
     assert_eq!(
         first_heading(&click),
         "Ada Lovelace",
         "a same-document fragment click stays on the same document: {click}"
-    );
-    assert!(
-        elapsed < NO_NAVIGATION_BUDGET,
-        "a fragment click --with-page took {elapsed:?}, over the {NO_NAVIGATION_BUDGET:?} bound \
-         — the settle loop must exit on the URL match instead of waiting for an \
-         innerWindowId that never changes: {click}"
     );
 }

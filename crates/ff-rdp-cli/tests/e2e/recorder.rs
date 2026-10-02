@@ -65,10 +65,10 @@ fn wait_true_server() -> MockRdpServer {
 }
 
 // ---------------------------------------------------------------------------
-// Theme A: recorder captures --wait-timeout
+// Theme A: recorder captures --timeout-ms
 // ---------------------------------------------------------------------------
 
-/// Recording `wait --selector body --wait-timeout 5000` (the default value)
+/// Recording `wait --selector body --timeout-ms 5000` (the default value)
 /// must NOT write the `timeout` field — the default is elided to keep the
 /// recorded file terse.  See `recorder_captures_nondefault_wait_timeout` for
 /// the positive case where a non-default value IS written.
@@ -94,13 +94,13 @@ fn recorder_elides_explicit_default_wait_timeout() {
         support::output_note(&start_out)
     );
 
-    // wait --selector body --wait-timeout 5000
+    // wait --selector body --timeout-ms 5000
     let mut wait_args = base_args(port);
     wait_args.extend([
         "wait".to_owned(),
         "--selector".to_owned(),
         "body".to_owned(),
-        "--wait-timeout".to_owned(),
+        "--timeout-ms".to_owned(),
         "5000".to_owned(),
     ]);
     let wait_out = run_with_state(&wait_args, &state_dir);
@@ -153,7 +153,7 @@ fn recorder_elides_explicit_default_wait_timeout() {
     let _ = std::fs::remove_file(&output_path);
 }
 
-/// Recording `wait --selector body --wait-timeout 1234` (non-default) must
+/// Recording `wait --selector body --timeout-ms 1234` (non-default) must
 /// produce a step with `"timeout": 1234` in the recorded JSON.
 #[test]
 fn recorder_captures_nondefault_wait_timeout() {
@@ -176,13 +176,13 @@ fn recorder_captures_nondefault_wait_timeout() {
         support::output_note(&start_out)
     );
 
-    // wait --selector body --wait-timeout 1234  (non-default)
+    // wait --selector body --timeout-ms 1234  (non-default)
     let mut wait_args = base_args(port);
     wait_args.extend([
         "wait".to_owned(),
         "--selector".to_owned(),
         "body".to_owned(),
-        "--wait-timeout".to_owned(),
+        "--timeout-ms".to_owned(),
         "1234".to_owned(),
     ]);
     let wait_out = run_with_state(&wait_args, &state_dir);
@@ -221,7 +221,7 @@ fn recorder_captures_nondefault_wait_timeout() {
     let _ = std::fs::remove_file(&output_path);
 }
 
-/// Recording `wait --selector body` with no explicit `--wait-timeout` must
+/// Recording `wait --selector body` with no explicit `--timeout-ms` must
 /// produce a step WITHOUT a `timeout` field (default is elided).
 #[test]
 fn recorder_omits_default_timeout() {
@@ -244,7 +244,7 @@ fn recorder_omits_default_timeout() {
         support::output_note(&start_out)
     );
 
-    // wait --selector body  (no --wait-timeout, default of 5000 applies)
+    // wait --selector body  (no --timeout-ms, default of 5000 applies)
     let mut wait_args = base_args(port);
     wait_args.extend([
         "wait".to_owned(),
@@ -290,7 +290,7 @@ fn recorder_omits_default_timeout() {
     let _ = std::fs::remove_file(&output_path);
 }
 
-/// Recording `wait --text Loaded --wait-timeout 2500` must preserve the
+/// Recording `wait --text Loaded --timeout-ms 2500` must preserve the
 /// non-default timeout in the recorded step alongside the `text` condition.
 #[test]
 fn recorder_captures_nondefault_timeout_for_text_wait() {
@@ -313,7 +313,7 @@ fn recorder_captures_nondefault_timeout_for_text_wait() {
         "wait".to_owned(),
         "--text".to_owned(),
         "Loaded".to_owned(),
-        "--wait-timeout".to_owned(),
+        "--timeout-ms".to_owned(),
         "2500".to_owned(),
     ]);
     let wait_out = run_with_state(&wait_args, &state_dir);
@@ -337,7 +337,7 @@ fn recorder_captures_nondefault_timeout_for_text_wait() {
     let _ = std::fs::remove_file(&output_path);
 }
 
-/// Recording `wait --eval EXPR --wait-timeout 7500` must preserve the
+/// Recording `wait --eval EXPR --timeout-ms 7500` must preserve the
 /// non-default timeout in the recorded step alongside the `eval` condition.
 #[test]
 fn recorder_captures_nondefault_timeout_for_eval_wait() {
@@ -360,7 +360,7 @@ fn recorder_captures_nondefault_timeout_for_eval_wait() {
         "wait".to_owned(),
         "--eval".to_owned(),
         "document.readyState === 'complete'".to_owned(),
-        "--wait-timeout".to_owned(),
+        "--timeout-ms".to_owned(),
         "7500".to_owned(),
     ]);
     let wait_out = run_with_state(&wait_args, &state_dir);

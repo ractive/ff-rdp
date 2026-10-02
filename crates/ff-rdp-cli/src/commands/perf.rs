@@ -1004,7 +1004,8 @@ pub fn run_audit(cli: &Cli) -> Result<(), AppError> {
   // ones that legitimately don't need it) produces a larger and misleading number.
   result.dom = {
     node_count: document.querySelectorAll('*').length,
-    document_size: document.documentElement.outerHTML.length,
+    // Strip ff-rdp's own data-ffrdp-ref stamps (same as `dom stats`).
+    document_size: document.documentElement.outerHTML.replace(/ data-ffrdp-ref="e[0-9]+"/g, '').length,
     inline_script_count: document.querySelectorAll('script:not([src])').length,
     render_blocking_resources: (function() {
       // Render-blocking predicate shared with dom stats (iter-94 Theme B).

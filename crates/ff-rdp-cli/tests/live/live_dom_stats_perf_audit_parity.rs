@@ -150,3 +150,67 @@ fn live_dom_stats_perf_audit_parity_images_without_lazy() {
          images_without_lazy must be non-zero, got {dom}"
     );
 }
+
+fn run_ok(port: u16, args: &[&str]) -> serde_json::Value {
+    let out = Command::new(ff_rdp_bin())
+        .args(base_args(port))
+        .args(args)
+        .output()
+        .expect("spawn ff-rdp");
+    assert!(
+        out.status.success(),
+        "{args:?} failed: {}",
+        crate::common::output_note(&out)
+    );
+    serde_json::from_slice(&out.stdout).expect("JSON envelope")
+}
+
+/// `snapshot` stamps `data-ffrdp-ref` onto interactive elements; those stamps
+/// are ff-rdp's, so `dom stats` and `perf audit` must report the same
+/// `document_size` before and after them.
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_dom_stats_document_size_ignores_ref_stamps() {
+    if !live_tests_enabled() {
+        eprintln!("live_dom_stats_document_size_ignores_ref_stamps: set FF_RDP_LIVE_TESTS=1");
+        return;
+    }
+    let ff = LiveFirefox::headless_on_random_port();
+    let Some(server) = spawn_html_server(
+        "<!doctype html><html><body><a href='#a'>one</a><a href='#b'>two</a>\
+         <button>three</button></body></html>"
+            .to_owned(),
+    ) else {
+        eprintln!("live_dom_stats_document_size_ignores_ref_stamps: no HTTP server — skipping");
+        return;
+    };
+    let port = ff.port();
+    run_ok(port, &["navigate", &server.base_url()]);
+    let size = |v: &serde_json::Value, pointer: &str| {
+        v.pointer(pointer)
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_else(|| panic!("missing {pointer}: {v}"))
+    };
+    let before = size(&run_ok(port, &["dom", "stats"]), "/results/document_size");
+
+    let snapshot = run_ok(port, &["snapshot"]);
+    let stamped = run_ok(
+        port,
+        &[
+            "eval",
+            "document.querySelectorAll('[data-ffrdp-ref]').length",
+        ],
+    );
+    assert!(
+        stamped["results"].as_u64().unwrap_or(0) > 0,
+        "snapshot must have stamped refs for this test to mean anything: {snapshot}"
+    );
+
+    let after = size(&run_ok(port, &["dom", "stats"]), "/results/document_size");
+    assert_eq!(before, after, "dom stats document_size counted ref stamps");
+    let perf = size(
+        &run_ok(port, &["perf", "audit"]),
+        "/results/dom_stats/document_size",
+    );
+    assert_eq!(before, perf, "perf audit document_size counted ref stamps");
+}

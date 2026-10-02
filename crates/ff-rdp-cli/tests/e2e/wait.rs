@@ -39,7 +39,7 @@ fn wait_selector_succeeds_immediately() {
         "wait".to_owned(),
         "--selector".to_owned(),
         ".results".to_owned(),
-        "--wait-timeout".to_owned(),
+        "--timeout-ms".to_owned(),
         "5000".to_owned(),
     ]);
 
@@ -166,7 +166,7 @@ fn wait_eval_succeeds_immediately() {
         "wait".to_owned(),
         "--eval".to_owned(),
         "document.readyState === 'complete'".to_owned(),
-        "--wait-timeout".to_owned(),
+        "--timeout-ms".to_owned(),
         "5000".to_owned(),
     ]);
 
@@ -200,7 +200,7 @@ fn wait_text_succeeds_immediately() {
         "wait".to_owned(),
         "--text".to_owned(),
         "Success".to_owned(),
-        "--wait-timeout".to_owned(),
+        "--timeout-ms".to_owned(),
         "5000".to_owned(),
     ]);
 
@@ -268,7 +268,7 @@ fn wait_exception_exits_nonzero() {
         "wait".to_owned(),
         "--selector".to_owned(),
         ".never-appears".to_owned(),
-        "--wait-timeout".to_owned(),
+        "--timeout-ms".to_owned(),
         "5000".to_owned(),
     ]);
 
@@ -311,7 +311,7 @@ fn wait_timeout_exits_nonzero() {
         "wait".to_owned(),
         "--selector".to_owned(),
         ".never-appears".to_owned(),
-        "--wait-timeout".to_owned(),
+        "--timeout-ms".to_owned(),
         "150".to_owned(), // Short timeout so the test is fast
     ]);
 

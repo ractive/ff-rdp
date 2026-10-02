@@ -28,7 +28,7 @@ const XPI_BYTES: &[u8] = include_bytes!("../../assets/extensions/consent-o-matic
 /// SHA-256 of `XPI_BYTES`, captured at vendor time. Exposed so tests can
 /// fail loudly if the on-disk asset is ever modified without also updating
 /// the licence/provenance file.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 const XPI_SHA256_HEX: &str = "a2119abc329638d6e7af1ab4e5548a348465e02eec11de08dee0af84919923dc";
 
 /// Install the Consent-O-Matic extension into the given Firefox profile.

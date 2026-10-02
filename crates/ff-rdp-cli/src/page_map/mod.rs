@@ -161,23 +161,6 @@ impl PageMap {
         })?;
         Ok((&route.method, &route.path))
     }
-
-    /// Resolve a named flow body.
-    // allow-claim-miss: resolve_flow — first_call_site is the `run: {flow: <name>}` step
-    // which is planned for the D-flows task; wired up here as the resolver, called from there.
-    #[allow(dead_code)]
-    pub fn resolve_flow(&self, name: &str) -> anyhow::Result<&FlowBody> {
-        self.flows.get(name).with_context(|| {
-            format!(
-                "page-map: flow '{name}' not found — available: [{}]",
-                self.flows
-                    .keys()
-                    .map(String::as_str)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        })
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -981,32 +964,5 @@ mod tests {
             .iter()
             .find(|d| d.kind == "missing" && d.path.contains("extra"));
         assert!(missing.is_some(), "should detect missing extra page");
-    }
-
-    // -----------------------------------------------------------------------
-    // test_page_map_flow_resolves_to_script (basic wiring only)
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_page_map_flow_resolves() {
-        let json = r#"{
-            "version": 1,
-            "base_url": "https://x.com",
-            "flows": {
-                "login-flow": {
-                    "steps": [{"navigate": {"url": "/login"}}]
-                }
-            }
-        }"#;
-        let map = parse_page_map_str(json, PageMapFormat::Json).expect("parse with flows");
-        let flow = map.resolve_flow("login-flow").expect("flow found");
-        assert_eq!(flow.steps.len(), 1);
-    }
-
-    #[test]
-    fn test_page_map_flow_missing_errors() {
-        let map = parse_page_map_str(&minimal_json(), PageMapFormat::Json).unwrap();
-        let result = map.resolve_flow("nonexistent");
-        assert!(result.is_err(), "missing flow should error");
     }
 }

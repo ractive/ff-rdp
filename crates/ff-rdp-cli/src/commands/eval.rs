@@ -2,8 +2,8 @@ use std::io::Read;
 
 use anyhow::Context as _;
 use ff_rdp_core::{
-    ActorId, EvaluateScope, Grip, LongStringActor, ObjectActor, ScopedGrip, WebConsoleActor,
-    sanitize_for_terminal,
+    ActorId, EvaluateScope, Grip, LongStringActor, ObjectActor, ScopedGrip, TargetEvent,
+    WebConsoleActor, sanitize_for_terminal,
 };
 use serde_json::json;
 
@@ -1409,33 +1409,51 @@ pub fn build_eval_js(
     Ok(build_script(&user_script, stringify, isolate))
 }
 
-/// CLI-side companion to [`EvaluateScope`] — owns `&str` slices borrowed
-/// from clap so the dispatch site does not have to construct an
-/// [`ActorId`] before deciding which connection path to take.
+/// Where `eval` runs. Every value here is resolvable on the command's own
+/// connection: actor IDs from an earlier command are dead on a new one, so
+/// the frame is named by URL substring, not by actor.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct CliEvalScope<'a> {
-    pub frame_actor: Option<&'a str>,
-    pub selected_node_actor: Option<&'a str>,
+    /// Evaluate in the first non-top frame whose URL contains this substring.
+    pub frame_url: Option<&'a str>,
     pub inner_window_id: Option<u64>,
 }
 
 impl CliEvalScope<'_> {
     /// Convert into an owned [`EvaluateScope`] for the core API, returning
-    /// `None` when every field is unset (so callers can pass `None` to the
+    /// `None` when no scope field is set (so callers can pass `None` to the
     /// scoped evaluator and stay on the legacy code path).
     pub fn to_scope(self) -> Option<EvaluateScope> {
-        if self.frame_actor.is_none()
-            && self.selected_node_actor.is_none()
-            && self.inner_window_id.is_none()
-        {
-            return None;
-        }
-        Some(EvaluateScope {
-            frame_actor: self.frame_actor.map(ActorId::from),
-            selected_node_actor: self.selected_node_actor.map(ActorId::from),
-            inner_window_id: self.inner_window_id,
+        self.inner_window_id.map(|id| EvaluateScope {
+            inner_window_id: Some(id),
+            ..EvaluateScope::default()
         })
     }
+}
+
+/// Pick the console actor of the first non-top frame whose URL contains
+/// `filter`, from targets enumerated on this connection.
+fn frame_console_actor(targets: &[TargetEvent], filter: &str) -> Result<ActorId, AppError> {
+    let frames: Vec<&TargetEvent> = targets.iter().filter(|t| !t.is_top_level).collect();
+    frames
+        .iter()
+        .filter(|t| t.url.as_deref().is_some_and(|u| u.contains(filter)))
+        .find_map(|t| t.console_actor.clone())
+        .ok_or_else(|| {
+            let urls: Vec<&str> = frames
+                .iter()
+                .map(|t| t.url.as_deref().unwrap_or("<no-url>"))
+                .collect();
+            AppError::User(format!(
+                "eval --frame '{filter}' matched no frame ({} frame(s) available: {})",
+                frames.len(),
+                if urls.is_empty() {
+                    "none".to_owned()
+                } else {
+                    urls.join(", ")
+                }
+            ))
+        })
 }
 
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
@@ -1461,9 +1479,17 @@ pub fn run(
     let mut ctx = connect_and_get_target(cli)?;
 
     // The console actor ID is taken directly from the target descriptor
-    // returned by `get_target`.  The retry path below re-fetches the target
-    // if the actor turns out to be stale (noSuchActor / unknownActor).
-    let console_actor = ctx.target().console_actor.clone();
+    // returned by `get_target` -- or, with `--frame`, from the matching frame
+    // target enumerated on this same connection. The retry path below
+    // re-fetches the top-level target if the actor turns out to be stale
+    // (noSuchActor / unknownActor); a frame target is not retried.
+    let console_actor = match cli_scope.frame_url {
+        Some(filter) => {
+            let targets = crate::commands::frame_targets::fetch_frame_targets(&mut ctx)?;
+            frame_console_actor(&targets, filter)?
+        }
+        None => ctx.target().console_actor.clone(),
+    };
 
     // Evaluate via the DevTools console actor.  Firefox routes this through
     // Debugger.evalInGlobal (eval-with-debugger.js:119-247), which bypasses
@@ -1478,7 +1504,7 @@ pub fn run(
         Err(ff_rdp_core::ProtocolError::ActorError {
             kind: ff_rdp_core::ActorErrorKind::UnknownActor,
             ..
-        }) => {
+        }) if cli_scope.frame_url.is_none() => {
             // Actor is stale — re-resolve and retry once.
             let fresh_console = ctx.refresh_target_result()?;
             WebConsoleActor::evaluate_js_async_scoped(
@@ -1667,6 +1693,62 @@ fn try_unwrap_json_string(value: &mut serde_json::Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn target(url: &str, top: bool, console: &str) -> TargetEvent {
+        TargetEvent {
+            actor: ActorId::from(format!("{console}-target")),
+            url: Some(url.to_owned()),
+            title: None,
+            target_type: "frame".to_owned(),
+            is_top_level: top,
+            console_actor: Some(ActorId::from(console)),
+            inspector_actor: None,
+            browsing_context_id: None,
+            process_id: None,
+        }
+    }
+
+    #[test]
+    fn frame_console_actor_picks_first_matching_non_top_frame() {
+        let targets = [
+            target("https://site.test/cmp", true, "top"),
+            target("https://ads.test/frame", false, "ads"),
+            target("https://cmp.test/consent", false, "cmp1"),
+            target("https://cmp.test/consent2", false, "cmp2"),
+        ];
+        let actor = frame_console_actor(&targets, "cmp.test").unwrap();
+        assert_eq!(actor.as_ref(), "cmp1");
+    }
+
+    #[test]
+    fn frame_console_actor_skips_matching_frame_without_console() {
+        let mut no_console = target("https://cmp.test/a", false, "none");
+        no_console.console_actor = None;
+        let targets = [no_console, target("https://cmp.test/b", false, "cmp")];
+        let actor = frame_console_actor(&targets, "cmp.test").unwrap();
+        assert_eq!(actor.as_ref(), "cmp");
+    }
+
+    #[test]
+    fn frame_console_actor_never_matches_top_level() {
+        let targets = [
+            target("https://site.test/cmp", true, "top"),
+            target("https://ads.test/frame", false, "ads"),
+        ];
+        let err = frame_console_actor(&targets, "site.test").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("matched no frame"), "{msg}");
+        assert!(msg.contains("https://ads.test/frame"), "{msg}");
+    }
+
+    #[test]
+    fn eval_scope_without_inner_window_is_none() {
+        let scope = CliEvalScope {
+            frame_url: Some("x"),
+            inner_window_id: None,
+        };
+        assert!(scope.to_scope().is_none());
+    }
 
     #[test]
     fn load_script_positional_passthrough() {

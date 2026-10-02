@@ -26,14 +26,6 @@ fn trace_connection_timing(scope: &str, stage: &str, origin: Option<Instant>) {
 pub struct ConnectedTab {
     session: Session,
     target_timeout: Duration,
-    /// Firefox major version, if detectable from the greeting or device actor.
-    ///
-    /// Currently the version is also stored in the process-global
-    /// `connection_meta::remembered_version()`.  This field is kept for
-    /// potential future use (e.g. exposing it via `ConnectedTab::firefox_version()`
-    /// without a global read).
-    #[allow(dead_code)]
-    pub(crate) firefox_version: Option<u32>,
     target: TargetInfo,
     tab_actor: ActorId,
 }
@@ -232,7 +224,6 @@ impl TabListing {
 
         // Consume the RdpConnection and build a Session so all subsequent
         // actor interactions use the registry for front resolution.
-        let firefox_version = connection.firefox_version();
         let transport = connection.into_transport();
         let session = Session::new(transport);
 
@@ -244,7 +235,6 @@ impl TabListing {
         Ok(ConnectedTab {
             target_timeout,
             session,
-            firefox_version,
             target: target_info,
             tab_actor,
         })
@@ -346,15 +336,6 @@ impl ConnectedTab {
     /// Borrow the underlying RDP transport.
     pub fn transport_mut(&mut self) -> &mut RdpTransport {
         self.session.transport_mut()
-    }
-
-    /// Borrow the session (transport + registry).
-    ///
-    /// Used by theme C/D agents (iter-61t) to access both transport and
-    /// registry together without separate borrows.
-    #[allow(dead_code)]
-    pub fn session_mut(&mut self) -> &mut Session {
-        &mut self.session
     }
 
     /// Return a reference to the actor registry for this session.
@@ -601,7 +582,6 @@ impl ConnectedTab {
         Self {
             target_timeout: Duration::from_secs(5),
             session,
-            firefox_version: None,
             target,
             tab_actor: ActorId::from("conn0/tab1"),
         }

@@ -75,7 +75,7 @@ pub fn run_core(cli: &Cli, opts: &WaitOptions<'_>) -> Result<serde_json::Value, 
     } else {
         let condition = describe_condition(opts);
         format!(
-            "wait timed out after {}ms — condition not met: {condition}; increase with --wait-timeout",
+            "wait timed out after {}ms — condition not met: {condition}; increase with --timeout-ms",
             opts.wait_timeout
         )
     };

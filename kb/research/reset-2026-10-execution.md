@@ -21,11 +21,13 @@ investigate a historical flake.
 | 1 | 286 `sources` native-path fix from archived patch; `dom --frames` hint fix | agent (Rust) | done | #285 (ff22b7cb) |
 | 2 | Process cut: CLAUDE.md, skills, plan template, `live.yml` nightly, quarantine rule, timing assertions removed, AGENTS.md reset, close 259/266/268/293/294 + PR #281, roadmap done | agent (process) | done | #286 (4def27f4) |
 | 3 | Daemon deletion; refs in-page; throttle/emulate per-call or removed; capture-mode docs | agent (Rust) | done | #287 (fcb4a439) |
-| 4a | Env-var and iteration-hook purge; help drift; deprecated aliases; `allow(dead_code)` | agent (Rust) | in-progress | |
+| 4a | Env-var and iteration-hook purge; help drift; deprecated aliases; `allow(dead_code)` | agent (Rust) | done | #290 (b9ccc091) |
 | 4b | `actors`/`fronts` collapse; launch/profile simplification | agent (Rust) | in-progress | |
 | 5 | Watch nightly live run for a week; then product features | session | planned | |
 
 ## Log
+
+- 2026-10-02: 4a follow-ups for 4b: delete hooks `FF_RDP_147_CONTROL_HOME` (`launch.rs`), `FF_RDP_147_PIPE_PEER` (`launch/language_initialization/tests.rs`), `FF_RDP_284_*` (`launch/startup_controls.rs`), `FF_RDP_277_CAPTURE` (`live_166_navigate_document_status.rs`), `FF_RDP_ENGLISH_PACK_TEST_XPI` (`english_language_pack.rs`); resolve `allow(dead_code)` at `navigate.rs:1772` and `actors/watcher.rs:1110`; rename `navigate --wait-timeout` to `--timeout-ms` (with the "increase with --wait-timeout" error text); `EvaluateScope::{frame_actor, selected_node_actor}` has no CLI consumer after #290; `launch` returns before the first tab is listable (`tabs` right after saw 0 tabs).
 
 - 2026-10-02: phase 3 merged (#287): 243 files, +3,020/−40,069. Refs stamped in-page (`data-ffrdp-ref`), `throttle`/`emulate` commands gone (`navigate --throttle/--block` instead), `inspect <expr>` single-connection, `network --headers` bug fixed. Phases 4a/4b launched in parallel.
 
