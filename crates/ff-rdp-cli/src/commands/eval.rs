@@ -1426,7 +1426,6 @@ impl CliEvalScope<'_> {
     pub fn to_scope(self) -> Option<EvaluateScope> {
         self.inner_window_id.map(|id| EvaluateScope {
             inner_window_id: Some(id),
-            ..EvaluateScope::default()
         })
     }
 }

@@ -222,58 +222,6 @@ fn is_neterror_url_detects_about_neterror() {
     assert!(!is_neterror_url("about:blank"));
 }
 
-// -----------------------------------------------------------------------
-// Theme G: cross-origin URL matching
-// -----------------------------------------------------------------------
-
-#[test]
-fn urls_match_scheme_host_path_identical() {
-    assert!(urls_match_scheme_host_path(
-        "https://example.com/path",
-        "https://example.com/path"
-    ));
-}
-
-#[test]
-fn urls_match_scheme_host_path_strips_query() {
-    assert!(urls_match_scheme_host_path(
-        "https://example.com/path?q=1",
-        "https://example.com/path?q=2"
-    ));
-    assert!(urls_match_scheme_host_path(
-        "https://example.com/path?q=1",
-        "https://example.com/path"
-    ));
-}
-
-#[test]
-fn urls_match_scheme_host_path_strips_hash() {
-    assert!(urls_match_scheme_host_path(
-        "https://example.com/path#a",
-        "https://example.com/path#b"
-    ));
-}
-
-#[test]
-fn urls_match_scheme_host_path_strips_trailing_slash() {
-    assert!(urls_match_scheme_host_path(
-        "https://example.com/path/",
-        "https://example.com/path"
-    ));
-}
-
-#[test]
-fn urls_do_not_match_different_paths_scheme_host_path() {
-    assert!(!urls_match_scheme_host_path(
-        "https://example.com/a",
-        "https://example.com/b"
-    ));
-    assert!(!urls_match_scheme_host_path(
-        "https://example.com/",
-        "https://other.com/"
-    ));
-}
-
 /// iter-83 Theme C: assert the default `WaitStrategy` is `Both` so the
 /// CLI's documented default (events first, readystate fallback) is exercised
 /// when callers omit `--wait-strategy`.

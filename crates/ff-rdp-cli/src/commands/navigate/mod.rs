@@ -38,8 +38,7 @@ use ff_rdp_core::{NavCause, Resource, ResourceCommand};
 #[cfg(test)]
 use readiness::{
     READINESS_SAMPLE, classify_neterror, is_neterror_url, is_readystate_fresh, must_reresolve_href,
-    needs_href_fallback, probe_same_document_commit, scripted_readiness,
-    urls_match_scheme_host_path, wait_for_doc_complete,
+    needs_href_fallback, probe_same_document_commit, scripted_readiness, wait_for_doc_complete,
 };
 #[cfg(test)]
 use status::{

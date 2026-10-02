@@ -1331,24 +1331,6 @@ pub(crate) fn wait_for_readystate_complete(
     })
 }
 
-/// Check whether two URLs refer to the same origin + path (ignoring query, hash,
-/// and trailing slash).  Used by the cross-origin race fix (Theme G): when a
-/// commit-wait times out but the landed URL shares scheme+host+port+path with
-/// the requested URL, we treat the navigation as successful.
-#[allow(dead_code)]
-pub(crate) fn urls_match_scheme_host_path(a: &str, b: &str) -> bool {
-    fn strip_query_and_hash(u: &str) -> &str {
-        let no_hash = u.split_once('#').map_or(u, |(h, _)| h);
-        no_hash.split_once('?').map_or(no_hash, |(h, _)| h)
-    }
-    fn strip_trailing_slash(u: &str) -> &str {
-        u.strip_suffix('/').unwrap_or(u)
-    }
-    let norm_a = strip_trailing_slash(strip_query_and_hash(a));
-    let norm_b = strip_trailing_slash(strip_query_and_hash(b));
-    norm_a == norm_b
-}
-
 /// Split a total wait `timeout_ms` into `(reserved_ms, events_budget)` for the
 /// `Both` wait strategy: `reserved_ms` goes to the readystate fallback,
 /// `events_budget` to the events wait.
