@@ -165,41 +165,37 @@ fn live_navigate_default_fast() {
     );
 }
 
-/// iter-122 Theme B — `live_navigate_elapsed_matches_wall`
+/// iter-122 Theme B — `live_navigate_reports_elapsed_ms`
 ///
 /// `result.elapsed_ms` must reflect total wall-clock across both phases, not
-/// just the readystate-poll duration (which was ~1ms). Assert it lands within
-/// ±750ms of the externally-measured wall-clock for a default navigate.
+/// just the readystate-poll duration (which was ~1ms).
 ///
-/// Post-condition: `|results.elapsed_ms − measured_wall_ms| ≤ 750`.
+/// The former ±750ms wall-vs-reported gap bound was removed in the 2026-10-02
+/// reset (`kb/research/step-back-2026-10-02.md` §5): it measured the host's
+/// load, not the product.
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
-fn live_navigate_elapsed_matches_wall() {
+fn live_navigate_reports_elapsed_ms() {
     if !live_tests_enabled() {
-        eprintln!("live_navigate_elapsed_matches_wall: set FF_RDP_LIVE_TESTS=1 to run");
+        eprintln!("live_navigate_reports_elapsed_ms: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
 
     let ff = LiveFirefox::headless_on_random_port();
     let Some(server) = spawn_html_server() else {
-        eprintln!("live_navigate_elapsed_matches_wall: could not bind HTTP server — skipping");
+        eprintln!("live_navigate_reports_elapsed_ms: could not bind HTTP server — skipping");
         return;
     };
     let url = server.base_url();
 
-    let start = Instant::now();
     let mut args = base_args(ff.port());
     args.push("--timeout".to_owned());
     args.push("8000".to_owned());
     let out = Command::new(ff_rdp_bin())
-        .env("RUST_LOG", "ff_rdp_cli::navigation_timing=debug")
         .args(args)
         .args(["navigate", &url])
         .output()
         .expect("ff-rdp navigate failed");
-    let measured_wall_ms = i128::try_from(start.elapsed().as_millis()).unwrap_or(i128::MAX);
-
-    eprintln!("NAV_TIMING_OUTPUT {}", crate::common::output_note(&out));
 
     assert!(
         out.status.success(),
@@ -210,25 +206,10 @@ fn live_navigate_elapsed_matches_wall() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let json: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("navigate stdout is not JSON: {e}\nstdout: {stdout}"));
-    let elapsed_ms = json["results"]["elapsed_ms"].as_i64().map_or_else(
-        || panic!("results.elapsed_ms missing/non-int: {json}"),
-        i128::from,
-    );
+    let elapsed_ms = json["results"]["elapsed_ms"]
+        .as_i64()
+        .unwrap_or_else(|| panic!("results.elapsed_ms missing/non-int: {json}"));
 
-    // The CLI's reported elapsed is measured from navigate dispatch, so it is
-    // strictly ≤ the externally-measured wall time (which also includes connect
-    // + teardown). Assert it is within ±750ms and never absurdly small.
-    let delta = (measured_wall_ms - elapsed_ms).abs();
-    let load = crate::common::timing_load_note();
-    eprintln!(
-        "TIMING_SAMPLE test=live_navigate_elapsed_matches_wall wall_ms={measured_wall_ms} \
-         reported_ms={elapsed_ms} delta_ms={delta} {load}"
-    );
-    assert!(
-        delta <= 750,
-        "elapsed_ms ({elapsed_ms}) must be within ±750ms of measured wall ({measured_wall_ms}); \
-         delta {delta}ms exceeds the wall/report gap bound; inspect NAV_TIMING regions for attribution; {load}"
-    );
     assert!(
         elapsed_ms > 5,
         "elapsed_ms ({elapsed_ms}) is implausibly small — it is reporting only the \

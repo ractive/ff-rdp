@@ -49,14 +49,15 @@
 //!       --test live live_111_daemon_follow_cross_process -- --nocapture
 //!
 //! The genuine cross-*process* (Fission) phase additionally requires
-//! `FF_RDP_LIVE_NETWORK_TESTS=1` (it navigates to real remote sites).
+//! `FF_RDP_LIVE_NETWORK_TESTS=1` and `FF_RDP_LIVE_SITES_TESTS=1` (it navigates to
+//! a real third-party site).
 
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::common::{LiveFirefox, ff_rdp_bin, live_network_tests_enabled, live_tests_enabled};
+use crate::common::{LiveFirefox, ff_rdp_bin, live_sites_tests_enabled, live_tests_enabled};
 
 /// Spawn a reader thread that pushes every line from `child`'s stdout into a
 /// shared buffer.  Returns the shared buffer so the test can poll it.
@@ -228,7 +229,7 @@ fn live_daemon_follow_survives_cross_process_nav() {
     // stream both stays alive AND delivers a post-nav-sourced event (the
     // wikipedia navigation) across the real process switch.
     let mut cross_process_ok = true;
-    if live_network_tests_enabled() {
+    if live_sites_tests_enabled() {
         let direct = |url: &str| {
             Command::new(ff_rdp_bin())
                 .args([
@@ -273,7 +274,7 @@ fn live_daemon_follow_survives_cross_process_nav() {
     } else {
         eprintln!(
             "live_daemon_follow_survives_cross_process_nav: skipping cross-process \
-             (network) phase — set FF_RDP_LIVE_NETWORK_TESTS=1 to enable"
+             (third-party site) phase — set FF_RDP_LIVE_NETWORK_TESTS=1 and FF_RDP_LIVE_SITES_TESTS=1 to enable"
         );
     }
 

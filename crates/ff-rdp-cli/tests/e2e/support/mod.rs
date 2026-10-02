@@ -28,8 +28,7 @@ pub fn load_fixture(name: &str) -> serde_json::Value {
 /// actually carrying the diagnostic, is silently dropped. iteration-179 fixed
 /// this for the live tier (`crate::common::output_note`); this is the e2e
 /// tier's mirror, kept as its own copy because the tiers do not share a
-/// module. `crates/ff-rdp-cli/tests/iter_179_harness_stdout_evidence.rs`
-/// fails the build if an e2e assertion goes back to naming only `stderr`.
+/// module.
 ///
 /// Both streams are trimmed and included unconditionally — an empty one is
 /// itself evidence (it says the tool wrote nothing there).

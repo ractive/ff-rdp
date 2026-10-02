@@ -31,6 +31,11 @@
 #[path = "../common/mod.rs"]
 mod common;
 
+// Firefox-free unit tests of the shared colour helpers (`parse_css_color`,
+// `assert_colors_equal`); they run on a plain `cargo test`.
+#[path = "../common/color_tests.rs"]
+mod color_tests;
+
 mod ignored_verdict;
 
 mod live_100_daemon_lifecycle_hardening;

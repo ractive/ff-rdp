@@ -235,8 +235,14 @@ fn network_tests_enabled(test: &str) -> bool {
 /// Measured baseline before the fix: 0 entries, and `network` (no `--source`)
 /// reporting `meta.source: "performance-api"`.
 #[test]
-#[ignore = "requires Firefox, network access, and FF_RDP_LIVE_NETWORK_TESTS=1"]
+#[ignore = "requires Firefox, network access, and FF_RDP_LIVE_NETWORK_TESTS=1 + FF_RDP_LIVE_SITES_TESTS=1 (third-party site)"]
 fn live_159_daemon_watcher_captures_plain_navigate() {
+    if !crate::common::live_sites_tests_enabled() {
+        eprintln!(
+            "live_159_daemon_watcher_captures_plain_navigate: set FF_RDP_LIVE_SITES_TESTS=1 to run (third-party site)"
+        );
+        return;
+    }
     if !network_tests_enabled("live_159_daemon_watcher_captures_plain_navigate") {
         return;
     }
@@ -330,8 +336,14 @@ fn live_159_daemon_watcher_captures_plain_navigate() {
 /// is asserted **== 0** before the navigate and **> 0** after, so the events can
 /// only have come from the daemon's own watcher.
 #[test]
-#[ignore = "requires Firefox, network access, and FF_RDP_LIVE_NETWORK_TESTS=1"]
+#[ignore = "requires Firefox, network access, and FF_RDP_LIVE_NETWORK_TESTS=1 + FF_RDP_LIVE_SITES_TESTS=1 (third-party site)"]
 fn live_159_watcher_result_is_uncontaminated() {
+    if !crate::common::live_sites_tests_enabled() {
+        eprintln!(
+            "live_159_watcher_result_is_uncontaminated: set FF_RDP_LIVE_SITES_TESTS=1 to run (third-party site)"
+        );
+        return;
+    }
     if !network_tests_enabled("live_159_watcher_result_is_uncontaminated") {
         return;
     }
@@ -379,8 +391,14 @@ fn live_159_watcher_result_is_uncontaminated() {
 /// while `--source performance-api` still returns Performance-API rows — the
 /// explicit opt-out survives the deletion.
 #[test]
-#[ignore = "requires Firefox, network access, and FF_RDP_LIVE_NETWORK_TESTS=1"]
+#[ignore = "requires Firefox, network access, and FF_RDP_LIVE_NETWORK_TESTS=1 + FF_RDP_LIVE_SITES_TESTS=1 (third-party site)"]
 fn live_159_network_default_source_is_watcher() {
+    if !crate::common::live_sites_tests_enabled() {
+        eprintln!(
+            "live_159_network_default_source_is_watcher: set FF_RDP_LIVE_SITES_TESTS=1 to run (third-party site)"
+        );
+        return;
+    }
     observe_stage("entered");
     if !network_tests_enabled("live_159_network_default_source_is_watcher") {
         observe_stage("live_gate_unset_return");
@@ -465,8 +483,14 @@ fn live_159_network_default_source_is_watcher() {
 /// the navigation. Measured baseline before the fix: 0 daemon entries vs 10
 /// direct entries.
 #[test]
-#[ignore = "requires Firefox, network access, and FF_RDP_LIVE_NETWORK_TESTS=1"]
+#[ignore = "requires Firefox, network access, and FF_RDP_LIVE_NETWORK_TESTS=1 + FF_RDP_LIVE_SITES_TESTS=1 (third-party site)"]
 fn live_159_daemon_direct_watcher_parity() {
+    if !crate::common::live_sites_tests_enabled() {
+        eprintln!(
+            "live_159_daemon_direct_watcher_parity: set FF_RDP_LIVE_SITES_TESTS=1 to run (third-party site)"
+        );
+        return;
+    }
     if !network_tests_enabled("live_159_daemon_direct_watcher_parity") {
         return;
     }
@@ -730,8 +754,14 @@ fn live_159_with_network_returns_on_idle() {
 /// consent-walled site — the only kind where both matter — you could dismiss
 /// the banner or capture the network, never both in one call.
 #[test]
-#[ignore = "requires Firefox, network access, and FF_RDP_LIVE_NETWORK_TESTS=1"]
+#[ignore = "requires Firefox, network access, and FF_RDP_LIVE_NETWORK_TESTS=1 + FF_RDP_LIVE_SITES_TESTS=1 (third-party site)"]
 fn live_159_with_network_and_auto_consent_together() {
+    if !crate::common::live_sites_tests_enabled() {
+        eprintln!(
+            "live_159_with_network_and_auto_consent_together: set FF_RDP_LIVE_SITES_TESTS=1 to run (third-party site)"
+        );
+        return;
+    }
     if !network_tests_enabled("live_159_with_network_and_auto_consent_together") {
         return;
     }

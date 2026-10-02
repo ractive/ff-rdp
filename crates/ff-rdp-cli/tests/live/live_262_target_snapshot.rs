@@ -284,8 +284,14 @@ impl Drop for ProofRun {
 }
 
 #[test]
-#[ignore = "requires Firefox, network access, and FF_RDP_LIVE_NETWORK_TESTS=1"]
+#[ignore = "requires Firefox, network access, and FF_RDP_LIVE_NETWORK_TESTS=1 + FF_RDP_LIVE_SITES_TESTS=1 (third-party site)"]
 fn live_262_watched_target_prevention_contract() {
+    if !crate::common::live_sites_tests_enabled() {
+        eprintln!(
+            "live_262_watched_target_prevention_contract: set FF_RDP_LIVE_SITES_TESTS=1 to run (third-party site)"
+        );
+        return;
+    }
     assert!(std::env::var_os("FF_RDP_LIVE_TESTS").is_some());
     assert!(std::env::var_os("FF_RDP_LIVE_NETWORK_TESTS").is_some());
     let root = std::env::var_os("FF_RDP_262_PROOF_DIR").map_or_else(

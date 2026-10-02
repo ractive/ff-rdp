@@ -122,8 +122,14 @@ fn is_pid_alive(pid: u32) -> bool {
 /// `dom stats` and `perf audit` report the same `render_blocking_count`.
 /// Gated by `FF_RDP_LIVE_NETWORK_TESTS=1`.
 #[test]
-#[ignore = "requires FF_RDP_LIVE_NETWORK_TESTS=1 and a running Firefox"]
+#[ignore = "requires FF_RDP_LIVE_NETWORK_TESTS=1 and a running Firefox + FF_RDP_LIVE_SITES_TESTS=1 (third-party site)"]
 fn live_render_blocking_parity_on_mdn() {
+    if !crate::common::live_sites_tests_enabled() {
+        eprintln!(
+            "live_render_blocking_parity_on_mdn: set FF_RDP_LIVE_SITES_TESTS=1 to run (third-party site)"
+        );
+        return;
+    }
     if !live_tests_enabled() || !live_network_tests_enabled() {
         return;
     }

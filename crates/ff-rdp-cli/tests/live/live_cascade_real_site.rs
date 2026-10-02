@@ -28,8 +28,14 @@ use std::process::Command;
 ///
 /// Post-condition: `results[0].rules | length >= 1`.
 #[test]
-#[ignore = "requires FF_RDP_LIVE_TESTS=1 and FF_RDP_LIVE_NETWORK_TESTS=1"]
+#[ignore = "requires FF_RDP_LIVE_TESTS=1 and FF_RDP_LIVE_NETWORK_TESTS=1 + FF_RDP_LIVE_SITES_TESTS=1 (third-party site)"]
 fn live_cascade_real_site_cli() {
+    if !crate::common::live_sites_tests_enabled() {
+        eprintln!(
+            "live_cascade_real_site_cli: set FF_RDP_LIVE_SITES_TESTS=1 to run (third-party site)"
+        );
+        return;
+    }
     if std::env::var("FF_RDP_LIVE_TESTS").is_err() || !live_network_tests_enabled() {
         eprintln!(
             "live_cascade_real_site_cli: set FF_RDP_LIVE_TESTS=1 and FF_RDP_LIVE_NETWORK_TESTS=1 to run"

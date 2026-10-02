@@ -2,7 +2,7 @@
 type: iteration
 title: "Iteration 266: daemon console resource grip lifetime"
 date: 2026-09-12
-status: planned
+status: obsolete
 branch: iter-266/daemon-console-resource-grip-lifetime
 depends_on: ["259"]
 first_call_sites: []
@@ -52,6 +52,8 @@ tags:
   - console
   - protocol
 ---
+
+Closed 2026-10-02 by [[step-back-2026-10-02]]: daemon console grip lifetime — moot once the daemon is removed.
 
 ## Implementation preflight — 2026-09-19
 

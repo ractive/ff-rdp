@@ -2,7 +2,7 @@
 title: "Iteration 268: diagnose recurrent daemon pre-auth connection loss"
 type: iteration
 date: 2026-09-13
-status: in-progress
+status: obsolete
 branch: iter-268/auth-loss-attribution-20260921
 first_call_sites: []
 dogfood_path: |
@@ -13,6 +13,8 @@ tags: [iteration, daemon, authentication, testing, carry-over]
 depends_on:
   - "284"
 ---
+
+Closed 2026-10-02 by [[step-back-2026-10-02]]: daemon pre-auth EOF, two 60-minute capture blocks, no capture — moot once the daemon is removed.
 
 # Iteration 268: recurrent connection loss during daemon authentication
 

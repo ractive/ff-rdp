@@ -255,8 +255,14 @@ fn live_eval_script_error_still_surfaces() {
 ///
 /// This is the original session-59 reproducer.
 #[test]
-#[ignore = "requires headless Firefox + network (developer.mozilla.org); set FF_RDP_LIVE_TESTS=1 and FF_RDP_LIVE_NETWORK_TESTS=1"]
+#[ignore = "requires headless Firefox + network (developer.mozilla.org); set FF_RDP_LIVE_TESTS=1 and FF_RDP_LIVE_NETWORK_TESTS=1 + FF_RDP_LIVE_SITES_TESTS=1 (third-party site)"]
 fn live_eval_works_on_real_mdn() {
+    if !crate::common::live_sites_tests_enabled() {
+        eprintln!(
+            "live_eval_works_on_real_mdn: set FF_RDP_LIVE_SITES_TESTS=1 to run (third-party site)"
+        );
+        return;
+    }
     if std::env::var("FF_RDP_LIVE_TESTS").is_err() {
         eprintln!("live_eval_works_on_real_mdn: set FF_RDP_LIVE_TESTS=1 to run");
         return;

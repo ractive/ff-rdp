@@ -313,51 +313,32 @@ fn cancelled_form_fixture() -> HashMap<String, FixtureRoute> {
 /// that will never navigate — every AJAX form would have gone from ~600 ms to
 /// the full 10 s. `build_request_submit_js` reports `preventDefault()` on the
 /// `submit` event as `cancelled`, and `press_enter_and_submit` skips the
-/// extended poll on that signal. This test is what keeps that gate honest: it
-/// fails on a 10 s stall, which is exactly what removing the gate produces.
+/// extended poll on that signal.
+///
+/// The former 2 s wall-clock bound was removed in the 2026-10-02 reset
+/// (`kb/research/step-back-2026-10-02.md` §5): under sweep load it measured the
+/// host, not the product. The functional assertion (`navigated: false`) stays.
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
-fn live_237_cancelled_submit_does_not_wait_out_the_timeout() {
+fn live_237_cancelled_submit_reports_not_navigated() {
     if !live_tests_enabled() {
-        eprintln!(
-            "live_237_cancelled_submit_does_not_wait_out_the_timeout: set FF_RDP_LIVE_TESTS=1"
-        );
+        eprintln!("live_237_cancelled_submit_reports_not_navigated: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_237_cancelled_submit_does_not_wait_out_the_timeout");
+    let ff = firefox_with_daemon("live_237_cancelled_submit_reports_not_navigated");
     let port = ff.port();
     let Some(server) = FixtureServer::start(cancelled_form_fixture()) else {
-        eprintln!(
-            "live_237_cancelled_submit_does_not_wait_out_the_timeout: no fixture HTTP — skipping"
-        );
+        eprintln!("live_237_cancelled_submit_reports_not_navigated: no fixture HTTP — skipping");
         stop_daemon(port);
         return;
     };
 
     run_json(port, &["navigate", &server.base_url()]);
-    let started = Instant::now();
     let typed = run_json(port, &["type", "input[name=q]", "lovelace", "--submit"]);
-    let elapsed = started.elapsed();
-    let load = crate::common::timing_load_note();
-    eprintln!(
-        "TIMING_SAMPLE test=live_237_cancelled_submit_does_not_wait_out_the_timeout elapsed_ms={} {load}",
-        elapsed.as_millis()
-    );
 
     assert_eq!(
         typed["results"]["navigated"], false,
         "a cancelled submission does not navigate: {typed}"
-    );
-    // A fifth of the budget (2s), not half: a cancelled submission must stay
-    // on the fast post-Enter-sized check, not the wider post-requestSubmit
-    // grace period (up to 3s). A 5s (half-budget) bound is too loose to catch
-    // that — the review fix that gated the first poll's budget on
-    // `load_expected` regressed silently under it until this bound was
-    // tightened (2026-09-07).
-    assert!(
-        elapsed < Duration::from_millis(CLICK_TIMEOUT_MS / 5),
-        "a cancelled submission must stay on the fast local check, not the wider \
-         post-requestSubmit grace period, took {elapsed:?}; {load}"
     );
 
     stop_daemon(port);

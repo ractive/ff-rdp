@@ -266,8 +266,14 @@ fn live_129_consent_envelope_no_cmp() {
 /// and `scroll bottom` reaches a `scrollHeight` > 2x the viewport height.
 /// Also covers the `cmp:"sourcepoint"` half of `live_129_consent_envelope`.
 #[test]
-#[ignore = "requires Firefox + network — FF_RDP_LIVE_NETWORK_TESTS=1"]
+#[ignore = "requires Firefox + network — FF_RDP_LIVE_NETWORK_TESTS=1 + FF_RDP_LIVE_SITES_TESTS=1 (third-party site)"]
 fn live_129_sourcepoint_consent() {
+    if !crate::common::live_sites_tests_enabled() {
+        eprintln!(
+            "live_129_sourcepoint_consent: set FF_RDP_LIVE_SITES_TESTS=1 to run (third-party site)"
+        );
+        return;
+    }
     if std::env::var("FF_RDP_LIVE_NETWORK_TESTS").is_err() {
         eprintln!("live_129_sourcepoint_consent: set FF_RDP_LIVE_NETWORK_TESTS=1 to run");
         return;

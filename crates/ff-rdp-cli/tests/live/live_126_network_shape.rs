@@ -106,8 +106,14 @@ fn network_keys(json: &serde_json::Value) -> Vec<String> {
 /// Both branches run inside one Firefox instance and the quiet/busy key sets
 /// are asserted equal key-by-key.
 #[test]
-#[ignore = "requires Firefox, network access, and FF_RDP_LIVE_NETWORK_TESTS=1"]
+#[ignore = "requires Firefox, network access, and FF_RDP_LIVE_NETWORK_TESTS=1 + FF_RDP_LIVE_SITES_TESTS=1 (third-party site)"]
 fn live_navigate_with_network_shape_quiet_and_busy() {
+    if !crate::common::live_sites_tests_enabled() {
+        eprintln!(
+            "live_navigate_with_network_shape_quiet_and_busy: set FF_RDP_LIVE_SITES_TESTS=1 to run (third-party site)"
+        );
+        return;
+    }
     if std::env::var("FF_RDP_LIVE_NETWORK_TESTS").is_err() {
         eprintln!(
             "live_navigate_with_network_shape_quiet_and_busy: set FF_RDP_LIVE_NETWORK_TESTS=1 to run"
@@ -203,8 +209,14 @@ fn live_navigate_with_network_shape_quiet_and_busy() {
 /// `live_navigate_with_network_all_keeps_summary`: adding `--all` still returns
 /// the object shape (full `entries`, summary fields intact) — never a bare array.
 #[test]
-#[ignore = "requires Firefox, network access, and FF_RDP_LIVE_NETWORK_TESTS=1"]
+#[ignore = "requires Firefox, network access, and FF_RDP_LIVE_NETWORK_TESTS=1 + FF_RDP_LIVE_SITES_TESTS=1 (third-party site)"]
 fn live_navigate_with_network_all_keeps_summary() {
+    if !crate::common::live_sites_tests_enabled() {
+        eprintln!(
+            "live_navigate_with_network_all_keeps_summary: set FF_RDP_LIVE_SITES_TESTS=1 to run (third-party site)"
+        );
+        return;
+    }
     if std::env::var("FF_RDP_LIVE_NETWORK_TESTS").is_err() {
         eprintln!(
             "live_navigate_with_network_all_keeps_summary: set FF_RDP_LIVE_NETWORK_TESTS=1 to run"

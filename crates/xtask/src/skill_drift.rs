@@ -63,9 +63,8 @@ fn skill_file(explicit: Option<&Path>) -> PathBuf {
 ///
 /// Uses `FF_RDP_BIN` when set (CI and the live sweep both already have a built
 /// binary), otherwise `cargo run -q -p ff-rdp-cli`. Either way the generator is
-/// the one compiled from the tree under test, never a stale binary from PATH —
-/// the same rule `tools/lint-dogfood-script.sh` enforces for dogfood scripts,
-/// and for the same reason: a stale binary certifies a build nobody is running.
+/// the one compiled from the tree under test, never a stale binary from PATH:
+/// a stale binary certifies a build nobody is running.
 fn generated_block() -> Result<String> {
     let output = if let Some(bin) = std::env::var_os("FF_RDP_BIN") {
         Command::new(&bin)

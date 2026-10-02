@@ -63,8 +63,14 @@ fn stop_daemon(port: u16) {
 /// two releases. `store-events` is gone (Theme D) and the only thing that can
 /// fill the buffer now is the daemon watcher itself.
 #[test]
-#[ignore = "requires Firefox, network access, and FF_RDP_LIVE_NETWORK_TESTS=1"]
+#[ignore = "requires Firefox, network access, and FF_RDP_LIVE_NETWORK_TESTS=1 + FF_RDP_LIVE_SITES_TESTS=1 (third-party site)"]
 fn live_128_network_detail_uses_watcher() {
+    if !crate::common::live_sites_tests_enabled() {
+        eprintln!(
+            "live_128_network_detail_uses_watcher: set FF_RDP_LIVE_SITES_TESTS=1 to run (third-party site)"
+        );
+        return;
+    }
     if std::env::var("FF_RDP_LIVE_NETWORK_TESTS").is_err() {
         eprintln!("live_128_network_detail_uses_watcher: set FF_RDP_LIVE_NETWORK_TESTS=1 to run");
         return;
@@ -140,8 +146,14 @@ fn live_128_network_detail_uses_watcher() {
 /// emit a line wider than 120 columns — the middle-ellipsis helper
 /// (iter-128 Theme C) keeps `url` columns bounded.
 #[test]
-#[ignore = "requires Firefox, network access, and FF_RDP_LIVE_NETWORK_TESTS=1"]
+#[ignore = "requires Firefox, network access, and FF_RDP_LIVE_NETWORK_TESTS=1 + FF_RDP_LIVE_SITES_TESTS=1 (third-party site)"]
 fn live_128_network_text_width() {
+    if !crate::common::live_sites_tests_enabled() {
+        eprintln!(
+            "live_128_network_text_width: set FF_RDP_LIVE_SITES_TESTS=1 to run (third-party site)"
+        );
+        return;
+    }
     if std::env::var("FF_RDP_LIVE_NETWORK_TESTS").is_err() {
         eprintln!("live_128_network_text_width: set FF_RDP_LIVE_NETWORK_TESTS=1 to run");
         return;
