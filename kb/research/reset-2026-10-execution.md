@@ -22,10 +22,12 @@ investigate a historical flake.
 | 2 | Process cut: CLAUDE.md, skills, plan template, `live.yml` nightly, quarantine rule, timing assertions removed, AGENTS.md reset, close 259/266/268/293/294 + PR #281, roadmap done | agent (process) | done | #286 (4def27f4) |
 | 3 | Daemon deletion; refs in-page; throttle/emulate per-call or removed; capture-mode docs | agent (Rust) | done | #287 (fcb4a439) |
 | 4a | Env-var and iteration-hook purge; help drift; deprecated aliases; `allow(dead_code)` | agent (Rust) | done | #290 (b9ccc091) |
-| 4b | `actors`/`fronts` collapse; launch/profile simplification | agent (Rust) | in-review | #291 |
-| 5 | Watch nightly live run for a week; then product features | session | planned | |
+| 4b | `actors`/`fronts` collapse; launch/profile simplification | agent (Rust) | done | #291 (edcc701b) |
+| 5 | Watch nightly live run for a week; then product features | session | in-progress | |
 
 ## Log
+
+- 2026-10-03: phase 4b merged (#291): fronts collapsed into actors (15,429 → 12,347), navigate split into `navigate/`, launch waits for a listable tab, `--wait-timeout` → `--timeout-ms`, 284/279 diagnostic scaffolding deleted (owner-approved), eval/core grip release removed. Language pack kept (German console text without it on de_CH). Rust lines Oct 1 → Oct 3: 178k → 156k (CLI 158k → 119k, core 33k → 29k, xtask 10.6k → 8.4k). Phase 5: first nightly-style live run triggered manually on main. Open follow-ups live in PR bodies #287/#290/#291 and issues #288/#289.
 
 - 2026-10-02: phase 4b PR #291 opened: fronts collapsed into actors (15,429 -> 12,347 lines), navigate split (5,539 -> 5,427), launch+profile files 9,045 -> 8,042; launch waits for a listable tab; `navigate --timeout-ms`; 4a hooks, eval grip release, EvaluateScope frame/node fields and the owner-approved 166/279 diagnostics deleted. Language pack kept (de_CH console text stays German without it).
 
