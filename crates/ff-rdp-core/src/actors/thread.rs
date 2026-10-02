@@ -199,7 +199,7 @@ mod tests {
         assert_eq!(sources[0].actor, "source1");
         assert_eq!(sources[0].url, "http://fixture/iteration286.js");
         assert_native_requests(&requests);
-        assert!(events.is_empty());
+        assert!(events.is_empty(), "expected empty, got {events:?}");
     }
 
     #[test]
@@ -217,7 +217,7 @@ mod tests {
         assert_eq!(requests.len(), 4);
         assert_native_requests(&requests[..2]);
         assert_native_requests(&requests[2..]);
-        assert!(events.is_empty());
+        assert!(events.is_empty(), "expected empty, got {events:?}");
     }
 
     #[test]
@@ -255,7 +255,7 @@ mod tests {
             requests,
             vec![json!({"to": "thread1", "type": "attach", "options": {}})]
         );
-        assert!(events.is_empty());
+        assert!(events.is_empty(), "expected empty, got {events:?}");
     }
 
     #[test]

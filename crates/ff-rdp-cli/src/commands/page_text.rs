@@ -325,7 +325,7 @@ mod tests {
         let e = build_excerpt(&sixty_lines(), &substring("no-such-token"), 2, None);
         assert_eq!(e.matches, 0);
         assert_eq!(e.shown, 0);
-        assert!(e.text.is_empty());
+        assert!(e.text.is_empty(), "expected empty, got {:?}", e.text);
         assert!(!e.truncated, "an empty match set is not a truncation");
     }
 

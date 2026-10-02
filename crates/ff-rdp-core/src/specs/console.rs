@@ -188,7 +188,11 @@ mod tests {
         // we silently get an empty Vec and the caller can decide.
         let v = json!({"from": "conn0/consoleActor1", "listeners": ["PageError"]});
         let reply: response::StartListeners = serde_json::from_value(v).unwrap();
-        assert!(reply.listeners.is_empty());
+        assert!(
+            reply.listeners.is_empty(),
+            "expected empty, got {:?}",
+            reply.listeners
+        );
     }
 
     #[test]

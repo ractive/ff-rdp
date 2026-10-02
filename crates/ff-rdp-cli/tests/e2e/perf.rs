@@ -481,7 +481,7 @@ fn perf_audit_returns_structured_report() {
     // resource_by_type has entries, including the folded-in navigation
     // document.
     let by_type = r["resource_by_type"].as_array().unwrap();
-    assert!(!by_type.is_empty());
+    assert!(!by_type.is_empty(), "expected a non-empty value");
     assert!(
         by_type.iter().any(|t| t["type"] == "document"),
         "resource_by_type must include a 'document' bucket for the \
@@ -499,7 +499,10 @@ fn perf_audit_returns_structured_report() {
     assert_eq!(r["dom_stats"]["images_without_lazy"], 2);
 
     // slowest_resources
-    assert!(!r["slowest_resources"].as_array().unwrap().is_empty());
+    assert!(
+        !r["slowest_resources"].as_array().unwrap().is_empty(),
+        "expected a non-empty value"
+    );
 
     // navigation present
     assert!(r["navigation"].is_object());

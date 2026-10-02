@@ -945,7 +945,11 @@ mod tests {
 
         let outcome = prune_profiles(root.path(), None, false);
 
-        assert!(outcome.removed.is_empty());
+        assert!(
+            outcome.removed.is_empty(),
+            "expected empty, got {:?}",
+            outcome.removed
+        );
         assert!(
             unmanaged.exists(),
             "a directory not matching the naming convention must never be removed, even with --all"

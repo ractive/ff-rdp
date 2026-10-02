@@ -3316,7 +3316,7 @@ mod tests {
         let mut out = Vec::new();
         let n = recv_bulk_with_handler_from(&mut cursor, "actor1", "kind1", &mut out).unwrap();
         assert_eq!(n, 0);
-        assert!(out.is_empty());
+        assert!(out.is_empty(), "unexpected bytes: {out:?}");
     }
 
     /// iter-240 review, finding 4: a bulk read must refuse a stream the

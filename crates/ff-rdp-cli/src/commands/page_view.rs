@@ -2295,7 +2295,7 @@ mod tests {
     #[test]
     fn unit_219_zero_budget_yields_nothing_but_reports_truncation() {
         let (text, truncated) = excerpt_at_boundary("some text", 0);
-        assert!(text.is_empty());
+        assert!(text.is_empty(), "expected empty, got {text:?}");
         assert!(truncated);
     }
 

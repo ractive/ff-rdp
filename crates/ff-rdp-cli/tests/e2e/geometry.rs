@@ -85,7 +85,7 @@ fn geometry_single_selector() {
     let overlaps = json["results"]["overlaps"]
         .as_array()
         .expect("overlaps must be an array");
-    assert!(overlaps.is_empty());
+    assert!(overlaps.is_empty(), "expected empty, got {overlaps:?}");
 }
 
 // ---------------------------------------------------------------------------
@@ -200,7 +200,7 @@ fn geometry_null_result() {
     let elements = json["results"]["elements"]
         .as_array()
         .expect("elements must be an array");
-    assert!(elements.is_empty());
+    assert!(elements.is_empty(), "expected empty, got {elements:?}");
 }
 
 // ---------------------------------------------------------------------------

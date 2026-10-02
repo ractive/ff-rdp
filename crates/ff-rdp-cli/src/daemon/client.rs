@@ -1799,7 +1799,7 @@ mod tests {
         let log = take_call_log();
         assert!(stopped);
         assert!(port_free, "no port to free ⇒ nothing can be blocking");
-        assert!(msg.is_empty());
+        assert!(msg.is_empty(), "expected empty, got {msg:?}");
         assert!(
             !log.contains(&"wait_port_closed"),
             "no port wait may run when there is no port; log was {log:?}"

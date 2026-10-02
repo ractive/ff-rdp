@@ -270,7 +270,8 @@ fn exercise_link_budgets(direct: bool) {
         counts_view["results"]["page"]["interactive"]
             .as_array()
             .unwrap()
-            .is_empty()
+            .is_empty(),
+        "counts view must not list interactive elements"
     );
     let text_view = collect("/text-budget");
     let facts = text_view["results"]["page"]["facts"].as_array().unwrap();

@@ -372,7 +372,15 @@ mod tests {
                 })
                 .collect()
         }
-        assert!(parse_cookie_str("").is_empty());
-        assert!(parse_cookie_str("   ").is_empty());
+        assert!(
+            parse_cookie_str("").is_empty(),
+            "expected empty, got {:?}",
+            parse_cookie_str("")
+        );
+        assert!(
+            parse_cookie_str("   ").is_empty(),
+            "expected empty, got {:?}",
+            parse_cookie_str("   ")
+        );
     }
 }
