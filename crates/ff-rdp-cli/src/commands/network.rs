@@ -58,13 +58,9 @@ pub fn run(
         // Collect resource events until timeout.
         let result = drain_network_events(ctx.transport_mut()).map_err(AppError::from)?;
 
-        // Unwatch to clean up server-side resources.
-        let _ = WatcherActor::unwatch_resources(
-            ctx.transport_mut(),
-            &watcher_actor,
-            &["network-event"],
-        );
-
+        // No `unwatchResources` here: unwatching destroys the network-event
+        // actors, and `--headers`/`--security` still have to query them
+        // below. The subscription ends with this command's connection.
         (result.0, result.1)
     };
 

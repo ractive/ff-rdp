@@ -518,11 +518,11 @@ fn live_161_eval_meta_has_no_eval_path() {
     let port = ff.port();
 
     let json = run_json(port, &["eval", "document.title"]);
-    let meta = json["meta"]
-        .as_object()
-        .unwrap_or_else(|| panic!("meta must be an object; got {json}"));
+    // An empty `meta` is omitted from the envelope, which also satisfies the
+    // assertion: there is no `eval_path` either way.
     assert!(
-        !meta.contains_key("eval_path"),
+        json.get("meta")
+            .is_none_or(|meta| meta.get("eval_path").is_none()),
         "meta.eval_path was removed in iter-161; got {json}"
     );
 }

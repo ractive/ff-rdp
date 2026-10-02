@@ -150,7 +150,28 @@ static TARGET: LazyLock<Regex> = LazyLock::new(|| {
 )).unwrap()
 });
 
+/// Drop terminal colour sequences (`ESC [ … m`): the CLI's tracing formatter
+/// colours its output, and the grammar below is about the text.
+fn strip_ansi(text: &str) -> String {
+    let mut plain = String::with_capacity(text.len());
+    let mut escape = false;
+    for ch in text.chars() {
+        if ch == '\u{1b}' {
+            escape = true;
+        } else if escape {
+            if ch == 'm' {
+                escape = false;
+            }
+        } else {
+            plain.push(ch);
+        }
+    }
+    plain
+}
+
 fn returned_order(logs: &str, base: &str, case: &str) -> Check<Vec<&'static str>> {
+    let plain = strip_ansi(logs);
+    let logs = plain.as_str();
     let begins: Vec<_> = logs
         .lines()
         .filter(|l| l.contains("FRAME_TARGETS_BEGIN"))

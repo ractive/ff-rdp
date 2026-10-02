@@ -1043,6 +1043,40 @@ impl IsolatedLiveFirefox {
                 launch_wait_timeout()
             ));
         }
+        // A freshly started Firefox opens its debugger port before it exposes
+        // its first tab; a command that connects in between gets "no tabs
+        // available". Wait for the tab the way `LiveFirefox` does.
+        let tab_deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let tabs = session
+                .command()
+                .args(base_args(port))
+                .args(["tabs", "--jq", ".total"])
+                .output();
+            let total = tabs
+                .as_ref()
+                .ok()
+                .filter(|o| o.status.success())
+                .and_then(|o| {
+                    String::from_utf8_lossy(&o.stdout)
+                        .trim()
+                        .parse::<u64>()
+                        .ok()
+                })
+                .unwrap_or(0);
+            if total >= 1 {
+                break;
+            }
+            if std::time::Instant::now() >= tab_deadline {
+                let pid = session.receipt.pid;
+                let cleanup = session.cleanup().err().unwrap_or_default();
+                session.finished = true;
+                return Err(format!(
+                    "isolated launch pid {pid} opened port {port} but exposed no tab within 10s; cleanup: {cleanup}"
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
         session.receipt.firefox_version =
             match firefox_version_within(&session.receipt.firefox_binary, Duration::from_secs(5)) {
                 Ok(version) => version,
