@@ -20,12 +20,14 @@ investigate a historical flake.
 | 0 | Land step-back note and Codex handoff docs on `main` | session | done | docs merge |
 | 1 | 286 `sources` native-path fix from archived patch; `dom --frames` hint fix | agent (Rust) | done | #285 (ff22b7cb) |
 | 2 | Process cut: CLAUDE.md, skills, plan template, `live.yml` nightly, quarantine rule, timing assertions removed, AGENTS.md reset, close 259/266/268/293/294 + PR #281, roadmap done | agent (process) | done | #286 (4def27f4) |
-| 3 | Daemon deletion; refs in-page; throttle/emulate per-call or removed; capture-mode docs | agent (Rust) | in-review | #287 |
-| 4a | Env-var and iteration-hook purge; help drift; deprecated aliases; `allow(dead_code)` | agent (Rust) | planned | |
-| 4b | `actors`/`fronts` collapse; launch/profile simplification | agent (Rust) | planned | |
+| 3 | Daemon deletion; refs in-page; throttle/emulate per-call or removed; capture-mode docs | agent (Rust) | done | #287 (fcb4a439) |
+| 4a | Env-var and iteration-hook purge; help drift; deprecated aliases; `allow(dead_code)` | agent (Rust) | in-progress | |
+| 4b | `actors`/`fronts` collapse; launch/profile simplification | agent (Rust) | in-progress | |
 | 5 | Watch nightly live run for a week; then product features | session | planned | |
 
 ## Log
+
+- 2026-10-02: phase 3 merged (#287): 243 files, +3,020/−40,069. Refs stamped in-page (`data-ffrdp-ref`), `throttle`/`emulate` commands gone (`navigate --throttle/--block` instead), `inspect <expr>` single-connection, `network --headers` bug fixed. Phases 4a/4b launched in parallel.
 
 - 2026-10-02: phase 3 PR #287 opened (DEC-056, DEC-057). `shortstat` against origin/main: 238 files changed, 2884 insertions(+), 40028 deletions(-). Deleted: `src/daemon/` (about 17.8k lines: server 8.1k, client 3.0k, registry 1.2k), `daemon_record.rs` (842), `daemon_status.rs` (168), the `emulate`/`throttle` commands, 21 daemon live-test files plus the `daemon`/`daemon_parity`/`emulate`/`throttle` e2e suites, `eval_object_leak_soak`, the `--no-daemon` live guard, the xtask `daemon-locks` invariant and the core proxy hooks. Refs moved in-page (`data-ffrdp-ref`); `--throttle`/`--block` on navigate/reload; emulate deleted (settings reset on disconnect, verified live); `inspect <js-expression>`. Targeted live run: 159 passed.
 
