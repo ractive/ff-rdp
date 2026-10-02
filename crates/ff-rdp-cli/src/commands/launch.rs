@@ -609,6 +609,10 @@ pub(crate) enum PortWaitOutcome {
     Opened,
     /// The bound elapsed with the port still refusing connections.
     TimedOut,
+    /// The port opened but `listTabs` returned no tab before the bound
+    /// elapsed, so a command run right after `launch` would find nothing to
+    /// attach to.
+    NoTab,
     /// `host:port` could not be resolved at all — a configuration error, not a
     /// timing one.
     Unresolvable(String),
@@ -629,6 +633,11 @@ impl PortWaitOutcome {
             Self::Opened => None,
             Self::TimedOut => Some(AppError::User(format!(
                 "Firefox (pid {pid}) did not open debug port {port} within {}s — \
+                 raise --launch-timeout or set {LAUNCH_TIMEOUT_ENV}",
+                bound.as_secs()
+            ))),
+            Self::NoTab => Some(AppError::User(format!(
+                "Firefox (pid {pid}) opened debug port {port} but listed no tab within {}s — \
                  raise --launch-timeout or set {LAUNCH_TIMEOUT_ENV}",
                 bound.as_secs()
             ))),
@@ -675,6 +684,11 @@ pub(crate) struct LaunchHooks {
     /// Poll `host:port` until it accepts a connection or the bound elapses.
     pub(crate) probe_port:
         fn(&str, u16, Duration, &mut startup::Observation<'_>) -> PortWaitOutcome,
+    /// After the port opened: poll `listTabs` on `port` until it returns at
+    /// least one tab or the deadline passes, so `launch` never reports success
+    /// before a follow-up command can attach.
+    pub(crate) wait_for_tab:
+        fn(u16, std::time::Instant, &mut startup::Observation<'_>) -> PortWaitOutcome,
     /// Spawn the prepared Firefox command.
     pub(crate) spawn: fn(&mut std::process::Command) -> std::io::Result<std::process::Child>,
     /// Read the owned child's status; injectable for the OS error branch.
@@ -707,6 +721,7 @@ impl LaunchHooks {
             is_port_in_use: port_owner::is_port_in_use,
             find_listener: |port| port_owner::find_listener(port).ok().flatten(),
             probe_port: wait_for_port,
+            wait_for_tab: wait_for_listable_tab,
             spawn: std::process::Command::spawn,
             try_wait: std::process::Child::try_wait,
             locate_firefox: find_firefox,
@@ -727,6 +742,7 @@ impl LaunchHooks {
     fn none_running() -> Self {
         Self {
             pid_is_ff_rdp_spawned: |_pid| false,
+            wait_for_tab: |_port, _deadline, _observation| PortWaitOutcome::Opened,
             ..Self::real()
         }
     }
@@ -893,6 +909,48 @@ fn wait_for_port(
     // cleanup check records any natural exit racing with this observation.
     observation.terminal("port_wait", "alive_when_deadline_checked");
     PortWaitOutcome::TimedOut
+}
+
+/// Poll `listTabs` on `localhost:port` until it returns at least one tab, the
+/// child exits, or `deadline` passes. Each attempt opens a fresh connection.
+fn wait_for_listable_tab(
+    port: u16,
+    deadline: std::time::Instant,
+    observation: &mut startup::Observation<'_>,
+) -> PortWaitOutcome {
+    let poll_interval = Duration::from_millis(100);
+    loop {
+        observation.stderr.pump(Some(deadline));
+        match observation.status() {
+            Ok(Some(status)) => {
+                observation.terminal("tab_wait", "natural_exit");
+                return PortWaitOutcome::Exited(status);
+            }
+            Err(error) => {
+                observation.terminal("tab_wait", "status_unknown");
+                return PortWaitOutcome::StatusFailed(error.to_string());
+            }
+            Ok(None) => {}
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            observation.terminal("tab_wait", "no_tab_at_deadline");
+            return PortWaitOutcome::NoTab;
+        }
+        if count_tabs("localhost", port, remaining.min(Duration::from_secs(2))) > 0 {
+            observation.terminal("tab_wait", "tab_listed");
+            return PortWaitOutcome::Opened;
+        }
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        std::thread::sleep(poll_interval.min(remaining));
+    }
+}
+
+/// Number of tabs one `listTabs` round trip reports; 0 on any failure.
+fn count_tabs(host: &str, port: u16, timeout: Duration) -> usize {
+    ff_rdp_core::RdpConnection::connect(host, port, timeout)
+        .and_then(|mut connection| ff_rdp_core::RootActor::list_tabs(connection.transport_mut()))
+        .map_or(0, |tabs| tabs.len())
 }
 
 /// Whether `launch` should drop an [`OWNER_PID_MARKER`](crate::util::profile_dir::OWNER_PID_MARKER)
@@ -1163,7 +1221,15 @@ pub(crate) fn run_with_hooks(
             // before reporting success. Always probe localhost since we
             // just spawned a local Firefox, regardless of --host.
             let pid = observation.child.id();
+            let deadline = std::time::Instant::now() + port_wait_bound;
             let outcome = (hooks.probe_port)("localhost", port, port_wait_bound, &mut observation);
+            if let Some(e) = outcome.into_error(pid, port, port_wait_bound) {
+                return Err(pending.fail(e));
+            }
+            // An open port is not yet a usable browser: the first tab can
+            // appear a moment later, and `tabs` run right after `launch` then
+            // saw none. Same bound as the port wait, measured from its start.
+            let outcome = (hooks.wait_for_tab)(port, deadline, &mut observation);
             if let Some(e) = outcome.into_error(pid, port, port_wait_bound) {
                 return Err(pending.fail(e));
             }
@@ -2479,6 +2545,72 @@ mod iter_175_tests {
              profile behind: {}",
             dir.display()
         );
+    }
+
+    /// The port opened but no tab was ever listed: `launch` fails with its own
+    /// message (not the bind-timeout one) and reclaims the profile.
+    #[test]
+    fn launch_fails_when_no_tab_is_listed_before_the_deadline() {
+        static PROFILE: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+        let hooks = LaunchHooks {
+            is_port_in_use: |_port| false,
+            find_listener: |_port| None,
+            probe_port: |_host, _port, _timeout, _observation| PortWaitOutcome::Opened,
+            wait_for_tab: |_port, _deadline, _observation| PortWaitOutcome::NoTab,
+            spawn: |cmd| {
+                *PROFILE.lock().expect("profile slot") = profile_arg_of(cmd);
+                spawn_lingering_child()
+            },
+            locate_firefox: || Ok(PathBuf::from("/nonexistent/ff-rdp-fake-firefox")),
+            ..LaunchHooks::none_running()
+        };
+
+        let err = run_with_hooks(&bare_launch_cli(), &managed_opts(7604), &hooks)
+            .expect_err("a browser that never lists a tab must fail the launch");
+        assert!(
+            err.to_string().contains("listed no tab within"),
+            "expected the no-tab message, got {err:?}"
+        );
+        let dir = PROFILE.lock().expect("profile slot").clone().unwrap();
+        assert!(!dir.exists(), "profile left behind: {}", dir.display());
+    }
+
+    /// `count_tabs` reports what one `listTabs` round trip returned, and 0
+    /// when nothing answers.
+    #[test]
+    fn count_tabs_reads_one_list_tabs_reply() {
+        use std::io::{BufReader, Write as _};
+        fn serve(tabs: serde_json::Value) -> (u16, std::thread::JoinHandle<()>) {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let handle = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                let send = |stream: &mut std::net::TcpStream, value: serde_json::Value| {
+                    let body = value.to_string();
+                    write!(stream, "{}:{body}", body.len()).unwrap();
+                };
+                send(
+                    &mut stream,
+                    json!({"from":"root","applicationType":"browser","traits":{}}),
+                );
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let request = ff_rdp_core::transport::recv_from(&mut reader).unwrap();
+                assert_eq!(request["type"], "listTabs");
+                send(&mut stream, json!({"from":"root","tabs":tabs}));
+            });
+            (port, handle)
+        }
+        let (port, handle) = serve(json!([]));
+        assert_eq!(count_tabs("127.0.0.1", port, Duration::from_secs(5)), 0);
+        handle.join().unwrap();
+        let (port, handle) = serve(json!([{"actor":"tab1","url":"about:blank","title":""}]));
+        assert_eq!(count_tabs("127.0.0.1", port, Duration::from_secs(5)), 1);
+        handle.join().unwrap();
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = closed.local_addr().unwrap().port();
+        drop(closed);
+        assert_eq!(count_tabs("127.0.0.1", port, Duration::from_secs(1)), 0);
     }
 
     /// A user-supplied `--profile` directory is never ours to delete, however
