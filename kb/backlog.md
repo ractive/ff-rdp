@@ -32,10 +32,12 @@ product work that needs design. Keep items to one line — if an item needs more
 
 ## Global skills (edit by hand in `~/.claude/skills/`, shared with other repos)
 
-- [ ] `create-pr`: drop `check-dogfood-script`; run the xtask `check-*` enumeration and the fmt/clippy/test gates only when `git rev-parse HEAD^{tree}` differs from the last green run (see [[reset-2026-10-execution]] "Global skill follow-ups")
-- [ ] `review-pr`: one local review pass per PR; no re-review for style-only fixes
-- [ ] `merge-pr`: no separate `status: done` commit — the flip goes in the same commit as the code
+- [x] `create-pr`: drop `check-dogfood-script`; run the xtask `check-*` enumeration and the fmt/clippy/test gates only when `git rev-parse HEAD^{tree}` differs from the last green run (see [[reset-2026-10-execution]] "Global skill follow-ups")
+- [x] `review-pr`: one local review pass per PR; no re-review for style-only fixes
+- [x] `merge-pr`: no separate `status: done` commit — the flip goes in the same commit as the code
 
 ## Done
 
+- [x] Global skills `create-pr`/`review-pr`/`merge-pr` edited 2026-10-03: gates run once per tree hash, one review pass per PR, no status-flip commit (`ralph-loop` skills left untouched — retired)
+- [x] CI skips docs-only PR pushes (#292, 2026-10-03)
 - [x] #288 / #289 moved here from GitHub issues (2026-10-03)
