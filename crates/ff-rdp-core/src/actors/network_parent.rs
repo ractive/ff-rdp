@@ -93,6 +93,14 @@ impl ThrottleProfile {
 /// This actor configures parent-process network behaviour for the debugging
 /// session: request throttling and URL blocking. Creating a
 /// `NetworkParentFront` is O(1) and does not touch the network.
+///
+/// Only [`set_network_throttling`](Self::set_network_throttling) and
+/// [`set_blocked_urls`](Self::set_blocked_urls) have a non-test consumer
+/// (`ff-rdp-cli`'s `--throttle`/`--block` flags); the original
+/// `clear_network_throttling` method had none and was removed in the
+/// reset/structure-core collapse — `set_network_throttling(None)`-equivalent
+/// behaviour is reachable by sending `setNetworkThrottling` with `null`
+/// options directly if a future caller needs it.
 pub struct NetworkParentFront {
     id: ActorId,
     registry: Registry,
@@ -126,17 +134,6 @@ impl NetworkParentFront {
             "uploadThroughput": profile.upload_bps(),
         });
         self.send_throttling(transport, &options)
-    }
-
-    /// Clear any active throttling, restoring full-speed network behaviour.
-    ///
-    /// Firefox treats `setNetworkThrottling(null)` as "restore the defaults
-    /// captured on the first set" (see `network-parent.js`).
-    pub fn clear_network_throttling(
-        &self,
-        transport: &mut RdpTransport,
-    ) -> Result<(), ProtocolError> {
-        self.send_throttling(transport, &Value::Null)
     }
 
     /// Replace the session's URL block-list.
@@ -280,26 +277,6 @@ mod tests {
         front
             .set_network_throttling(&mut transport, ThrottleProfile::Slow3g)
             .unwrap();
-        t.join().unwrap();
-    }
-
-    #[test]
-    fn clear_network_throttling_sends_null_options() {
-        let (mut transport, server) = make_transport_pair();
-        let (front, actor_id) = make_front("server1.conn0.networkParent6");
-
-        let t = std::thread::spawn(move || {
-            let req = server_read(&server);
-            assert_eq!(req["type"], "setNetworkThrottling");
-            assert!(
-                req["options"].is_null(),
-                "clear must send options: null, got {}",
-                req["options"]
-            );
-            server_reply(&server, json!({"from": actor_id.as_ref()}));
-        });
-
-        front.clear_network_throttling(&mut transport).unwrap();
         t.join().unwrap();
     }
 

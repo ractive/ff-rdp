@@ -90,23 +90,42 @@ See [[rdp/resources/README|resources/]] for each.
 
 ## Method support matrix
 
-State of the `WatcherFront` (`crates/ff-rdp-core/src/fronts/watcher.rs`) after iter-61u.  "Spec" = present in `crates/ff-rdp-core/src/specs/watcher.rs`; "Front" = a typed Rust method exists on `WatcherFront`; "Wired" = called from production code paths (daemon or CLI commands), not only tests.
+**2026-10 reset/structure-core update:** `WatcherFront`
+(`crates/ff-rdp-core/src/actors/watcher.rs`, moved from `fronts/watcher.rs`)
+was trimmed to just `new` + `get_network_parent_actor` — the only two members
+with a non-test consumer (`ff-rdp-cli`'s `network_conditions::apply`, behind
+`navigate`/`reload --throttle`/`--block`). Every other method in the table
+below (`watch_targets`, `unwatch_targets`, `watch_resources`,
+`unwatch_resources`, `clear_resources`, `get_parent_browsing_context_id`,
+`get_blackboxing_actor`, `get_breakpoint_list_actor`,
+`get_target_configuration_actor`, `get_thread_configuration_actor`) was
+removed: production code reaches the same wire calls through
+[`WatcherActor`]'s static methods (`actors/watcher.rs`) or the resource bus in
+`crate::resources::command`, not through the `Front`'s instance methods, so
+the `Front` copies had no non-test consumer. `TargetConfigurationFront` (fed
+by the removed `get_target_configuration_actor`) was deleted in the same pass
+— it also had no non-test consumer.
+
+The table below is kept as a historical record of iter-61u's wired-vs-primitive
+survey; "Front" now names a removed method unless noted.
+
+State of the `WatcherFront` (`crates/ff-rdp-core/src/fronts/watcher.rs`, now `crates/ff-rdp-core/src/actors/watcher.rs`) after iter-61u.  "Spec" = present in `crates/ff-rdp-core/src/specs/watcher.rs`; "Front" = a typed Rust method exists on `WatcherFront`; "Wired" = called from production code paths (daemon or CLI commands), not only tests.
 
 | Method | Spec | Front | Wired | Notes |
 |---|---|---|---|---|
-| `watchTargets` | yes | `watch_targets` | yes | Daemon engagement + `commands/navigate.rs`. |
-| `unwatchTargets` | yes (oneway) | `unwatch_targets` | yes | Used on daemon shutdown to avoid hang (iter-61n). |
-| `watchResources` | yes | `watch_resources` | yes | Via `ResourceCommand::subscribe` (iter-61q/t). |
-| `unwatchResources` | yes (oneway) | `unwatch_resources` | yes | |
-| `clearResources` | yes (oneway) | `clear_resources` | primitive | Front exists; no production call site yet. |
-| `getParentBrowsingContextID` | yes | `get_parent_browsing_context_id` | primitive | iter-265: takes the required numeric context ID and decodes the nullable reply; the earlier no-argument public signature was removed because every call it could make was invalid. |
-| `getNetworkParentActor` | yes | `get_network_parent_actor` | wired | iter-109/110 — `NetworkParentFront` + `throttle` CLI command. Reply shape is nested `{network: {actor}}`. |
-| `getBlackboxingActor` | yes | `get_blackboxing_actor` | primitive | iter-265: decodes `{blackboxing: {actor}}`, live-verified on Firefox 156. |
-| `getBreakpointListActor` | yes | `get_breakpoint_list_actor` | primitive | iter-265: decodes `{breakpointList: {actor}}`, live-verified on Firefox 156. |
-| `getTargetConfigurationActor` | yes | `get_target_configuration_actor` | primitive | iter-61u; `TargetConfigurationFront` exists but not yet called from a CLI command. |
-| `getThreadConfigurationActor` | yes | `get_thread_configuration_actor` | primitive | iter-265: decodes `{configuration: {actor}}`, live-verified on Firefox 156. |
+| `watchTargets` | yes | `watch_targets` (removed 2026-10) | yes | Production wiring is `WatcherActor::watch_targets`, not the Front method. |
+| `unwatchTargets` | yes (oneway) | `unwatch_targets` (removed 2026-10) | yes | Production wiring is `WatcherActor::unwatch_targets`. |
+| `watchResources` | yes | `watch_resources` (removed 2026-10) | yes | Via `ResourceCommand::subscribe` → `WatcherActor::watch_resources`, not the Front method. |
+| `unwatchResources` | yes (oneway) | `unwatch_resources` (removed 2026-10) | yes | Production wiring is `WatcherActor::unwatch_resources`. |
+| `clearResources` | yes (oneway) | `clear_resources` (removed 2026-10) | primitive | Had no production call site; removed. |
+| `getParentBrowsingContextID` | yes | `get_parent_browsing_context_id` (removed 2026-10) | primitive | Had no non-test consumer; removed. |
+| `getNetworkParentActor` | yes | `get_network_parent_actor` | wired | iter-109/110 — `NetworkParentFront` + `--throttle`/`--block` on `navigate`/`reload`. Reply shape is nested `{network: {actor}}`. Still present — the one retained Front method. |
+| `getBlackboxingActor` | yes | `get_blackboxing_actor` (removed 2026-10) | primitive | Had no non-test consumer; removed. |
+| `getBreakpointListActor` | yes | `get_breakpoint_list_actor` (removed 2026-10) | primitive | Had no non-test consumer; removed. |
+| `getTargetConfigurationActor` | yes | `get_target_configuration_actor` (removed 2026-10) | primitive | Fed `TargetConfigurationFront`, also removed; neither ever reached a CLI command. |
+| `getThreadConfigurationActor` | yes | `get_thread_configuration_actor` (removed 2026-10) | primitive | Had no non-test consumer; removed. |
 
-See [[from-our-codebase/wired-vs-primitive]] for the broader wired-vs-primitive snapshot across iter-61p..61u landings.
+See [[from-our-codebase/wired-vs-primitive]] for the broader wired-vs-primitive snapshot across iter-61p..61u landings (pre-dates the 2026-10 collapse).
 
 ## Oneway methods — important protocol constraint (iter-74)
 

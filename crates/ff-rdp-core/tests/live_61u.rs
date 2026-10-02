@@ -13,8 +13,7 @@ mod support;
 use std::time::Duration;
 
 use ff_rdp_core::{
-    RdpConnection, ResourceCommand, ResourceType, RootActor, TabActor, TargetConfigurationFront,
-    WatcherFront, WindowGlobalTarget,
+    RdpConnection, ResourceCommand, ResourceType, RootActor, TabActor, WindowGlobalTarget,
 };
 use support::recording::{firefox_port, should_run_live};
 
@@ -39,7 +38,7 @@ fn live_unwatch_targets_does_not_hang() {
     );
     // The test itself just verifies we can call list_tabs without hanging;
     // the no-hang guarantee for unwatchTargets is covered by the unit test
-    // (oneway path in specs/watcher.rs + fronts/watcher.rs).
+    // (oneway path in specs/watcher.rs + actors/watcher.rs).
     drop(conn);
 }
 
@@ -124,64 +123,10 @@ fn live_network_set_cookie_longstring() {
     );
 }
 
-/// Verify that `getTargetConfigurationActor` returns an actor reference and
-/// that `set_cache_disabled(true/false)` round-trips the `updateConfiguration`
-/// protocol call without error.  The full end-to-end cache-bypass assertion
-/// (request a `Cache-Control: max-age=3600` resource, observe a non-304 fresh
-/// response after disabling) is still TODO and will land in a follow-up
-/// iteration that wires in a stable cacheable fixture URL.
-#[test]
-#[ignore = "requires live Firefox — FF_RDP_LIVE_TESTS=1"]
-fn live_cache_disable_via_target_config() {
-    if !should_run_live() {
-        return;
-    }
-
-    let port = firefox_port();
-    let mut conn = RdpConnection::connect("127.0.0.1", port, TIMEOUT).unwrap();
-    let tabs = RootActor::list_tabs(conn.transport_mut()).unwrap();
-    assert!(
-        !tabs.is_empty(),
-        "need a tab for live_cache_disable_via_target_config"
-    );
-
-    let tab = tabs
-        .iter()
-        .find(|t| t.selected)
-        .or_else(|| tabs.first())
-        .unwrap();
-    let tab_actor = tab.actor.clone();
-
-    // Get the watcher actor for this tab.
-    let watcher_actor_id = TabActor::get_watcher(conn.transport_mut(), &tab_actor).unwrap();
-
-    // Build a WatcherFront to obtain the target configuration actor.
-    let watcher_front = WatcherFront::new(
-        watcher_actor_id.clone(),
-        ff_rdp_core::Registry::default(),
-        Some(watcher_actor_id.clone()),
-    );
-
-    let config_actor_id = watcher_front
-        .get_target_configuration_actor(conn.transport_mut())
-        .unwrap();
-
-    // Build a TargetConfigurationFront and disable the cache.
-    let config_front = TargetConfigurationFront::new(
-        config_actor_id,
-        ff_rdp_core::Registry::default(),
-        watcher_actor_id.clone(),
-    );
-
-    // set_cache_disabled(true) must not error — this is the key protocol assertion.
-    config_front
-        .set_cache_disabled(conn.transport_mut(), true)
-        .expect("set_cache_disabled(true) must succeed");
-
-    // Re-enable so we leave Firefox in a clean state for subsequent tests.
-    config_front
-        .set_cache_disabled(conn.transport_mut(), false)
-        .expect("set_cache_disabled(false) must succeed");
-
-    drop(conn);
-}
+// `live_cache_disable_via_target_config` (iter-103, `getTargetConfigurationActor`
+// + `TargetConfigurationFront::set_cache_disabled`) was removed in the
+// reset/structure-core collapse: `TargetConfigurationFront` had no non-test
+// consumer — no CLI command ever drove cache-bypass through it — and was
+// deleted along with `WatcherFront::get_target_configuration_actor`, which fed
+// it. See `kb/decision-log.md` DEC-056 for the daemon-removal context that
+// made the surface unreachable.

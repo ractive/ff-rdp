@@ -38,7 +38,9 @@ Catalog of known RDP-layer gaps as of 2026-05-23, drawn from dogfooding sessions
 
 ## actor-leak-in-daemon
 
-**Status (iter-76b)**: CLOSED. `extract_grips` now walks watcher resource payloads and populates `ResourceGripGuard` for every `consoleAPICall` / `evaluationResult` containing object or longString grips. The drainer thread (`grip_release_drainer_loop`) owns `ReleaseQueueRx` and sends release packets over the shared `FramedWriter`. Type-safe dispatch via `AnyGripHandle` ensures `LongString` actors are not misidentified as `Object` actors. Live test: `live_grip_release_actually_releases` (`FF_RDP_LIVE_TESTS=1`).
+**Status (iter-76b)**: CLOSED for the daemon, which no longer exists (DEC-056, 2026-08). `extract_grips` walked watcher resource payloads and populated `ResourceGripGuard` for every `consoleAPICall` / `evaluationResult` containing object or longString grips; a drainer thread (`grip_release_drainer_loop`) owned `ReleaseQueueRx` and sent release packets over the shared `FramedWriter`, with type-safe dispatch via `AnyGripHandle` ensuring `LongString` actors were not misidentified as `Object` actors. Live test: `live_grip_release_actually_releases` (`FF_RDP_LIVE_TESTS=1`).
+
+**2026-10 update**: with the daemon's long-lived-connection use case gone, none of `extract_grips`/`ResourceGripGuard`/`AnyGripHandle`/`release_queue`/`ReleaseQueueTx`/`ReleaseQueueRx`/`ReleaseRequest` had a non-test consumer left, so all were deleted in the reset/structure-core collapse. `ff-rdp-cli`'s short-lived one-connection-per-command model (see `kb/decision-log.md` DEC-056) releases actors implicitly on disconnect instead; the synchronous `ScopedGrip`/`GripHandle::without_queue().release(transport)` path (used by `eval`/`navigate`) covers the cases that need an explicit release before then.
 
 Remaining known gap: grip-consuming call sites in inspector and network-response-body paths still do not call `add_grip`; those are low-priority because daemon eval is the primary source of unbounded actor growth. File a new iteration if they become a problem.
 

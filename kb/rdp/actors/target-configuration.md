@@ -18,8 +18,18 @@ title: TargetConfigurationActor
 Changes per-target ("page environment") settings without requiring
 browser-wide pref changes. Obtained via
 `WatcherFront::get_target_configuration_actor` (the watcher's
-`getTargetConfigurationActor` method). Consumed by the `ff-rdp emulate`
+`getTargetConfigurationActor` method). Was consumed by the `ff-rdp emulate`
 command (iter-103) and the `set_cache_disabled` cache-bypass path.
+
+**2026-10 reset/structure-core update:** the `emulate` command no longer
+exists in `ff-rdp-cli` (removed in an earlier reset phase) and nothing else
+ever called `TargetConfigurationFront` outside its own unit tests and
+`WatcherFront::get_target_configuration_actor`, which fed it and had the same
+problem. Both types — along with `get_target_configuration_actor` — were
+deleted from `crates/ff-rdp-core/src/fronts/` (now removed; see
+[[watcher]]) as part of the `fronts/`→`actors/` collapse. This page is kept as
+a historical record of the wire protocol, which is unchanged and could still
+back a future `emulate`-equivalent command.
 
 ## Firefox references
 

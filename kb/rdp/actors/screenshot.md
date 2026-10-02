@@ -215,7 +215,11 @@ longer *needed* on 153, though it stays for older builds.
 ### Fix
 
 - `ScreenshotArgsExt::snapshot_scale` is now a plain `f64`, **always
-  serialised**; `ScreenshotFront::capture` likewise always sends `Some(scale)`.
+  serialised**; `ScreenshotActor::capture` likewise always sends `Some(scale)`.
+  (The `ScreenshotFront` typed-handle wrapper around this same call had no
+  non-test consumer and was removed in the 2026-10 reset/structure-core
+  collapse — `ScreenshotActor::capture`, called directly from
+  `commands/screenshot.rs`, is the production path.)
 - `parse_capture_response()` (new, `actors/screenshot.rs`) folds the reply's
   `messages` into the error via `capture_no_image_data_error()` instead of
   discarding them. Both the root-actor and `screenshot_via_target` paths use it.

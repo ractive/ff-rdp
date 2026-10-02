@@ -38,14 +38,26 @@ is reached through a target. Obtained by calling `getTarget()` on a descriptor.
   --hard` so callers can bypass the HTTP cache. See
   [[rdp/actors/targets/window-global-target]] for the wire-level spec.
   iter-102 Theme B routed the `force=true` path through the matched
-  `actor_request`/`recv_reply_from` reply path (`fronts/target.rs`) — it was
-  the last production caller of the blind `transport.request` (send + one
-  *unmatched* recv), which has been removed. The matched path routes an
-  interleaved `tabNavigated` push (the reload's most likely moment) to the
-  event sink instead of consuming it as the reply, so the actor's reply stream
-  no longer desyncs. Unit test:
+  `actor_request`/`recv_reply_from` reply path (then `fronts/target.rs`'s
+  `TargetFront::reload`) — it was the last production caller of the blind
+  `transport.request` (send + one *unmatched* recv), which has been removed.
+  The matched path routes an interleaved `tabNavigated` push (the reload's
+  most likely moment) to the event sink instead of consuming it as the reply,
+  so the actor's reply stream no longer desyncs. Unit test:
   `reload_force_tolerates_tab_navigated_push_before_reply`. Live AC:
   `live_reload_force_with_watched_resources`.
+
+  **reset/structure-core update (2026-10):** `TargetFront` had no non-test
+  consumer by the time of the collapse — `ff-rdp reload --hard` and the rest
+  of `nav_action.rs` drive `reload`/`go_back`/`go_forward` via a raw
+  `transport.send(...)`, not through `TargetFront` or
+  `WindowGlobalTarget::reload`/`go_back`/`go_forward` (`actors/target.rs`,
+  also currently without a non-test consumer) — and was deleted along with
+  the rest of `fronts/`. The matched-reply behaviour this section documents
+  is preserved only by `TargetFront`'s former unit tests, which were removed
+  with it; the matched-request pattern itself (`actor_request`/
+  `recv_reply_from`) lives on in `crate::actor` and is still exercised by
+  other actors.
 
 ## Status
 
