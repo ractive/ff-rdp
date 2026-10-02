@@ -26,14 +26,19 @@ use crate::error::AppError;
 /// `click.rs`'s `fetch_frame_targets` note: the second `watchTargets` is a
 /// no-op and yields an empty list.
 pub(crate) fn fetch_frame_targets(ctx: &mut ConnectedTab) -> Result<Vec<TargetEvent>, AppError> {
+    let started = std::time::Instant::now();
+    tracing::debug!(target: "ff_rdp_cli::frame_targets", "FRAME_TARGETS_BEGIN pid={}", std::process::id());
     let tab_actor = ctx.target_tab_actor().clone();
-    let watcher_actor =
-        TabActor::get_watcher_with_options(ctx.transport_mut(), &tab_actor, Some(true))
-            .map_err(AppError::from)?;
-    enumerate_frame_targets(
-        ctx.transport_mut(),
-        &watcher_actor,
-        DEFAULT_FRAME_TARGETS_SETTLE,
-    )
-    .map_err(AppError::from)
+    let result = TabActor::get_watcher_with_options(ctx.transport_mut(), &tab_actor, Some(true))
+        .map_err(AppError::from)
+        .and_then(|watcher_actor| {
+            enumerate_frame_targets(
+                ctx.transport_mut(),
+                &watcher_actor,
+                DEFAULT_FRAME_TARGETS_SETTLE,
+            )
+            .map_err(AppError::from)
+        });
+    tracing::debug!(target: "ff_rdp_cli::frame_targets", "FRAME_TARGETS_END pid={} elapsed_ns={} result={:?}", std::process::id(), started.elapsed().as_nanos(), result);
+    result
 }

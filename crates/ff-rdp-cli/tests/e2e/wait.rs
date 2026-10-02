@@ -10,7 +10,6 @@ fn base_args(port: u16) -> Vec<String> {
         "127.0.0.1".to_owned(),
         "--port".to_owned(),
         port.to_string(),
-        "--no-daemon".to_owned(),
     ]
 }
 
@@ -80,8 +79,7 @@ fn e2e_wait_sleep_form() {
     drop(listener);
 
     let mut args = base_args(port);
-    // base_args includes --no-daemon; irrelevant here since the sleep path
-    // never opens a connection at all, daemon or otherwise.
+    // The sleep path never opens a connection at all.
     args.extend(["wait".to_owned(), "--sleep-ms".to_owned(), "50".to_owned()]);
 
     let started = std::time::Instant::now();

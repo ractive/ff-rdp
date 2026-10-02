@@ -2672,10 +2672,7 @@ fn live_throttle_slow3g_slows_fetch() {
         );
         assert!(got[0].needs_live);
         assert!(!got[0].needs_network);
-        assert_eq!(
-            got[0].full_name,
-            "live_watch_targets::live_watch_targets"
-        );
+        assert_eq!(got[0].full_name, "live_watch_targets::live_watch_targets");
     }
 
     #[test]
@@ -3137,9 +3134,7 @@ test result: FAILED. 0 passed; 2 failed; 0 ignored
         let verdict = classify_failures(stdout, true, false);
         assert_eq!(
             verdict.launch_timeout,
-            vec![
-                "live_123_launch_registry::live_launch_tabless".to_owned()
-            ]
+            vec!["live_123_launch_registry::live_launch_tabless".to_owned()]
         );
         assert_eq!(
             verdict.genuine,

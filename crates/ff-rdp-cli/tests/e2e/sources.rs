@@ -19,7 +19,6 @@ fn base_args(port: u16) -> Vec<String> {
         "127.0.0.1".to_owned(),
         "--port".to_owned(),
         port.to_string(),
-        "--no-daemon".to_owned(),
     ]
 }
 
@@ -450,7 +449,6 @@ fn sources_native_json_and_jq_keep_complete_identities() {
     let output = native_sources_output(&sources, &[]);
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(json["results"], sources);
-    assert_eq!(json["meta"]["route"], "direct");
     assert!(json["meta"].get("fallback").is_none());
     let output = native_sources_output(&sources, &["--jq", ".results"]);
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();

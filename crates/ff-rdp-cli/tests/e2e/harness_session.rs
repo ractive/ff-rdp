@@ -356,7 +356,6 @@ fn isolated_harness_timeouts_cover_product_budgets_without_global_env_mutation()
     let launch_outer =
         isolated_launch_command_timeout(Duration::from_secs(45), Duration::from_secs(5));
     assert!(launch_outer > Duration::from_secs(50));
-
 }
 #[cfg(unix)]
 #[test]

@@ -156,6 +156,12 @@ pub fn run(
 
     let use_detail = use_detail_mode(cli, headers, security);
 
+    if results.is_empty() {
+        // stderr-ok: (b) hint — stdout still carries the (empty) JSON result
+        // envelope, whose top-level `hint` says the same thing.
+        eprintln!("hint: {EMPTY_CAPTURE_HINT}");
+    }
+
     let empty_hint = if results.is_empty() && filter.is_none() && method.is_none() {
         Some(json!(EMPTY_CAPTURE_HINT))
     } else if results.is_empty() {

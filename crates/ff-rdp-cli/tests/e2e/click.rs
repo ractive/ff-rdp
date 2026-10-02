@@ -10,7 +10,6 @@ fn base_args(port: u16) -> Vec<String> {
         "127.0.0.1".to_owned(),
         "--port".to_owned(),
         port.to_string(),
-        "--no-daemon".to_owned(),
     ]
 }
 
@@ -313,8 +312,8 @@ fn e2e_272_frame_records_actual_direct_result() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     for marker in [
-        format!("FRAME_TARGETS_BEGIN pid={pid} via_daemon=false"),
-        format!("FRAME_TARGETS_END pid={pid} via_daemon=false"),
+        format!("FRAME_TARGETS_BEGIN pid={pid}"),
+        format!("FRAME_TARGETS_END pid={pid}"),
     ] {
         assert_eq!(
             stderr.matches(&marker).count(),

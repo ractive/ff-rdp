@@ -13,7 +13,6 @@ fn base_args(port: u16) -> Vec<String> {
         "127.0.0.1".to_owned(),
         "--port".to_owned(),
         port.to_string(),
-        "--no-daemon".to_owned(),
     ]
 }
 
@@ -415,7 +414,6 @@ fn screenshot_viewport_height_flag_returns_error() {
             "127.0.0.1",
             "--port",
             "1",
-            "--no-daemon",
             "screenshot",
             "--viewport-height",
             "2500",
@@ -559,7 +557,6 @@ fn screenshot_window_size_invalid_rejected() {
             "127.0.0.1",
             "--port",
             "1",
-            "--no-daemon",
             "screenshot",
             "--window-size",
             "not-a-size",

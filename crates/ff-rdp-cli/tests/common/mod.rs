@@ -16,7 +16,6 @@
 // `#[path]`-included, while production code stays denied.
 #![allow(unsafe_code)]
 
-
 use std::collections::HashMap;
 use std::io::{Read, Seek, Write};
 use std::net::{TcpListener, TcpStream};
@@ -1261,11 +1260,7 @@ pub(crate) fn launch_request_context(home: &Path, port: u16) -> serde_json::Valu
 /// are the authority. A failed `launch` reaps the Firefox it spawned itself
 /// (iter-282), so a port that is still listening means something survived:
 /// the home is preserved for inspection rather than removed under it.
-pub(crate) fn failed_launch_error(
-    reason: &str,
-    home: tempfile::TempDir,
-    port: u16,
-) -> String {
+pub(crate) fn failed_launch_error(reason: &str, home: tempfile::TempDir, port: u16) -> String {
     // Parent-selected authority survives even when the launch child never
     // executes or writes a receipt. Keep it separate from cleanup's response.
     let request = launch_request_context(home.path(), port);
@@ -1564,7 +1559,6 @@ impl LiveFirefox {
             std::thread::sleep(Duration::from_millis(200));
         }
     }
-
 }
 
 pub fn output_note(out: &std::process::Output) -> String {

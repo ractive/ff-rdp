@@ -1,14 +1,17 @@
 //! Bounded, non-Firefox controls for the two closing1 follow-ups.
-//! Browser replies are scripted; CLI, daemon auth/ref storage, command parsing,
+//! Browser replies are scripted; CLI command parsing, ref resolution,
 //! navigation, page collection and home assembly execute their real paths.
+//! Every command opens its own connection, so the scripted peer accepts one
+//! connection per command and keeps its browser state across them.
 #[path = "../common/home_ref_flow.rs"]
 mod home_ref_flow;
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
-use std::sync::{Arc, Mutex, mpsc};
+use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -64,6 +67,7 @@ fn sentinel(value: &Value) -> Value {
 struct Peer {
     port: u16,
     socket: Arc<Mutex<Option<TcpStream>>>,
+    stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<Vec<String>>>,
 }
 
@@ -73,172 +77,189 @@ impl Peer {
         let port = listener.local_addr().unwrap().port();
         let socket = Arc::new(Mutex::new(None));
         let acquired = Arc::clone(&socket);
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = Arc::clone(&stop);
         let worker = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("owned peer accept");
-            *acquired.lock().unwrap() = Some(stream.try_clone().unwrap());
-            stream
-                .set_read_timeout(Some(Duration::from_secs(10)))
-                .unwrap();
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            send(
-                &mut stream,
-                &json!({"from":"root","applicationType":"browser",
-                "traits":{},"ua":"Firefox/156.0"}),
-            );
             let mut actions = 0;
             let mut destination = false;
             let mut teardown = false;
             let mut sequence = 0;
             let mut transcript = Vec::new();
-            while let Ok(request) = recv_from(&mut reader) {
-                let kind = request["type"].as_str().expect("request type");
-                let to = request["to"].as_str().unwrap_or("root");
-                match kind {
-                    "listTabs" => {
-                        let url = if destination { DESTINATION } else { ORIGIN };
-                        transcript.push(format!("listTabs:{url}"));
-                        send(
-                            &mut stream,
-                            &json!({"from":"root","tabs":[{
+            loop {
+                let (mut stream, _) = listener.accept().expect("owned peer accept");
+                if stopped.load(Ordering::SeqCst) {
+                    break;
+                }
+                *acquired.lock().unwrap() = Some(stream.try_clone().unwrap());
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                send(
+                    &mut stream,
+                    &json!({"from":"root","applicationType":"browser",
+                "traits":{},"ua":"Firefox/156.0"}),
+                );
+                while let Ok(request) = recv_from(&mut reader) {
+                    let kind = request["type"].as_str().expect("request type");
+                    let to = request["to"].as_str().unwrap_or("root");
+                    match kind {
+                        "listTabs" => {
+                            let url = if destination { DESTINATION } else { ORIGIN };
+                            transcript.push(format!("listTabs:{url}"));
+                            send(
+                                &mut stream,
+                                &json!({"from":"root","tabs":[{
                             "actor":"tab","browsingContextID":16,"selected":true,
                             "url":url,"title":if destination {"t212 clicked"} else {"t212 home"}}]}),
-                        );
-                    }
-                    "getTarget" => {
-                        let mut form = target();
-                        if destination {
-                            form["url"] = json!(DESTINATION);
+                            );
                         }
-                        send(&mut stream, &json!({"from":"tab","frame":form}));
-                    }
-                    "getWatcher" => send(&mut stream, &json!({"from":"tab","actor":"watcher"})),
-                    "watchTargets" => {
-                        send(
-                            &mut stream,
-                            &json!({"from":"watcher","type":"target-available-form","target":target()}),
-                        );
-                        send(&mut stream, &json!({"from":"watcher"}));
-                    }
-                    "watchResources" => send(&mut stream, &json!({"from":"watcher"})),
-                    "unwatchResources" | "unwatchTargets" => {
-                        teardown = true;
-                        transcript.push(kind.to_owned());
-                        // Both protocol requests are one-way; invent no reply.
-                    }
-                    "listFrames" => {
-                        // Synchronous transition seam: the first actual target
-                        // metadata acquisition after dispatch releases takeover.
-                        // A bare click reaches the next home's listTabs first;
-                        // --with-page acquires before that home invocation.
-                        if actions > 0 && !scenario.is_navigation() {
-                            destination = true;
-                            transcript.push("destination-acquired".into());
+                        "getTarget" => {
+                            // Transition seam on a direct connection: the first
+                            // target acquisition after the click dispatched hands
+                            // over the destination document.
+                            if actions > 0 && !scenario.is_navigation() && !destination {
+                                destination = true;
+                                transcript.push("destination-acquired".into());
+                            }
+                            let mut form = target();
+                            if destination {
+                                form["url"] = json!(DESTINATION);
+                            }
+                            send(&mut stream, &json!({"from":"tab","frame":form}));
                         }
-                        send(
-                            &mut stream,
-                            &json!({"from":to,"frames":[{"isTopLevel":true,
+                        "getWatcher" => send(&mut stream, &json!({"from":"tab","actor":"watcher"})),
+                        "watchTargets" => {
+                            send(
+                                &mut stream,
+                                &json!({"from":"watcher","type":"target-available-form","target":target()}),
+                            );
+                            send(&mut stream, &json!({"from":"watcher"}));
+                        }
+                        "watchResources" => send(&mut stream, &json!({"from":"watcher"})),
+                        "unwatchResources" | "unwatchTargets" => {
+                            teardown = true;
+                            transcript.push(kind.to_owned());
+                            // Both protocol requests are one-way; invent no reply.
+                        }
+                        "listFrames" => {
+                            // Synchronous transition seam: the first actual target
+                            // metadata acquisition after dispatch releases takeover.
+                            // A bare click reaches the next home's listTabs first;
+                            // --with-page acquires before that home invocation.
+                            if actions > 0 && !scenario.is_navigation() && !destination {
+                                destination = true;
+                                transcript.push("destination-acquired".into());
+                            }
+                            send(
+                                &mut stream,
+                                &json!({"from":to,"frames":[{"isTopLevel":true,
                             "url":if destination {DESTINATION} else {ORIGIN}}]}),
-                        );
-                    }
-                    "navigateTo" => {
-                        assert!(scenario.is_navigation());
-                        actions += 1;
-                        assert_eq!(actions, 1, "dispatch is never retried");
-                        assert_eq!(request["url"], DESTINATION);
-                        destination = scenario == Scenario::Events;
-                        transcript.push("navigate".into());
-                        send(&mut stream, &json!({"from":"target"}));
-                        send(
-                            &mut stream,
-                            &json!({"from":"watcher","type":"resources-available-array",
-                            "array":[["network-event",[{"resourceId":7,"actor":"network7",
-                            "url":DESTINATION,"method":"GET","cause":{"type":"document"},
-                            "isNavigationRequest":true,"browsingContextID":16,"innerWindowId":1}]]]}),
-                        );
-                        send(
-                            &mut stream,
-                            &json!({"from":"watcher","type":"resources-updated-array",
-                            "array":[["network-event",[{"resourceId":7,"resourceUpdates":{"status":"200"}}]]]}),
-                        );
-                        if scenario == Scenario::Events {
+                            );
+                        }
+                        "navigateTo" => {
+                            assert!(scenario.is_navigation());
+                            actions += 1;
+                            assert_eq!(actions, 1, "dispatch is never retried");
+                            assert_eq!(request["url"], DESTINATION);
+                            destination = scenario == Scenario::Events;
+                            transcript.push("navigate".into());
+                            send(&mut stream, &json!({"from":"target"}));
                             send(
                                 &mut stream,
                                 &json!({"from":"watcher","type":"resources-available-array",
-                                "array":[["document-event",[{"name":"dom-complete","url":DESTINATION}]]]}),
+                            "array":[["network-event",[{"resourceId":7,"actor":"network7",
+                            "url":DESTINATION,"method":"GET","cause":{"type":"document"},
+                            "isNavigationRequest":true,"browsingContextID":16,"innerWindowId":1}]]]}),
                             );
-                        }
-                    }
-                    "evaluateJSAsync" => {
-                        sequence += 1;
-                        let js = request["text"].as_str().expect("evaluation source");
-                        let value = if scenario.is_navigation() {
-                            let committed = destination || teardown;
-                            if js.contains("readyState: document.readyState") {
-                                json!(json!({"readyState":"complete","href":if committed {DESTINATION} else {ORIGIN},
-                                    "epoch":if committed {2.0} else {1.0}}).to_string())
-                            } else if js.contains("var h = window.location.href") {
-                                if committed {
-                                    json!(DESTINATION)
-                                } else {
-                                    Value::Null
-                                }
-                            } else if js.contains("performance.timing.navigationStart") {
-                                json!(if committed { 2.0 } else { 1.0 })
-                            } else if js.contains("window.location.href") {
-                                json!(if committed { DESTINATION } else { ORIGIN })
-                            } else {
-                                panic!("unhandled navigation eval: {js}");
-                            }
-                        } else if js.contains("headings") && js.contains("interactive") {
-                            let heading = if destination {
-                                if scenario == Scenario::WrongHeading {
-                                    "Wrong destination"
-                                } else {
-                                    "Arrived"
-                                }
-                            } else {
-                                "Ambient context"
-                            };
-                            transcript.push(format!("page:{heading}"));
-                            sentinel(
-                                &json!({"headings":[{"level":1,"text":heading}],"landmarks":[],
-                                "interactive":if destination {json!([])} else {json!([{"role":"link",
-                                    "name":"Follow me","href":"/clicked","__resolver":"#go"}])},
-                                "reader_missing":false,"readerable":false,"text":"","source":"fallback"}),
-                            )
-                        } else if js.contains("dispatchEvent") {
-                            assert!(js.contains("#go"), "real daemon resolved the minted ref");
-                            actions += 1;
-                            assert_eq!(actions, 1);
-                            transcript.push("click-resolved-ref".into());
-                            // Latch the announcement before the click's eval
-                            // completion. No target acquisition is performed here.
                             send(
                                 &mut stream,
-                                &json!({"from":"target","type":"tabNavigated",
-                                "state":"start","url":DESTINATION}),
+                                &json!({"from":"watcher","type":"resources-updated-array",
+                            "array":[["network-event",[{"resourceId":7,"resourceUpdates":{"status":"200"}}]]]}),
                             );
-                            sentinel(&json!({"clicked":true,"matched":true,"reachable":true,
+                            if scenario == Scenario::Events {
+                                send(
+                                    &mut stream,
+                                    &json!({"from":"watcher","type":"resources-available-array",
+                                "array":[["document-event",[{"name":"dom-complete","url":DESTINATION}]]]}),
+                                );
+                            }
+                        }
+                        "evaluateJSAsync" => {
+                            sequence += 1;
+                            let js = request["text"].as_str().expect("evaluation source");
+                            let value = if scenario.is_navigation() {
+                                let committed = destination || teardown;
+                                if js.contains("readyState: document.readyState") {
+                                    json!(json!({"readyState":"complete","href":if committed {DESTINATION} else {ORIGIN},
+                                    "epoch":if committed {2.0} else {1.0}}).to_string())
+                                } else if js.contains("var h = window.location.href") {
+                                    if committed {
+                                        json!(DESTINATION)
+                                    } else {
+                                        Value::Null
+                                    }
+                                } else if js.contains("performance.timing.navigationStart") {
+                                    json!(if committed { 2.0 } else { 1.0 })
+                                } else if js.contains("window.location.href") {
+                                    json!(if committed { DESTINATION } else { ORIGIN })
+                                } else {
+                                    panic!("unhandled navigation eval: {js}");
+                                }
+                            } else if js.contains("headings") && js.contains("interactive") {
+                                let heading = if destination {
+                                    if scenario == Scenario::WrongHeading {
+                                        "Wrong destination"
+                                    } else {
+                                        "Arrived"
+                                    }
+                                } else {
+                                    "Ambient context"
+                                };
+                                transcript.push(format!("page:{heading}"));
+                                sentinel(
+                                    &json!({"headings":[{"level":1,"text":heading}],"landmarks":[],
+                                "interactive":if destination {json!([])} else {json!([{"role":"link",
+                                    "name":"Follow me","href":"/clicked","ref":"e1"}])},
+                                "reader_missing":false,"readerable":false,"text":"","source":"fallback"}),
+                                )
+                            } else if js.contains("dispatchEvent") {
+                                assert!(
+                                    js.contains("data-ffrdp-ref"),
+                                    "the click resolved the in-page ref"
+                                );
+                                actions += 1;
+                                assert_eq!(actions, 1);
+                                transcript.push("click-resolved-ref".into());
+                                // Latch the announcement before the click's eval
+                                // completion. No target acquisition is performed here.
+                                send(
+                                    &mut stream,
+                                    &json!({"from":"target","type":"tabNavigated",
+                                "state":"start","url":DESTINATION}),
+                                );
+                                sentinel(&json!({"clicked":true,"matched":true,"reachable":true,
                                 "tag":"A","text":"Follow me","obscured_by":null}))
-                        } else if js == "document.readyState === 'complete'" {
-                            transcript.push("destination-readiness".into());
-                            json!(scenario != Scenario::Unready)
-                        } else if js.contains("querySelectorAll") {
-                            json!(r#"{"matchCount":1,"hidden":false}"#)
-                        } else if js.contains("getComputedStyle") {
-                            sentinel(&json!({"ready":true,"tag":"A","text":"Follow me"}))
-                        } else if js.contains("getBoundingClientRect") {
-                            json!("[0,0,10,10]")
-                        } else {
-                            panic!("unhandled home/click eval: {js}");
-                        };
-                        evaluate(&mut stream, &value, sequence);
+                            } else if js == "document.readyState === 'complete'" {
+                                transcript.push("destination-readiness".into());
+                                json!(scenario != Scenario::Unready)
+                            } else if js.contains("querySelectorAll") {
+                                json!(r#"{"matchCount":1,"hidden":false}"#)
+                            } else if js.contains("getComputedStyle") {
+                                sentinel(&json!({"ready":true,"tag":"A","text":"Follow me"}))
+                            } else if js.contains("getBoundingClientRect") {
+                                json!("[0,0,10,10]")
+                            } else {
+                                panic!("unhandled home/click eval: {js}");
+                            };
+                            evaluate(&mut stream, &value, sequence);
+                        }
+                        "startListeners" => {
+                            send(&mut stream, &json!({"from":to,"startedListeners":[]}));
+                        }
+                        "release" => {}
+                        other => panic!("unexpected scripted peer request: {other}: {request}"),
                     }
-                    "startListeners" => {
-                        send(&mut stream, &json!({"from":to,"startedListeners":[]}));
-                    }
-                    "release" => {}
-                    other => panic!("unexpected scripted peer request: {other}: {request}"),
                 }
             }
             transcript.push("peer-return".into());
@@ -247,17 +268,18 @@ impl Peer {
         Self {
             port,
             socket,
+            stop,
             worker: Some(worker),
         }
     }
 
     fn finish(&mut self) -> Vec<String> {
+        self.stop.store(true, Ordering::SeqCst);
         if let Some(socket) = self.socket.lock().unwrap().as_ref() {
             let _ = socket.shutdown(Shutdown::Both);
-        } else {
-            // Unblock only our own accept if a command failed before connect.
-            let _ = TcpStream::connect(("127.0.0.1", self.port));
         }
+        // Wake our own accept so the loop observes `stop`.
+        let _ = TcpStream::connect(("127.0.0.1", self.port));
         self.worker
             .take()
             .expect("peer owned once")
@@ -271,88 +293,6 @@ impl Drop for Peer {
         if self.worker.is_some() {
             // Panic cleanup must not turn an unjoined endpoint into a pass.
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.finish()));
-        }
-    }
-}
-
-struct Daemon {
-    child: Option<Child>,
-    stderr: Option<JoinHandle<String>>,
-    stdout: tempfile::NamedTempFile,
-}
-
-impl Daemon {
-    fn start(port: u16, home: &Path) -> Self {
-        // A regular file cannot backpressure the daemon like an undrained pipe.
-        let stdout = tempfile::NamedTempFile::new_in(home).expect("owned daemon stdout file");
-        let mut child = command(port, home)
-            .arg("_daemon")
-            .stdout(stdout.reopen().expect("daemon stdout writer"))
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("real daemon spawn");
-        let stderr = child.stderr.take().unwrap();
-        let (ready_tx, ready_rx) = mpsc::channel();
-        let stderr = std::thread::spawn(move || {
-            let mut text = String::new();
-            for line in BufReader::new(stderr).lines() {
-                let line = line.expect("daemon stderr");
-                if line.starts_with("daemon: listening on port ") {
-                    let _ = ready_tx.send(());
-                }
-                text.push_str(&line);
-                text.push('\n');
-            }
-            text
-        });
-        let guard = Self {
-            child: Some(child),
-            stderr: Some(stderr),
-            stdout,
-        };
-        ready_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("actual daemon listening marker");
-        guard
-    }
-
-    fn finish(&mut self) -> (Vec<u8>, String) {
-        let status = self
-            .child
-            .take()
-            .unwrap()
-            .wait()
-            .expect("actual daemon wait");
-        let stderr = self
-            .stderr
-            .take()
-            .unwrap()
-            .join()
-            .expect("stderr reader actual join");
-        // Read only after the actual child wait and existing stderr-reader join.
-        let stdout = std::fs::read(self.stdout.path()).expect("read actual daemon stdout");
-        assert!(
-            status.success(),
-            "daemon exit {status}: stdout={} stderr={stderr}",
-            String::from_utf8_lossy(&stdout)
-        );
-        assert!(
-            stderr.contains("shut down after joining all acquired workers"),
-            "stdout={} stderr={stderr}",
-            String::from_utf8_lossy(&stdout)
-        );
-        (stdout, stderr)
-    }
-}
-
-impl Drop for Daemon {
-    fn drop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        if let Some(stderr) = self.stderr.take() {
-            let _ = stderr.join();
         }
     }
 }
@@ -445,7 +385,6 @@ fn home_control(scenario: Scenario, expected_rejection: Option<&str>) {
     let label = format!("{scenario:?}");
     let home = tempfile::tempdir().unwrap();
     let mut peer = Peer::start(scenario);
-    let mut daemon = Daemon::start(peer.port, home.path());
     let mut outputs = Vec::new();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         home_ref_flow::check(ORIGIN, |args| {
@@ -463,29 +402,11 @@ fn home_control(scenario: Scenario, expected_rejection: Option<&str>) {
     }));
     // Even the expected-before URL assertion is deferred until these actual
     // joins complete; every failed transcript remains available to the runner.
-    let stop = run_command(
-        command(peer.port, home.path()).args(["daemon", "stop"]),
-        &label,
-        outputs.len(),
-    );
-    assert!(stop.status.success(), "daemon stop failed: {stop:?}");
-    let daemon_pid = daemon.child.as_ref().unwrap().id();
-    let (stdout, stderr) = daemon.finish();
     let transcript = peer.finish();
-    archive(&label, "daemon.stdout", &stdout);
-    archive(&label, "daemon.stderr", stderr.as_bytes());
     archive(
         &label,
         "peer.json",
         serde_json::to_vec_pretty(&transcript).unwrap().as_slice(),
-    );
-    archive(
-        &label,
-        "joins.json",
-        serde_json::to_vec_pretty(&json!({"daemon_pid":daemon_pid,
-        "daemon_waited":true,"stderr_joined":true,"peer_joined":true}))
-        .unwrap()
-        .as_slice(),
     );
     let click = transcript
         .iter()
@@ -560,7 +481,7 @@ fn navigate_diagnostics_execute_real_event_and_fallback_paths() {
         // surrounding libtest process alone is deliberately not our evidence.
         let output = run_command(command(peer.port, home.path())
             .env("RUST_LOG", "ff_rdp_core::transport=trace,ff_rdp_cli::navigation_166_diagnostic=debug,ff_rdp_cli::commands::navigate=debug")
-            .args(["--no-daemon","navigate",DESTINATION]), &label, 0);
+            .args(["navigate",DESTINATION]), &label, 0);
         let transcript = peer.finish();
         archive(
             &label,

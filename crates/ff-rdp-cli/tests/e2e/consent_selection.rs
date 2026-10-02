@@ -1316,7 +1316,6 @@ fn selection(scenario: Scenario, expected_actors: &[&str], expected: Expected) {
     cmd.args([
         "--host",
         "127.0.0.1",
-        "--no-daemon",
         "--port",
         &port.to_string(),
         "--timeout",

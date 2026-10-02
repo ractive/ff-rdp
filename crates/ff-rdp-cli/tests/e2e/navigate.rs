@@ -10,7 +10,7 @@ fn ff_rdp_bin() -> std::path::PathBuf {
 #[test]
 fn e2e_147_privileged_navigation_rejected_before_connect() {
     use std::net::TcpListener;
-    for direct in [false, true] {
+    {
         for blocked in [
             "about:support",
             "ABOUT:SUPPORT",
@@ -36,9 +36,6 @@ fn e2e_147_privileged_navigation_rejected_before_connect() {
                     "--timeout",
                     "100",
                 ]);
-                if direct {
-                    command.arg("--no-daemon");
-                }
                 let output = command
                     .args(&args)
                     .output()
@@ -58,10 +55,10 @@ fn e2e_147_privileged_navigation_rejected_before_connect() {
                     std::io::ErrorKind::WouldBlock,
                     "connection attempted: {args:?}"
                 );
-                // The default route must not have started a proxy daemon either.
+                // Nothing may be written under the state home either.
                 assert!(
                     !home.path().join(".ff-rdp").exists(),
-                    "daemon side effect: {args:?}"
+                    "state side effect: {args:?}"
                 );
             }
         }
@@ -77,7 +74,6 @@ fn base_args(port: u16) -> Vec<String> {
         // Short timeout so the event drain loop exits quickly.
         "--timeout".to_owned(),
         "1000".to_owned(),
-        "--no-daemon".to_owned(),
     ]
 }
 
@@ -619,10 +615,7 @@ fn e2e_279_navigation_timing_records_same_command() {
                 "output_end",
             ][..],
         ),
-        (
-            "connect",
-            &["entry", "route_resolved", "greeted", "attached"][..],
-        ),
+        ("connect", &["entry", "greeted", "attached"][..]),
         ("list_tabs", &["entry", "parsed"][..]),
         (
             "attach",

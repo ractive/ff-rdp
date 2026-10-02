@@ -1306,7 +1306,6 @@ pub fn recv_event_from(
     }
 }
 
-
 /// Encode a JSON string as a Firefox RDP frame: `"{len}:{json}"`.
 pub fn encode_frame(json: &str) -> String {
     format!("{}:{}", json.len(), json)
@@ -2976,7 +2975,6 @@ mod tests {
         server_thread.join().unwrap();
     }
 
-
     /// `recv_event_from` must surface an error reply from the target actor
     /// instead of silently skipping it. This regression was originally exposed
     /// by the old ThreadActor attach event waiter (replaced in iteration 286).
@@ -3368,4 +3366,3 @@ mod tests {
         );
     }
 }
-
