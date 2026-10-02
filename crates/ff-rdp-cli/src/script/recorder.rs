@@ -436,11 +436,7 @@ mod tests {
 
         let content = std::fs::read_to_string(&final_path).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
-        assert!(
-            parsed["steps"].as_array().unwrap().is_empty(),
-            "expected empty, got {:?}",
-            parsed["steps"].as_array().unwrap()
-        );
+        assert!(parsed["steps"].as_array().unwrap().is_empty());
     }
 
     /// B2: Recording a type step into a password selector auto-sets secret: true.

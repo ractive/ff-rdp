@@ -483,11 +483,7 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(events[0]["url"], "https://a.com");
         assert_eq!(events[1]["url"], "https://b.com");
-        assert!(
-            buf.drain("network-event").is_empty(),
-            "expected empty, got {:?}",
-            buf.drain("network-event")
-        );
+        assert!(buf.drain("network-event").is_empty());
     }
 
     #[test]

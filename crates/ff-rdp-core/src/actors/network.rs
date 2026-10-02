@@ -426,11 +426,7 @@ mod tests {
         assert_eq!(si.protocol_version.as_deref(), Some("TLSv1.3"));
         assert_eq!(si.cipher_suite.as_deref(), Some("TLS_AES_128_GCM_SHA256"));
         assert_eq!(si.hsts, Some(true));
-        assert!(
-            si.weakness_reasons.is_empty(),
-            "expected empty, got {:?}",
-            si.weakness_reasons
-        );
+        assert!(si.weakness_reasons.is_empty());
         let cert = si.cert.expect("cert present");
         assert_eq!(cert.subject.as_deref(), Some("example.com"));
         assert_eq!(

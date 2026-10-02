@@ -178,11 +178,7 @@ mod tests {
         let reply = front
             .get_cached_messages(&mut transport, &["PageError"])
             .unwrap();
-        assert!(
-            reply.messages.is_empty(),
-            "expected empty, got {:?}",
-            reply.messages
-        );
+        assert!(reply.messages.is_empty());
         t.join().unwrap();
     }
 }

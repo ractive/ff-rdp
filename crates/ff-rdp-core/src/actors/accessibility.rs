@@ -527,11 +527,7 @@ mod tests {
         assert!(node.name.is_none());
         assert!(node.value.is_none());
         assert!(node.actor.is_none());
-        assert!(
-            node.states.is_empty(),
-            "expected empty, got {:?}",
-            node.states
-        );
+        assert!(node.states.is_empty());
     }
 
     #[test]

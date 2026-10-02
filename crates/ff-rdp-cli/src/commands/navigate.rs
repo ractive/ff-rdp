@@ -3786,11 +3786,7 @@ mod tests {
     #[test]
     fn wait_for_empty_slice_is_none() {
         let opts = default_wait_opts();
-        assert!(
-            opts.wait_for.is_empty(),
-            "expected empty, got {:?}",
-            opts.wait_for
-        );
+        assert!(opts.wait_for.is_empty());
     }
 
     // -----------------------------------------------------------------------

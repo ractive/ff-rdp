@@ -1165,7 +1165,7 @@ mod tests {
         let node = json!({"role": "button", "name": "OK"});
         let mut out = Vec::new();
         flatten_tree(&node, &mut out, Some(0));
-        assert!(out.is_empty(), "expected empty, got {out:?}");
+        assert!(out.is_empty());
     }
 
     #[test]

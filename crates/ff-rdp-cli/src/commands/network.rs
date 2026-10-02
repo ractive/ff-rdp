@@ -1389,11 +1389,7 @@ mod tests {
         let s = build_network_summary(&[], false);
         assert_eq!(s["total_requests"], 0);
         assert_eq!(s["total_transfer_bytes"], 0.0);
-        assert!(
-            s["slowest"].as_array().unwrap().is_empty(),
-            "expected empty, got {:?}",
-            s["slowest"].as_array().unwrap()
-        );
+        assert!(s["slowest"].as_array().unwrap().is_empty());
         assert_eq!(s["timeout_reached"], false);
         // iter-128 Theme A: `hint` is always present (null when nothing to
         // hint), never omitted — the key set must not vary with content.

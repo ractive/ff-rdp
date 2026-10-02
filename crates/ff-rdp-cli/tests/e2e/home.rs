@@ -79,11 +79,7 @@ fn e2e_212_home_json_carries_state_and_hints() {
     let results = &json["results"];
     assert_eq!(results["browser"]["reachable"], serde_json::json!(false));
     assert_eq!(results["page"], serde_json::Value::Null);
-    assert!(
-        results["tabs"].as_array().expect("tabs array").is_empty(),
-        "expected empty, got {:?}",
-        results["tabs"].as_array().expect("tabs array")
-    );
+    assert!(results["tabs"].as_array().expect("tabs array").is_empty());
     assert!(
         results["bin"].as_str().is_some_and(|b| !b.is_empty()),
         "the view must name the binary that produced it: {results}"

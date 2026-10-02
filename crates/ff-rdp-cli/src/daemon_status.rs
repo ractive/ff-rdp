@@ -131,11 +131,7 @@ mod tests {
         assert_eq!(warnings[0].warning_type, AUTOSTART_FAILED_TYPE);
         assert!(warnings[0].reason.contains("registry not found"));
         // Second take is empty — the first drained it.
-        assert!(
-            take_warnings().is_empty(),
-            "expected empty, got {:?}",
-            take_warnings()
-        );
+        assert!(take_warnings().is_empty());
     }
 
     #[test]

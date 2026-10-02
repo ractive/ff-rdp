@@ -263,7 +263,11 @@ fn main() {
                 );
             }
             // Match clap's exit behavior.
-            std::process::exit(if is_help_or_version { 0 } else { 2 });
+            if is_help_or_version {
+                std::process::exit(0);
+            } else {
+                std::process::exit(2);
+            }
         }
     };
 

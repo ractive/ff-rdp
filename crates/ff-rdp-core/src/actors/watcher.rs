@@ -1357,11 +1357,7 @@ mod tests {
     #[test]
     fn extract_grips_empty_on_no_grips() {
         let event = json!({"type": "resources-available-array", "array": []});
-        assert!(
-            extract_grips(&event).is_empty(),
-            "expected empty, got {:?}",
-            extract_grips(&event)
-        );
+        assert!(extract_grips(&event).is_empty());
     }
 
     #[test]

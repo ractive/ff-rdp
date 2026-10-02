@@ -213,11 +213,7 @@ mod tests {
             result.manifest.is_none(),
             "a page with no manifest yields manifest: None"
         );
-        assert!(
-            result.errors.is_empty(),
-            "expected empty, got {:?}",
-            result.errors
-        );
+        assert!(result.errors.is_empty());
         t.join().unwrap();
     }
 

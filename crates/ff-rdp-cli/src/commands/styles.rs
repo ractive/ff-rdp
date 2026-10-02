@@ -375,7 +375,7 @@ mod tests {
         let items = make_items();
         let props = vec!["nonexistent-prop".to_string()];
         let result = apply_properties_filter(items, Some(&props));
-        assert!(result.is_empty(), "expected empty, got {result:?}");
+        assert!(result.is_empty());
     }
 
     // ---------------------------------------------------------------------------

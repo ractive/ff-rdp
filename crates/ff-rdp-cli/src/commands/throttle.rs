@@ -451,7 +451,7 @@ mod tests {
         let mut args = base_args();
         args.unblock = true;
         let urls = resolve_block_urls(&args);
-        assert!(urls.is_empty(), "expected empty, got {urls:?}");
+        assert!(urls.is_empty());
         assert!(wants_block_change(&args), "--unblock must trigger a send");
 
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind stub Firefox");

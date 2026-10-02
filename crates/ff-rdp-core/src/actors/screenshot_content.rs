@@ -218,7 +218,7 @@ mod tests {
 
     #[test]
     fn capture_methods_is_non_empty() {
-        assert!(!CAPTURE_METHODS.is_empty(), "expected a non-empty value");
+        assert!(!CAPTURE_METHODS.is_empty());
         assert_eq!(CAPTURE_METHODS[0], "captureScreenshot");
     }
 

@@ -1039,11 +1039,7 @@ mod tests {
             tabs[0].get("actor").is_none(),
             "the actor id is not part of the home view"
         );
-        assert!(
-            normalize_tabs(&[]).is_empty(),
-            "expected empty, got {:?}",
-            normalize_tabs(&[])
-        );
+        assert!(normalize_tabs(&[]).is_empty());
     }
 
     /// The description an agent reads at session start comes from the same
