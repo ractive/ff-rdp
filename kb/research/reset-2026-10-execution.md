@@ -21,7 +21,7 @@ investigate a historical flake.
 | 1 | 286 `sources` native-path fix from archived patch; `dom --frames` hint fix | agent (Rust) | done | #285 (ff22b7cb) |
 | 2 | Process cut: CLAUDE.md, skills, plan template, `live.yml` nightly, quarantine rule, timing assertions removed, AGENTS.md reset, close 259/266/268/293/294 + PR #281, roadmap done | agent (process) | done | #286 (4def27f4) |
 | 3 | Daemon deletion; refs in-page; throttle/emulate per-call or removed; capture-mode docs | agent (Rust) | done | #287 (fcb4a439) |
-| 4a | Env-var and iteration-hook purge; help drift; deprecated aliases; `allow(dead_code)` | agent (Rust) | in-progress | |
+| 4a | Env-var and iteration-hook purge; help drift; deprecated aliases; `allow(dead_code)` | agent (Rust) | in-review | #290 |
 | 4b | `actors`/`fronts` collapse; launch/profile simplification | agent (Rust) | in-progress | |
 | 5 | Watch nightly live run for a week; then product features | session | planned | |
 
