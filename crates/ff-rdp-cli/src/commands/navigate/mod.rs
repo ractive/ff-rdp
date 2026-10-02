@@ -101,7 +101,7 @@ pub enum WaitStrategy {
 /// before the navigation has actually completed.  Callers should be aware of
 /// this when reusing the same selector or text across navigations.
 // Field names intentionally carry the `wait_` prefix to match the CLI flags
-// they correspond to (--wait-text, --wait-selector, --wait-timeout).
+// they correspond to (--wait-text, --wait-selector, --timeout-ms).
 #[allow(clippy::struct_field_names)]
 pub struct WaitAfterNav<'a> {
     /// Wait until this text appears anywhere on the page body.
@@ -605,7 +605,7 @@ fn wait_after_navigate(
 
     let condition = describe_wait_condition(opts);
     let timeout_msg = format!(
-        "navigate wait timed out after {}ms — condition not met: {condition}; increase with --wait-timeout",
+        "navigate wait timed out after {}ms — condition not met: {condition}; increase with --timeout-ms",
         opts.wait_timeout
     );
 

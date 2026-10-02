@@ -538,7 +538,7 @@ fn navigate_wait_text_reresolves_console_actor_after_navigate() {
         "https://example.com".to_owned(),
         "--wait-text".to_owned(),
         "Success".to_owned(),
-        "--wait-timeout".to_owned(),
+        "--timeout-ms".to_owned(),
         "5000".to_owned(),
     ]);
 

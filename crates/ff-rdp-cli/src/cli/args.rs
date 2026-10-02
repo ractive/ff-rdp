@@ -16,7 +16,7 @@ COMMAND REFERENCE:
     ff-rdp tabs
 
   Navigate & wait:
-    ff-rdp navigate <URL> [--with-page] [--with-network] [--wait-text T | --wait-selector S] [--wait-timeout MS]
+    ff-rdp navigate <URL> [--with-page] [--with-network] [--wait-text T | --wait-selector S] [--timeout-ms MS]
     ff-rdp reload [--with-page] [--wait-idle [--idle-ms MS] [--reload-timeout MS]]
     ff-rdp back | forward [--with-page]
     ff-rdp wait --selector S | --text T | --eval JS [--timeout-ms MS]
@@ -1609,7 +1609,7 @@ pub struct NavigateArgs {
     #[arg(long, conflicts_with = "wait_text")]
     pub wait_selector: Option<String>,
     /// Timeout for the --wait-text/--wait-selector condition in milliseconds. If the condition is not met within this time, the command fails with an error showing the elapsed time.
-    #[arg(long, default_value_t = 5000)]
+    #[arg(long = "timeout-ms", default_value_t = 5000)]
     pub wait_timeout: u64,
     /// Skip waiting for the new document to commit; return immediately after the navigate request is acknowledged (pre-61g fire-and-forget behaviour).
     #[arg(long)]
