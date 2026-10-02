@@ -97,7 +97,7 @@ delegated prompts.
   optional).
 - Plan `status:` is `planned | in-progress | in-review | done | obsolete` — `done`, never
   `completed`.
-- Follow-up work goes in the PR body or a GitHub issue; file a new plan only for real product work.
+- Follow-up work goes in `kb/backlog.md` (one line per item, with the PR it came from), ticked in the same commit as the fix; file a new plan only for product work that needs design. Not GitHub issues.
 
 Why the process was cut back on 2026-10-02: `kb/research/step-back-2026-10-02.md` and
 `kb/discipline-rationale.md`. Contributor details: `CONTRIBUTING.md`. The repo has no pre-commit
