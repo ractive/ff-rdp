@@ -72,9 +72,10 @@ fn resolve_selector_or_ref(
 /// `[data-ffrdp-ref="e<N>"]`. A navigation replaces the document and with it
 /// every ref; a stale ref then simply matches nothing.
 pub(crate) fn ref_selector(id: &str) -> Result<String, AppError> {
-    let valid = id
-        .strip_prefix('e')
-        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+    // Stamping produces `e1`, `e2`, … — no `e0`, no leading zeros.
+    let valid = id.strip_prefix('e').is_some_and(|n| {
+        !n.is_empty() && !n.starts_with('0') && n.bytes().all(|b| b.is_ascii_digit())
+    });
     if valid {
         Ok(format!(
             "[{}=\"{id}\"]",
@@ -84,6 +85,21 @@ pub(crate) fn ref_selector(id: &str) -> Result<String, AppError> {
         Err(AppError::User(format!(
             "--ref {id:?}: expected a ref like 'e3' from `snapshot`, `dom` or `--with-page`"
         )))
+    }
+}
+
+/// A `--ref` that matched nothing usually belongs to a page that has since
+/// navigated or re-rendered; say so instead of leaving a bare
+/// "no element matches `[data-ffrdp-ref=…]`".
+fn with_stale_ref_hint(err: AppError, selector: Option<&str>) -> AppError {
+    match (err, selector) {
+        (AppError::User(msg), Some(sel)) if is_ref_selector(sel) && msg.contains(sel) => {
+            AppError::User(format!(
+                "{msg}\nhint: refs are stamped in the page and die when it navigates or \
+                 re-renders the element — run `ff-rdp snapshot` / `a11y summary` again for a fresh ref"
+            ))
+        }
+        (err, _) => err,
     }
 }
 
@@ -282,7 +298,8 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
     // resolves to its `[data-ffrdp-ref=…]` attribute selector).
     let mut recording_resolved_selector: Option<String> = None;
 
-    let result = dispatch_inner(cli, &mut recording_resolved_selector);
+    let result = dispatch_inner(cli, &mut recording_resolved_selector)
+        .map_err(|e| with_stale_ref_hint(e, recording_resolved_selector.as_deref()));
 
     // If the command succeeded and a recording is active, append the step.
     if result.is_ok()
@@ -1153,8 +1170,23 @@ mod tests {
 
     #[test]
     fn ref_selector_rejects_anything_that_is_not_e_digits() {
-        for bad in ["", "e", "3", "E3", "e3a", "e-1", "button", "e3\"]"] {
+        for bad in [
+            "", "e", "3", "E3", "e3a", "e-1", "button", "e3\"]", "e0", "e007",
+        ] {
             assert!(ref_selector(bad).is_err(), "{bad:?} must be rejected");
         }
+    }
+}
+
+#[cfg(test)]
+mod ref_attr_tests {
+    #[test]
+    fn stamping_and_resolution_use_the_same_attribute() {
+        let attr = crate::commands::js_helpers::REF_ATTR;
+        assert!(
+            crate::commands::js_helpers::STAMP_REF_JS_FN.contains(&format!("'{attr}'")),
+            "STAMP_REF_JS_FN must stamp the attribute ref_selector resolves"
+        );
+        assert!(super::ref_selector("e4").unwrap().contains(attr));
     }
 }

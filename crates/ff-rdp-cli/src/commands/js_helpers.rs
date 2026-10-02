@@ -120,14 +120,23 @@ pub(crate) const REF_ATTR: &str = "data-ffrdp-ref";
 /// page's expandos) it restarts above the highest ref already in the document,
 /// so two calls can never hand out the same ref for different elements.
 ///
+/// A page that clones a stamped node (carousels, list templating) copies the
+/// attribute too; the first element an enumeration meets keeps the ref and any
+/// later element carrying the same one is re-stamped, so one call never hands
+/// out a ref twice.
+///
 /// Refs are top-document only: an element in another document (an iframe)
 /// gets `null`, because `--ref` resolves against the top document.
 pub(crate) const STAMP_REF_JS_FN: &str = r"
+  var __ffrdpRefsSeen = {};
   function __ffrdpStampRef(el) {
     if (!el || el.nodeType !== 1 || el.ownerDocument !== document) return null;
     var ATTR = 'data-ffrdp-ref';
     var existing = el.getAttribute(ATTR);
-    if (existing) return existing;
+    if (existing && !__ffrdpRefsSeen[existing]) {
+      __ffrdpRefsSeen[existing] = true;
+      return existing;
+    }
     var n = window.__ffrdp_refs;
     if (typeof n !== 'number') {
       n = 0;
@@ -141,6 +150,7 @@ pub(crate) const STAMP_REF_JS_FN: &str = r"
     try { window.__ffrdp_refs = n; } catch (e) { /* frozen window: the scan above covers it */ }
     var id = 'e' + n;
     el.setAttribute(ATTR, id);
+    __ffrdpRefsSeen[id] = true;
     return id;
   }
 ";

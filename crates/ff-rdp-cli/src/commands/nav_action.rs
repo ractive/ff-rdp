@@ -198,7 +198,8 @@ pub fn run_reload_wait_idle(
     // Subscribe to network events before reloading so we don't miss early requests.
     WatcherActor::watch_resources(ctx.transport_mut(), &watcher_actor, &["network-event"])
         .map_err(AppError::from)?;
-    let conditions_echo = super::network_conditions::apply(&mut ctx, &watcher_actor, conditions)?;
+    let conditions_applied =
+        super::network_conditions::apply(&mut ctx, &watcher_actor, conditions)?;
 
     // Send reload without reading the ack.
     let reload_packet = build_reload_packet(&target_actor, force);
@@ -207,9 +208,15 @@ pub fn run_reload_wait_idle(
     let (requests_observed, idle_at_ms) =
         drain_idle_events(ctx.transport_mut(), idle_ms, timeout_ms, cli.timeout)?;
 
-    // Unwatch to clean up server-side state.
-    let _ =
-        WatcherActor::unwatch_resources(ctx.transport_mut(), &watcher_actor, &["network-event"]);
+    // Unwatch to clean up server-side state — unless `--throttle`/`--block`
+    // are in force (unwatching tears them down before `--with-page`).
+    if conditions_applied.is_none() {
+        let _ = WatcherActor::unwatch_resources(
+            ctx.transport_mut(),
+            &watcher_actor,
+            &["network-event"],
+        );
+    }
 
     emit_reload_result(
         &mut ctx,
@@ -217,7 +224,7 @@ pub fn run_reload_wait_idle(
         requests_observed,
         idle_at_ms,
         force,
-        conditions_echo,
+        conditions_applied.as_ref(),
         page_args,
     )
 }
@@ -363,7 +370,7 @@ fn emit_reload_result(
     requests_observed: u64,
     idle_at_ms: u64,
     force: bool,
-    conditions_echo: Option<serde_json::Value>,
+    conditions_applied: Option<&super::network_conditions::Applied>,
     page_args: &crate::cli::args::PageViewArgs,
 ) -> Result<(), AppError> {
     let mut result = if force {
@@ -388,7 +395,7 @@ fn emit_reload_result(
     if let Some(obj) = result.as_object_mut() {
         obj.extend(super::navigate::not_observed_status());
     }
-    super::network_conditions::insert_echo(&mut result, conditions_echo);
+    super::network_conditions::insert_echo(&mut result, conditions_applied);
     // iter-210 Theme A: `--with-page`, collected last (after the idle drain)
     // so `reload --wait-idle --with-page` describes the settled document, not
     // whatever was on screen mid-reload. Previously dropped silently by the

@@ -376,16 +376,20 @@ fn build_js(selector: &str, mode: OutputMode) -> String {
             r"(function() {{
   var els = document.querySelectorAll('{escaped}');
   if (els.length === 0) return null;
-  if (els.length === 1) return els[0].outerHTML;
-  return '{JSON_SENTINEL}' + JSON.stringify(Array.from(els, function(e) {{ return e.outerHTML; }}));
+  // ff-rdp's own ref stamps are not page content.
+  function html(e) {{ return e.outerHTML.replace(/ data-ffrdp-ref=\x22e[0-9]+\x22/g, ''); }}
+  if (els.length === 1) return html(els[0]);
+  return '{JSON_SENTINEL}' + JSON.stringify(Array.from(els, html));
 }})()"
         ),
         OutputMode::InnerHtml => format!(
             r"(function() {{
   var els = document.querySelectorAll('{escaped}');
   if (els.length === 0) return null;
-  if (els.length === 1) return els[0].innerHTML;
-  return '{JSON_SENTINEL}' + JSON.stringify(Array.from(els, function(e) {{ return e.innerHTML; }}));
+  // ff-rdp's own ref stamps are not page content.
+  function html(e) {{ return e.innerHTML.replace(/ data-ffrdp-ref=\x22e[0-9]+\x22/g, ''); }}
+  if (els.length === 1) return html(els[0]);
+  return '{JSON_SENTINEL}' + JSON.stringify(Array.from(els, html));
 }})()"
         ),
         // iter-211 Theme C: `--text` returns the element's accessible name,
@@ -410,6 +414,7 @@ fn build_js(selector: &str, mode: OutputMode) -> String {
   function attrs(e) {{
     var o = {{}};
     for (var i = 0; i < e.attributes.length; i++) {{
+      if (e.attributes[i].name === 'data-ffrdp-ref') continue;
       o[e.attributes[i].name] = e.attributes[i].value;
     }}
     return o;
@@ -425,6 +430,7 @@ fn build_js(selector: &str, mode: OutputMode) -> String {
   function textAttrs(e) {{
     var o = {{}};
     for (var i = 0; i < e.attributes.length; i++) {{
+      if (e.attributes[i].name === 'data-ffrdp-ref') continue;
       o[e.attributes[i].name] = e.attributes[i].value;
     }}
     return {{textContent: e.textContent, attrs: o}};

@@ -1895,7 +1895,7 @@ pub(crate) fn wait_for_navigation_commit(
     let watcher_actor = get_navigation_watcher(ctx, &tab_actor)?;
     // `--throttle`/`--block` (reload): set on this connection's watcher before
     // the dispatch, so they govern the load this command waits for.
-    let conditions_echo = super::network_conditions::apply(ctx, &watcher_actor, conditions)?;
+    let conditions_applied = super::network_conditions::apply(ctx, &watcher_actor, conditions)?;
 
     let pre_nav_epoch = capture_pre_nav_epoch(ctx, "nav_action: pre-nav epoch eval");
 
@@ -2042,7 +2042,7 @@ pub(crate) fn wait_for_navigation_commit(
         "status": commit_info.http_status,
         "status_reason": commit_info.status_reason.map(StatusUnknown::as_str),
     });
-    super::network_conditions::insert_echo(&mut result, conditions_echo);
+    super::network_conditions::insert_echo(&mut result, conditions_applied.as_ref());
     Ok(result)
 }
 
@@ -2245,7 +2245,8 @@ pub fn run_core(
     trace_navigation_timing("setup", "watcher_ready", timing_origin, Instant::now());
     // `--throttle`/`--block`: set on this connection's watcher before
     // `navigateTo`, so they govern the load this command waits for.
-    let conditions_echo = super::network_conditions::apply(&mut ctx, &watcher_actor, conditions)?;
+    let conditions_applied =
+        super::network_conditions::apply(&mut ctx, &watcher_actor, conditions)?;
 
     // Missing baseline evidence stays absent, never a synthetic epoch zero.
     let pre_nav_epoch = if wait_opts.no_wait {
@@ -2641,7 +2642,7 @@ pub fn run_core(
         super::page_view::attach(cli, &mut ctx, &mut result, Some(cli.timeout), page_args)?;
     }
 
-    super::network_conditions::insert_echo(&mut result, conditions_echo);
+    super::network_conditions::insert_echo(&mut result, conditions_applied.as_ref());
     trace_navigation_timing("core", "return_before_drop", timing_origin, Instant::now());
     Ok(result)
 }
@@ -2885,7 +2886,8 @@ pub fn run_with_network(
         .map_err(AppError::from)?;
 
     // `--throttle`/`--block`: set on this watcher before `navigateTo`.
-    let conditions_echo = super::network_conditions::apply(&mut ctx, &watcher_actor, conditions)?;
+    let conditions_applied =
+        super::network_conditions::apply(&mut ctx, &watcher_actor, conditions)?;
 
     // iter-138 Theme G: wall-clock start, so the envelope's `elapsed_ms`
     // matches what plain `navigate` reports rather than being absent.
@@ -2958,9 +2960,16 @@ pub fn run_with_network(
     // Build the network entries array (no URL/method filtering here).
     let network_entries = build_network_entries(&all_resources, &update_map);
 
-    // Unwatch to clean up server-side resources.
-    let _ =
-        WatcherActor::unwatch_resources(ctx.transport_mut(), &watcher_actor, &["network-event"]);
+    // Unwatch to clean up server-side resources — unless `--throttle`/`--block`
+    // are in force: unwatching `network-event` would tear them down before the
+    // wait conditions and `--with-page` below. The connection's end cleans up.
+    if conditions_applied.is_none() {
+        let _ = WatcherActor::unwatch_resources(
+            ctx.transport_mut(),
+            &watcher_actor,
+            &["network-event"],
+        );
+    }
 
     // Pair the `watchTargets("frame")` prelude with `unwatchTargets` so the
     // server-side frame-target subscription is cleared (oneway, best-effort).
@@ -3039,7 +3048,7 @@ pub fn run_with_network(
     {
         obj.insert("consent".to_string(), c);
     }
-    super::network_conditions::insert_echo(&mut result, conditions_echo);
+    super::network_conditions::insert_echo(&mut result, conditions_applied.as_ref());
     if page_args.with_page {
         super::page_view::attach(cli, &mut ctx, &mut result, Some(cli.timeout), page_args)?;
     }

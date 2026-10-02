@@ -333,9 +333,15 @@ fn live_225_a_miss_everywhere_reports_zero_and_hints() {
 /// The facts pass reads the document and never writes to it — the same
 /// byte-identical-DOM property `live_219_reader_view` pins for the stamping
 /// reader pass, re-checked now that a second pass walks the same tree.
+///
+/// `--with-page` does stamp `data-ffrdp-ref` on the elements it hands out
+/// (DEC-056: refs live in the page), so the comparison strips those stamps —
+/// any *other* difference is still a write the facts pass must not make.
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
 fn live_225_the_facts_pass_leaves_the_dom_untouched() {
+    const HTML_WITHOUT_REFS: &str =
+        "document.documentElement.outerHTML.replace(/ data-ffrdp-ref=\"e[0-9]+\"/g, '')";
     if !live_tests_enabled() {
         eprintln!("live_225_the_facts_pass_leaves_the_dom_untouched: set FF_RDP_LIVE_TESTS=1");
         return;
@@ -348,15 +354,9 @@ fn live_225_the_facts_pass_leaves_the_dom_untouched() {
     };
 
     run_json(port, &["navigate", &server.base_url()]);
-    let before = run_json(
-        port,
-        &["eval", "--stringify", "document.documentElement.outerHTML"],
-    );
+    let before = run_json(port, &["eval", "--stringify", HTML_WITHOUT_REFS]);
     run_json(port, &["reload", "--with-page", "--page-chars", "2000"]);
-    let after = run_json(
-        port,
-        &["eval", "--stringify", "document.documentElement.outerHTML"],
-    );
+    let after = run_json(port, &["eval", "--stringify", HTML_WITHOUT_REFS]);
     assert_eq!(
         before["results"], after["results"],
         "a --with-page call must leave the document byte-identical"

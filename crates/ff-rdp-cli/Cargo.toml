@@ -30,7 +30,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_norway = { workspace = true }
 toml = { version = "0.9", default-features = false, features = ["parse", "serde", "std"] }
-getrandom = { workspace = true }
 tempfile = { workspace = true }
 url = { workspace = true }
 ureq = { workspace = true }
@@ -38,9 +37,7 @@ include_dir = { workspace = true }
 walkdir = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-subtle = { workspace = true }
 thiserror = { workspace = true }
-mio = { version = "1.2.0", features = ["net", "os-poll"] }
 sha2 = { workspace = true }
 # Bounded local langpack inspection only; no encryption or non-deflate codecs.
 zip = { version = "=0.6.6", default-features = false, features = ["deflate"] }

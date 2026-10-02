@@ -12,8 +12,23 @@
 //! The network-parent actor throws `"Not listening for network events"` unless
 //! `watchResources(["network-event"])` was issued on the owning watcher first,
 //! so [`apply`] subscribes before configuring.
+//!
+//! # Lifetime within the command
+//!
+//! Firefox keeps the throttle and the block-list on the network observer that
+//! the `network-event` subscription owns: an `unwatchResources(["network-event"])`
+//! tears both down. The navigation wait unsubscribes its own `network-event`
+//! interest at `dom-complete`, so [`apply`] takes its subscription through the
+//! session's resource bus and [`Applied`] holds it: the bus's ref-count then
+//! never reaches zero and the conditions last until the command disconnects.
 
-use ff_rdp_core::{ActorId, NetworkParentFront, Registry, ThrottleProfile, WatcherFront};
+use std::sync::Arc;
+use std::sync::mpsc::Receiver;
+
+use ff_rdp_core::{
+    ActorId, NetworkParentFront, Registry, Resource, ResourceType, SubscriptionId, ThrottleProfile,
+    WatcherFront,
+};
 use serde_json::{Value, json};
 
 use crate::cli::args::{NetworkConditionsArgs, ThrottleProfileArg};
@@ -43,9 +58,23 @@ pub(crate) fn is_requested(args: &NetworkConditionsArgs) -> bool {
     args.throttle.is_some() || !block_patterns(args).is_empty()
 }
 
-/// Apply `args` on `ctx`'s connection, returning the
-/// `{throttle, blocked_urls}` echo for the command's `results`, or `None`
-/// when nothing was requested (no round trip is made then).
+/// Conditions applied on a connection, plus the `network-event` bus
+/// subscription that keeps them in force — see the module docs. Keep it alive
+/// until the command is done with the page.
+pub(crate) struct Applied {
+    echo: Value,
+    _hold: Option<(SubscriptionId, Receiver<Arc<Resource>>)>,
+}
+
+impl Applied {
+    /// The `{throttle, blocked_urls}` object for the command's `results`.
+    pub(crate) fn echo(&self) -> Value {
+        self.echo.clone()
+    }
+}
+
+/// Apply `args` on `ctx`'s connection, returning the applied conditions, or
+/// `None` when nothing was requested (no round trip is made then).
 ///
 /// `watcher_actor` is the watcher the caller already obtained for its
 /// navigation. It must be passed in rather than fetched here: a tab
@@ -59,19 +88,22 @@ pub(crate) fn apply(
     ctx: &mut ConnectedTab,
     watcher_actor: &ActorId,
     args: &NetworkConditionsArgs,
-) -> Result<Option<Value>, AppError> {
+) -> Result<Option<Applied>, AppError> {
     if !is_requested(args) {
         return Ok(None);
     }
     let watcher_actor = watcher_actor.clone();
+    let bus = ctx.get_or_init_resource_command(watcher_actor.clone());
+    let hold = bus
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .subscribe(ctx.transport_mut(), &[ResourceType::NetworkEvent])
+        .map_err(AppError::from)?;
     let watcher_front = WatcherFront::new(
         watcher_actor.clone(),
         Registry::default(),
         Some(watcher_actor.clone()),
     );
-    watcher_front
-        .watch_resources(ctx.transport_mut(), &["network-event"])
-        .map_err(AppError::from)?;
     let network_parent_actor = watcher_front
         .get_network_parent_actor(ctx.transport_mut())
         .map_err(AppError::from)?;
@@ -99,17 +131,20 @@ pub(crate) fn apply(
         json!(patterns)
     };
 
-    Ok(Some(json!({
-        "throttle": throttle_echo,
-        "blocked_urls": blocked_echo,
-    })))
+    Ok(Some(Applied {
+        echo: json!({
+            "throttle": throttle_echo,
+            "blocked_urls": blocked_echo,
+        }),
+        _hold: Some(hold),
+    }))
 }
 
 /// Attach the [`apply`] echo to a command's `results` object under
 /// `network_conditions`.
-pub(crate) fn insert_echo(results: &mut Value, echo: Option<Value>) {
-    if let (Some(echo), Some(obj)) = (echo, results.as_object_mut()) {
-        obj.insert("network_conditions".to_owned(), echo);
+pub(crate) fn insert_echo(results: &mut Value, applied: Option<&Applied>) {
+    if let (Some(applied), Some(obj)) = (applied, results.as_object_mut()) {
+        obj.insert("network_conditions".to_owned(), applied.echo());
     }
 }
 
@@ -204,8 +239,12 @@ mod tests {
 
     #[test]
     fn echo_lands_under_network_conditions() {
+        let applied = Applied {
+            echo: json!({"throttle": "slow-3g"}),
+            _hold: None,
+        };
         let mut results = json!({"url": "https://example.com/"});
-        insert_echo(&mut results, Some(json!({"throttle": "slow-3g"})));
+        insert_echo(&mut results, Some(&applied));
         assert_eq!(results["network_conditions"]["throttle"], "slow-3g");
         let mut untouched = json!({"url": "x"});
         insert_echo(&mut untouched, None);
