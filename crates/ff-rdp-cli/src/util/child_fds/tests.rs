@@ -188,7 +188,10 @@ fn isolated_parent() -> Result<()> {
         status.success(),
         "fixture child status={status}, stderr={stderr}"
     );
-    assert!(stderr.contains("child-fds-stderr-preserved"), "stderr={stderr}");
+    assert!(
+        stderr.contains("child-fds-stderr-preserved"),
+        "stderr={stderr}"
+    );
     assert!(
         alive_and_group,
         "child must respond while alive in its own group"

@@ -543,9 +543,7 @@ mod tests {
     fn stats_document_size_excludes_ref_stamps() {
         let js = build_stats_js();
         assert!(
-            js.contains(
-                r"outerHTML.replace(/ data-ffrdp-ref=\x22e[0-9]+\x22/g, '').length"
-            ),
+            js.contains(r"outerHTML.replace(/ data-ffrdp-ref=\x22e[0-9]+\x22/g, '').length"),
             "docSize must be measured with ff-rdp's ref stamps stripped: {js}"
         );
     }

@@ -42,6 +42,5 @@ fn live_wait_timeout_ms_canonical_flag() {
         crate::common::output_note(&out_new)
     );
 
-
     eprintln!("live_wait_timeout_ms_canonical_flag: PASS");
 }

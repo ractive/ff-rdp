@@ -645,7 +645,10 @@ fn vars_file_populates_vars() {
 /// The removed `--env-file` alias is a usage error, not a silent no-op.
 #[test]
 fn env_file_alias_is_rejected() {
-    let output = run_dry(r#"{"version": 1, "steps": []}"#, &["--env-file", "vars.env"]);
+    let output = run_dry(
+        r#"{"version": 1, "steps": []}"#,
+        &["--env-file", "vars.env"],
+    );
     assert_eq!(
         output.status.code(),
         Some(2),

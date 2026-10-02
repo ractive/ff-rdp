@@ -931,7 +931,6 @@ mod tests {
         assert_eq!(arr[0]["specificity"], json!([0, 1, 0]));
     }
 
-
     #[test]
     fn cascade_returns_null_computed_when_no_declarations() {
         // No rule declares the requested property — computed is null, rules empty.

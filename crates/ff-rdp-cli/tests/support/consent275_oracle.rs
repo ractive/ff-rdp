@@ -130,9 +130,8 @@ pub fn qualify_before(before: &Value, case: &str, base: &str) -> Check {
 // Deliberately fixed Debug grammar. No substring URL guesses, quoted escapes,
 // arbitrary titles or partially consumed records are accepted as fixture proof.
 static BEGIN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-    r"^[0-9TZ:.+-]+ DEBUG ff_rdp_cli::frame_targets: FRAME_TARGETS_BEGIN pid=([0-9]+)$"
-).unwrap()
+    Regex::new(r"^[0-9TZ:.+-]+ DEBUG ff_rdp_cli::frame_targets: FRAME_TARGETS_BEGIN pid=([0-9]+)$")
+        .unwrap()
 });
 static END: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(

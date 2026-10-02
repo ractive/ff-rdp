@@ -1010,7 +1010,6 @@ mod oracle_controls {
             );
         }
     }
-
 }
 
 fn send(stream: &mut TcpStream, value: &Value) {
