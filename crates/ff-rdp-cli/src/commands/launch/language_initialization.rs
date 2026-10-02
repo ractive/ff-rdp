@@ -704,9 +704,6 @@ pub(super) fn run(
     let outcome = (|| -> Result<Value> {
         pending.stderr.attach(pending.child.stderr.take())?;
         crate::util::profile_dir::write_owner_pid_marker(profile, pid);
-        if let Ok(name) = std::env::var(crate::util::profile_dir::SPAWNING_TEST_ENV) {
-            crate::util::profile_dir::write_owner_test_marker(profile, name.trim());
-        }
         let mut observation = startup::Observation {
             child: &mut pending.child,
             stderr: &mut pending.stderr,

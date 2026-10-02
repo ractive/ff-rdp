@@ -16,6 +16,7 @@
 // `#[path]`-included, while production code stays denied.
 #![allow(unsafe_code)]
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{Read, Seek, Write};
 use std::net::{TcpListener, TcpStream};
@@ -30,55 +31,103 @@ pub fn ff_rdp_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_ff-rdp"))
 }
 
-/// Env var [`LiveFirefox::try_launch`] sets on every `ff-rdp launch` it
-/// spawns, naming the currently-running test (iter-151 Theme A).
-///
-/// Mirrors the product's private `crate::util::profile_dir::SPAWNING_TEST_ENV`
-/// — duplicated, not imported, because this crate ships no `[lib]` target
-/// for an integration-test binary to pull from (the same reason this file
-/// already duplicates `OWNER_PID_MARKER`-shaped constants per test file
-/// rather than sharing them with `src/`). Keep both in sync by hand.
-pub const SPAWNING_TEST_ENV: &str = "FF_RDP_LIVE_TEST_NAME";
-
 /// Best-effort name of the currently running `#[test]` function.
 ///
 /// `cargo test`'s harness spawns every test body on its own thread named
 /// after the test's fully-qualified path (so panics/backtraces can identify
-/// it) — this reads that name back for [`SPAWNING_TEST_ENV`]. Falls back to
-/// `"unknown"` when no thread name is set (e.g. code calling this outside
-/// the test harness), which is still strictly more useful than no marker at
-/// all.
+/// it) — this reads that name back for diagnostic logging (e.g. the
+/// per-attempt launch ledger's `"test"` field). Falls back to `"unknown"`
+/// when no thread name is set (e.g. code calling this outside the test
+/// harness), which is still strictly more useful than nothing.
 pub fn current_test_name() -> String {
     std::thread::current()
         .name()
         .map_or_else(|| "unknown".to_owned(), str::to_owned)
 }
 
-/// A [`Command`] for the `ff-rdp` binary, pre-tagged with
-/// [`SPAWNING_TEST_ENV`] so any managed profile the launch creates records
-/// which test asked for it (iter-171).
+/// A [`Command`] for the `ff-rdp` binary, pre-tagged with this test thread's
+/// isolated `FF_RDP_HOME` (see [`ISOLATED_LIVE_HOME`]).
 ///
-/// **Use this for every `ff-rdp launch` a live test spawns directly.** Only
-/// `LiveFirefox` set the env var before iter-171, so the ~20 suites that call
-/// `ff-rdp launch` through a bare `Command` produced profiles whose owner-test
-/// marker was simply never requested. That is why the four orphans the
-/// iteration-168 postmortem chased all read `spawned by unknown test` — not,
-/// as first assumed, because the marker failed to survive a kill.
+/// **Use this for every `ff-rdp launch` a live test spawns directly** — this
+/// is also what [`iter_242_every_live_launch_site_is_owned_and_isolated`]
+/// (in `tests/iter_242_launch_site_ownership.rs`) enforces: a bare
+/// `Command::new(ff_rdp_bin())` spawning `launch` would write its managed
+/// profile into the developer's real per-user profile root instead of this
+/// thread's isolated one.
 ///
-/// The name is read off the current thread, so call this **on the test's own
-/// thread**. A worker thread spawned by the test has no name and would tag the
-/// profile `unknown`; those callers want
-/// [`ff_rdp_launch_command_for`] with a name captured beforehand.
+/// Before the 2026-10-02 reset phase 4b second pass, this also existed in a
+/// `_for(test_name)` form so a worker thread spawned with an explicit name
+/// could tag its launch's leaked-profile marker with the *spawning test's*
+/// name rather than its own thread's. That attribution marker is gone (see
+/// [`ISOLATED_LIVE_HOME`]), and `isolated_live_home()` is already scoped per
+/// OS thread regardless of what that thread is named, so the two forms had
+/// become identical; the `_for` variant was removed rather than kept as a
+/// no-op wrapper. A worker thread that wants its ledger/log lines to read as
+/// the owning test (e.g. `live_158_launch_survives_contended_bind`'s four
+/// concurrent launches) still sets its own thread name via
+/// `std::thread::Builder::name` before calling this.
 pub fn ff_rdp_launch_command() -> Command {
-    ff_rdp_launch_command_for(&current_test_name())
+    let mut cmd = Command::new(ff_rdp_bin());
+    cmd.env("FF_RDP_HOME", isolated_live_home());
+    cmd
 }
 
-/// [`ff_rdp_launch_command`] with an explicit owner name, for launches issued
-/// from a worker thread (whose thread name is not the test's).
-pub fn ff_rdp_launch_command_for(test_name: &str) -> Command {
-    let mut cmd = Command::new(ff_rdp_bin());
-    cmd.env(SPAWNING_TEST_ENV, test_name);
-    cmd
+thread_local! {
+    /// This test thread's isolated `FF_RDP_HOME`, created lazily on first use
+    /// and reused for the rest of the thread's life (2026-10-02 reset phase
+    /// 4b, second pass).
+    ///
+    /// Before this, `ff_rdp_launch_command`/`_for` and [`LiveFirefox::try_launch`]
+    /// spawned `ff-rdp launch` with no `FF_RDP_HOME` override, so every managed
+    /// profile they created landed in the developer's *real* per-user profile
+    /// root — the premise the owner-PID/owner-test attribution machinery in
+    /// `util::profile_dir` exists to cope with. Giving every test thread its
+    /// own root instead removes the need for that attribution outright.
+    ///
+    /// Thread-local, not a single shared temp dir, because `cargo test` runs
+    /// each `#[test]` body on its own dedicated thread (see
+    /// [`current_test_name`]'s doc comment) — sharing one root across tests
+    /// would reintroduce exactly the cross-test leak attribution problem this
+    /// removes, just under a different path. A single test's own worker
+    /// threads (e.g. the four concurrent launches in
+    /// `live_158_launch_survives_contended_bind`) each get their own isolated
+    /// root too; that is fine because none of those launches needs to find a
+    /// sibling thread's marker — the one pattern that does (a `launch` and a
+    /// later `launch --replace` against the same port) always happens on one
+    /// thread within a single test body.
+    ///
+    /// Dropped — and so removed from disk — when the owning thread exits,
+    /// i.e. when the test using it finishes.
+    static ISOLATED_LIVE_HOME: RefCell<Option<tempfile::TempDir>> = const { RefCell::new(None) };
+}
+
+/// The per-test isolated profile-root home every live-test `ff-rdp launch`
+/// now uses by default (see [`ISOLATED_LIVE_HOME`]). Callers that need to
+/// control or inspect the root themselves (several tests already did, before
+/// this existed) can still override it with an explicit
+/// `.env("FF_RDP_HOME", ...)` applied after building the command — the later
+/// `env()` call wins.
+fn isolated_live_home() -> PathBuf {
+    ISOLATED_LIVE_HOME.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let dir = slot.get_or_insert_with(|| {
+            tempfile::Builder::new()
+                .prefix("ff-rdp-live-home-")
+                .tempdir()
+                .expect("create this test thread's isolated FF_RDP_HOME")
+        });
+        dir.path().to_path_buf()
+    })
+}
+
+/// Public accessor for [`isolated_live_home`]: this test thread's isolated
+/// `FF_RDP_HOME` — the exact same one `ff_rdp_launch_command`/`_for` and
+/// [`LiveFirefox::try_launch`] already used for every launch issued from this
+/// thread. For a test that needs to independently inspect what a launch wrote
+/// (e.g. scanning for its managed profile directory) rather than re-deriving
+/// the root or falling back to the real per-user one.
+pub fn current_live_home() -> PathBuf {
+    isolated_live_home()
 }
 
 /// True when live Firefox tests are enabled (`FF_RDP_LIVE_TESTS=1`).
@@ -514,27 +563,22 @@ pub fn await_document_ready(port: u16, timeout: Duration) -> DocumentState {
 /// the product's private `util::profile_dir::OWNER_PID_MARKER`.
 ///
 /// Duplicated rather than imported because this crate ships no `[lib]` target
-/// for an integration-test binary to import from — the same unavoidable
-/// duplication [`SPAWNING_TEST_ENV`] carries. What was *avoidable*, and is
+/// for an integration-test binary to import from. What was *avoidable*, and is
 /// fixed here (iter-242 Theme E), is the same literal appearing in three
 /// separate modules of this one test binary: `live_151_residual_leak`,
 /// `live_168_drop_waits_for_exit` and the since-deleted `live_96` scan all
 /// spelled it out independently.
 pub const OWNER_PID_MARKER: &str = ".ff-rdp-owner-pid";
 
-/// Owner-test marker (iter-151 Theme A), same duplication rationale as
-/// [`OWNER_PID_MARKER`].
-pub const OWNER_TEST_MARKER: &str = ".ff-rdp-owner-test";
-
 /// Scan `root` for `ff-rdp-profile-*` directories whose owner-PID marker names
-/// a still-alive process, as `(dir, pid, spawning_test)` triples.
+/// a still-alive process, as `(dir, pid)` pairs.
 ///
 /// The single copy of a scan that was previously duplicated across live
-/// modules (iter-242 Theme E). `spawning_test` is `None` when the profile
-/// carries no `.ff-rdp-owner-test` marker — which for a profile spawned under
-/// the live suite is itself the finding, since every launch site is supposed
-/// to route through [`ff_rdp_launch_command`].
-pub fn live_owned_profile_dirs(root: &str) -> Vec<(PathBuf, u32, Option<String>)> {
+/// modules (iter-242 Theme E). Used to detect a leaked ff-rdp-launched
+/// Firefox process; which test leaked it is no longer tracked on disk (see
+/// [`ISOLATED_LIVE_HOME`]) — each test's own isolated `FF_RDP_HOME` already
+/// makes that attribution unnecessary.
+pub fn live_owned_profile_dirs(root: &str) -> Vec<(PathBuf, u32)> {
     let Ok(entries) = std::fs::read_dir(root) else {
         return Vec::new();
     };
@@ -554,11 +598,7 @@ pub fn live_owned_profile_dirs(root: &str) -> Vec<(PathBuf, u32, Option<String>)
             if !pid_alive(pid) {
                 return None;
             }
-            let test_name = std::fs::read_to_string(e.path().join(OWNER_TEST_MARKER))
-                .ok()
-                .map(|s| s.trim().to_owned())
-                .filter(|s| !s.is_empty());
-            Some((e.path(), pid, test_name))
+            Some((e.path(), pid))
         })
         .collect()
 }
@@ -699,9 +739,9 @@ pub fn kill_pid_and_wait(pid: u32) {
 ///
 /// A silent give-up would recreate the pre-168 behaviour exactly — the process
 /// stays alive, the next profile-scanning test fails, and nothing says why. So
-/// this names the pid, the bound, the env var that raises it, and the test that
-/// owned the process, which is what iter-151's `OWNER_TEST_MARKER` bought and
-/// what made this defect diagnosable in the first place.
+/// this names the pid, the bound, the env var that raises it, and the current
+/// thread's test name, read live off the thread rather than from an on-disk
+/// marker (see [`ISOLATED_LIVE_HOME`]).
 ///
 /// Writes through [`std::io::stderr`] rather than `eprintln!` because the
 /// latter panics if the write fails, and this is reachable from a `Drop` on an
@@ -986,7 +1026,6 @@ impl IsolatedLiveFirefox {
         let launch_result = bounded_command_output(
             Command::new(&ff_rdp_binary)
                 .env("FF_RDP_HOME", home.path())
-                .env(SPAWNING_TEST_ENV, current_test_name())
                 .args([
                     "launch",
                     "--headless",
@@ -1509,10 +1548,10 @@ impl LiveFirefox {
         command
             .args(["launch", "--headless", "--debug-port", &port.to_string()])
             .args(extra_args)
-            // iter-151 Theme A: identify the spawning test so a leaked
-            // profile is traceable from the artifact alone — see
-            // `SPAWNING_TEST_ENV`'s doc comment.
-            .env(SPAWNING_TEST_ENV, current_test_name());
+            // See `ISOLATED_LIVE_HOME`: every managed profile this launch
+            // creates lands under this test thread's own temp root, never the
+            // developer's real per-user profile root.
+            .env("FF_RDP_HOME", isolated_live_home());
         let output = recorded_launch_output(&mut command, &ledger, attempt, port).map_err(|e| {
             format!(
                 "attempt {attempt} (port {port}): could not spawn `{} launch`: {e}",
