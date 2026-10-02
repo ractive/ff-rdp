@@ -4,6 +4,14 @@ on:
   pull_request:
     branches:
       - main
+    # Docs-only pushes (plan ticks, kb notes, README) do not need the Rust
+    # matrix. `main` has no required status checks, so a PR whose every commit
+    # is docs-only simply shows no CI and can still merge.
+    paths-ignore:
+      - "kb/**"
+      - "**.md"
+      - "LICENSE*"
+      - ".gitignore"
 
 # Only newer runs of the same PR supersede one another. Other events use a
 # unique run id, so future manual/main runs cannot cancel a PR or each other.
