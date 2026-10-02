@@ -374,7 +374,6 @@ fn dispatch_inner(
             stringify,
             no_isolate,
             frame,
-            node,
             inner_window,
             unwrap,
         }) => commands::eval::run(
@@ -386,8 +385,7 @@ fn dispatch_inner(
             *no_isolate,
             *unwrap,
             commands::eval::CliEvalScope {
-                frame_actor: frame.as_deref(),
-                selected_node_actor: node.as_deref(),
+                frame_url: frame.as_deref(),
                 inner_window_id: *inner_window,
             },
         ),

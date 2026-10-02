@@ -1672,19 +1672,11 @@ pub struct EvalArgs {
     /// `await` scripts, whose wrap is a syntactic necessity.
     #[arg(long)]
     pub no_isolate: bool,
-    /// Evaluate inside a specific frame/iframe actor (iter-77 S3).
-    ///
-    /// Pass the frame actor ID — e.g. obtained from a `watcher`
-    /// `target-available-form` event with `targetType=frame`.  Wires the
-    /// spec-declared `frameActor` field of `evaluateJSAsync`
-    /// (devtools/shared/specs/webconsole.js:149-164).
-    #[arg(long, value_name = "ACTOR")]
+    /// Evaluate inside the first iframe whose URL contains this substring
+    /// (same matching as `click --frame`). Works for same- and cross-origin
+    /// frames; an unmatched substring is an error listing the frame URLs.
+    #[arg(long, value_name = "URL_SUBSTRING")]
     pub frame: Option<String>,
-    /// Pre-bind `$0` to a DOM node actor before evaluating (iter-77 S3).
-    ///
-    /// Maps to `selectedNodeActor` in the `evaluateJSAsync` request.
-    #[arg(long, value_name = "ACTOR")]
-    pub node: Option<String>,
     /// Scope the eval to a specific inner-window ID (iter-77 S3).
     ///
     /// Maps to `innerWindowID` in the `evaluateJSAsync` request.
