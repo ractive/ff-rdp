@@ -49,7 +49,7 @@ pub enum AppError {
     /// Exit with specific code (reserved for commands that need a precise exit code)
     #[allow(dead_code)]
     Exit(i32),
-    /// Connection failure (could not reach Firefox or daemon) — exit 3
+    /// Connection failure (could not reach Firefox) — exit 3
     Connection(String),
     /// Operation timed out — exit 124
     Timeout(String),
@@ -80,8 +80,7 @@ pub enum AppError {
     ///
     /// `after_ms` is the deadline that actually elapsed.  It is never 0 on any
     /// path the CLI constructs (iter-137 Theme B): a zero would claim the
-    /// operation timed out instantly, which is never true and is exactly the
-    /// nonsense the daemon-contention bug surfaced.
+    /// operation timed out instantly, which is never true.
     RdpTimeout {
         phase: String,
         after_ms: u64,
@@ -100,8 +99,6 @@ pub enum AppError {
     RdpTransport(String),
     /// Remote peer closed the connection — exit 6.
     RdpRemoteClosed(String),
-    /// Daemon protocol version does not match CLI.
-    DaemonVersionMismatch { daemon: u32, cli: u32 },
     /// An actor has been destroyed (target navigated or closed) — exit 3.
     RdpActorDestroyed { actor: String },
     /// Navigation failed with a typed DNS/network cause — deterministic exit codes.
@@ -126,7 +123,7 @@ pub enum AppError {
     /// Theme D) — exit 1 (runtime/user error).
     ///
     /// `error_type` is a stable machine-readable discriminant (e.g.
-    /// `"since_requires_daemon"`) so scripts and parity tests can branch on it
+    /// `"unsupported_feature"`) so scripts can branch on it
     /// without matching on the human-readable `message`.  Exit code 1 keeps it
     /// in the documented "runtime / user error" bucket and avoids colliding
     /// with clap's usage-error exit code 2.
@@ -204,7 +201,6 @@ impl AppError {
             Self::RdpShape { .. } => "Shape",
             Self::RdpTransport(_) => "Transport",
             Self::RdpRemoteClosed(_) => "RemoteClosed",
-            Self::DaemonVersionMismatch { .. } => "daemon_version_mismatch",
             Self::RdpActorDestroyed { .. } => "actor_destroyed",
             Self::Navigation { cause, .. } => match cause {
                 ff_rdp_core::NavCause::DnsFail => "nav_dns_fail",
@@ -238,7 +234,7 @@ impl AppError {
     /// | `RdpBulkOversize`                        | 78 (`EX_CONFIG`) |
     /// | `Timeout` (operation-level)              | 124       |
     /// | `Exit(code)`                             | `code`    |
-    /// | `User` / `Internal` / `Diagnostics` / `DaemonVersionMismatch` / `Unsupported` | 1 |
+    /// | `User` / `Internal` / `Diagnostics` / `Unsupported` | 1 |
     pub fn exit_code(&self) -> i32 {
         match self {
             Self::WithWarnings { source, .. } => source.exit_code(),
@@ -259,14 +255,12 @@ impl AppError {
             Self::RdpBulkOversize { .. } => 78,
             Self::Timeout(_) => 124,
             Self::Exit(code) => *code,
-            // Everything else — `User`, `Internal`, `Diagnostics`,
-            // `DaemonVersionMismatch`, and `Unsupported` (well-formed but not
-            // honorable here) — falls in the runtime/user-error bucket (exit 1),
+            // Everything else — `User`, `Internal`, `Diagnostics`, and
+            // `Unsupported` (well-formed but not honorable here) — falls in the runtime/user-error bucket (exit 1),
             // never clap's usage exit code 2.
             Self::User(_)
             | Self::Internal(_)
             | Self::Diagnostics { .. }
-            | Self::DaemonVersionMismatch { .. }
             | Self::Unsupported { .. } => 1,
         }
     }
@@ -374,7 +368,7 @@ impl fmt::Display for AppError {
                     f,
                     "operation timed out (phase: {phase}) — no reply arrived before the \
                      socket read deadline.\n\
-                     hint: raise --timeout, or use --no-daemon for a private connection to Firefox.{}",
+                     hint: raise --timeout.{}",
                     hint.as_ref().map_or_else(String::new, |h| format!("\n{h}"))
                 )
             }
@@ -387,13 +381,6 @@ impl fmt::Display for AppError {
                     f,
                     "operation timed out after {after_ms}ms (phase: {phase}){}",
                     hint.as_ref().map_or_else(String::new, |h| format!("\n{h}"))
-                )
-            }
-            Self::DaemonVersionMismatch { daemon, cli } => {
-                write!(
-                    f,
-                    "daemon protocol version mismatch: daemon={daemon}, cli={cli}.\n\
-                     Stop the running daemon (`ff-rdp daemon stop`) so a fresh one is started."
                 )
             }
             Self::RdpActorDestroyed { actor } => {
@@ -558,10 +545,9 @@ impl From<ff_rdp_core::ProtocolError> for AppError {
             }
             // EvalNavigatedDuringEval, BulkPacketUnsupported, BulkPacketUnexpected,
             // ActorChannelFull, and InvalidState remain Internal.
-            // Bulk frames are not something the CLI handles; they are skipped
-            // by the daemon and surfaced as Internal for direct-connect callers.
-            // ActorChannelFull is a daemon-internal back-pressure signal; it
-            // should not escape to end-user error paths.
+            // Bulk frames are not something the CLI handles; they surface as
+            // Internal. ActorChannelFull is an internal back-pressure signal;
+            // it should not escape to end-user error paths.
             // InvalidState is a programming error (misuse of the API); surface
             // it as Internal so engineers see it in traces.
             // iter-220: a target destroyed mid-request is not an internal
@@ -591,37 +577,6 @@ impl From<ff_rdp_core::ProtocolError> for AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn daemon_version_mismatch_error_type() {
-        let err = AppError::DaemonVersionMismatch { daemon: 0, cli: 1 };
-        assert_eq!(err.error_type(), "daemon_version_mismatch");
-    }
-
-    #[test]
-    fn daemon_version_mismatch_display_contains_versions() {
-        let err = AppError::DaemonVersionMismatch { daemon: 0, cli: 1 };
-        let msg = err.to_string();
-        assert!(
-            msg.contains("daemon=0") && msg.contains("cli=1"),
-            "message should mention both versions: {msg}"
-        );
-    }
-
-    #[test]
-    fn daemon_version_mismatch_json_has_correct_error_type() {
-        let err = AppError::DaemonVersionMismatch { daemon: 0, cli: 1 };
-        let json = err.to_error_json();
-        assert_eq!(
-            json["error_type"].as_str(),
-            Some("daemon_version_mismatch"),
-            "JSON error_type must be 'daemon_version_mismatch'"
-        );
-        assert!(
-            json["error"].as_str().unwrap_or("").contains("daemon=0"),
-            "JSON error message should mention daemon version"
-        );
-    }
 
     // ── with_timeout_hint (iter-220 Theme C) ────────────────────────────────
 
@@ -805,8 +760,7 @@ mod tests {
     /// AC: `unit_timeout_error_never_reports_zero_ms` — bridging
     /// `ProtocolError::Timeout` must report the socket read deadline that
     /// actually elapsed. Dogfooding kept hitting
-    /// "operation timed out after 0ms (phase: recv)" from contended daemon
-    /// commands: a duration of zero is never true and tells the user nothing
+    /// "operation timed out after 0ms (phase: recv)": a duration of zero is never true and tells the user nothing
     /// about what to change.
     #[test]
     fn unit_timeout_error_never_reports_zero_ms() {
@@ -928,11 +882,6 @@ mod tests {
             (AppError::RdpTransport("x".to_owned()), 6, "Transport"),
             (AppError::RdpRemoteClosed("x".to_owned()), 6, "RemoteClosed"),
             (
-                AppError::DaemonVersionMismatch { daemon: 0, cli: 1 },
-                1,
-                "daemon_version_mismatch",
-            ),
-            (
                 AppError::RdpActorDestroyed {
                     actor: "a".to_owned(),
                 },
@@ -997,12 +946,12 @@ mod tests {
             ),
             (
                 AppError::Unsupported {
-                    error_type: "since_requires_daemon",
+                    error_type: "unsupported_feature",
                     message: "x".to_owned(),
                     details: None,
                 },
                 1,
-                "since_requires_daemon",
+                "unsupported_feature",
             ),
         ];
 

@@ -21,9 +21,6 @@
 //!   an idle page answers early, a page with a request in flight keeps its
 //!   full budget.
 //!
-//! daemon-parity: these run the daemon route, like the iter-210/220 suites
-//! they extend.
-//!
 //! # Running
 //!
 //!   FF_RDP_LIVE_TESTS=1 cargo test-live -p ff-rdp-cli \
@@ -52,7 +49,7 @@ const DESTINATION_DELAY: Duration = Duration::from_millis(1_200);
 /// numbers.
 const CLICK_TIMEOUT_MS: u64 = 10_000;
 
-fn daemon_args(port: u16) -> Vec<String> {
+fn cli_args(port: u16) -> Vec<String> {
     vec![
         "--host".to_owned(),
         "127.0.0.1".to_owned(),
@@ -63,26 +60,9 @@ fn daemon_args(port: u16) -> Vec<String> {
     ]
 }
 
-fn stop_daemon(port: u16) {
-    let _ = Command::new(ff_rdp_bin())
-        .args(["--host", "127.0.0.1", "--port", &port.to_string()])
-        .args(["daemon", "stop"])
-        .output();
-}
-
-fn firefox_with_daemon(test: &str) -> LiveFirefox {
-    let ff = LiveFirefox::headless_on_random_port();
-    assert!(
-        ff.with_daemon().is_some(),
-        "{test}: the proxy daemon did not start for Firefox on port {}",
-        ff.port()
-    );
-    ff
-}
-
 fn run(port: u16, args: &[&str]) -> Output {
     Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("spawn ff-rdp {args:?}: {e}"))
@@ -152,13 +132,12 @@ fn live_237_submit_navigated_agrees_with_the_page_it_reports() {
         );
         return;
     }
-    let ff = firefox_with_daemon("live_237_submit_navigated_agrees_with_the_page_it_reports");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(slow_form_fixture()) else {
         eprintln!(
             "live_237_submit_navigated_agrees_with_the_page_it_reports: no fixture HTTP — skipping"
         );
-        stop_daemon(port);
         return;
     };
 
@@ -189,8 +168,6 @@ fn live_237_submit_navigated_agrees_with_the_page_it_reports() {
          proof of a cross-document navigation, so `false` here is one envelope \
          contradicting itself: {typed}"
     );
-
-    stop_daemon(port);
 }
 
 /// The delay that outlives the post-`requestSubmit()` grace period entirely,
@@ -252,16 +229,13 @@ fn live_237_submit_navigated_survives_a_destination_slower_than_the_grace() {
         );
         return;
     }
-    let ff = firefox_with_daemon(
-        "live_237_submit_navigated_survives_a_destination_slower_than_the_grace",
-    );
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(very_slow_form_fixture()) else {
         eprintln!(
             "live_237_submit_navigated_survives_a_destination_slower_than_the_grace: \
              no fixture HTTP — skipping"
         );
-        stop_daemon(port);
         return;
     };
 
@@ -282,8 +256,6 @@ fn live_237_submit_navigated_survives_a_destination_slower_than_the_grace() {
          re-check is what must report it, and `false` here means the envelope is back \
          to contradicting itself: {typed}"
     );
-
-    stop_daemon(port);
 }
 
 /// A form whose `submit` handler cancels the submission — the AJAX shape.
@@ -325,11 +297,10 @@ fn live_237_cancelled_submit_reports_not_navigated() {
         eprintln!("live_237_cancelled_submit_reports_not_navigated: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_237_cancelled_submit_reports_not_navigated");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(cancelled_form_fixture()) else {
         eprintln!("live_237_cancelled_submit_reports_not_navigated: no fixture HTTP — skipping");
-        stop_daemon(port);
         return;
     };
 
@@ -340,8 +311,6 @@ fn live_237_cancelled_submit_reports_not_navigated() {
         typed["results"]["navigated"], false,
         "a cancelled submission does not navigate: {typed}"
     );
-
-    stop_daemon(port);
 }
 
 // ---------------------------------------------------------------------------
@@ -378,13 +347,12 @@ fn live_237_absent_selector_reports_well_under_the_timeout() {
         );
         return;
     }
-    let ff = firefox_with_daemon("live_237_absent_selector_reports_well_under_the_timeout");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(static_fixture()) else {
         eprintln!(
             "live_237_absent_selector_reports_well_under_the_timeout: no fixture HTTP — skipping"
         );
-        stop_daemon(port);
         return;
     };
 
@@ -413,8 +381,6 @@ fn live_237_absent_selector_reports_well_under_the_timeout() {
         "a guessed selector on an idle page must not cost the full \
          {CLICK_TIMEOUT_MS}ms budget, took {elapsed:?}: {combined}"
     );
-
-    stop_daemon(port);
 }
 
 /// `/` starts a request shortly after load whose response inserts the button.
@@ -460,13 +426,12 @@ fn live_237_late_selector_behind_a_request_still_clicks() {
         eprintln!("live_237_late_selector_behind_a_request_still_clicks: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_237_late_selector_behind_a_request_still_clicks");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(late_insert_fixture()) else {
         eprintln!(
             "live_237_late_selector_behind_a_request_still_clicks: no fixture HTTP — skipping"
         );
-        stop_daemon(port);
         return;
     };
 
@@ -477,6 +442,4 @@ fn live_237_late_selector_behind_a_request_still_clicks() {
         clicked["results"]["clicked"], true,
         "an element inserted by a pending request must still be waited for: {clicked}"
     );
-
-    stop_daemon(port);
 }

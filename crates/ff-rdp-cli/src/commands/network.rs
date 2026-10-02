@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::io::Write;
-use std::time::Duration;
 
 use ff_rdp_core::{
     NetworkEventActor, NetworkResource, ProtocolError, RdpTransport, TabActor, WatcherActor,
@@ -17,129 +16,30 @@ use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::{ConnectedTab, connect_and_get_target};
 use super::network_events::{
-    build_network_entries_with_ids, drain_network_events, drain_network_from_daemon_since,
-    merge_updates, performance_api_fallback,
+    build_network_entries_with_ids, drain_network_events, merge_updates, performance_api_fallback,
 };
 
-/// Floor for the network-drain socket read timeout in daemon mode.
-///
-/// The global `--timeout` controls individual RDP read timeouts (connection
-/// quality); the drain floor is independent and gives slow pages enough time
-/// to deliver all buffered events before we give up.
-const DAEMON_DRAIN_FLOOR_MS: u64 = 15_000;
+/// Hint for an empty one-shot capture: a fresh connection only sees requests
+/// made while it is open, so teach the three ways to capture the traffic the
+/// caller actually wanted.
+pub(crate) const EMPTY_CAPTURE_HINT: &str = "No network events captured: a one-shot `network` only sees requests made while it is connected. \
+     Capture a page load with `ff-rdp navigate <url> --with-network`; capture traffic caused by later commands by starting \
+     `ff-rdp network --follow > net.ndjson &` before them; or read what already loaded with `ff-rdp network --source performance-api`.";
 
-/// Build the structured `since_requires_daemon` error (iter-101 Theme D).
-fn since_requires_daemon_error() -> AppError {
-    AppError::Unsupported {
-        error_type: "since_requires_daemon",
-        message: "network --since requires the daemon: navigation-scoped \
-                  filtering is only available when the persistent daemon is \
-                  buffering events.\n\
-                  hint: drop --no-daemon so the command routes through the \
-                  daemon, or omit --since for a one-shot capture."
-            .to_owned(),
-        details: None,
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
 pub fn run(
     cli: &Cli,
     filter: Option<&str>,
     method: Option<&str>,
     headers: bool,
     security: bool,
-    since_nav: i64,
     source: NetworkSource,
-    since_explicit: bool,
 ) -> Result<(), AppError> {
-    // iter-101 Theme D: `--since` nav-scoping is only implemented against the
-    // daemon's navigation-boundary buffer.  When the user forced direct mode
-    // with `--no-daemon` there is no boundary bookkeeping, so an
-    // explicitly-requested `--since` cannot be honored.  Refuse *before* opening
-    // any connection — there is no point connecting just to fail — with a stable
-    // `since_requires_daemon` discriminant instead of the pre-101 silent no-op.
-    if since_explicit && cli.no_daemon {
-        return Err(since_requires_daemon_error());
-    }
-
-    // iter-137 Theme C: navigation-scoped filtering is a property of the
-    // daemon's watcher buffer.  `performance.getEntriesByType('resource')` has
-    // no navigation boundaries at all — it is reset by the page, not by us —
-    // so combining the two would silently ignore `--since`.
-    if since_explicit && source == NetworkSource::PerformanceApi {
-        return Err(AppError::Unsupported {
-            error_type: "since_requires_watcher_source",
-            message: "network --since cannot be combined with --source performance-api: \
-                      the Performance API exposes no navigation boundaries, so the \
-                      requested window cannot be applied.\n\
-                      hint: use --source watcher (or drop --source) to keep --since, \
-                      or drop --since for a full performance-api capture."
-                .to_owned(),
-            details: None,
-        });
-    }
-
     let mut ctx = connect_and_get_target(cli)?;
-    let via_daemon = ctx.via_daemon;
-
-    // Also refuse when the connection resolved to direct mode despite the daemon
-    // being enabled (e.g. daemon auto-start failed and we fell back to a direct
-    // connect): the buffer semantics `--since` needs still aren't present.
-    if since_explicit && !via_daemon {
-        return Err(since_requires_daemon_error());
-    }
-
-    let drain_timeout_ms = cli.timeout.max(DAEMON_DRAIN_FLOOR_MS);
-
-    let (all_resources, all_updates, nav_boundary) = if source == NetworkSource::PerformanceApi {
+    let (all_resources, all_updates) = if source == NetworkSource::PerformanceApi {
         // iter-137 Theme C: `--source performance-api` must not touch the
-        // watcher at all — draining it first and then discarding the rows
-        // would make the command's cost (and its effect on the daemon buffer)
-        // depend on a source the user explicitly opted out of.
-        (Vec::new(), Vec::new(), None)
-    } else if ctx.via_daemon {
-        // The daemon has already subscribed to network-event resources and is
-        // buffering them.  Drain the buffer without touching watcher state.
-        //
-        // Temporarily raise the socket read timeout to the drain floor so slow
-        // pages don't cause a premature timeout on the drain RPC.
-        let restored_timeout = Duration::from_millis(cli.timeout);
-        let drain_timeout = Duration::from_millis(drain_timeout_ms);
-        let _ = ctx.transport_mut().set_read_timeout(Some(drain_timeout));
-        let drain_result = drain_network_from_daemon_since(ctx.transport_mut(), since_nav);
-        let _ = ctx.transport_mut().set_read_timeout(Some(restored_timeout));
-        drain_result.map_err(|e| {
-            // Downcast through the anyhow chain to find a ProtocolError::Timeout
-            // or an io::Error with kind WouldBlock/TimedOut — both indicate the
-            // socket read deadline fired rather than a real protocol failure.
-            if let AppError::Internal(ref inner) = e {
-                let mut is_timeout = false;
-                for cause in inner.chain() {
-                    if let Some(pe) = cause.downcast_ref::<ProtocolError>()
-                        && matches!(pe, ProtocolError::Timeout)
-                    {
-                        is_timeout = true;
-                        break;
-                    }
-                    if let Some(io_err) = cause.downcast_ref::<std::io::Error>()
-                        && matches!(
-                            io_err.kind(),
-                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                        )
-                    {
-                        is_timeout = true;
-                        break;
-                    }
-                }
-                if is_timeout {
-                    return AppError::Timeout(format!(
-                        "network drain timed out — try --timeout {drain_timeout_ms}"
-                    ));
-                }
-            }
-            e
-        })?
+        // watcher at all — its cost must not depend on a source the user
+        // explicitly opted out of.
+        (Vec::new(), Vec::new())
     } else {
         let tab_actor = ctx.target_tab_actor().clone();
 
@@ -158,14 +58,10 @@ pub fn run(
         // Collect resource events until timeout.
         let result = drain_network_events(ctx.transport_mut()).map_err(AppError::from)?;
 
-        // Unwatch to clean up server-side resources.
-        let _ = WatcherActor::unwatch_resources(
-            ctx.transport_mut(),
-            &watcher_actor,
-            &["network-event"],
-        );
-
-        (result.0, result.1, None)
+        // No `unwatchResources` here: unwatching destroys the network-event
+        // actors, and `--headers`/`--security` still have to query them
+        // below. The subscription ends with this command's connection.
+        (result.0, result.1)
     };
 
     // Merge updates into resources by resource_id.
@@ -215,15 +111,9 @@ pub fn run(
     // Pick the source.  Exactly one of two, and always the one that was asked
     // for — there is no implicit substitution any more (iter-159 Theme D).
     //
-    // The deleted `auto` rule was "watcher if it produced anything, else the
-    // Performance API", which is *connection-mode dependent* by construction
-    // and, worse, indistinguishable from a broken watcher: when the daemon
-    // stopped buffering network events entirely (iter-137 → iter-159) every
-    // daemon-mode `network` call quietly answered from the Performance API,
-    // with `method`, `status`, `content_type` and `transfer_size` null on every
-    // row, and nothing in the default output said so.  An empty watcher buffer
-    // is now reported as zero watcher rows; `--source performance-api` remains
-    // as the explicit opt-out.
+    // An empty watcher capture is reported as zero watcher rows, never swapped
+    // for Performance API rows with `method`/`status`/`content_type` null;
+    // `--source performance-api` is the explicit opt-in.
     let is_perf_source = source == NetworkSource::PerformanceApi;
     let results = if is_perf_source {
         apply_filters(performance_api_fallback(&mut ctx), false)
@@ -243,17 +133,6 @@ pub fn run(
         None
     };
 
-    // When the requested source returned nothing, print a hint so the user
-    // knows how to get data.
-    if results.is_empty() {
-        // stderr-ok: (b) hint — see the comment above; stdout still carries
-        // the (empty) JSON result envelope.
-        eprintln!(
-            "hint: no network events captured. \
-             Navigate first or use `--follow` to stream events in real time."
-        );
-    }
-
     // `meta.source` names where we looked, not what we found: a zero-row
     // watcher result still reports `watcher`, because the alternative — going
     // quiet, or answering from somewhere else — is exactly the behaviour
@@ -263,19 +142,6 @@ pub fn run(
     } else {
         json!({"source": "watcher"})
     };
-    // Include the navigation boundary that scoped the result, if any.
-    if let Some(ref b) = nav_boundary
-        && let Some(m) = meta.as_object_mut()
-    {
-        m.insert(
-            "since".to_string(),
-            json!({
-                "index": since_nav,
-                "url": b.get("url"),
-                "sequence": b.get("sequence"),
-            }),
-        );
-    }
     crate::connection_meta::merge_into_if_verbose(
         &mut meta,
         &cli.host,
@@ -283,20 +149,17 @@ pub fn run(
         None,
         cli.is_verbose(),
     );
-    // iter-128 Theme D: unlike the connection block above, `route` is always
-    // present — not gated by --verbose — so an agent can tell how this
-    // command executed without a separate `daemon status` round-trip.
-    crate::connection_meta::merge_route(&mut meta, via_daemon);
 
     let use_detail = use_detail_mode(cli, headers, security);
 
+    if results.is_empty() {
+        // stderr-ok: (b) hint — stdout still carries the (empty) JSON result
+        // envelope, whose top-level `hint` says the same thing.
+        eprintln!("hint: {EMPTY_CAPTURE_HINT}");
+    }
+
     let empty_hint = if results.is_empty() && filter.is_none() && method.is_none() {
-        let hint = if via_daemon {
-            "No network events captured. Events are buffered by the daemon; navigate first with: ff-rdp navigate <url>, or use --follow to stream events in real time."
-        } else {
-            "No network events captured. Connect before the page loads, use ff-rdp navigate <url> --with-network, or use --follow to stream events in real time."
-        };
-        Some(json!(hint))
+        Some(json!(EMPTY_CAPTURE_HINT))
     } else if results.is_empty() {
         Some(json!(
             "No requests matched the current --filter/--method. Remove the filter to see all captured events."
@@ -952,36 +815,19 @@ pub(crate) fn build_canonical_network(
     obj
 }
 
-/// The route a [`run_get_events_with_route`] drain took. `"daemon"` reads the
-/// daemon's standing buffer; `"direct"` arms a watcher for the duration of that
-/// call only. The distinction decides whether an empty result means "nothing
-/// happened" or "the watcher was not armed yet" — see the fn docs.
-///
-/// Since iteration 181 the script runner normally does **not** come through
-/// here on the direct route: it holds a playbook-scoped subscription instead
-/// (see [`crate::commands::network_watch`]). This path remains the daemon
-/// route's drain, and the direct route's fallback when arming that
-/// subscription failed.
-pub type NetworkDrainRoute = &'static str;
-
 /// Direct-mode default drain window, in ms, when the caller passes no timeout.
 /// Public so the runner can report the window it actually got without
 /// hard-coding a second copy that could drift (iter-179).
 pub const DEFAULT_DRAIN_MS: u64 = 500;
 
-/// Drain buffered network events as a JSON array, together with the route taken
-/// (iter-179).
+/// Drain network events as a JSON array (iter-179).
 ///
 /// Used by the script runner's `assert_network` step. `drain_timeout_ms`
-/// controls how long to drain in direct mode (default [`DEFAULT_DRAIN_MS`]).
+/// controls how long to drain (default [`DEFAULT_DRAIN_MS`]).
 ///
-/// # The direct-mode subscription window
+/// # The subscription window
 ///
-/// In **daemon** mode the daemon holds a standing `network-event` subscription,
-/// so this call reads a buffer that has been filling since the daemon started
-/// watching — requests that completed before this call are still in it.
-///
-/// In **direct** mode there is no standing subscription. This function arms the
+/// There is no standing subscription. This function arms the
 /// watcher itself, drains for `drain_timeout_ms`, and unwatches. Firefox's
 /// `watchResources` delivers events that occur *while watching*; it does not
 /// replay history. **A request that completed before this call was made is
@@ -1002,23 +848,18 @@ pub const DEFAULT_DRAIN_MS: u64 = 500;
 /// still describes **this** function, which the runner now reaches only when
 /// that arming failed — and its `assert_network` diagnostics say so, with
 /// `subscription: "step"`.
-pub fn run_get_events_with_route(
+pub fn run_get_events(
     cli: &Cli,
     drain_timeout_ms: Option<u64>,
-) -> Result<(Vec<serde_json::Value>, NetworkDrainRoute), crate::error::AppError> {
-    use super::network_events::{build_network_entries, drain_network_from_daemon, merge_updates};
+) -> Result<Vec<serde_json::Value>, crate::error::AppError> {
+    use super::network_events::{build_network_entries, merge_updates};
     use ff_rdp_core::{TabActor, WatcherActor};
     use std::time::Duration;
 
     let mut ctx = super::connect_tab::connect_and_get_target(cli)?;
 
-    let route: NetworkDrainRoute = if ctx.via_daemon { "daemon" } else { "direct" };
-    let entries = if ctx.via_daemon {
-        let (resources, updates) = drain_network_from_daemon(ctx.transport_mut())?;
-        let update_map = merge_updates(updates);
-        build_network_entries(&resources, &update_map)
-    } else {
-        // Direct mode: subscribe, drain briefly, unsubscribe.
+    let entries = {
+        // Subscribe, drain briefly, unsubscribe.
         let drain_ms = drain_timeout_ms.unwrap_or(DEFAULT_DRAIN_MS);
         let tab_actor = ctx.target_tab_actor().clone();
         let watcher_actor = TabActor::get_watcher(ctx.transport_mut(), &tab_actor)
@@ -1066,13 +907,13 @@ pub fn run_get_events_with_route(
         })
         .collect();
 
-    Ok((json_entries, route))
+    Ok(json_entries)
 }
 
 /// Stream network events in real time.
 ///
-/// Subscribes to `network-event` resources via the WatcherActor (direct mode)
-/// or daemon stream protocol (daemon mode), then loops reading events and
+/// Subscribes to `network-event` resources via the WatcherActor, then loops
+/// reading events and
 /// printing each entry as a JSON line (NDJSON) to stdout.
 ///
 /// Both request arrivals (`resources-available-array`) and response completions
@@ -1083,14 +924,10 @@ pub fn run_get_events_with_route(
 /// Exits cleanly when the connection is closed (e.g. Firefox exits).
 pub fn run_follow(cli: &Cli, filter: Option<&str>, method: Option<&str>) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
-    if ctx.via_daemon {
-        run_follow_daemon(&mut ctx, filter, method, cli.jq.as_deref())
-    } else {
-        run_follow_direct(&mut ctx, filter, method, cli.jq.as_deref())
-    }
+    run_follow_on(&mut ctx, filter, method, cli.jq.as_deref())
 }
 
-fn run_follow_direct(
+fn run_follow_on(
     ctx: &mut ConnectedTab,
     filter: Option<&str>,
     method: Option<&str>,
@@ -1108,24 +945,6 @@ fn run_follow_direct(
     // Best-effort cleanup — ignore errors since we may be exiting anyway.
     let _ =
         WatcherActor::unwatch_resources(ctx.transport_mut(), &watcher_actor, &["network-event"]);
-
-    result
-}
-
-fn run_follow_daemon(
-    ctx: &mut ConnectedTab,
-    filter: Option<&str>,
-    method: Option<&str>,
-    jq_filter: Option<&str>,
-) -> Result<(), AppError> {
-    use crate::daemon::client::{start_daemon_stream, stop_daemon_stream};
-
-    start_daemon_stream(ctx.transport_mut(), "network-event").map_err(AppError::from)?;
-
-    let result = network_follow_loop(ctx.transport_mut(), filter, method, jq_filter);
-
-    // Best-effort cleanup — ignore errors since we may be exiting anyway.
-    let _ = stop_daemon_stream(ctx.transport_mut(), "network-event");
 
     result
 }
@@ -1171,8 +990,8 @@ fn network_follow_loop(
             Ok(msg) => {
                 let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
                 match msg_type {
-                    // Navigation boundary events forwarded by the daemon.
-                    "nav-boundary" | "tabNavigated" => {
+                    // Top-level navigation of the watched tab.
+                    "tabNavigated" => {
                         let url = msg
                             .get("url")
                             .and_then(Value::as_str)
@@ -1269,7 +1088,7 @@ fn network_follow_loop(
                     || e.kind() == std::io::ErrorKind::ConnectionReset
                     || e.kind() == std::io::ErrorKind::BrokenPipe =>
             {
-                // Connection closed cleanly (Firefox exited, daemon stopped, etc.).
+                // Connection closed cleanly (Firefox exited, etc.).
                 return Ok(());
             }
             Err(e) => return Err(AppError::from(e)),

@@ -40,26 +40,14 @@ stop_record() {
   echo "Owned PID $pid survived cleanup" >&2
   return 1
 }
-record_daemon() {
-  local registry="$FF_RDP_HOME/.ff-rdp/daemon.6000.json" pid identity
-  [ -f "$registry" ] || return 0
-  pid="$(jq -er '.pid | select(type == "number")' "$registry")" || return 1
-  identity="$(fingerprint "$pid")" || return 0
-  case "$identity" in *"$FF_RDP_DOGFOOD_BIN"*' _daemon '*) ;; *) echo "Unowned daemon $pid: $identity" >&2; return 1;; esac
-  printf '%s\n%s\n' "$pid" "$identity" > "$state/daemon.owner"
-}
 stop() {
   local status=0
-  # Discover daemons started by the agent too, using this unique build path and
-  # private registry. No daemon-stop RPC can accidentally target an intruder.
-  record_daemon || status=1
-  stop_record "$state/daemon.owner" "$FF_RDP_DOGFOOD_BIN" || status=1
   stop_record "$state/firefox.owner" "$state/profile" || status=1
   if [ "$status" = 0 ]; then rm -rf "${state:?}/profile" "${state:?}/home"; fi
   return "$status"
 }
 start() {
-  [ ! -e "$state/firefox.owner" ] && [ ! -e "$state/daemon.owner" ] || { echo 'Previous lifecycle not stopped' >&2; return 1; }
+  [ ! -e "$state/firefox.owner" ] || { echo 'Previous lifecycle not stopped' >&2; return 1; }
   if lsof -nP -iTCP:6000 -sTCP:LISTEN >/dev/null 2>&1; then
     echo 'Refusing occupied port 6000' >&2; return 1
   fi
@@ -87,7 +75,6 @@ PREFS
       identity="$(fingerprint "$pid")"
       printf '%s\n%s\n' "$pid" "$identity" > "$state/firefox.owner"
       if ! ffrdp --port 6000 tabs > "$state/health.json"; then stop; return 1; fi
-      record_daemon
       return 0
     fi
     kill -0 "$pid" 2>/dev/null || { stop; return 1; }

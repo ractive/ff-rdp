@@ -16,8 +16,6 @@
 // `#[path]`-included, while production code stays denied.
 #![allow(unsafe_code)]
 
-pub mod action_route;
-
 use std::collections::HashMap;
 use std::io::{Read, Seek, Write};
 use std::net::{TcpListener, TcpStream};
@@ -114,16 +112,28 @@ pub fn live_sites_tests_enabled() -> bool {
         && std::env::var("FF_RDP_LIVE_SITES_TESTS").as_deref() == Ok("1")
 }
 
-/// Build the common CLI arguments that point at a specific Firefox RDP port
-/// with `--no-daemon` so tests don't accidentally spin up a background daemon.
+/// Build the common CLI arguments that point at a specific Firefox RDP port.
 pub fn base_args(port: u16) -> Vec<String> {
     vec![
         "--host".to_owned(),
         "127.0.0.1".to_owned(),
         "--port".to_owned(),
         port.to_string(),
-        "--no-daemon".to_owned(),
     ]
+}
+
+/// Poll until nothing accepts connections on `127.0.0.1:port`, or `timeout`.
+fn wait_for_tcp_closed(port: u16, timeout: Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if TcpStream::connect(("127.0.0.1", port)).is_err() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 /// Attempt to bind `:0` to discover a free port.
@@ -276,7 +286,7 @@ pub fn wait_for_debugger_port_within(bin: &std::path::Path, port: u16, timeout: 
 
 /// Return `true` if a process with `pid` is currently alive.
 ///
-/// Mirrors the product's `daemon::process::is_process_alive` (unreachable from
+/// Mirrors the product's `util::process::is_process_alive` (unreachable from
 /// an integration-test binary) so the iter-110 Theme A0 kill-scoping test can
 /// assert a foreign browser survives an `ff-rdp launch --replace`.
 #[cfg(unix)]
@@ -334,7 +344,7 @@ impl FirefoxGuard {
     /// Give up ownership: `Drop` will not signal this PID (iter-242 Theme D).
     ///
     /// For the paths that have already *asserted* the process is gone — a
-    /// `daemon stop` that reported the port free, a `launch --replace` whose
+    /// `launch --replace` whose
     /// replacement was verified to carry a different PID. Keeping the guard
     /// live past that point means `Drop` unconditionally signals a PID the
     /// test knows is dead, and [`kill_pid`] does no ownership check, so at
@@ -620,8 +630,7 @@ pub fn kill_wait_timeout_from(raw: Option<&str>) -> Duration {
 
 /// Poll cadence for [`wait_for_pid_exit_with`].
 ///
-/// 1 ms rather than the 100 ms [`poll_for_daemon_port`] uses: the window being
-/// waited out is ~20 ms, and this runs on *every* live test's teardown, so a
+/// 1 ms: the window being waited out is ~20 ms, and this runs on *every* live test's teardown, so a
 /// coarse cadence would add up to 100 ms × ~150 drops of pure sleeping to a
 /// suite that already takes half an hour.
 const KILL_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(1);
@@ -670,7 +679,7 @@ pub fn wait_for_pid_exit(pid: u32, timeout: Duration) -> Option<Duration> {
 /// profile it believes is in use and an unrelated test fails.
 ///
 /// That is the whole of iteration-168: signal-and-hope where a bounded poll
-/// belongs, the same shape iter-164 fixed in [`LiveFirefox::with_daemon`].
+/// belongs.
 ///
 /// Never panics: this runs from `Drop`, including while an assertion is
 /// unwinding, and a panic during unwind aborts the process — turning one
@@ -916,17 +925,16 @@ pub struct LiveLaunchReceipt {
     pub requested_preferences: Vec<(String, ProfilePreference)>,
 }
 
-/// A private ff-rdp home, profile, browser and optional daemon for one test.
+/// A private ff-rdp home, profile and browser for one test.
 ///
 /// This is deliberately adjacent to [`LiveFirefox`] instead of a second
-/// launcher: it uses the product's `launch` and its supported `eval 1`
-/// autostart path.  `finish` is the observable cleanup point; `Drop` only
-/// supplies a non-panicking last resort for assertion-unwind paths.
+/// launcher: it uses the product's `launch`.  `finish` is the observable
+/// cleanup point; `Drop` only supplies a non-panicking last resort for
+/// assertion-unwind paths.
 pub struct IsolatedLiveFirefox {
     firefox: Option<LiveFirefox>,
     ff_rdp_binary: PathBuf,
     home: Option<tempfile::TempDir>,
-    daemon_started: bool,
     finished: bool,
     receipt: LiveLaunchReceipt,
 }
@@ -1008,7 +1016,7 @@ impl IsolatedLiveFirefox {
         let mut receipt = match launch_result {
             Ok(receipt) => receipt,
             Err(reason) => {
-                return Err(failed_launch_error(&reason, &ff_rdp_binary, home, port));
+                return Err(failed_launch_error(&reason, home, port));
             }
         };
         receipt.ff_rdp_binary.clone_from(&ff_rdp_binary);
@@ -1022,7 +1030,6 @@ impl IsolatedLiveFirefox {
             }),
             ff_rdp_binary,
             home: Some(home),
-            daemon_started: false,
             finished: false,
             receipt,
         };
@@ -1035,6 +1042,40 @@ impl IsolatedLiveFirefox {
                 pid,
                 launch_wait_timeout()
             ));
+        }
+        // A freshly started Firefox opens its debugger port before it exposes
+        // its first tab; a command that connects in between gets "no tabs
+        // available". Wait for the tab the way `LiveFirefox` does.
+        let tab_deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let tabs = session
+                .command()
+                .args(base_args(port))
+                .args(["tabs", "--jq", ".total"])
+                .output();
+            let total = tabs
+                .as_ref()
+                .ok()
+                .filter(|o| o.status.success())
+                .and_then(|o| {
+                    String::from_utf8_lossy(&o.stdout)
+                        .trim()
+                        .parse::<u64>()
+                        .ok()
+                })
+                .unwrap_or(0);
+            if total >= 1 {
+                break;
+            }
+            if std::time::Instant::now() >= tab_deadline {
+                let pid = session.receipt.pid;
+                let cleanup = session.cleanup().err().unwrap_or_default();
+                session.finished = true;
+                return Err(format!(
+                    "isolated launch pid {pid} opened port {port} but exposed no tab within 10s; cleanup: {cleanup}"
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(200));
         }
         session.receipt.firefox_version =
             match firefox_version_within(&session.receipt.firefox_binary, Duration::from_secs(5)) {
@@ -1067,18 +1108,7 @@ impl IsolatedLiveFirefox {
         command
     }
 
-    /// Trigger the supported `eval 1` daemon autostart path inside this
-    /// session's private home.
-    pub fn with_daemon(&mut self) -> Result<u16, String> {
-        self.daemon_started = true;
-        let port = self.firefox().with_daemon_using(
-            &self.ff_rdp_binary,
-            self.home.as_ref().map(tempfile::TempDir::path),
-        )?;
-        Ok(port)
-    }
-
-    /// Stop only this session's daemon/browser and remove only its temporary
+    /// Stop only this session's browser and remove only its temporary
     /// profile root. Cleanup errors are returned to the caller for assertion.
     pub fn finish(mut self) -> Result<(), String> {
         let result = self.cleanup();
@@ -1088,37 +1118,13 @@ impl IsolatedLiveFirefox {
 
     fn cleanup(&mut self) -> Result<(), String> {
         let mut failures = Vec::new();
-        let cleanup_phase = if self.daemon_started {
-            "after eval 1 autostart"
-        } else {
-            "after launch"
-        };
-        if let Some(ff) = self.firefox.as_ref() {
-            match bounded_command_output(
-                self.command().args([
-                    "--host",
-                    "127.0.0.1",
-                    "--port",
-                    &ff.port.to_string(),
-                    "daemon",
-                    "stop",
-                ]),
-                scoped_daemon_stop_timeout(),
-                "scoped daemon stop",
-            ) {
-                Ok(out) if out.status.success() => {}
-                Ok(out) => failures.push(format!(
-                    "scoped daemon stop {cleanup_phase} exited {}: {}",
-                    out.status,
-                    output_note(&out)
-                )),
-                Err(e) => failures.push(format!("spawn scoped daemon stop {cleanup_phase}: {e}")),
-            }
-        }
         if let Some(ff) = self.firefox.take() {
+            // The receipt's PID is the Firefox this session launched; there is
+            // ff-rdp keeps no other handle on it.
+            kill_pid_and_wait(ff.firefox_pid);
             if pid_alive(ff.firefox_pid) {
                 failures.push(format!(
-                    "Firefox pid {} remains alive after scoped daemon stop; preserving isolated root for inspection",
+                    "Firefox pid {} remains alive after kill; preserving isolated root for inspection",
                     ff.firefox_pid
                 ));
             }
@@ -1272,50 +1278,6 @@ fn terminate_and_reap(child: &mut Child) -> String {
     format!("child_pid={child_pid}; kill={kill_error:?}; reap={reap:?}")
 }
 
-/// Outer bound for the product's complete `daemon stop` path.
-///
-/// The registry path can spend three separate default 10-second socket waits
-/// connecting, reading the authenticated greeting and reading the RPC reply.
-/// The reply loop checks its 10-second deadline between frames, so a push frame
-/// received just before that deadline can start one final 10-second socket
-/// read. Add 2 seconds for graceful RPC shutdown, 2.3 seconds for the proxy
-/// daemon's TERM/KILL ladder, and 10.8 seconds for Firefox's ladder (2-second
-/// grace + 300 ms kill settle + 8-second port wait + 500 ms tree repoll). A
-/// rounded 60-second watchdog leaves 4.9 seconds for scheduling, capture,
-/// registry/profile cleanup and polling cadence after that 55.1-second path.
-pub(crate) fn scoped_daemon_stop_timeout() -> Duration {
-    Duration::from_secs(60)
-}
-
-pub(crate) fn scoped_daemon_stop(
-    binary: &Path,
-    home: &Path,
-    port: u16,
-    timeout: Duration,
-) -> Result<String, String> {
-    let output = bounded_command_output(
-        Command::new(binary).env("FF_RDP_HOME", home).args([
-            "--host",
-            "127.0.0.1",
-            "--port",
-            &port.to_string(),
-            "daemon",
-            "stop",
-        ]),
-        timeout,
-        "malformed-receipt scoped daemon stop",
-    )?;
-    if output.status.success() {
-        Ok(output_note(&output))
-    } else {
-        Err(format!(
-            "exited {}: {}",
-            output.status,
-            output_note(&output)
-        ))
-    }
-}
-
 /// Diagnostic display only: null means no exact UTF-8 representation exists.
 /// Cleanup must continue to use the original Path, never this display value.
 pub(crate) fn launch_request_context(home: &Path, port: u16) -> serde_json::Value {
@@ -1327,35 +1289,29 @@ pub(crate) fn launch_request_context(home: &Path, port: u16) -> serde_json::Valu
     })
 }
 
-/// Finish every failure after the launch command was invoked through the same
-/// product-owned cleanup path. At this point no receipt field, especially its
-/// PID, is trusted; the private home and requested port are the authority.
-pub(crate) fn failed_launch_error(
-    reason: &str,
-    binary: &Path,
-    home: tempfile::TempDir,
-    port: u16,
-) -> String {
+/// Finish every failure after the launch command was invoked. No receipt
+/// field, especially its PID, is trusted; the private home and requested port
+/// are the authority. A failed `launch` reaps the Firefox it spawned itself
+/// (iter-282), so a port that is still listening means something survived:
+/// the home is preserved for inspection rather than removed under it.
+pub(crate) fn failed_launch_error(reason: &str, home: tempfile::TempDir, port: u16) -> String {
     // Parent-selected authority survives even when the launch child never
     // executes or writes a receipt. Keep it separate from cleanup's response.
     let request = launch_request_context(home.path(), port);
     let reason = format!("isolated launch request: {request}\n{reason}");
-    match scoped_daemon_stop(binary, home.path(), port, scoped_daemon_stop_timeout()) {
-        Ok(note) => {
-            let removal = home.close().map_or_else(
-                |e| format!("could not remove isolated FF_RDP_HOME: {e}"),
-                |()| "removed isolated FF_RDP_HOME".to_owned(),
-            );
-            format!("{reason}; scoped cleanup succeeded: {note}; {removal}")
-        }
-        Err(cleanup_error) => {
-            let preserved = home.path().to_path_buf();
-            std::mem::forget(home);
-            format!(
-                "{reason}; scoped cleanup failed: {cleanup_error}; preserving {} for inspection",
-                preserved.display()
-            )
-        }
+    if wait_for_tcp_closed(port, Duration::from_secs(2)) {
+        let removal = home.close().map_or_else(
+            |e| format!("could not remove isolated FF_RDP_HOME: {e}"),
+            |()| "removed isolated FF_RDP_HOME".to_owned(),
+        );
+        format!("{reason}; port {port} is free; {removal}")
+    } else {
+        let preserved = home.path().to_path_buf();
+        std::mem::forget(home);
+        format!(
+            "{reason}; port {port} is still listening after the failed launch; preserving {} for inspection",
+            preserved.display()
+        )
     }
 }
 
@@ -1637,146 +1593,8 @@ impl LiveFirefox {
             std::thread::sleep(Duration::from_millis(200));
         }
     }
-
-    /// Start the daemon for this Firefox instance and return its proxy port.
-    ///
-    /// Mirrors the `start_daemon_for` logic from `live_daemon_watch_targets.rs`.
-    /// Returns `None` if the daemon doesn't start within a reasonable timeout —
-    /// in which case the reason is printed to stderr by
-    /// [`Self::with_daemon_or_reason`], which libtest surfaces when the caller's
-    /// assertion then fails.
-    pub fn with_daemon(&self) -> Option<u16> {
-        match self.with_daemon_or_reason() {
-            Ok(port) => Some(port),
-            Err(reason) => {
-                eprintln!("LiveFirefox: the proxy daemon did not start: {reason}");
-                None
-            }
-        }
-    }
-
-    /// [`Self::with_daemon`] with the failure reason instead of a bare `None`
-    /// (iter-172).
-    ///
-    /// Every live test that asserts "the proxy daemon did not start" used to
-    /// print exactly that and nothing else, so a reader had no way to tell a
-    /// product defect from an unmet precondition. `ff-rdp` already knows why:
-    /// when autostart gives up it records the cause in `meta.daemon_fallback`
-    /// and reports `meta.route == "direct"`. The trigger `eval` below asks for
-    /// `--verbose` purely so that block is present, and this function hands it
-    /// to the caller. iter-169 fixed the same shape in `live_158`; the
-    /// iteration-172 carry-over made it general.
-    pub fn with_daemon_or_reason(&self) -> Result<u16, String> {
-        self.with_daemon_using(&ff_rdp_bin(), None)
-    }
-
-    fn with_daemon_using(&self, binary: &Path, home: Option<&Path>) -> Result<u16, String> {
-        // Trigger daemon startup: an `eval` call without --no-daemon causes
-        // auto-start. `tabs` does NOT work here — `tabs.rs` connects to
-        // Firefox directly via `RdpConnection::connect` and never goes
-        // through `resolve_connection_target`, so it never actually starts a
-        // daemon (see the fix + note in `eval_object_leak_soak.rs`).
-        let mut trigger = Command::new(binary);
-        if let Some(home) = home {
-            trigger.env("FF_RDP_HOME", home);
-        }
-        let out = bounded_command_output(
-            trigger.args([
-                "--host",
-                "127.0.0.1",
-                "--port",
-                &self.port.to_string(),
-                "--timeout",
-                "5000",
-                "--verbose",
-                "eval",
-                "1",
-            ]),
-            daemon_autostart_trigger_timeout(daemon_start_timeout()),
-            "ff-rdp eval 1 autostart trigger",
-        )?;
-
-        if !out.status.success() {
-            return Err(format!(
-                "the autostart trigger `eval 1` exited {}: stdout={} stderr={}",
-                out.status,
-                String::from_utf8_lossy(&out.stdout).trim(),
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
-        }
-        // Keep whatever the CLI said about the route so a later timeout can
-        // name the cause rather than shrugging.
-        let route_note = daemon_route_note(&out.stdout);
-
-        // iter-164 (defect 2): poll for the registry entry instead of sleeping
-        // a fixed 500 ms. At load average 18.6 the daemon had not registered
-        // within 500 ms and `with_daemon` reported "no daemon" for a daemon
-        // that came up 200 ms later — which iter-158's honest harness then
-        // turned into a hard failure of an unrelated test.
-        let port = self.port;
-        let daemon_port = poll_for_daemon_port(daemon_ready_timeout(), || {
-            let mut status_command = Command::new(binary);
-            if let Some(home) = home {
-                status_command.env("FF_RDP_HOME", home);
-            }
-            let status = bounded_command_output(
-                status_command.args([
-                    "--host",
-                    "127.0.0.1",
-                    "--port",
-                    &port.to_string(),
-                    "daemon",
-                    "status",
-                ]),
-                Duration::from_secs(2),
-                "ff-rdp daemon status probe",
-            )
-            .ok()?;
-            let status_json = serde_json::from_slice::<serde_json::Value>(&status.stdout).ok()?;
-            daemon_port_from_status(&status_json)
-        })
-        .ok_or_else(|| {
-            format!(
-                "`daemon status` never reported a running daemon for Firefox port {port} \
-                 within {}s ({DAEMON_READY_TIMEOUT_ENV}); the autostart trigger said: {route_note}",
-                daemon_ready_timeout().as_secs()
-            )
-        })?;
-
-        eprintln!("LiveFirefox: daemon proxy port={daemon_port}");
-        Ok(daemon_port)
-    }
 }
 
-/// Summarise what an `ff-rdp --verbose` envelope says about how it connected —
-/// `meta.route` plus `meta.daemon_fallback` when autostart degraded (iter-172).
-///
-/// Split out from [`LiveFirefox::with_daemon_or_reason`] so the extraction is
-/// unit-testable without a live Firefox.
-pub fn daemon_route_note(stdout: &[u8]) -> String {
-    let Ok(json) = serde_json::from_slice::<serde_json::Value>(stdout) else {
-        return "(the trigger command emitted no JSON envelope)".to_owned();
-    };
-    let route = json["meta"]["route"].as_str().unwrap_or("(no meta.route)");
-    match json["meta"]["daemon_fallback"].as_str() {
-        Some(reason) => format!("route={route}, daemon_fallback={reason:?}"),
-        None => format!("route={route}, no meta.daemon_fallback recorded"),
-    }
-}
-
-/// Both output streams of a finished `ff-rdp` invocation, formatted for a
-/// panic message (iter-179).
-///
-/// `ff-rdp` is a JSON-on-stdout tool: its **error envelopes go to stdout**, and
-/// stderr is usually empty. A failure message built from `out.stderr` alone
-/// therefore ships with nothing after the colon — which is exactly how
-/// iteration 179 lost the `diagnostics.events_in_buffer: 0` field that was the
-/// most informative fact about `live_62`'s failure. Three iterations have now
-/// fixed one instance of this each (169, 172, 179); `output_note` is the shared
-/// form so there is no fourth.
-///
-/// Both streams are trimmed and included unconditionally — an empty one is
-/// itself evidence (it says the tool wrote nothing there).
 pub fn output_note(out: &std::process::Output) -> String {
     format!(
         "status={:?} stdout={} stderr={}",
@@ -1784,220 +1602,6 @@ pub fn output_note(out: &std::process::Output) -> String {
         String::from_utf8_lossy(&out.stdout).trim(),
         String::from_utf8_lossy(&out.stderr).trim()
     )
-}
-
-/// Env var overriding [`live_target_wait_bound`] (iter-246 Part D).
-///
-/// Deliberately a knob rather than a raised default. Iteration 246 found the
-/// 15 s bound below missed four times across iterations 188, 197, 224 and 239
-/// under a `--jobs 6` sweep, and the plan's own design note forbids widening
-/// it without a measured distribution behind the new value. The knob lets a
-/// measurement raise it *for one run*, on purpose, the way
-/// `FF_RDP_LAUNCH_TIMEOUT_SECS` lets a caller raise the launch budget, without
-/// silently making every future run less sensitive.
-pub const LIVE_TARGET_WAIT_ENV: &str = "FF_RDP_TEST_LIVE_TARGET_WAIT_S";
-
-/// How long [`wait_for_live_targets`] polls for the daemon's frame-target
-/// subscription. 15 s by default; override with [`LIVE_TARGET_WAIT_ENV`].
-pub fn live_target_wait_bound() -> Duration {
-    let secs = std::env::var(LIVE_TARGET_WAIT_ENV)
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|s| *s > 0)
-        .unwrap_or(15);
-    Duration::from_secs(secs)
-}
-
-/// What [`wait_for_live_targets`] observed — not just whether it succeeded.
-///
-/// iter-246 Part D: three suites carried a byte-identical copy of this wait,
-/// each returning a bare `bool`, so `daemon never reported live frame targets`
-/// was the whole record of four separate sweep failures. It said nothing about
-/// how long the wait actually took, how many times it polled, or what the
-/// daemon last reported — which is why "it only fails under load" survived as
-/// a description for four iterations without ever becoming a diagnosis.
-pub struct LiveTargetWait {
-    /// Did `live_target_count` reach 1 before the bound?
-    pub reached: bool,
-    /// How long the wait actually ran.
-    pub elapsed: Duration,
-    /// How many `daemon status` probes it issued.
-    pub polls: usize,
-    /// The last `daemon status` output seen, JSON or not.
-    pub last_status: String,
-    /// The bound in force for this run.
-    pub bound: Duration,
-}
-
-impl LiveTargetWait {
-    /// A panic-message rendering: the timing *and* what the daemon last said.
-    pub fn note(&self) -> String {
-        format!(
-            "waited {:?} of a {:?} bound over {} poll(s) ({} to raise it deliberately);              last daemon status: {}",
-            self.elapsed,
-            self.bound,
-            self.polls,
-            LIVE_TARGET_WAIT_ENV,
-            self.last_status.trim()
-        )
-    }
-}
-
-/// Poll `daemon status` until it reports at least one **live** target.
-///
-/// `live_target_count` (iter-137) is the number of targets alive right now, as
-/// opposed to the cumulative `target_count`. A daemon that restarted mid-test
-/// re-establishes its `watchTargets("frame")` subscription on a background
-/// thread; until that lands it has recorded nothing, and probing it would
-/// measure the restart rather than the feature under test.
-///
-/// Every call prints one `LIVE_TARGET_WAIT` line to stderr, whether it
-/// succeeded or not. That line is the instrument iteration 246 Part D asks
-/// for: a sweep log then carries the whole *distribution* of subscription
-/// times across every test that waits, idle and under load, instead of a
-/// single number recovered from whichever run happened to fail.
-pub fn wait_for_live_targets(port: u16) -> LiveTargetWait {
-    let bound = live_target_wait_bound();
-    let started = std::time::Instant::now();
-    let deadline = started + bound;
-    let mut polls = 0usize;
-    let mut last_status = String::from("<never probed>");
-    let mut reached = false;
-    while std::time::Instant::now() < deadline {
-        let out = Command::new(ff_rdp_bin())
-            .args(["--host", "127.0.0.1", "--port", &port.to_string()])
-            .args(["daemon", "status"])
-            .output();
-        polls += 1;
-        match out {
-            Ok(out) => {
-                last_status = output_note(&out);
-                let text = String::from_utf8_lossy(&out.stdout);
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
-                    && json["results"]["live_target_count"].as_u64().unwrap_or(0) >= 1
-                {
-                    reached = true;
-                    break;
-                }
-            }
-            Err(e) => last_status = format!("`daemon status` could not be spawned: {e}"),
-        }
-        std::thread::sleep(Duration::from_millis(250));
-    }
-    let elapsed = started.elapsed();
-    eprintln!(
-        "LIVE_TARGET_WAIT port={port} reached={reached} elapsed_ms={} polls={polls} \
-         bound_ms={}",
-        elapsed.as_millis(),
-        bound.as_millis()
-    );
-    LiveTargetWait {
-        reached,
-        elapsed,
-        polls,
-        last_status,
-        bound,
-    }
-}
-
-/// Env var overriding [`daemon_ready_timeout`] (iter-164).
-pub const DAEMON_READY_TIMEOUT_ENV: &str = "FF_RDP_TEST_DAEMON_READY_TIMEOUT_S";
-
-/// Product-side daemon registry wait used by the `eval 1` autostart trigger.
-const PRODUCT_DAEMON_START_TIMEOUT_ENV: &str = "FF_RDP_DAEMON_START_TIMEOUT_MS";
-
-const DEFAULT_PRODUCT_DAEMON_START_TIMEOUT_MS: u64 = 20_000;
-const DAEMON_TRIGGER_SOCKET_TIMEOUT: Duration = Duration::from_secs(5);
-const DAEMON_TRIGGER_SOCKET_PHASES: u32 = 11;
-const DAEMON_TRIGGER_RUNNER_HEADROOM: Duration = Duration::from_secs(5);
-
-/// Resolve the product's daemon-start wait without mutating process-global
-/// environment state. Missing, malformed and zero values use the 20-second
-/// product default.
-pub(crate) fn parse_daemon_start_timeout(raw: Option<&str>) -> Duration {
-    Duration::from_millis(
-        raw.and_then(|value| value.trim().parse::<u64>().ok())
-            .filter(|milliseconds| *milliseconds > 0)
-            .unwrap_or(DEFAULT_PRODUCT_DAEMON_START_TIMEOUT_MS),
-    )
-}
-
-fn daemon_start_timeout() -> Duration {
-    parse_daemon_start_timeout(
-        std::env::var(PRODUCT_DAEMON_START_TIMEOUT_ENV)
-            .ok()
-            .as_deref(),
-    )
-}
-
-/// Bound the trigger above its finite valid slow path after the configured
-/// registry wait. The explicit `--timeout 5000` applies independently to TCP
-/// connect, greeting, `listTabs`, the optional `getRoot`/`getDescription`
-/// version fallback, `getTarget`, and the eval acknowledgement/result. A stale
-/// console actor may add one refresh `getTarget` plus a second eval
-/// acknowledgement/result: eleven socket-sized phases in total. The final
-/// allowance covers scheduling, JSON/output handling and runner polling.
-///
-/// This is a conservative harness watchdog, not an absolute protocol duration:
-/// product locks and push-event streams do not yet share one operation
-/// deadline. Its purpose is to avoid killing a command while every bounded
-/// phase above is still within its own product timeout.
-pub(crate) fn daemon_autostart_trigger_timeout(registry_wait: Duration) -> Duration {
-    registry_wait
-        .saturating_add(DAEMON_TRIGGER_SOCKET_TIMEOUT.saturating_mul(DAEMON_TRIGGER_SOCKET_PHASES))
-        .saturating_add(DAEMON_TRIGGER_RUNNER_HEADROOM)
-}
-
-/// How long [`LiveFirefox::with_daemon`] waits for the autostarted daemon to
-/// register (iter-164). Defaults to 30 s; override with
-/// [`DAEMON_READY_TIMEOUT_ENV`].
-///
-/// Generous on purpose: this is the harness half of iteration-164's defect 2.
-/// It must comfortably exceed the product's own autostart budget
-/// (`FF_RDP_DAEMON_START_TIMEOUT_MS`, default 20 s) so a harness timeout can
-/// never be mistaken for a product failure.
-pub fn daemon_ready_timeout() -> Duration {
-    let secs = std::env::var(DAEMON_READY_TIMEOUT_ENV)
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|s| *s > 0)
-        .unwrap_or(30);
-    Duration::from_secs(secs)
-}
-
-/// Extract the daemon proxy port from a `daemon status` envelope, or `None`
-/// when the daemon is not (yet) running (iter-164).
-///
-/// Split out from [`LiveFirefox::with_daemon`] so the polling contract is
-/// unit-testable against a stub registry without a live Firefox.
-pub fn daemon_port_from_status(status_json: &serde_json::Value) -> Option<u16> {
-    if status_json["results"]["running"].as_bool() != Some(true) {
-        return None;
-    }
-    status_json["results"]["port"]
-        .as_u64()
-        .and_then(|p| u16::try_from(p).ok())
-}
-
-/// Poll `probe` until it yields a daemon port or `timeout` elapses (iter-164).
-///
-/// Always probes at least once, so a zero timeout degrades to a single
-/// attempt rather than to "never checked". Returns `None` when the deadline
-/// passes with every probe still reporting "not running".
-pub fn poll_for_daemon_port(
-    timeout: Duration,
-    mut probe: impl FnMut() -> Option<u16>,
-) -> Option<u16> {
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        if let Some(port) = probe() {
-            return Some(port);
-        }
-        if std::time::Instant::now() >= deadline {
-            return None;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
 }
 
 impl Drop for LiveFirefox {

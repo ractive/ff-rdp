@@ -2,9 +2,9 @@
 //! Firefox profile directories ff-rdp creates for itself under
 //! `secure_profile_root()` (iter-96 Theme C).
 //!
-//! Theme A (`daemon stop`) and Theme B (`launch`'s background pruning,
-//! `crate::util::profile_dir`) already remove profile directories
-//! automatically. This module is the manual escape hatch: `profiles list`
+//! `launch`'s background pruning (`crate::util::profile_dir`, Theme B)
+//! already removes stale profile directories automatically. This module is
+//! the manual escape hatch: `profiles list`
 //! reports how much has accumulated, and `profiles prune` removes it on
 //! demand — e.g. after a crash, a `kill -9`, or a long-running host where
 //! Theme B's bounded per-launch pruning hasn't caught up.

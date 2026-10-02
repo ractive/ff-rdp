@@ -27,8 +27,8 @@ enum Commands {
     /// directory instead of a file, sweep every `iteration-*.md` in it and exit 1
     /// if any one fails — this is what CI's discipline job runs (iter-233).
     CheckIterationPlan(check_iteration_plan::Args),
-    /// Scan product source for three defect shapes: `.lock().unwrap()` in the daemon,
-    /// `eprintln!` + `AppError::Exit(N)` that bypasses the JSON envelope, and any
+    /// Scan product source for two defect shapes: `eprintln!` +
+    /// `AppError::Exit(N)` that bypasses the JSON envelope, and any
     /// `eprintln!` under commands/ without a `// stderr-ok: <reason>` justification.
     CheckSourceInvariants(check_source_invariants::Args),
     /// Validate firefox_refs line ranges in an iteration plan against the local Firefox checkout.

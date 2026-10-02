@@ -17,7 +17,7 @@ Implemented in two commits on `iter-61p/actor-registry-and-front-lifecycle`.
 - `invalidate_target(destroyed_target)` does a full scan of the map to cascade to owned fronts. Acceptable for small actor counts; revisit if registry grows large.
 - `Front` trait is minimal: just `id()` and `registry()`. `assert_alive()` is a default method.
 - `call_with_refresh` is generic over `IsActorGone` — works with both `ProtocolError` and `RdpError`.
-- `live_consoleactor_invalidation` wired in iter-61t Theme A: `handle_target_event` in daemon/server.rs now calls `registry.register` on `target-available-form` and `invalidate_target` on `target-destroyed-form`.
+- `live_consoleactor_invalidation` was wired in iter-61t Theme A through the (since removed, DEC-056) daemon's target-event handler; direct connections re-register fronts via `ConnectedTab::install_target`.
 - `Session` struct added to `ff-rdp-core/src/session.rs`: owns `RdpTransport` + `Arc<Registry>`. Constructed from `RdpConnection::into_transport()`.
 - `ConnectedTab` in commands/connect_tab.rs now owns `Session` (replaces `RdpConnection`). After `getTarget`, registers TargetFront+ConsoleFront in the session registry.
 - `eval.rs` uses registry + manual retry (match on `noSuchActor`/`unknownActor`) with `register_target_fronts` on refresh.

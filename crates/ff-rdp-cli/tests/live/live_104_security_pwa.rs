@@ -3,8 +3,6 @@
 //! ACs (see kb/iterations/iteration-104-security-pwa-audit-pack.md):
 //!   - live_network_security_info_https
 //!   - live_manifest_fetch_canonical
-//!   - live_throttle_slow3g_slows_fetch  [deferred — theme C not landed]
-//!   - live_block_url_pattern            [deferred — theme C not landed]
 //!
 //! # Running
 //!
@@ -27,23 +25,10 @@ fn parse_json(output: &Output) -> serde_json::Value {
     })
 }
 
-fn stop_daemon(port: u16) {
-    let _ = Command::new(ff_rdp_bin())
-        .args([
-            "--host",
-            "127.0.0.1",
-            "--port",
-            &port.to_string(),
-            "daemon",
-            "stop",
-        ])
-        .output();
-}
-
 /// `live_network_security_info_https`:
 ///
-/// After `navigate https://example.com --with-network`, `network --security`
-/// attaches a `security` object to the (HTTPS) request whose
+/// A `network --security` capture listening while `navigate https://example.com`
+/// runs attaches a `security` object to the (HTTPS) request whose
 /// `protocolVersion` starts with "TLS" and whose `cipherSuite` is non-empty.
 /// The top-level `insecure_requests` count is present (0 for an all-HTTPS
 /// capture). The http→null half of the AC is covered by the unit test
@@ -60,7 +45,7 @@ fn live_network_security_info_https() {
     }
     let ff = LiveFirefox::headless_on_random_port();
 
-    let daemon_args = || {
+    let cli_args = || {
         vec![
             "--host".to_owned(),
             "127.0.0.1".to_owned(),
@@ -71,27 +56,34 @@ fn live_network_security_info_https() {
         ]
     };
 
+    // A one-shot `network` only sees requests made while it is connected, so
+    // start it first (it drains until the stream has been quiet for
+    // `--timeout`) and navigate from a second process while it listens.
+    let port = ff.port().to_string();
+    let watcher = Command::new(ff_rdp_bin())
+        .args(["--host", "127.0.0.1", "--port", &port, "--timeout", "8000"])
+        .args(["network", "--security", "--format", "json"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn network --security");
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+
     let nav = Command::new(ff_rdp_bin())
-        .args(daemon_args())
-        .args(["navigate", "https://example.com", "--with-network"])
+        .args(cli_args())
+        .args(["navigate", "https://example.com"])
         .output()
-        .expect("navigate --with-network");
+        .expect("navigate");
+    let network = watcher
+        .wait_with_output()
+        .expect("network --security output");
     if !nav.status.success() {
         eprintln!(
             "live_network_security_info_https: navigate failed — {}",
             String::from_utf8_lossy(&nav.stderr)
         );
-        stop_daemon(ff.port());
         return;
     }
-
-    let network = Command::new(ff_rdp_bin())
-        .args(daemon_args())
-        .args(["network", "--security", "--format", "json"])
-        .output()
-        .expect("network --security");
-
-    stop_daemon(ff.port());
 
     let json = parse_json(&network);
     assert_eq!(
@@ -110,7 +102,7 @@ fn live_network_security_info_https() {
     let entries = json["results"].as_array().unwrap_or(&empty);
     assert!(
         !entries.is_empty(),
-        "network results must be non-empty after navigate --with-network: {json}"
+        "network results must capture the navigation it was listening during: {json}"
     );
 
     // The main-document HTTPS request must carry a security object whose
@@ -138,7 +130,7 @@ fn live_network_security_info_https() {
 ///
 /// A `data:` page that links a manifest returns the parsed `name`/`start_url`
 /// and an `errors` array (exit 0); a page without a manifest returns
-/// `manifest: null` with exit 0. Both halves run over the same daemon
+/// `manifest: null` with exit 0. Both halves run over the same
 /// connection.
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
@@ -148,13 +140,9 @@ fn live_manifest_fetch_canonical() {
         return;
     }
     let ff = LiveFirefox::headless_on_random_port();
-    if ff.with_daemon().is_none() {
-        eprintln!("live_manifest_fetch_canonical: daemon did not start — skipping");
-        return;
-    }
     let port = ff.port();
 
-    let daemon_args = || {
+    let cli_args = || {
         vec![
             "--host".to_owned(),
             "127.0.0.1".to_owned(),
@@ -167,7 +155,7 @@ fn live_manifest_fetch_canonical() {
 
     let navigate = |url: &str| {
         let out = Command::new(ff_rdp_bin())
-            .args(daemon_args())
+            .args(cli_args())
             .args(["navigate", "--allow-unsafe-urls", url])
             .output()
             .expect("ff-rdp navigate");
@@ -179,7 +167,7 @@ fn live_manifest_fetch_canonical() {
     };
     let manifest = || {
         let out = Command::new(ff_rdp_bin())
-            .args(daemon_args())
+            .args(cli_args())
             .args(["manifest", "--format", "json"])
             .output()
             .expect("ff-rdp manifest");
@@ -232,6 +220,5 @@ fn live_manifest_fetch_canonical() {
         "no-manifest result must carry a reason string: {without_json}"
     );
 
-    stop_daemon(port);
     eprintln!("live_manifest_fetch_canonical: PASSED");
 }

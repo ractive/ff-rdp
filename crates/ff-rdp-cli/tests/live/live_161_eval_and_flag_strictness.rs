@@ -15,9 +15,6 @@
 //! - D: `--fields`/`--sort` reject names that appear on no result entry.
 //! - E: `meta.eval_path` — a constant since iter-93 — is gone.
 //!
-//! daemon-parity: these use [`daemon_args`] (no `--no-daemon`) — the default
-//! path every real invocation takes.
-//!
 //! # Running
 //!
 //!   FF_RDP_LIVE_TESTS=1 cargo test-live -p ff-rdp-cli \
@@ -31,7 +28,7 @@ use serde_json::Value;
 
 use crate::common::{FixtureRoute, FixtureServer, LiveFirefox, ff_rdp_bin, live_tests_enabled};
 
-fn daemon_args(port: u16) -> Vec<String> {
+fn cli_args(port: u16) -> Vec<String> {
     vec![
         "--host".to_owned(),
         "127.0.0.1".to_owned(),
@@ -42,29 +39,9 @@ fn daemon_args(port: u16) -> Vec<String> {
     ]
 }
 
-fn stop_daemon(port: u16) {
-    let _ = Command::new(ff_rdp_bin())
-        .args(["--host", "127.0.0.1", "--port", &port.to_string()])
-        .args(["daemon", "stop"])
-        .output();
-}
-
-/// Bring up Firefox with a running daemon, panicking on failure (iter-158
-/// Theme D: an `Option` here made every caller `return`, which libtest
-/// reports as `ok`).
-fn firefox_with_daemon(test: &str) -> LiveFirefox {
-    let ff = LiveFirefox::headless_on_random_port();
-    assert!(
-        ff.with_daemon().is_some(),
-        "{test}: the proxy daemon did not start for Firefox on port {}",
-        ff.port()
-    );
-    ff
-}
-
 fn run(port: u16, args: &[&str]) -> Output {
     Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("spawn ff-rdp {args:?}: {e}"))
@@ -142,7 +119,7 @@ fn live_161_stringify_multi_statement_positional() {
         eprintln!("live_161_stringify_multi_statement_positional: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_161_stringify_multi_statement_positional");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let out = run(port, &["eval", "--stringify", "const x = 5; x"]);
@@ -168,8 +145,6 @@ fn live_161_stringify_multi_statement_positional() {
         serde_json::json!({"a": 1, "b": [2, 3]}),
         "expected the parsed object, not a grip; got {json}"
     );
-
-    stop_daemon(port);
 }
 
 /// AC: `live_161_stringify_multi_statement_stdin`.
@@ -184,12 +159,12 @@ fn live_161_stringify_multi_statement_stdin() {
         eprintln!("live_161_stringify_multi_statement_stdin: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_161_stringify_multi_statement_stdin");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let script = "const a=1;\nconst b=2;\na+b\n";
     let mut child = Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(["eval", "--stdin", "--stringify"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -215,8 +190,6 @@ fn live_161_stringify_multi_statement_stdin() {
     );
     let json = parse_json(&out, &["eval", "--stdin", "--stringify"]);
     assert_eq!(json["results"], 3, "expected results == 3; got {json}");
-
-    stop_daemon(port);
 }
 
 /// AC: `live_161_stringify_await_multi_statement`.
@@ -231,7 +204,7 @@ fn live_161_stringify_await_multi_statement() {
         eprintln!("live_161_stringify_await_multi_statement: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_161_stringify_await_multi_statement");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let script = "const r = await Promise.resolve({n:7}); r";
@@ -251,8 +224,6 @@ fn live_161_stringify_await_multi_statement() {
         serde_json::json!({"n": 7}),
         "expected the resolved value, not a pending Promise; got {json}"
     );
-
-    stop_daemon(port);
 }
 
 // ---------------------------------------------------------------------------
@@ -280,7 +251,7 @@ fn live_161_build_script_matrix_evaluates() {
         eprintln!("live_161_build_script_matrix_evaluates: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_161_build_script_matrix_evaluates");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     // Kept in sync with `MATRIX_SCRIPTS` in `commands/eval.rs`. iter-167
@@ -358,8 +329,6 @@ fn live_161_build_script_matrix_evaluates() {
             }
         }
     }
-
-    stop_daemon(port);
 }
 
 // ---------------------------------------------------------------------------
@@ -379,7 +348,7 @@ fn live_161_eval_returns_full_long_string() {
         eprintln!("live_161_eval_returns_full_long_string: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_161_eval_returns_full_long_string");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let out = run(port, &["eval", "\"x\".repeat(5000)"]);
@@ -396,8 +365,6 @@ fn live_161_eval_returns_full_long_string() {
             .any(|w| w == b"\"type\":\"longString\""),
         "no longString grip may appear anywhere in the envelope: {text}"
     );
-
-    stop_daemon(port);
 }
 
 /// AC: `live_161_eval_stringify_long_payload_parses`.
@@ -414,7 +381,7 @@ fn live_161_eval_stringify_long_payload_parses() {
         eprintln!("live_161_eval_stringify_long_payload_parses: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_161_eval_stringify_long_payload_parses");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let script = "Array.from({length:400},(_,i)=>({i}))";
@@ -428,8 +395,6 @@ fn live_161_eval_stringify_long_payload_parses() {
         json["meta"].get("stringify_parsed").is_none(),
         "the parse must succeed, so no stringify_parsed flag; got {json}"
     );
-
-    stop_daemon(port);
 }
 
 // ---------------------------------------------------------------------------
@@ -448,14 +413,13 @@ fn live_161_fields_and_sort_reject_unknown_names() {
         eprintln!("live_161_fields_and_sort_reject_unknown_names: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_161_fields_and_sort_reject_unknown_names");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(_server) = serve_and_navigate(
         port,
         "live_161_fields_and_sort_reject_unknown_names",
         LINKS_PAGE,
     ) else {
-        stop_daemon(port);
         return;
     };
 
@@ -533,8 +497,6 @@ fn live_161_fields_and_sort_reject_unknown_names() {
     );
     let json = parse_json(&out, &["dom", ".no-such-class-anywhere", "--fields", "tag"]);
     assert_eq!(json["total"], 0, "expected total 0; got {json}");
-
-    stop_daemon(port);
 }
 
 // ---------------------------------------------------------------------------
@@ -552,17 +514,15 @@ fn live_161_eval_meta_has_no_eval_path() {
         eprintln!("live_161_eval_meta_has_no_eval_path: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_161_eval_meta_has_no_eval_path");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let json = run_json(port, &["eval", "document.title"]);
-    let meta = json["meta"]
-        .as_object()
-        .unwrap_or_else(|| panic!("meta must be an object; got {json}"));
+    // An empty `meta` is omitted from the envelope, which also satisfies the
+    // assertion: there is no `eval_path` either way.
     assert!(
-        !meta.contains_key("eval_path"),
+        json.get("meta")
+            .is_none_or(|meta| meta.get("eval_path").is_none()),
         "meta.eval_path was removed in iter-161; got {json}"
     );
-
-    stop_daemon(port);
 }

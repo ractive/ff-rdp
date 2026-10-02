@@ -356,7 +356,6 @@ impl RdpTransport {
 
     /// Adopt an already-connected stream without consuming its greeting.
     ///
-    /// The daemon uses this after cancellable nonblocking connection acquisition.
     /// The caller selects blocking mode and operation timeouts before adoption.
     pub fn from_stream(stream: TcpStream) -> Result<Self, ProtocolError> {
         let reader = BufReader::new(
@@ -376,7 +375,7 @@ impl RdpTransport {
         })
     }
 
-    /// Clone this transport's socket for an independent daemon shutdown handle.
+    /// Clone this transport's socket, e.g. for an independent shutdown handle.
     pub fn try_clone_stream(&self) -> std::io::Result<TcpStream> {
         self.writer.try_clone()
     }
@@ -441,7 +440,7 @@ impl RdpTransport {
     /// sink was already installed so a caller can temporarily capture push
     /// events (e.g. a `resources-available-array` that `recv_reply_from` routes
     /// to the sink while awaiting a `watchResources` ACK) and then restore the
-    /// original sink — without silently clobbering a daemon-installed one.
+    /// original sink — without silently clobbering one a caller installed.
     pub fn swap_event_sink(&mut self, sink: Option<Sender<Value>>) -> Option<Sender<Value>> {
         std::mem::replace(&mut self.event_sink, sink)
     }
@@ -514,8 +513,8 @@ impl RdpTransport {
     /// TCP connection. The read half is exclusive; the write half can be shared
     /// via the calling thread. Both halves speak the Firefox RDP framing protocol.
     ///
-    /// This is the preferred way for the daemon to split the connection so it
-    /// never needs to import raw `encode_frame`/`recv_from` from this crate.
+    /// Callers that need separate reader and writer halves use this instead of
+    /// raw `encode_frame`/`recv_from`.
     pub fn split(self) -> (FramedReader, FramedWriter) {
         // iter-240: the framer state travels with the read half. A split that
         // reset it would restart decoding mid-frame if the transport were split
@@ -743,7 +742,7 @@ impl RdpTransport {
 
 /// Read half of a split [`RdpTransport`].
 ///
-/// Owned exclusively by the Firefox-reader thread in the daemon.
+/// The read half is exclusive to one reader.
 pub struct FramedReader {
     reader: BufReader<TcpStream>,
     /// Resumable framer state for `reader` (iter-240) — one per stream, kept
@@ -754,7 +753,7 @@ pub struct FramedReader {
 impl FramedReader {
     /// Wrap a `TcpStream` in a `FramedReader` without going through [`RdpTransport`].
     ///
-    /// Useful in the daemon where client TCP streams need to be read using the
+    /// Useful where a TCP stream (e.g. a test peer) needs to be read with the
     /// typed framing API rather than the raw `recv_from` free function.
     pub fn from_stream(stream: TcpStream) -> Self {
         Self {
@@ -793,9 +792,7 @@ impl FramedReader {
 
     /// Try to clone the underlying `TcpStream`.
     ///
-    /// The clone shares the same underlying socket. Useful when the daemon
-    /// needs to hand a write clone to a `StreamSubscriber` while retaining the
-    /// read half for the client loop.
+    /// The clone shares the same underlying socket.
     pub fn try_clone_stream(&self) -> std::io::Result<TcpStream> {
         self.reader.get_ref().try_clone()
     }
@@ -825,7 +822,7 @@ pub struct FramedWriter {
 impl FramedWriter {
     /// Wrap a `TcpStream` in a `FramedWriter` without going through [`RdpTransport`].
     ///
-    /// Useful in the daemon where client TCP streams need to be written using the
+    /// Useful where a TCP stream (e.g. a test peer) needs to be written with the
     /// typed framing API rather than the raw `encode_frame` free function.
     pub fn from_stream(stream: TcpStream) -> Self {
         Self { writer: stream }
@@ -860,37 +857,6 @@ impl FramedWriter {
     pub fn send_raw(&mut self, json: &str) -> Result<(), ProtocolError> {
         let frame = encode_frame(json);
         write_frame(&mut self.writer, frame.as_bytes())
-    }
-
-    /// Send one frame within the caller's absolute deadline, including partial
-    /// writes and interrupted syscalls. Used by the daemon's serialized writer
-    /// after acquiring its lease within that same deadline.
-    pub fn send_raw_until(&mut self, json: &str, deadline: Instant) -> Result<(), ProtocolError> {
-        let frame = encode_frame(json);
-        write_frame_until(&mut self.writer, frame.as_bytes(), deadline, Instant::now)
-    }
-
-    /// Set the write deadline (`SO_SNDTIMEO`) on the underlying socket.
-    ///
-    /// A write that exceeds it fails with
-    /// [`ProtocolError::FrameWriteDesynchronised`] if any byte of the frame had
-    /// already reached the socket, and with [`ProtocolError::Timeout`] if none
-    /// had. The daemon uses this to bound every write to a CLI client so one
-    /// client that stopped reading cannot stall the event dispatcher (iter-240
-    /// Part B).
-    pub fn set_write_timeout(&self, timeout: Option<Duration>) -> Result<(), ProtocolError> {
-        self.writer
-            .set_write_timeout(timeout)
-            .map_err(ProtocolError::ConnectionFailed)
-    }
-
-    /// Shut down the underlying socket in both directions.
-    ///
-    /// Used by the daemon to drop a client whose write deadline expired: the
-    /// peer must not be left holding a half-written frame on a socket that
-    /// something else could still write to.
-    pub fn shutdown(&self) -> std::io::Result<()> {
-        self.writer.shutdown(std::net::Shutdown::Both)
     }
 
     /// Try to clone the underlying `TcpStream`.
@@ -1206,13 +1172,13 @@ fn navigation_start_url(msg: &Value) -> Option<String> {
 /// per `RdpTransport`, no concurrent guarded section on the same connection —
 /// *any* top-level navigation-start seen while a guard is armed can only be
 /// about the guarded document, so not checking the destination costs nothing
-/// and buys the no-daemon route (which never sees `target-destroyed-form` at
+/// and buys a direct connection (which never sees `target-destroyed-form` at
 /// all — see [`RdpTransport::set_target_guard`]) its only signal.
 ///
 /// This stops holding the moment a connection can carry navigation-start
 /// events for a document *other* than the one guarded — e.g. a future
-/// multi-tab feature sharing one transport, or a daemon-proxied connection
-/// that starts forwarding events for a sibling client's tab. Either would
+/// multi-tab feature sharing one transport, or a proxy that forwards events
+/// for another client's tab. Either would
 /// need this to filter by destination/actor identity before the coarse
 /// fallback fires; nothing here does that today (iter-220 review finding).
 fn target_destroyed_guard_hit(msg: &Value, guard: Option<u64>) -> Option<ProtocolError> {
@@ -1251,15 +1217,6 @@ pub fn recv_reply_from(transport: &mut RdpTransport, actor: &str) -> Result<Valu
         }
         let from = msg.get("from").and_then(Value::as_str).unwrap_or_default();
         if from != actor {
-            // iter-101 Theme B: a control-error frame injected by the daemon
-            // (e.g. `daemon_busy` when a second client tried to use the RPC
-            // channel) will never be followed by the awaited actor reply
-            // because the request was *not* forwarded.  Surface it promptly as
-            // an ActorError so the caller fails fast instead of blocking until
-            // the socket timeout.
-            if let Some(err) = daemon_control_error(&msg) {
-                return Err(err);
-            }
             // Sibling-actor packet — forward to the event sink so it isn't
             // lost (e.g. watcher events that arrived while we awaited a reply
             // on a different actor).
@@ -1343,44 +1300,10 @@ pub fn recv_event_from(
             // to the sink instead of discarding.
             transport.forward_event(msg);
         } else {
-            // iter-101 Theme B: fail fast on a daemon control-error frame
-            // (see `recv_reply_from`) rather than waiting for an actor reply
-            // that will never arrive.
-            if let Some(err) = daemon_control_error(&msg) {
-                return Err(err);
-            }
             // Packet from a sibling actor — forward to the sink.
             transport.forward_event(msg);
         }
     }
-}
-
-/// Recognise a daemon-injected control-error frame (iter-101 Theme B).
-///
-/// The ff-rdp daemon proxies raw Firefox RDP but occasionally needs to signal a
-/// condition of its own (currently only `daemon_busy`) by emitting a frame with
-/// `from == "daemon"` and an `error` field.  Because such a frame is *not* an
-/// actor reply and will never be followed by one for the awaited request, the
-/// reply/event wait loops convert it into a terminal [`ProtocolError::ActorError`]
-/// (with `actor = "daemon"`) so the caller fails fast.
-///
-/// Returns `None` for any frame that is not a daemon control-error, so ordinary
-/// forwarded `from == "daemon"` frames (e.g. the greeting) are unaffected.
-fn daemon_control_error(msg: &Value) -> Option<ProtocolError> {
-    if msg.get("from").and_then(Value::as_str) != Some("daemon") {
-        return None;
-    }
-    let error = msg.get("error").and_then(Value::as_str)?;
-    Some(ProtocolError::ActorError {
-        actor: "daemon".to_owned(),
-        kind: ActorErrorKind::from_code(error),
-        error: error.to_owned(),
-        message: msg
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_owned(),
-    })
 }
 
 /// Encode a JSON string as a Firefox RDP frame: `"{len}:{json}"`.
@@ -1437,8 +1360,7 @@ enum DecodeState {
 /// Framing used to be a straight-line function: read the length prefix, then
 /// `read_exact` the payload. Every socket in this codebase carries
 /// `SO_RCVTIMEO`, and every read loop built on it treats
-/// [`ProtocolError::Timeout`] as *"nothing arrived, poll again"* — the daemon's
-/// client loop and its Firefox reader both do, at 30 s and 1 s respectively.
+/// [`ProtocolError::Timeout`] as *"nothing arrived, poll again"*.
 ///
 /// But a timeout does not only happen at a frame boundary. When it fired
 /// **mid-frame**, `read_exact` had already consumed the length prefix and part
@@ -1448,8 +1370,7 @@ enum DecodeState {
 /// like:
 ///
 /// ```text
-/// daemon: abandoning client 42: client_frame_undecodable: \
-///     invalid packet: unexpected byte 0x3d in length prefix
+/// invalid packet: unexpected byte 0x3d in length prefix
 /// ```
 ///
 /// `0x3d` is `=`; `0x64` is `d`. Both are payload bytes, not framing. That is
@@ -1660,7 +1581,7 @@ fn parse_length(digits: &[u8], cap: usize) -> Result<usize, ProtocolError> {
 ///
 /// This is the event that used to corrupt the stream silently. Logging it at
 /// debug keeps the mechanism observable — `RUST_LOG=ff_rdp_core::transport=debug`
-/// on a daemon shows exactly which frames straddled a read deadline — without
+/// shows exactly which frames straddled a read deadline — without
 /// the volume of a full trace.
 fn trace_resume(part: &'static str, progress: usize) {
     tracing::debug!(
@@ -1746,13 +1667,12 @@ fn map_send_io_error(e: std::io::Error) -> ProtocolError {
 /// already pushed an unknown number of bytes, and the caller cannot tell that
 /// case apart from "nothing was sent". Every connection this crate opens *does*
 /// carry a write timeout — [`RdpTransport::connect_raw`] sets it from the
-/// caller's `--timeout` — so the ambiguity was live on every socket, including
-/// the CLI↔daemon one.
+/// caller's `--timeout` — so the ambiguity was live on every socket.
 ///
 /// The consequence was the desync iteration 224 recorded and could not
 /// explain: a truncated frame stump left on the wire, the peer's framer
-/// resuming mid-payload, and `unexpected byte 0x3d in length prefix` in
-/// `~/.ff-rdp/daemon.log`. Worse, the truncation surfaced as
+/// resuming mid-payload, and `unexpected byte 0x3d in length prefix` in the
+/// log. Worse, the truncation surfaced as
 /// [`ProtocolError::Timeout`], which [`ProtocolError::is_transient`] calls
 /// retryable — so a retry could append a second copy of the frame after the
 /// stump.
@@ -1771,76 +1691,6 @@ fn write_frame(stream: &mut TcpStream, frame: &[u8]) -> Result<(), ProtocolError
         let _ = stream.shutdown(std::net::Shutdown::Both);
     }
     result
-}
-
-// Keep the real socket operations behind this private seam so partial progress
-// and EINTR can be controlled without relying on platform socket buffer sizes.
-trait DeadlineIo: Write {
-    fn timeout(&self) -> std::io::Result<Option<Duration>>;
-    fn set_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()>;
-    fn interrupt(&self);
-}
-
-impl DeadlineIo for TcpStream {
-    fn timeout(&self) -> std::io::Result<Option<Duration>> {
-        self.write_timeout()
-    }
-    fn set_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
-        self.set_write_timeout(timeout)
-    }
-    fn interrupt(&self) {
-        let _ = self.shutdown(std::net::Shutdown::Both);
-    }
-}
-
-fn write_frame_until<W: DeadlineIo>(
-    stream: &mut W,
-    frame: &[u8],
-    deadline: Instant,
-    now: impl FnMut() -> Instant,
-) -> Result<(), ProtocolError> {
-    let previous = stream.timeout().map_err(ProtocolError::ConnectionFailed)?;
-    let result = write_frame_to(
-        &mut DeadlineWriter {
-            stream,
-            deadline,
-            now,
-        },
-        frame,
-    );
-    if matches!(result, Err(ProtocolError::FrameWriteDesynchronised { .. })) {
-        stream.interrupt();
-    }
-    // The caller still owns its writer lease throughout restoration.
-    let restored = stream
-        .set_timeout(previous)
-        .map_err(ProtocolError::ConnectionFailed);
-    match result {
-        Err(error) => Err(error),
-        Ok(()) => restored,
-    }
-}
-
-/// A single absolute deadline is rechecked even after partial progress or EINTR.
-struct DeadlineWriter<'a, W, N> {
-    stream: &'a mut W,
-    deadline: Instant,
-    now: N,
-}
-
-impl<W: DeadlineIo, N: FnMut() -> Instant> Write for DeadlineWriter<'_, W, N> {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        let remaining = self.deadline.saturating_duration_since((self.now)());
-        if remaining.is_zero() {
-            return Err(std::io::ErrorKind::TimedOut.into());
-        }
-        self.stream.set_timeout(Some(remaining))?;
-        self.stream.write(bytes)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.stream.flush()
-    }
 }
 
 /// [`write_frame`] over any `Write`, without the socket shutdown.
@@ -2087,7 +1937,7 @@ mod tests {
 
     #[test]
     fn target_guard_fires_on_a_navigation_starting_mid_request() {
-        // The direct (no-daemon) route never sees `target-destroyed-form` —
+        // A direct connection never sees `target-destroyed-form` —
         // nothing subscribed the connection to target watching — so the
         // navigation announcement is the only warning it gets.
         let msg = serde_json::json!({
@@ -2746,8 +2596,7 @@ mod tests {
     ///
     /// Every read loop in this codebase polls: it sets `SO_RCVTIMEO`, calls
     /// `recv()`, and treats `ProtocolError::Timeout` as "nothing arrived, go
-    /// round again" — the daemon's client loop at 30 s and its Firefox reader
-    /// at 1 s both do. Before this, a timeout that fired *inside* a frame threw
+    /// round again". Before this, a timeout that fired *inside* a frame threw
     /// away the length prefix and the payload bytes already consumed, and the
     /// next `recv()` started decoding in the middle of the payload:
     /// `invalid packet: unexpected byte 0x3d in length prefix`.
@@ -2885,7 +2734,7 @@ mod tests {
     /// Every socket this crate opens carries `SO_SNDTIMEO` (set from
     /// `--timeout` in `connect_raw`), and `write_all` on a timed-out socket
     /// returns `TimedOut` having already pushed an unknown number of bytes.
-    /// That truncated stump on the wire is what made the daemon's framer resume
+    /// That truncated stump on the wire is what made the peer's framer resume
     /// inside a payload and report `unexpected byte 0x3d in length prefix`
     /// (iteration 224) — and because the old mapping produced
     /// `ProtocolError::Timeout`, which `is_transient()` calls retryable, a
@@ -3010,7 +2859,7 @@ mod tests {
     /// one, so a caller can temporarily capture push events (e.g. the
     /// `resources-available-array` that precedes a `watchResources` ACK on
     /// FF152) and then restore whatever sink was there before — without
-    /// clobbering a daemon-installed one.
+    /// clobbering one another caller installed.
     #[test]
     fn swap_event_sink_returns_previous_and_installs_new() {
         let (mut transport, _server) = make_transport_pair();
@@ -3123,50 +2972,6 @@ mod tests {
             }
             other => panic!("expected ActorError, got {other:?}"),
         }
-        server_thread.join().unwrap();
-    }
-
-    /// iter-101 Theme B: a `daemon_busy` control-error frame (`from == "daemon"`)
-    /// arriving while awaiting an actor reply must surface promptly as an
-    /// `ActorError` rather than being forwarded as a sibling event and hanging
-    /// until the socket timeout.
-    #[test]
-    fn recv_reply_from_surfaces_daemon_busy_control_error() {
-        let (mut transport, server) = make_transport_pair();
-        let (tx, rx) = std::sync::mpsc::channel::<Value>();
-        transport.set_event_sink(Some(tx));
-
-        let server_thread = std::thread::spawn(move || {
-            write_frame(
-                &server,
-                &serde_json::json!({
-                    "from": "daemon",
-                    "error": "daemon_busy",
-                    "message": "another CLI client is holding the daemon's RPC channel"
-                }),
-            );
-        });
-
-        let err = recv_reply_from(&mut transport, "actorA").unwrap_err();
-        match err {
-            ProtocolError::ActorError {
-                actor,
-                error,
-                message,
-                ..
-            } => {
-                assert_eq!(actor, "daemon");
-                assert_eq!(error, "daemon_busy");
-                assert!(message.contains("RPC channel"));
-            }
-            other => panic!("expected ActorError from daemon, got {other:?}"),
-        }
-        // The control-error frame must NOT be forwarded to the event sink — it
-        // is terminal, not a stray event.
-        assert!(
-            rx.try_recv().is_err(),
-            "daemon control-error must not leak to the event sink"
-        );
         server_thread.join().unwrap();
     }
 
@@ -3558,133 +3363,6 @@ mod tests {
             rest_of_header.len(),
             "cursor should be positioned after header, not into body; \
              body bytes should still be unread (total={total_len}, pos={pos})"
-        );
-    }
-}
-
-#[cfg(test)]
-mod absolute_write_controls {
-    use super::*;
-    use std::cell::Cell;
-    use std::rc::Rc;
-
-    struct ScriptedSocket {
-        timeout: Cell<Option<Duration>>,
-        clock: Rc<Cell<Instant>>,
-        expires: Instant,
-        first_write: Option<std::io::Result<usize>>,
-        writes: usize,
-        interrupted: Cell<bool>,
-    }
-
-    impl Write for ScriptedSocket {
-        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
-            self.writes += 1;
-            self.clock.set(self.expires);
-            self.first_write
-                .take()
-                .expect("absolute deadline must prevent a second syscall")
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl DeadlineIo for ScriptedSocket {
-        fn timeout(&self) -> std::io::Result<Option<Duration>> {
-            Ok(self.timeout.get())
-        }
-        fn set_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
-            self.timeout.set(timeout);
-            Ok(())
-        }
-        fn interrupt(&self) {
-            self.interrupted.set(true);
-        }
-    }
-
-    #[test]
-    fn iter284_absolute_partial_expiry_retires_and_restores() {
-        let start = Instant::now();
-        let clock = Rc::new(Cell::new(start));
-        let previous = Some(Duration::from_secs(7));
-        let deadline = start + Duration::from_secs(1);
-        let mut socket = ScriptedSocket {
-            timeout: Cell::new(previous),
-            clock: Rc::clone(&clock),
-            expires: deadline,
-            first_write: Some(Ok(2)),
-            writes: 0,
-            interrupted: Cell::new(false),
-        };
-        let result = write_frame_until(&mut socket, b"9:{\"x\":123}", deadline, || clock.get());
-        assert!(matches!(
-            result,
-            Err(ProtocolError::FrameWriteDesynchronised { written: 2, .. })
-        ));
-        assert!(
-            socket.interrupted.get(),
-            "partial frame must retire its socket"
-        );
-        assert_eq!(socket.timeout.get(), previous);
-        assert_eq!(socket.writes, 1);
-    }
-
-    #[test]
-    fn iter284_absolute_eintr_does_not_restart_budget() {
-        let start = Instant::now();
-        let clock = Rc::new(Cell::new(start));
-        let deadline = start + Duration::from_secs(1);
-        let mut socket = ScriptedSocket {
-            timeout: Cell::new(None),
-            clock: Rc::clone(&clock),
-            expires: deadline,
-            first_write: Some(Err(std::io::ErrorKind::Interrupted.into())),
-            writes: 0,
-            interrupted: Cell::new(false),
-        };
-        let result = write_frame_until(&mut socket, b"2:{}", deadline, || clock.get());
-        assert!(matches!(result, Err(ProtocolError::Timeout)));
-        assert_eq!(socket.writes, 1);
-        assert!(
-            !socket.interrupted.get(),
-            "zero bytes preserve frame alignment"
-        );
-        assert_eq!(socket.timeout.get(), None);
-    }
-
-    #[test]
-    fn iter284_absolute_zero_expiry_preserves_real_socket_and_timeout() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback endpoint");
-        let socket = TcpStream::connect(listener.local_addr().expect("address")).expect("connect");
-        let (peer, _) = listener.accept().expect("accept");
-        let original = Some(Duration::from_secs(3));
-        socket
-            .set_write_timeout(original)
-            .expect("set previous timeout");
-        let observed = socket.try_clone().expect("timeout observation clone");
-        let mut writer = FramedWriter::from_stream(socket);
-        assert!(matches!(
-            writer.send_raw_until("{}", Instant::now()),
-            Err(ProtocolError::Timeout)
-        ));
-        assert_eq!(
-            observed.write_timeout().expect("restored timeout"),
-            original
-        );
-        writer
-            .send_raw_until("{\"normal\":true}", Instant::now() + Duration::from_secs(3))
-            .expect("next complete frame");
-        peer.set_read_timeout(Some(Duration::from_secs(3)))
-            .expect("peer deadline");
-        let mut reader = FramedReader::from_stream(peer);
-        assert_eq!(
-            reader.recv().expect("normal frame"),
-            serde_json::json!({"normal":true})
-        );
-        assert_eq!(
-            observed.write_timeout().expect("restored success timeout"),
-            original
         );
     }
 }

@@ -157,7 +157,6 @@ fn live_286_sources_returns_native_script_actor() {
     .expect("native sources command");
     assert!(output.status.success(), "{}", output_note(&output));
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(result["meta"]["route"], "direct");
     assert!(result["meta"].get("fallback").is_none(), "{result}");
     let source = result["results"]
         .as_array()

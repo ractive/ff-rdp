@@ -49,14 +49,16 @@ typed handle. It is obtained from `WatcherFront::get_network_parent_actor`
 (nested `{network: {actor}}` reply — the key is `network`, NOT `networkParent`;
 iter-109 guessed `networkParent` and shipped a decode bug caught by iter-110's
 live sweep and fixed after capturing the real Firefox 152 reply
-`{"network":{"actor":"…networkParent12"},"from":…}` — see [[watcher]]) and
-drives the `throttle` CLI command:
+`{"network":{"actor":"…networkParent12"},"from":…}` — see [[watcher]]). Since
+DEC-056 (daemon removed) the throttle and block list last only as long as the
+connection's `network-event` subscription, so they are flags on the command
+that needs them (`navigate` / `reload`), not a standalone command:
 
 | Front method | Wire call | CLI surface |
 |---|---|---|
-| `set_network_throttling(profile)` | `setNetworkThrottling({latency, downloadThroughput, uploadThroughput})` | `throttle slow-3g` / `throttle fast-3g` |
-| `clear_network_throttling()` | `setNetworkThrottling(null)` | `throttle off` |
-| `set_blocked_urls(urls)` | `setBlockedUrls({urls})` | `throttle --block <pat>…` / `throttle --unblock` |
+| `set_network_throttling(profile)` | `setNetworkThrottling({latency, downloadThroughput, uploadThroughput})` | `navigate`/`reload --throttle slow-3g\|fast-3g` |
+| `clear_network_throttling()` | `setNetworkThrottling(null)` | none (connection end resets it) |
+| `set_blocked_urls(urls)` | `setBlockedUrls({urls})` | `navigate`/`reload --block <pat>` |
 
 `ThrottleProfile` presets (bytes/sec, ms latency): **slow-3g** = 50 000 / 50 000
 / 400 ms; **fast-3g** = 200 000 / 93 750 / 150 ms (canonical DevTools tiers).

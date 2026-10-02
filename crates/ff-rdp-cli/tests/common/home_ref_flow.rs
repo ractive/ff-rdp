@@ -40,11 +40,6 @@ pub fn check(url: &str, mut run: impl FnMut(&[&str]) -> Value) {
         "the page block must describe the loaded document: {home}"
     );
 
-    let refs_registered = page["refs_registered"].as_bool().unwrap_or(false);
-    assert!(
-        refs_registered,
-        "on the daemon route the page block must carry live refs: {home}"
-    );
     let first_ref = page["interactive"]
         .as_array()
         .and_then(|entries| entries.first())

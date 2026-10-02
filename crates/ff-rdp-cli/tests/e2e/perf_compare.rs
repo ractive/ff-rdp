@@ -12,7 +12,6 @@ fn base_args(port: u16) -> Vec<String> {
         port.to_string(),
         "--timeout".to_owned(),
         "5000".to_owned(),
-        "--no-daemon".to_owned(),
     ]
 }
 

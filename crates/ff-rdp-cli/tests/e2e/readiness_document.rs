@@ -133,7 +133,6 @@ fn run(port: u16, args: &[&str], timeout: &str) -> Output {
             "127.0.0.1",
             "--port",
             &port.to_string(),
-            "--no-daemon",
             "--timeout",
             timeout,
         ])

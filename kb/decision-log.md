@@ -132,6 +132,8 @@ status: active
 
 **Trade-off**: Added complexity (daemon process management, registry file, signal handling). Mitigated by: auto-start/auto-stop lifecycle, TCP loopback (cross-platform), virtual actor (same wire format as RDP — no new framing), serialized one-client-at-a-time access (avoids multiplexing complexity). The `--no-daemon` flag preserves the original direct behavior. See [[research/gradle-daemon-architecture]] and [[research/connection-persistence]] for the analysis that informed this design.
 
+**Superseded** by [[#DEC-056: Remove the connection daemon]] (2026-10-02).
+
 ## 2026-04-07: Output Size Control Principles
 
 **Context**: As an LLM-focused CLI tool, ff-rdp output must be bounded by default to avoid flooding agent context windows.
@@ -2453,3 +2455,87 @@ closing1 three153 failures or native1 diagnostic failure into passes. Native
 validation and successful closing remain pending. See
 [[iteration-282-unledgered-owned-firefox-survival]] for the active test mapping
 and evidence boundary. No unrelated unmet criterion is changed by this note.
+
+## DEC-056: Remove the connection daemon
+
+**Date**: 2026-10-02. **Supersedes**: [[#DEC-016: Connection daemon with virtual actor protocol]]
+(restores [[#DEC-002: Stateless CLI (connect-per-invocation)]]). **Context**:
+[[research/step-back-2026-10-02]] §3, [[research/reset-2026-10-execution]] phase 3.
+
+**Decision**: `ff-rdp` is a stateless CLI again. Every command opens its own RDP
+connection, does its work and disconnects. The daemon (`_daemon`, `daemon
+status/stop`, auto-start, `--no-daemon`, `--daemon-timeout`, the per-port registry,
+spawn/write locks, launch records, throttle-state files, `meta.route`,
+`meta.daemon_fallback`, `FF_RDP_DAEMON_START_TIMEOUT_MS`) is deleted outright, with
+no deprecation release (owner, 2026-10-02: "Just kill it. We don't need to be
+backward compatible.").
+
+**Why**: DEC-016's two reasons no longer hold. Connect cost is a few milliseconds
+on loopback. Cross-command event capture does not need a proxy: on 2026-10-02
+(Firefox 156) a `network --follow` stream on one direct connection received every
+request — navigation, document, script, XHR, with status and content type — that
+*other* direct connections (`navigate`, `eval 'fetch(...)'`) caused. The daemon
+only ever held a socket and a buffer; the page lives in Firefox. Meanwhile it was
+the largest single source of defects and process (plans 259/262/266/268/289/292,
+23 live-test files, the parity suite).
+
+**What replaced each daemon-backed feature**:
+
+- **Network capture** — three modes, taught by `network --help` and its empty-result
+  hint: `navigate <url> --with-network` (a load), `network --follow > net.ndjson &`
+  started before the actions (traffic later commands cause), `network --source
+  performance-api` (what already loaded). `network --since` is gone.
+- **Refs (`e<N>`)** move into the page. The command that hands a ref out
+  (`snapshot`, `dom`, `a11y summary`, `--with-page`) stamps `data-ffrdp-ref="eN"` on
+  the element in the same evaluation that enumerates it, from a counter on
+  `window.__ffrdp_refs` that restarts above the highest ref already in the
+  document, and an element that already has a ref keeps it. `--ref eN` resolves to
+  `[data-ffrdp-ref="eN"]` on any later connection. Refs die when the document is
+  replaced and are top-document only. The cost: these commands now mutate the DOM
+  (one attribute per handed-out element), and a recorded `--ref` step records the
+  attribute selector, which does not survive replay — the recorder warns.
+- **Throttle/block** live on the connection's network-parent actor and end with it,
+  so a standalone `throttle` could not work. They are now `--throttle
+  slow-3g|fast-3g` and `--block PATTERN` on `navigate` and `reload`, applied on the
+  command's own watcher before it navigates, echoed under
+  `results.network_conditions`, refused with `--no-wait`. `throttle status` is gone.
+- **Emulate** is deleted. Verified live on 2026-10-02: `emulate --color-scheme dark
+  --user-agent X --print on` on one connection, then `prefers-color-scheme: dark`,
+  `navigator.userAgent` and `print` media all read back as the defaults on the next
+  connection — Firefox resets the target configuration when the connection closes.
+  Folding its flags into `navigate` would only affect what that one command reads;
+  the visual uses (dark/print screenshots) need the setting on the `screenshot`
+  connection, which is follow-up work, not a fold.
+- **inspect** of an object grip across calls is impossible: grips are
+  connection-scoped. `inspect <js-expression> [--depth N]` now evaluates and walks
+  on one connection.
+- **Console history** was never the daemon's: `console` reads Firefox's
+  `getCachedMessages` after `startListeners`.
+- **`launch` idempotency and `--replace`** used the launch records. Without them
+  ownership is proven only by the owner-PID marker in a managed profile, so both
+  work for managed-profile launches only; a `--profile` launch is never claimed or
+  stopped, and the "already running" envelope reports `headless`/`profile` as null.
+
+**Trade-off**: no state survives a command, by design. Anything that must span
+commands lives in the browser (the page, its refs, Firefox's console cache) or in a
+`--follow` stream the caller owns.
+
+## DEC-057: Stay on RDP; no WebDriver BiDi transport
+
+**Date**: 2026-10-02. **Context**: requested in
+[[research/deep-review-2026-07-fable5]], recorded in [[research/step-back-2026-10-02]] §3 (decision 6);
+complements [[#DEC-001: Use Firefox RDP directly over TCP, not WebDriver BiDi]].
+
+**Decision**: ff-rdp keeps the Firefox Remote Debugging Protocol as its only
+transport and does not add a WebDriver BiDi transport.
+
+**Why**: RDP exposes the devtools actors ff-rdp's distinctive commands are built on
+— the CSS cascade and applied styles, the accessibility walker, the inspector and
+walker, sources — with no middleware (no geckodriver, no Selenium, no Node). BiDi
+would bring a standard protocol, a truthful viewport (real window sizing instead of
+the CSS-constraint `responsive` workaround) and trusted input (`isTrusted: true`
+events, which `type`/`click` cannot produce over RDP). Those are real gains, but not
+worth maintaining a second transport and a second actor model now.
+
+**Revisit**: if Mozilla removes or restricts `--start-debugger-server`, or if
+trusted input becomes a blocking requirement for a core use case.

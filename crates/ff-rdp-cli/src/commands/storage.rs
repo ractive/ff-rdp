@@ -7,7 +7,7 @@ use crate::hints::{HintContext, HintSource};
 use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
-use super::connect_tab::connect_direct;
+use super::connect_tab::connect_and_get_target;
 use super::js_helpers::eval_or_bail;
 
 /// Read all keys or a single key from localStorage or sessionStorage.
@@ -22,7 +22,7 @@ pub fn run(cli: &Cli, storage_type: &str, key: Option<&str>) -> Result<(), AppEr
         }
     };
 
-    let mut ctx = connect_direct(cli)?;
+    let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target().console_actor.clone();
 
     let mut meta = json!({
@@ -35,10 +35,6 @@ pub fn run(cli: &Cli, storage_type: &str, key: Option<&str>) -> Result<(), AppEr
         None,
         cli.is_verbose(),
     );
-    // iter-134: always present, not gated by --verbose — an
-    // agent can tell how this command executed without a
-    // separate `daemon status` round-trip.
-    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
 
     if let Some(k) = key {
         // Single-key lookup: embed key as a JSON-encoded string literal to

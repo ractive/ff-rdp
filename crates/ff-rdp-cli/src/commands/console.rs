@@ -20,7 +20,7 @@ pub fn run(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), 
     // Prime the server-side message cache before reading it. Firefox's
     // WebConsole actor only records messages into the cache that
     // `getCachedMessages` reads *after* `startListeners` has been called on
-    // that actor (see kb/rdp/actors/console.md). On a fresh --no-daemon
+    // that actor (see kb/rdp/actors/console.md). On a fresh
     // connection the listeners have never been started, so without this call
     // `getCachedMessages` legitimately returns nothing — even for a
     // `console.log` an earlier `ff-rdp eval` just emitted.
@@ -131,10 +131,6 @@ pub fn run(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), 
         None,
         cli.is_verbose(),
     );
-    // iter-134: always present, not gated by --verbose — an
-    // agent can tell how this command executed without a
-    // separate `daemon status` round-trip.
-    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
     let mut envelope =
         output::envelope_with_truncation(&json!(limited), shown, total, truncated, &meta);
 
@@ -180,7 +176,7 @@ pub fn run(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), 
 /// Firefox only records messages into the cache that `getCachedMessages` reads
 /// *after* `startListeners` has run on the target's console actor (see the
 /// `getCachedMessages` / `startListeners` sections of
-/// `kb/rdp/actors/console.md`). A fresh `--no-daemon` `ff-rdp console`
+/// `kb/rdp/actors/console.md`). A fresh `ff-rdp console`
 /// invocation has never started listeners, so without this call the very first
 /// `getCachedMessages` legitimately returns an empty set — even for a message
 /// an earlier `ff-rdp eval 'console.log(...)'` just logged.
@@ -262,12 +258,11 @@ pub fn run_get_errors(cli: &Cli) -> Result<Vec<serde_json::Value>, crate::error:
 /// Stream console messages in real time until the connection is closed.
 ///
 /// Subscribes to `console-message` and `error-message` resource types via the
-/// WatcherActor (direct mode) or daemon stream protocol (daemon mode), then
-/// loops reading events and printing each matching message as a compact JSON
-/// line (NDJSON format) to stdout.
+/// WatcherActor, then loops reading events and printing each matching message
+/// as a compact JSON line (NDJSON format) to stdout.
 ///
-/// Exits cleanly when the connection is closed (e.g. Firefox exits or the
-/// daemon is killed). Ctrl-C terminates the process, which is acceptable.
+/// Exits cleanly when the connection is closed (e.g. Firefox exits). Ctrl-C
+/// terminates the process, which is acceptable.
 pub fn run_follow(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
 
@@ -280,14 +275,10 @@ pub fn run_follow(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Resu
         })
         .transpose()?;
 
-    if ctx.via_daemon {
-        run_follow_daemon(&mut ctx, level, regex.as_ref(), cli.jq.as_deref())
-    } else {
-        run_follow_direct(&mut ctx, level, regex.as_ref(), cli.jq.as_deref())
-    }
+    run_follow_on(&mut ctx, level, regex.as_ref(), cli.jq.as_deref())
 }
 
-fn run_follow_direct(
+fn run_follow_on(
     ctx: &mut ConnectedTab,
     level: Option<&str>,
     regex: Option<&regex::Regex>,
@@ -316,8 +307,7 @@ fn run_follow_direct(
     //    (only web extensions get a `TargetActorRegistry` fallback), so with
     //    an empty list the subscription reaches nobody.
     //
-    // The daemon route has always done both in `establish_watcher`, which is
-    // why it was unaffected. The `get_watcher_with_options` CAUTION about the
+    // The `get_watcher_with_options` CAUTION about the
     // flag moving top-level target delivery onto the watcher does not bite
     // here: `follow_loop` never touches the target actor, it only reads
     // events off the transport.
@@ -347,7 +337,6 @@ fn run_follow_direct(
         level,
         regex,
         jq_filter,
-        true,
     );
 
     // Best-effort cleanup — ignore errors since we may be exiting anyway.
@@ -361,33 +350,6 @@ fn run_follow_direct(
     result
 }
 
-fn run_follow_daemon(
-    ctx: &mut ConnectedTab,
-    level: Option<&str>,
-    regex: Option<&regex::Regex>,
-    jq_filter: Option<&str>,
-) -> Result<(), AppError> {
-    use crate::daemon::client::{start_daemon_stream, stop_daemon_stream};
-
-    start_daemon_stream(ctx.transport_mut(), "console-message").map_err(AppError::from)?;
-    start_daemon_stream(ctx.transport_mut(), "error-message").map_err(AppError::from)?;
-
-    let result = follow_loop(
-        ctx.transport_mut(),
-        std::iter::empty(),
-        level,
-        regex,
-        jq_filter,
-        false,
-    );
-
-    // Best-effort cleanup — ignore errors since we may be exiting anyway.
-    let _ = stop_daemon_stream(ctx.transport_mut(), "console-message");
-    let _ = stop_daemon_stream(ctx.transport_mut(), "error-message");
-
-    result
-}
-
 /// Inner loop: read events from the transport and emit matching console
 /// messages as compact JSON lines (NDJSON).
 ///
@@ -396,11 +358,9 @@ fn run_follow_daemon(
 /// If `jq_filter` is set, it is applied to each message before printing.
 ///
 /// Firefox delivers console messages via the watcher's
-/// `resources-available-array` stream.  In direct-follow mode the caller
-/// issues `watchResources(console-message, error-message)` before invoking
-/// `follow_loop`; in daemon-follow mode the equivalent subscription is set
-/// up by `start_daemon_stream(...)`.  Either way, `follow_loop` reads the
-/// resulting watcher frames off the transport.  We also accept legacy
+/// `resources-available-array` stream.  The caller issues
+/// `watchResources(console-message, error-message)` before invoking
+/// `follow_loop`, which reads the resulting watcher frames off the transport.  We also accept legacy
 /// `consoleAPICall` / `pageError` pushes defensively in case a server build
 /// emits them without an explicit `startListeners` call — see iter-71c.
 fn follow_loop(
@@ -409,7 +369,6 @@ fn follow_loop(
     level: Option<&str>,
     regex: Option<&regex::Regex>,
     jq_filter: Option<&str>,
-    release_grips: bool,
 ) -> Result<(), AppError> {
     use std::io::Write;
 
@@ -468,9 +427,7 @@ fn follow_loop(
                     // Flush stdout so each message appears immediately in tail-like usage.
                     let _ = std::io::stdout().flush();
                 }
-                if release_grips {
-                    release_follow_grips(transport, &msg).map_err(AppError::from)?;
-                }
+                release_follow_grips(transport, &msg).map_err(AppError::from)?;
             }
             Err(ProtocolError::Timeout) => {
                 // Normal poll timeout — keep waiting for more events.
@@ -481,7 +438,7 @@ fn follow_loop(
                     || e.kind() == std::io::ErrorKind::ConnectionAborted
                     || e.kind() == std::io::ErrorKind::BrokenPipe =>
             {
-                // Connection closed cleanly (Firefox exited, daemon stopped, etc.).
+                // Connection closed cleanly (Firefox exited, etc.).
                 return Ok(());
             }
             Err(e) => return Err(AppError::from(e)),
@@ -489,8 +446,7 @@ fn follow_loop(
     }
 }
 
-/// Only the direct connection owns these actors. Daemon stream readers receive
-/// copies of shared events and must leave their lifetime to the daemon.
+/// Release the grips an event carries: this connection owns them.
 fn release_follow_grips(transport: &mut RdpTransport, event: &Value) -> Result<(), ProtocolError> {
     if !matches!(
         event["type"].as_str(),

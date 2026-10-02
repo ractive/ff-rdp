@@ -13,7 +13,6 @@ fn base_args(port: u16) -> Vec<String> {
         "127.0.0.1".to_owned(),
         "--port".to_owned(),
         port.to_string(),
-        "--no-daemon".to_owned(),
     ]
 }
 
@@ -415,7 +414,6 @@ fn screenshot_viewport_height_flag_returns_error() {
             "127.0.0.1",
             "--port",
             "1",
-            "--no-daemon",
             "screenshot",
             "--viewport-height",
             "2500",
@@ -550,7 +548,7 @@ fn screenshot_has_no_dppx_flag() {
 
 /// A malformed `--window-size` value is rejected with a user error naming
 /// the expected `WxH` form — before any RDP connection is attempted, so
-/// this needs neither a live daemon nor Firefox (port 1 is unroutable).
+/// this needs no Firefox (port 1 is unroutable).
 #[test]
 fn screenshot_window_size_invalid_rejected() {
     let output = std::process::Command::new(ff_rdp_bin())
@@ -559,7 +557,6 @@ fn screenshot_window_size_invalid_rejected() {
             "127.0.0.1",
             "--port",
             "1",
-            "--no-daemon",
             "screenshot",
             "--window-size",
             "not-a-size",

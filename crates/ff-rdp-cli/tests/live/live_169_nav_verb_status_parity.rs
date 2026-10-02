@@ -8,7 +8,7 @@
 //! from `navigate`'s *meaningful* `null`, and without the `status_reason`
 //! iter-166 added specifically to tell those apart.
 //!
-//! Measured on `main` at 86262f0, daemon route:
+//! Measured on `main` at 86262f0:
 //!
 //! ```text
 //! ff-rdp reload --jq '.results | keys'
@@ -16,24 +16,14 @@
 //! ```
 //!
 //! These tests assert both keys are present on all three verbs, on the
-//! commit-wait path and on `--no-wait`, on both connection routes
-//! (CONTRIBUTING's daemon-parity rule). They use a **local** fixture server so
+//! commit-wait path and on `--no-wait`. They use a **local** fixture server so
 //! the status assertion is against a response this test controls rather than
 //! a real origin: a `reload` of a 200 page must report 200, not merely "some
 //! number".
 //!
-//! iter-174: that last assertion now runs on **both** routes. It was
-//! daemon-only here because the direct route was starved of `dom-complete` and
-//! could only ever answer `not_observed` — the defect iteration 174 fixed by
-//! passing `isServerTargetSwitchingEnabled` on the direct route's
-//! `getWatcher`. The `expect_reload_status` parameter that carried that
-//! exemption is gone.
-//!
-//! daemon-parity: `live_169_nav_verbs_report_status_daemon` is the daemon leg
-//! (the mode every real invocation uses, and the one where `network-event`
-//! delivery needs an explicit daemon `stream` request) and
-//! `live_169_nav_verbs_report_status_direct` is the `--no-daemon` leg, so the
-//! two cannot diverge again unnoticed.
+//! iter-174: a direct connection used to be starved of `dom-complete` and could
+//! only ever answer `not_observed` for `reload` — fixed by passing
+//! `isServerTargetSwitchingEnabled` on `getWatcher`.
 //!
 //! # Running
 //!
@@ -46,11 +36,7 @@ use serde_json::Value;
 
 use crate::common::{FixtureRoute, FixtureServer, LiveFirefox, ff_rdp_bin, live_tests_enabled};
 
-/// Global args for the **default** connection mode — no `--no-daemon`, so the
-/// CLI auto-starts and proxies through the daemon. That is the mode every real
-/// invocation uses, and the one where `network-event` delivery needs the
-/// daemon's explicit stream request (`DAEMON_OWNED_RESOURCE_NAMES`).
-fn daemon_args(port: u16) -> Vec<String> {
+fn cli_args(port: u16) -> Vec<String> {
     vec![
         "--host".to_owned(),
         "127.0.0.1".to_owned(),
@@ -59,20 +45,6 @@ fn daemon_args(port: u16) -> Vec<String> {
         "--timeout".to_owned(),
         "30000".to_owned(),
     ]
-}
-
-/// The other half of daemon parity: a direct connection to Firefox.
-fn direct_args(port: u16) -> Vec<String> {
-    let mut args = daemon_args(port);
-    args.push("--no-daemon".to_owned());
-    args
-}
-
-fn stop_daemon(port: u16) {
-    let _ = Command::new(ff_rdp_bin())
-        .args(["--host", "127.0.0.1", "--port", &port.to_string()])
-        .args(["daemon", "stop"])
-        .output();
 }
 
 fn combined(out: &Output) -> String {
@@ -158,14 +130,12 @@ fn exercise_nav_verbs(global: &[String], route: &str) {
 
     // --- reload: a real request, so a real status ------------------------
     //
-    // iter-174: asserted on both routes now. Until that iteration the
-    // `--no-daemon` leg was exempt (`expect_reload_status: false`) because a
-    // direct connection received only `will-navigate` — the three `dom-*`
-    // events never arrived, so the events wait burnt its whole budget and the
-    // readystate fallback, which correlates no document request, answered
-    // `not_observed`. Measured before the fix: `reload --no-daemon`
-    // 21 029 ms against a 30 000 ms `--timeout`, versus 112 ms on the daemon
-    // route. A `not_observed` here is that regression coming back.
+    // iter-174: before that iteration a direct connection received only
+    // `will-navigate` — the three `dom-*` events never arrived, so the events
+    // wait burnt its whole budget and the readystate fallback, which
+    // correlates no document request, answered `not_observed` (measured:
+    // 21 029 ms against a 30 000 ms `--timeout`). A `not_observed` here is that
+    // regression coming back.
     let results = run_ok(global, &["reload"], &format!("{route}: reload"));
     assert_status_pair(&results, &format!("{route}: reload"));
     assert_eq!(
@@ -200,39 +170,14 @@ fn exercise_nav_verbs(global: &[String], route: &str) {
 }
 
 /// AC: "`back`/`forward`/`reload` emit `status` and `status_reason` on every
-/// path, with a live test asserting both keys are present on all three verbs"
-/// — daemon leg.
+/// path, with a live test asserting both keys are present on all three verbs".
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
-fn live_169_nav_verbs_report_status_daemon() {
+fn live_169_nav_verbs_report_status() {
     if !live_tests_enabled() {
-        eprintln!("live_169_nav_verbs_report_status_daemon: set FF_RDP_LIVE_TESTS=1");
+        eprintln!("live_169_nav_verbs_report_status: set FF_RDP_LIVE_TESTS=1");
         return;
     }
     let ff = LiveFirefox::headless_on_random_port();
-    assert!(
-        ff.with_daemon().is_some(),
-        "live_169_nav_verbs_report_status_daemon: the proxy daemon did not start \
-         for Firefox on port {}",
-        ff.port()
-    );
-    let port = ff.port();
-    exercise_nav_verbs(&daemon_args(port), "daemon");
-    stop_daemon(port);
-}
-
-/// The `--no-daemon` half of the same assertions, so the two routes cannot
-/// diverge again unnoticed (CONTRIBUTING's daemon-parity rule). The daemon
-/// route needs an explicit `stream` request to receive `network-event` at all;
-/// the direct route does not — exactly the kind of asymmetry that produced the
-/// iter-138 Theme A daemon bug in the first place.
-#[test]
-#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
-fn live_169_nav_verbs_report_status_direct() {
-    if !live_tests_enabled() {
-        eprintln!("live_169_nav_verbs_report_status_direct: set FF_RDP_LIVE_TESTS=1");
-        return;
-    }
-    let ff = LiveFirefox::headless_on_random_port();
-    exercise_nav_verbs(&direct_args(ff.port()), "direct");
+    exercise_nav_verbs(&cli_args(ff.port()), "direct");
 }

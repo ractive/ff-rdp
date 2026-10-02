@@ -7,9 +7,9 @@
 //!
 //! # Hypothesis being tested
 //!
-//! `commands/console.rs` calls `WebConsoleActor::start_listeners` AND the
-//! daemon path uses `ResourceCommand::subscribe` for `console-message`.
-//! Running both paths in the same session *may* cause Firefox to push each
+//! `commands/console.rs` calls `WebConsoleActor::start_listeners` AND a
+//! `ResourceCommand::subscribe` for `console-message` may run on the same
+//! connection. Running both paths in the same session *may* cause Firefox to push each
 //! `consoleAPICall` event twice — once via the legacy console actor push and
 //! once via the watcher resources stream.
 //!

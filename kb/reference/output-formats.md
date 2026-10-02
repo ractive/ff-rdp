@@ -135,7 +135,7 @@ Since iter-60, `dom <selector>` returns an ARIA-tree node per element:
 ```
 
 Fields:
-- `ref` — stable ref ID (per-process; per-tab in daemon mode future)
+- `ref` — ref ID stamped on the element as `data-ffrdp-ref`; usable as `--ref` by any later command until the page navigates
 - `role` — ARIA semantic role (from explicit `role=""` attribute or tag semantics)
 - `name` — accessible name (aria-label, alt text, or trimmed text content)
 - `level` — heading level (h1=1…h6=6; null for non-headings)

@@ -41,10 +41,6 @@ pub fn run(cli: &Cli, allow_no_cmp: bool) -> Result<(), AppError> {
         None,
         cli.is_verbose(),
     );
-    // iter-134: always present, not gated by --verbose — an
-    // agent can tell how this command executed without a
-    // separate `daemon status` round-trip.
-    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
 
     // iter-160 Theme D: a non-accepting pass is a failed action and must not be
     // reported as exit 0. Before this, `consent accept` returned `Ok(())`
@@ -379,12 +375,7 @@ fn try_native_cmp(
 /// These keys remain present for every outcome, never omitted.
 /// Returns `{"cmp": "<name>", "action": "accepted"}` on success.
 pub(crate) fn detect_and_accept(ctx: &mut ConnectedTab) -> Result<Value, AppError> {
-    // iter-137 Theme A: route through the connection-aware entry point.  The
-    // former direct-only enumeration was a no-op through the daemon (the
-    // daemon subscribed to frame targets at startup, so a second
-    // `watchTargets` re-delivers nothing), which is why `consent accept`
-    // reported `{"cmp":null,"action":null}` on a Sourcepoint site unless the
-    // caller passed `--no-daemon`.
+    // One frame-target enumeration per connection — see `fetch_frame_targets`.
     let targets = crate::commands::frame_targets::fetch_frame_targets(ctx)?;
 
     // iter-144 Theme C: try the same-origin table before the iframe table —

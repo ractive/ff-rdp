@@ -107,10 +107,6 @@ pub fn run(cli: &Cli, selector: &str, properties: Option<&[String]>) -> Result<(
         None,
         cli.is_verbose(),
     );
-    // iter-134: always present, not gated by --verbose — an
-    // agent can tell how this command executed without a
-    // separate `daemon status` round-trip.
-    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
 
     let envelope = output::envelope_with_truncation(&results, shown, total, truncated, &meta);
 
@@ -183,10 +179,6 @@ pub fn run_applied(cli: &Cli, selector: &str) -> Result<(), AppError> {
         None,
         cli.is_verbose(),
     );
-    // iter-134: always present, not gated by --verbose — an
-    // agent can tell how this command executed without a
-    // separate `daemon status` round-trip.
-    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
 
     let envelope = output::envelope_with_truncation(&results, shown, total, truncated, &meta);
 
@@ -213,10 +205,6 @@ pub fn run_layout(cli: &Cli, selector: &str) -> Result<(), AppError> {
         None,
         cli.is_verbose(),
     );
-    // iter-134: always present, not gated by --verbose — an
-    // agent can tell how this command executed without a
-    // separate `daemon status` round-trip.
-    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
 
     let envelope = output::envelope(&results, 1, &meta);
 

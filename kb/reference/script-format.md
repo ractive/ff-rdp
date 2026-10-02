@@ -89,14 +89,12 @@ it re-runs an existing script *and* writes the executed steps to
 
 ### Ref resolution at record time
 
-When a command uses `--ref e23` (an iter-60 runtime ref), the recorder
-resolves the ref to its underlying CSS selector at the moment of
-recording and emits `"selector": "<css>"` instead of `"ref": "e23"`.
-Refs are session-scoped and expire; embedding a raw ref in a replay
-script would silently break on the next session.
-
-If the ref cannot be resolved (daemon not running, ref expired), the
-step is skipped and a warning is printed to stderr.
+When a command uses `--ref e23`, the recorder emits the attribute
+selector the ref resolves to (`"selector": "[data-ffrdp-ref=\"e23\"]"`)
+and prints a warning on stderr. Refs are stamped into the page by
+`snapshot` / `dom` / `a11y summary` and die when the page navigates, so
+such a step only replays if the replay re-stamps the same element first.
+Prefer a CSS selector when recording.
 
 ### Recordable vs. inspection-only commands
 
@@ -227,7 +225,7 @@ untrusted sources.
 - `assert_no_console_errors`: checks the console buffer for error-level
   messages; filterable via `ignore_patterns`.
 - `assert_network`: scans buffered network events for a matching entry.
-  On failure the `diagnostics` object carries `events_in_buffer`, `route`,
+  On failure the `diagnostics` object carries `events_in_buffer`,
   `subscription` and `drain_window_ms`, plus an `empty_buffer_hint` (whose
   wording depends on `subscription`) when the buffer was empty, and
   `evicted_requests` when the playbook buffer overflowed.  History:
@@ -248,7 +246,7 @@ N+1 asserts on it:
 {"assert_network": {"url_contains": "/api/auth/sign-in", "status": 200}}
 ```
 
-This shape is now deterministic on **both** routes. The step `timeout` is a
+This shape is deterministic. The step `timeout` is a
 *ceiling* on how long the assertion waits for a request that is still in
 flight — not a window the request has to complete inside. If the response
 already landed during the `click`, the assertion returns immediately.
@@ -256,7 +254,6 @@ already landed during the `click`, the assertion returns immediately.
 | route | what the buffer contains | `diagnostics.subscription` |
 |-------|--------------------------|----------------------------|
 | `direct` | Everything since the playbook's first step. `run` still opens a fresh connection per step, but the subscription is on a separate connection that stays open for the whole run. | `playbook` |
-| `daemon` | Everything since the daemon started watching — a standing subscription that predates the playbook. Unchanged by iteration 181. | `daemon` |
 | `direct`, degraded | Only what arrives while this step runs. Reached **only** when arming the playbook subscription failed, in which case `run` prints a warning on stderr. | `step` |
 
 The subscription is armed when a script contains an `assert_network` step, and

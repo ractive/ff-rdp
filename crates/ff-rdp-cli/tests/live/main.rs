@@ -11,7 +11,7 @@
 //!   FF_RDP_LIVE_TESTS=1 cargo test-live -p ff-rdp-cli --test live
 //!
 //! Run one migrated suite:
-//!   FF_RDP_LIVE_TESTS=1 cargo test -p ff-rdp-cli --test live live_96 -- --include-ignored
+//!   FF_RDP_LIVE_TESTS=1 cargo test -p ff-rdp-cli --test live live_210 -- --include-ignored
 //!
 //! Enumerate every test name (no Firefox needed):
 //!   cargo test -p ff-rdp-cli --test live -- --list
@@ -20,7 +20,7 @@
 //! new top-level `tests/live_*.rs` file (enforced by
 //! `cargo run -p xtask -- check-live-test-layout`).
 
-// iter-105 Theme D: several live suites call `libc::kill` via FFI for daemon
+// iter-105 Theme D: several live suites call `libc::kill` via FFI for
 // process-lifecycle assertions.  The CLI crate default is
 // `unsafe_code = "deny"`; allow it crate-wide for this test binary only (every
 // block carries its own `// SAFETY:` note) so the FFI-using live suites compile.
@@ -38,15 +38,11 @@ mod color_tests;
 
 mod ignored_verdict;
 
-mod live_100_daemon_lifecycle_hardening;
 mod live_102_longstring_and_reload;
-mod live_103_emulate;
 mod live_104_security_pwa;
 mod live_109_throttle_block;
 mod live_110_kill_scoping;
-mod live_111_daemon_follow_cross_process;
 mod live_113_launch_timeout;
-mod live_123_daemon_autostart_and_registry;
 mod live_126_network_shape;
 mod live_128_network_output_fidelity;
 mod live_129_frames_and_consent;
@@ -54,14 +50,11 @@ mod live_130_navigation_truthfulness;
 mod live_131_measurement_honesty;
 mod live_132_cli_polish;
 mod live_133_viewport_emulation;
-mod live_134_meta_route_all_commands;
 mod live_135_screenshot_ff153;
-mod live_137_daemon_mode_parity;
 mod live_138_navigation_truthfulness_2;
 mod live_139_perf_honesty_2;
 mod live_140_element_targeting;
 mod live_141_output_hygiene;
-mod live_142_daemon_stop_pid_honesty;
 mod live_142_disk_growth;
 mod live_142_eval_asi_await;
 mod live_143_native_a11y_tree;
@@ -72,10 +65,8 @@ mod live_149_a11y_restore_honesty;
 mod live_151_residual_leak;
 mod live_153_replace_double_envelope;
 mod live_158_launch_lifecycle;
-mod live_159_daemon_watcher_regression;
 mod live_160_envelope_honesty;
 mod live_161_eval_and_flag_strictness;
-mod live_164_block_and_daemon_autostart;
 mod live_165_eval_call_scope;
 mod live_166_navigate_document_status;
 mod live_167_eval_scanner_tokens;
@@ -83,11 +74,9 @@ mod live_168_drop_waits_for_exit;
 mod live_169_nav_verb_status_parity;
 mod live_170_eval_scanner_braces;
 mod live_171_recycled_owner_pid;
-mod live_172_zero_byte_registry;
 mod live_174_direct_route_events_path;
 mod live_175_failed_launch_profile;
 mod live_176_eval_scanner_brace_positions;
-mod live_186_launch_record_gc;
 mod live_210_act_and_see;
 mod live_211_find_not_guess;
 mod live_212_ambient_context;
@@ -96,25 +85,21 @@ mod live_220_navigating_action_with_page;
 mod live_224_with_page_connection_reset;
 mod live_225_reader_facts;
 mod live_237_act_and_see_timing;
-mod live_240_daemon_frame_desync_and_wedge;
 mod live_242_launch_ownership;
 mod live_252_console_follow_content_resources;
 mod live_253_outgoing_page;
 mod live_255_fact_links;
 mod live_257_drawsnapshot;
-mod live_262_target_snapshot;
 mod live_61l;
 mod live_61q_resource_bus;
 mod live_61r_eval;
 mod live_61r_screenshot;
 mod live_62_page_map_index;
 mod live_86_perf_field_fixes;
-mod live_90_daemon_lifecycle;
 mod live_92_navigate_epoch;
 mod live_92_screenshot_full_page;
 mod live_94_polish_bundle;
 mod live_95_cascade_computed_agreement;
-mod live_96_profile_cleanup;
 mod live_98_media_query_truthfulness;
 mod live_a11y_contrast_wai_bad;
 mod live_a11y_critical;
@@ -127,18 +112,13 @@ mod live_console_printf;
 mod live_cookies;
 mod live_cookies_set_cookie_header;
 mod live_cross_actor;
-mod live_daemon_heavy_spa;
-mod live_daemon_stop_mdn;
-mod live_daemon_watch_targets;
 mod live_dom_include_style;
 mod live_dom_stats_perf_audit_parity;
 mod live_eval_csp;
 mod live_eval_scope;
-mod live_grip_release;
 mod live_navigate_default_fast;
 mod live_navigate_readiness;
 mod live_navigate_real_site;
-mod live_network_default_watcher;
 mod live_network_headers;
 mod live_oneway;
 mod live_perf_audit_lcp_unavailable;

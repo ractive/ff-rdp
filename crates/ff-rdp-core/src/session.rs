@@ -1,6 +1,6 @@
 //! Session — transport + actor registry bundled as a unit.
 //!
-//! A [`Session`] is the single object a command or daemon path needs to
+//! A [`Session`] is the single object a command needs to
 //! interact with Firefox: it owns the [`RdpTransport`] and an [`Arc<Registry>`]
 //! that tracks every live actor handle.
 //!
@@ -10,10 +10,6 @@
 //! Commands borrow it mutably via [`Session::transport_mut`].  This avoids the
 //! overhead and complexity of interior mutability for the single-threaded CLI
 //! use-case.
-//!
-//! The daemon splits the transport into separate reader/writer threads *before*
-//! constructing a `Session`, so it manages the transport halves independently.
-//! It still creates an `Arc<Registry>` directly and shares it across threads.
 //!
 //! # Registry call sites
 //!
@@ -61,17 +57,6 @@ impl Session {
         Self {
             transport,
             registry: Arc::new(Registry::new()),
-            resource_command: None,
-        }
-    }
-
-    /// Create a `Session` from an existing transport + registry.
-    ///
-    /// Used by the daemon to attach a shared registry to a per-client session.
-    pub fn with_registry(transport: RdpTransport, registry: Arc<Registry>) -> Self {
-        Self {
-            transport,
-            registry,
             resource_command: None,
         }
     }
@@ -192,30 +177,5 @@ mod tests {
         let arc2 = session.registry_arc();
         // Both Arcs must point to the same allocation.
         assert!(Arc::ptr_eq(&arc1, &arc2));
-    }
-
-    #[test]
-    fn with_registry_shares_existing_registry() {
-        use std::io::BufReader;
-        use std::net::{TcpListener, TcpStream};
-
-        let reg = Arc::new(Registry::new());
-        let id = ActorId::from("conn0/target1");
-        reg.register(id.clone(), FrontKind::Target, None);
-
-        // Build a transport pair.
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let client = TcpStream::connect(addr).unwrap();
-        let (_server, _) = listener.accept().unwrap();
-        let writer = client.try_clone().unwrap();
-        let reader = BufReader::new(client);
-        let transport = RdpTransport::from_parts(reader, writer);
-
-        let session = Session::with_registry(transport, Arc::clone(&reg));
-        // The session's registry must be the same Arc.
-        assert!(Arc::ptr_eq(session.registry(), &reg));
-        // The pre-registered actor is visible.
-        assert!(session.registry().assert_alive(&id).is_ok());
     }
 }

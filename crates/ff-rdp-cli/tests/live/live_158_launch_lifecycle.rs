@@ -1,6 +1,6 @@
 //! Live tests for iter-158: `launch` must survive a contended debug-port
 //! bind, report the bound it used, create a missing `--profile` directory,
-//! repeat `--replace` cleanly, and free a port whose parent has been killed.
+//! and repeat `--replace` cleanly.
 //!
 //! ## Why these are live tests and not unit tests
 //!
@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use crate::common::{
     FirefoxGuard, LIVE_LAUNCH_LOG_ENV, LiveFirefox, base_args, current_test_name, ff_rdp_bin,
-    ff_rdp_launch_command, ff_rdp_launch_command_for, kill_pid, live_tests_enabled, pid_alive,
+    ff_rdp_launch_command, ff_rdp_launch_command_for, live_tests_enabled, pid_alive,
     recorded_launch_output,
 };
 
@@ -37,25 +37,6 @@ fn parse_json(what: &str, stdout: &[u8]) -> serde_json::Value {
             String::from_utf8_lossy(stdout)
         )
     })
-}
-
-/// Poll until `127.0.0.1:port` stops accepting connections, or `timeout`.
-fn wait_for_port_closed(port: u16, timeout: Duration) -> bool {
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        if std::net::TcpStream::connect_timeout(
-            &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
-            Duration::from_millis(200),
-        )
-        .is_err()
-        {
-            return true;
-        }
-        if std::time::Instant::now() >= deadline {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
 }
 
 /// AC `live_158_launch_survives_contended_bind`: four concurrent
@@ -220,9 +201,9 @@ fn live_158_launch_reports_effective_wait_bound() {
 /// "no owner-PID marker" refusal nor the "still in use after stopping the
 /// prior instance" error appears.
 ///
-/// Theme B is what makes this repeatable: a failed stop used to delete the
-/// `DaemonRecord` first, so the next `--replace` fell into the raw port-owner
-/// branch and was refused against an instance ff-rdp had launched itself.
+/// Theme B is what made this repeatable: a failed stop used to delete its own
+/// ownership proof first, so the next `--replace` was refused against an
+/// instance ff-rdp had launched itself.
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
 fn live_158_replace_repeats_cleanly() {
@@ -285,78 +266,6 @@ fn live_158_replace_repeats_cleanly() {
             "--replace round {round} must report meta.replaced.stopped == true: {json}"
         );
     }
-    drop(guard);
-}
-
-/// AC `live_158_stop_reaches_orphaned_children`: after SIGKILLing only the
-/// parent PID, `ff-rdp daemon stop --port P` still exits 0 and the port is
-/// genuinely free — the escalation ladder reaches the orphaned children.
-///
-/// Pre-158 `run_escalation` returned at its `is_alive` guard (its only caller
-/// had already killed the pid), so steps 3-7 never ran and this reported
-/// `"port still listening after 8s"`.
-#[cfg(unix)]
-#[test]
-#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
-fn live_158_stop_reaches_orphaned_children() {
-    if !live_tests_enabled() {
-        return;
-    }
-
-    let port = 7109u16;
-    let out = ff_rdp_launch_command()
-        .args(["launch", "--headless", "--debug-port", &port.to_string()])
-        .output()
-        .expect("spawn `ff-rdp launch`");
-    let json = parse_json("launch for the orphan test", &out.stdout);
-    // iter-169: print stdout as well. ff-rdp reports failures as a JSON error
-    // envelope on **stdout** (that is the whole point of the JSON-only output
-    // rule), so the previous stderr-only message rendered as a bare
-    // `launch failed: ` — which is exactly what iteration 169's sweep got,
-    // leaving the one failure in 272 undiagnosable.
-    assert!(
-        out.status.success(),
-        "launch on port {port} failed\nstdout={}\nstderr={}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let pid = u32::try_from(json["results"]["pid"].as_u64().expect("results.pid"))
-        .expect("results.pid fits u32");
-    let guard = FirefoxGuard::new(pid);
-
-    // Orphan the children: SIGKILL only the parent, leaving whatever still
-    // holds the port behind. The parent is dead, so `getpgid(pid)` now fails —
-    // exactly the case the pre-captured-pgid fallback exists for.
-    kill_pid(pid);
-    let dead_by = std::time::Instant::now() + Duration::from_secs(5);
-    while pid_alive(pid) && std::time::Instant::now() < dead_by {
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    assert!(!pid_alive(pid), "the parent pid {pid} should be dead");
-
-    let stop = Command::new(ff_rdp_bin())
-        .args(["--host", "127.0.0.1", "--port", &port.to_string()])
-        .args(["daemon", "stop"])
-        .output()
-        .expect("spawn `ff-rdp daemon stop`");
-    let stop_stdout = String::from_utf8_lossy(&stop.stdout).into_owned();
-    let stop_stderr = String::from_utf8_lossy(&stop.stderr).into_owned();
-
-    assert!(
-        !stop_stdout.contains("port still listening after 8")
-            && !stop_stderr.contains("port still listening after 8"),
-        "the escalation ladder must reach the orphaned children\n\
-         stdout={stop_stdout}\nstderr={stop_stderr}"
-    );
-    assert!(
-        stop.status.success(),
-        "`daemon stop --port {port}` exited {}\nstdout={stop_stdout}\nstderr={stop_stderr}",
-        stop.status
-    );
-    assert!(
-        wait_for_port_closed(port, Duration::from_secs(8)),
-        "port {port} must be genuinely free after `daemon stop`"
-    );
     drop(guard);
 }
 

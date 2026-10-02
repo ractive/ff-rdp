@@ -42,14 +42,7 @@ fn warn_if_timeout_alias_used() {
 /// Wait for a condition and return the result value without printing.
 ///
 /// Called by the script runner, which handles its own NDJSON output.
-/// Returns the result value alongside the resolved route (`Some(via_daemon)`),
-/// or `None` when `--sleep-ms` took the no-connection short-circuit below —
-/// there is no route to report because no Firefox connection was ever
-/// resolved (iter-134: `meta.route` on every command).
-pub fn run_core(
-    cli: &Cli,
-    opts: &WaitOptions<'_>,
-) -> Result<(serde_json::Value, Option<bool>), AppError> {
+pub fn run_core(cli: &Cli, opts: &WaitOptions<'_>) -> Result<serde_json::Value, AppError> {
     // iter-142 Theme F: --sleep-ms is a plain delay — no condition to poll,
     // no Firefox connection needed at all. Takes priority over the other
     // fields so a caller that somehow sets both never falls through to the
@@ -57,10 +50,9 @@ pub fn run_core(
     // condition-polling path below.
     if let Some(ms) = opts.sleep_ms {
         std::thread::sleep(std::time::Duration::from_millis(ms));
-        return Ok((
+        return Ok(
             json!({"matched": true, "elapsed_ms": ms, "condition": format!("sleep={ms}ms")}),
-            None,
-        ));
+        );
     }
 
     if opts.selector.is_none() && opts.text.is_none() && opts.eval.is_none() {
@@ -110,15 +102,12 @@ pub fn run_core(
         e
     })?;
 
-    Ok((
-        json!({"matched": true, "elapsed_ms": elapsed_ms, "condition": condition}),
-        Some(ctx.via_daemon),
-    ))
+    Ok(json!({"matched": true, "elapsed_ms": elapsed_ms, "condition": condition}))
 }
 
 pub fn run(cli: &Cli, opts: &WaitOptions<'_>) -> Result<(), AppError> {
     warn_if_timeout_alias_used();
-    let (result_json, via_daemon) = run_core(cli, opts)?;
+    let result_json = run_core(cli, opts)?;
     let mut meta = json!({});
     crate::connection_meta::merge_into_if_verbose(
         &mut meta,
@@ -127,11 +116,6 @@ pub fn run(cli: &Cli, opts: &WaitOptions<'_>) -> Result<(), AppError> {
         None,
         cli.is_verbose(),
     );
-    // iter-134: always present, not gated by --verbose, except when
-    // --sleep-ms short-circuited before resolving a connection at all.
-    if let Some(via_daemon) = via_daemon {
-        crate::connection_meta::merge_route(&mut meta, via_daemon);
-    }
     let envelope = output::envelope(&result_json, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Wait);
@@ -232,16 +216,11 @@ mod tests {
             wait_timeout: 5000,
         };
         let started = std::time::Instant::now();
-        let (result, via_daemon) =
-            run_core(&cli, &opts).expect("sleep form must succeed with no connection");
+        let result = run_core(&cli, &opts).expect("sleep form must succeed with no connection");
         let elapsed = started.elapsed();
 
         assert_eq!(result["matched"], true);
         assert_eq!(result["elapsed_ms"], 5);
-        assert_eq!(
-            via_daemon, None,
-            "sleep form never resolves a connection, so there is no route to report"
-        );
         assert!(
             elapsed >= std::time::Duration::from_millis(5),
             "must actually sleep for the requested duration, elapsed={elapsed:?}"

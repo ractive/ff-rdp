@@ -69,7 +69,7 @@ Standalone `.deb` and `.rpm` packages (x86_64) are attached to each release as w
 ## First contact (for AI agents)
 
 Run `ff-rdp` with no arguments. It prints what is actually true right now —
-which binary you are running, whether a daemon and a browser are up, the open
+which binary you are running, whether a browser is up, the open
 tabs, an accessibility view of the current page with `--ref` handles, and up to
 five `-> ff-rdp …` commands that make sense from that state — and exits 0 even
 when nothing is running, because a missing browser is state, not an error:
@@ -77,7 +77,6 @@ when nothing is running, because a missing browser is state, not an error:
 ```text
 ff-rdp 0.3.0 — drive a live Firefox from the shell — inspect, act on, and measure the page …
 bin: ~/.cargo/bin/ff-rdp
-daemon: running (pid 51234, firefox port 6000)
 browser: reachable at localhost:6000 (Firefox 143)
 
 TABS
@@ -96,8 +95,7 @@ INTERACTIVE
 
 `--format json` (or any `--jq` filter) returns the same thing as JSON, and it is
 the one command whose JSON carries `hints` — it is the orientation surface. It
-never starts anything: `launch` starts Firefox and `daemon start` starts the
-daemon.
+never starts anything: `launch` starts Firefox.
 
 To get that view automatically at the start of every agent session, install the
 opt-in `SessionStart` hook:
@@ -130,11 +128,11 @@ and [OpenCode plugins](https://opencode.ai/docs/plugins/).
 If anything goes wrong, run `ff-rdp doctor` — it pinpoints connection,
 port, and version issues in one shot. The probes are:
 
-1. **Daemon registry** — is a daemon running and reachable?
-2. **Port owner** — who is listening on `--port` (PID, process, uptime)?
-3. **RDP handshake** — can we receive a Firefox greeting?
-4. **Tabs** — how many tabs are exposed by the connected target?
-5. **Firefox version compatibility** — within the tested range?
+1. **Port owner** — who is listening on `--port` (PID, process, uptime)?
+2. **RDP handshake** — can we receive a Firefox greeting?
+3. **Tabs** — how many tabs are exposed by the connected target?
+4. **Firefox version compatibility** — within the tested range?
+5. **Binary staleness** and **profile disk usage**.
 
 A typical first-time session looks like:
 
@@ -147,8 +145,11 @@ ff-rdp navigate https://example.com --with-page --query "<text>"   # go there an
 
 `launch` is idempotent (iter-210). If the requested port is already held by a
 Firefox **ff-rdp itself launched**, a second `launch` exits 0 and reports that
-instance — `results.already_running: true` alongside the existing `pid`,
-`port` and `profile` — instead of failing. An agent that cannot remember
+instance — `results.already_running: true` alongside the existing `pid` and
+`port` (`headless`/`profile` are `null`: ff-rdp keeps no record of how an
+earlier launch was configured) — instead of failing. "Launched by ff-rdp"
+means the port's listener carries the owner-PID marker of a managed profile, so
+a launch with your own `--profile` directory is not recognised as ours. An agent that cannot remember
 whether it has a browser open can simply run `launch` and proceed.
 
 When the port is held by anything else — a Firefox you started by hand, an
@@ -164,17 +165,11 @@ matters: pre-iter-158 both printed "is the port already in use?", which sent
 users hunting for a process that did not exist.
 
 `--replace` stops the instance already on that port and relaunches — but only
-one ff-rdp itself started. It will refuse rather than signal a process it
-cannot prove it spawned, and since iter-191 that proof is an identity check,
-not a liveness check: the `launch-record.<port>.json` it consults records the
-owning process's OS start token alongside its PID, and a record whose PID the
-OS has since handed to something else is rejected with *"ff-rdp did not launch
-… Refusing to stop a process ff-rdp does not own"*. Before that, a leaked
-record from an earlier run was enough to aim SIGTERM and SIGKILL at whatever
-process happened to inherit the number. The refused record is left on disk —
-it is the ownership trail, and the launch-record sweep below is what reclaims
-it. If the refusal is wrong (the port really is held by your own stale
-instance), stop it yourself or pick another port with `--debug-port`.
+one ff-rdp itself started, proven by the owner-PID marker (plus its recorded
+OS start token, so a recycled PID never passes) in a managed profile. Anything
+else is refused with *"ff-rdp did not launch … Refusing to stop a process
+ff-rdp does not own"*; stop it yourself or pick another port with
+`--debug-port`.
 
 `launch` waits **30 s** by default for that port to open. Raise it with
 `--launch-timeout <secs>` or `FF_RDP_LAUNCH_TIMEOUT_SECS` (the flag wins; a
@@ -206,9 +201,10 @@ cargo build --release
 
 Run `ff-rdp --help` for the full command surface and options.
 
-Key global flags: `--host`, `--port`, `--tab`, `--jq`, `--timeout`, `--format text`, `--no-daemon`.
+Key global flags: `--host`, `--port`, `--tab`, `--jq`, `--timeout`, `--format text`.
 
-`--no-daemon`: connect directly to Firefox, bypassing the background daemon. The daemon (default) keeps a persistent Firefox connection and buffers events for streaming commands (`--follow`). Use `--no-daemon` for one-off commands or to debug daemon issues.
+Every command opens its own RDP connection, does its work and disconnects — see
+[Connections](#connections).
 
 All output is JSON with a standard envelope (`results`, `total`, `meta`). Use `--jq` to filter:
 
@@ -281,13 +277,14 @@ ff-rdp network --filter api
 # Filter network by HTTP method
 ff-rdp network --method POST
 
-# The capture source is always the one you asked for. The default is the RDP
-# resource watcher — the only source that carries method, status, content_type
-# and transfer_size. `meta.source` names where the rows came from; an empty
-# watcher buffer reports zero watcher rows rather than silently answering from
-# somewhere else (iter-159 removed that substitution).
+# A one-shot `network` only sees requests made while it is connected — see
+# Connections for the three capture modes. The default source is the RDP
+# resource watcher, the only one that carries method, status, content_type and
+# transfer_size; `meta.source` names where the rows came from, and an empty
+# capture reports zero rows rather than silently answering from somewhere else.
 ff-rdp network                          # watcher (default)
-ff-rdp network --source performance-api # explicit opt-out: fewer fields
+ff-rdp network --source performance-api # what already loaded: fewer fields
+ff-rdp network --follow > net.ndjson &  # stream traffic other commands cause
 
 # Act and see: return the page the action produced (iter-210). `navigate`,
 # `click`, `type`, `reload`, `back`, `forward` and `scroll` all take it.
@@ -354,8 +351,7 @@ ff-rdp navigate <URL> --with-page --query "Stable release" \
 # The page is collected LAST — after the command's own wait and after
 # `document.readyState == "complete"` — so a click that navigates reports the
 # DESTINATION page. `meta.page_ready` is false if that wait timed out or an
-# announced navigation has not confirmed its document handover;
-# `meta.page_refs_registered` says whether the refs are usable (daemon only).
+# announced navigation has not confirmed its document handover.
 #
 # Since iter-220 that holds on a slow destination too. Firefox keeps handing
 # back the OUTGOING document for a while after a click — same `innerWindowId`,
@@ -374,19 +370,15 @@ ff-rdp navigate <URL> --with-page --query "Stable release" \
 # An already-confirmed submission stays ready without another settle-budget wait.
 # Nothing navigated, nothing waited for.
 #
-# And since iter-224 a connection that dies mid-collection no longer costs you
-# the action. On the daemon route, roughly one hop in fifteen used to come back
-# `{"error":"recv failed: Connection reset by peer (os error 54)",
-# "error_type":"Transport"}` — exit 6, in under half a second, with the click
-# already performed and no view of where it landed. The daemon now writes a
-# named `daemon_client_closed` frame before it abandons a client, and
+# A connection that dies mid-collection no longer costs you the action:
 # `--with-page` rebuilds the connection and collects again inside `--timeout`.
 # `meta.page_attempts` and `meta.page_reconnects` report what the returned view
 # cost — `1` and `0` when nothing went wrong.
 
-# Refs no longer come only from `dom <selector>`: `a11y summary` and `snapshot`
-# register them too, so the first thing you read after navigating already
-# carries click handles.
+# Refs come from `dom <selector>`, `a11y summary`, `snapshot` and
+# `--with-page`. Each is stamped on its element as `data-ffrdp-ref="eN"`, so
+# any later command resolves it as `[data-ffrdp-ref="eN"]`. Refs die when the
+# page navigates, and only top-document elements get one (not iframe content).
 ff-rdp a11y summary --jq '.results.interactive[0].ref'
 
 # Type into a search box and submit in one command. Enter is dispatched first;
@@ -397,6 +389,12 @@ ff-rdp type --ref e7 "Turing Award" --submit --with-page
 
 # Navigate and capture all network traffic in one shot
 ff-rdp navigate https://example.com --with-network
+
+# Shape the network for this load only: throttle and block on the command's own
+# connection, right before it navigates (echoed under results.network_conditions;
+# refused with --no-wait, since the settings end when the command exits)
+ff-rdp navigate https://example.com --with-network --throttle slow-3g --block '*.png'
+ff-rdp reload --hard --throttle fast-3g
 
 # Dismiss a cookie banner and capture the network in the same call — the
 # consent click happens inside the capture window.
@@ -511,11 +509,11 @@ ff-rdp profiles prune
 ff-rdp profiles prune --all --dry-run
 ff-rdp profiles prune --all
 
-# Inspect a remote object grip (from eval output)
-ff-rdp inspect server1.conn0.child2/obj19
+# Evaluate an expression and inspect the resulting object (one connection)
+ff-rdp inspect 'window.location'
 
 # Recursive inspection (depth 2)
-ff-rdp inspect server1.conn0.child2/obj19 --depth 2
+ff-rdp inspect 'document.forms[0]' --depth 2
 
 # List all loaded JavaScript sources
 ff-rdp sources
@@ -573,7 +571,7 @@ ownership fails; a profile with uncertain cleanup is retained for recovery.
 In this mode `results.english_language_pack` reports `mode: "install-then-relaunch"`,
 `status: "initialized-and-relaunched"`, `relaunch_count: 1`, and the initial child's
 PID/birth, normal-quit outcome, actual wait/exit code and persisted-file hashes. The
-main launch PID and record describe only the operational Firefox. A receive EOF is
+main launch PID describes only the operational Firefox. A receive EOF is
 not a quit acknowledgement. Persisted hashes do not attest startup-cache contents.
 The mode does not promise that every engine diagnostic will be English: matching
 resources and locale preferences alone have not established that guarantee. No cache
@@ -610,75 +608,38 @@ controlled-input, consent banner, …) and runs probe commands against a
 live Firefox tab. See `kb/skills/ff-rdp-debug.md` for the full skill
 guide.
 
-## Daemon Mode
+## Connections
 
-By default, the first CLI invocation auto-starts a background daemon that holds a persistent Firefox RDP connection and buffers watcher events. Subsequent invocations connect through the daemon for faster execution and cross-command workflows.
+`ff-rdp` is a stateless CLI. Every command opens its own RDP connection to
+Firefox, does its work and disconnects; nothing ff-rdp sets up outlives the
+command that set it up. There is no background process and no state file
+besides the managed profiles under the profile root and the `record` state.
+Page state lives in the page: refs are attributes on the elements, console
+history is Firefox's own message cache (`console` reads it on a fresh
+connection).
 
-**How it works:**
-- First `ff-rdp` call spawns a daemon process (`ff-rdp _daemon`) in the background
-- The daemon connects to Firefox, subscribes to watcher resources (network, console, errors), and listens on a random TCP loopback port
-- Subsequent CLI calls connect to the daemon instead of Firefox directly
-- The daemon transparently proxies RDP frames and also exposes a `"daemon"` virtual actor for draining buffered events, for the recorded frame-target snapshot (`click --frame`, `consent accept`), and for status
-- Firefox RDP replies carry no request id, so the daemon lets **one** client have Firefox-bound requests in flight at a time. Concurrent invocations **queue** for that channel and all succeed; a client that waits out the queue budget gets a `daemon_busy` error naming the wait and the cap. Use `--no-daemon` for a private connection when you want true parallelism.
-- Daemon exits automatically after 5 minutes of inactivity (configurable via `--daemon-timeout`)
-- The watcher resource subscriptions (`network-event`, `console-message`, `error-message`) belong to the **daemon**, not to any one CLI invocation. The daemon therefore drops a proxied client's `unwatchResources` for those types (it already does the same for `unwatchTargets`) — otherwise one command's teardown would destroy Firefox's `NetworkObserver` on the shared connection, taking the session's URL block-list and throttling config with it (iter-164)
-- Auto-start waits up to **20 s** for the freshly spawned daemon to register; override with `FF_RDP_DAEMON_START_TIMEOUT_MS`. If it gives up, the command still runs over a direct connection — `meta.route` reports `"direct"` and, under `--verbose`, `meta.daemon_fallback` names why daemon mode degraded instead of silently discarding the reason (iter-164)
+Network traffic is reported by a watcher on the connection that subscribed,
+so pick the capture mode that matches the question:
 
-**Cross-command workflows (enabled by daemon):**
 ```bash
-# Navigate, then inspect network traffic as separate commands
-ff-rdp navigate https://example.com
-ff-rdp network
+# 1. A page load: subscribe before navigating
+ff-rdp navigate https://example.com --with-network
 
-# Object grips from eval survive across invocations
-ff-rdp eval 'document.querySelector("h1")'
-ff-rdp inspect server1.conn0.child2/obj19
+# 2. Traffic caused by later commands: start a follow stream first. A separate
+#    connection's watcher sees requests other connections cause.
+ff-rdp network --follow > net.ndjson &
+ff-rdp click --ref e3
+ff-rdp type 'input[name=q]' 'query' --submit
+kill %1                           # net.ndjson: one request/response event per line
+
+# 3. What already loaded, after the fact (no method/status/headers)
+ff-rdp network --source performance-api
+
+# Or wait for one request on the click's own connection
+ff-rdp click 'button[type=submit]' --wait-for-network /api/login
 ```
-
-**Disabling the daemon:**
-```bash
-# Connect directly to Firefox (original behavior)
-ff-rdp --no-daemon eval "1+1"
-```
-
-**Registry and logs:**
-- Registry file: `~/.ff-rdp/daemon.json` (PID, port, Firefox target)
-- Log file: `~/.ff-rdp/daemon.log`
-- Stale registry files are cleaned up automatically when the daemon PID is dead
-
-**Health and diagnostics (iter-240):**
-- `ff-rdp daemon status` reports whether the daemon is *working*, not just
-  running: `dispatcher.alive`, `dispatcher.frames_started` /
-  `frames_finished` / `in_flight`, `dispatcher.current_frame_age_ms`,
-  `dispatcher.last_frame_kind`, `rpc_slot.owner` / `rpc_slot.held_secs`, and
-  `clients_dropped_on_write`. A single thread routes every Firefox frame, so
-  `in_flight > 0` with a `current_frame_age_ms` that keeps growing is a wedged
-  daemon — before these fields it was indistinguishable from a slow page,
-  because the CLI reported only a generic 10 s `phase: recv` timeout.
-- `ff-rdp doctor` runs the same check as a `daemon_dispatcher` probe and fails
-  when the dispatcher has exited or has been stuck on one frame for 15 s.
-- Every daemon→client write is bounded by a 10 s deadline
-  (`client_write_deadline_ms`). A client that stops reading is dropped and
-  counted in `clients_dropped_on_write`, rather than parking the dispatcher —
-  which used to take the whole daemon down with it, silently and permanently.
-- `--log-level <level>` on the invocation that auto-starts the daemon also
-  configures the daemon, as `RUST_LOG` in its environment; an exported
-  `RUST_LOG` reaches it through ordinary inheritance. Either way the output
-  lands in `~/.ff-rdp/daemon.log`. Raising the level does **not** reach a
-  daemon that is already running — stop it first.
-
-**Troubleshooting:**
-- If the daemon seems stuck, run `ff-rdp daemon status` (or `ff-rdp doctor`)
-  first — it will say whether the dispatcher is stuck; then
-  `ff-rdp daemon stop`
-- Use `--no-daemon` to bypass the daemon and test direct connectivity
-- Check `~/.ff-rdp/daemon.log` for daemon-side errors
 
 **Temporary profile cleanup:**
-- `ff-rdp daemon stop` attempts to delete the temporary profile directory it
-  launched Firefox with (never a directory passed via `--profile`). Cleanup
-  runs only after the daemon has confirmed the stop; the stop JSON reports
-  whether it happened via `profile_removed` / `profile_removed_path`.
 - `ff-rdp launch` prunes orphaned `ff-rdp-profile-*` directories left behind
   by crashes or `kill -9`: entries older than `FF_RDP_PROFILE_PRUNE_DAYS`
   (default 7) are removed, at most `FF_RDP_PROFILE_PRUNE_MAX` (default 50)
@@ -724,39 +685,8 @@ ff-rdp --no-daemon eval "1+1"
   directory — a profile Firefox actually used still keeps the full
   `FF_RDP_PROFILE_PRUNE_DAYS` threshold, and `profiles prune --older-than`
   stays a pure age query.
-- Every `ff-rdp launch` also sweeps `~/.ff-rdp/` housekeeping files: stale
-  per-port spawn locks, the per-port registry write locks (iter-172), the
-  legacy port-less `daemon.spawn.lock` name,
-  `daemon.<port>.throttle.json` state files whose recorded daemon PID is no
-  longer alive (iter-142), and `launch-record.<port>.json` files whose
-  recorded PID is no longer alive (iter-186). Previously this only ran on the
-  rare daemon-autostart path, so a session that reused an already-running
-  daemon never triggered it at all.
-- Launch records needed their own sweep because nothing else reclaimed them.
-  `daemon stop` deletes the record only on a **clean** stop, and reading a
-  record with a dead PID deletes it only when *that same port* is read again —
-  and ports come from an ephemeral `bind(:0)`, so that port essentially never
-  recurs. Measured on one dev machine: 4803 records / 20 MB accumulated over
-  ten days; the first launch carrying the iter-186 sweep took that to 14
-  files / 1.0 MB, and three further launches left it at 13, 13, 13. A record
-  whose PID is still alive is never removed, so a running instance's record
-  survives a sweep that happens while it is up.
-- The daemon registry `daemon.<port>.json` is only ever published by an atomic
-  `rename`, and the lock that serializes writers lives in a **sibling**
-  `daemon.<port>.write.lock` (iter-172). Locking the published path itself —
-  which is what earlier builds did — meant a zero-byte record existed for the
-  whole span between taking the lock and the rename, and a client that read it
-  in that window gave up on the daemon and silently ran the command over a
-  direct connection instead. A zero-byte record left behind by such a build is
-  now read as "no daemon registered" rather than as a parse error, so the next
-  invocation starts a daemon normally instead of degrading forever.
-- `FF_RDP_HOME` overrides the base directory for *all* of ff-rdp's per-user
-  state: the daemon registry and launch records under `$FF_RDP_HOME/.ff-rdp/`,
-  and (since iter-188) the temporary-profile root at
-  `$FF_RDP_HOME/ff-rdp/profiles/`. Before iter-188 the profiles root ignored
-  it, so setting the variable gave you a split state directory — registry
-  redirected, profiles still landing in the real per-user path. Unset, the
-  profiles root resolves as before: `$XDG_STATE_HOME` (Linux), else
+- `FF_RDP_HOME` overrides the base directory of the temporary-profile root:
+  `$FF_RDP_HOME/ff-rdp/profiles/`. Unset, the profiles root resolves as: `$XDG_STATE_HOME` (Linux), else
   `~/Library/Application Support` (macOS) / `%LOCALAPPDATA%` (Windows), plus
   `ff-rdp/profiles`. **`$FF_RDP_HOME` must be a directory only you can
   write.** ff-rdp trusts an owner-PID marker found under it to decide
@@ -779,8 +709,6 @@ ff-rdp has the same power as Firefox DevTools — it can read httpOnly cookies, 
 
 **URL validation:** The `navigate` command rejects `javascript:` and `data:` URLs by default to prevent accidental code execution in the page context. Allowed schemes are `http:`, `https:`, `file:`, and `about:`. Use `--allow-unsafe-urls` to bypass this check if needed.
 
-**Daemon trust model:** The daemon listens on `127.0.0.1` (loopback only). Any local process can connect and send RDP commands through it — the same trust boundary as Firefox DevTools. The registry file (`~/.ff-rdp/daemon.json`) is created with owner-only permissions (0600 on Unix).
-
 **Regex limits:** The `--pattern` flag (used by `console` and `sources` commands) applies a 1 MiB NFA size limit to prevent denial-of-service from pathological regular expressions.
 
 **Not designed for untrusted networks.** Do not expose the Firefox debug port to the network. All RDP traffic (page content, cookies, eval results) is transmitted in plaintext.
@@ -788,7 +716,7 @@ ff-rdp has the same power as Firefox DevTools — it can read httpOnly cookies, 
 ## Architecture
 
 - **ff-rdp-core** — Protocol library: blocking TCP transport, length-prefixed JSON framing, typed errors
-- **ff-rdp-cli** — CLI binary: clap args, jq output pipeline, command dispatch, daemon proxy
+- **ff-rdp-cli** — CLI binary: clap args, jq output pipeline, command dispatch
 
 ## Releasing
 

@@ -4,15 +4,15 @@ def browser_commands:
   ["tabs", "navigate", "eval", "page-text", "dom", "console", "network",
    "perf", "screenshot", "click", "type", "wait", "cookies", "storage",
    "a11y", "reload", "back", "forward", "inspect", "sources", "snapshot",
-   "geometry", "responsive", "emulate", "throttle", "manifest", "computed",
+   "geometry", "responsive", "manifest", "computed",
    "styles", "cascade", "scroll", "home"];
 def command_paths:
-  browser_commands + ["daemon", "launch", "install-skill", "install-hook",
+  browser_commands + ["launch", "install-skill", "install-hook",
     "skill-doc", "doctor", "profiles", "run", "record", "index", "consent",
     "completions", "dom stats", "dom tree", "perf vitals", "perf summary",
     "perf audit", "perf compare", "a11y contrast", "a11y summary",
     "scroll to", "scroll by", "scroll top", "scroll bottom", "scroll container",
-    "scroll until", "scroll text", "daemon status", "daemon stop",
+    "scroll until", "scroll text",
     "profiles list", "profiles prune", "record start", "record stop",
     "record status", "consent accept"];
 def known_path: join(" ") as $path | $path == "" or (command_paths | index($path)) != null;
@@ -20,7 +20,7 @@ def help_only:
   if .[0] == "help" then .[1:] | known_path
   elif .[-1] == "--help" or .[-1] == "-h" then .[:-1] | known_path
   elif .[1] == "help" and (.[0] as $parent |
-    ["dom", "perf", "a11y", "scroll", "daemon", "profiles", "record", "consent"] | index($parent)) != null
+    ["dom", "perf", "a11y", "scroll", "profiles", "record", "consent"] | index($parent)) != null
     then [.[0]] + .[2:] | known_path
   else false end;
 def browser_invocation:

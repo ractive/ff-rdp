@@ -17,15 +17,13 @@
 //! assertion" bug class iteration 146 fixed in
 //! `live_96_profile_cleanup.rs`'s `launch_headless`:
 //!
-//! 1. `live_90_daemon_lifecycle.rs` (×2), `live_daemon_stop_mdn.rs`, and
-//!    `live_142_daemon_stop_pid_honesty.rs` each wrapped their `LiveFirefox`
-//!    guard in `std::mem::ManuallyDrop` immediately after spawning, so
-//!    `daemon stop` (or `launch --replace`) alone was responsible for
-//!    killing Firefox — but every assertion between that point and the
-//!    final liveness check ran with **no** guard at all. A failure in any of
-//!    them (a non-zero `daemon stop`, a slow port release, a pid-honesty
-//!    mismatch) panicked with Firefox still alive and nothing left to reap
-//!    it. Fixed by removing the `ManuallyDrop` suppression — the guard now
+//! 1. Four lifecycle tests (since deleted with the feature they tested) each
+//!    wrapped their `LiveFirefox` guard in `std::mem::ManuallyDrop`
+//!    immediately after spawning, so the command under test alone was
+//!    responsible for killing Firefox — but every assertion between that
+//!    point and the final liveness check ran with **no** guard at all. A
+//!    failure in any of them panicked with Firefox still alive and nothing
+//!    left to reap it. Fixed by removing the `ManuallyDrop` suppression — the guard now
 //!    stays a normal binding for the rest of each function, so its `Drop`
 //!    is a harmless no-op on the happy path and a real safety net on panic.
 //! 2. `live_142_disk_growth.rs`'s `launch_headless` launched Firefox via a
@@ -39,9 +37,8 @@
 //! 3. `launch --replace` starts a REPLACEMENT Firefox after reaping the prior
 //!    instance, and a `LiveFirefox` guard owns only the PID it launched
 //!    itself — so `live_86_perf_field_fixes.rs`'s
-//!    `live_launch_replace_handles_stuck_prior` and
-//!    `live_123_daemon_autostart_and_registry.rs`'s port-scoping test each
-//!    orphaned one Firefox on *every* run, happy path included. This class
+//!    `live_launch_replace_handles_stuck_prior` (and a since-deleted
+//!    port-scoping test) each orphaned one Firefox on *every* run, happy path included. This class
 //!    was missed by the original Theme B audit (which looked only for
 //!    discarded guards, not for processes nothing ever owned) and is the
 //!    better arithmetic fit for the measured ~1-orphan-per-100-tests rate
@@ -161,9 +158,8 @@ fn live_151_leaked_profile_names_its_test() {
 
 /// AC: `live_151_root_cause_documented` — reproduces, live, the exact
 /// mechanism this iteration's Theme B fixed: a `LiveFirefox` guard
-/// suppressed via `ManuallyDrop` (the pre-fix pattern removed from
-/// `live_90_daemon_lifecycle.rs`, `live_daemon_stop_mdn.rs`, and
-/// `live_142_daemon_stop_pid_honesty.rs` by this iteration) leaves Firefox
+/// suppressed via `ManuallyDrop` (the pre-fix pattern this iteration removed
+/// from four lifecycle tests) leaves Firefox
 /// alive when a panic strikes before cleanup runs; the fixed pattern (the
 /// guard stays a normal binding) does not.
 ///
@@ -183,7 +179,7 @@ fn live_151_root_cause_documented() {
     let leaked_pid = ff.pid();
     let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
         // The exact pre-fix idiom: suppress Drop, then panic before any
-        // cleanup code runs — modeling a failed `daemon stop` assertion.
+        // cleanup code runs — modeling a failed stop assertion.
         let _keep = std::mem::ManuallyDrop::new(ff);
         panic!("live_151 probe: simulated assertion failure before cleanup (pre-fix shape)");
     }));

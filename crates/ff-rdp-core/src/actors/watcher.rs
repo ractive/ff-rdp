@@ -332,9 +332,9 @@ pub const DEFAULT_FRAME_TARGETS_SETTLE: std::time::Duration = std::time::Duratio
 /// immediately followed by `evaluateJSAsync` on a just-returned frame's
 /// `console_actor` produced `target-destroyed-form` for both targets and the
 /// eval never got a reply. The subscription is left active for the lifetime
-/// of the connection — harmless (each direct/no-daemon CLI connection is
-/// short-lived; daemon connections tolerate a standing "frame" subscription
-/// the same way `navigate`'s own prelude does), and calling `watchTargets`
+/// of the connection — harmless (each CLI connection is short-lived, and
+/// `navigate`'s own prelude leaves the same standing "frame" subscription),
+/// and calling `watchTargets`
 /// again on a type already being watched is safe (existing targets are
 /// simply re-delivered, which the actor-id dedup here already tolerates).
 ///
@@ -360,7 +360,7 @@ pub fn enumerate_frame_targets(
     // (`crates/ff-rdp-core/src/actors/storage.rs`); empirically confirmed
     // here too (`enumerate_frame_targets` returned 0 targets — not even the
     // top-level one — against live Firefox 153 until this sink was added).
-    // Restoring `prev_sink` afterwards means a daemon-installed sink is never
+    // Restoring `prev_sink` afterwards means a caller-installed sink is never
     // clobbered.
     let (event_tx, event_rx) = std::sync::mpsc::channel::<Value>();
     let prev_sink = transport.swap_event_sink(Some(event_tx));
@@ -423,46 +423,11 @@ pub fn enumerate_frame_targets(
     Ok(targets)
 }
 
-/// Replay a recorded sequence of raw target lifecycle packets into the same
-/// deduped snapshot [`enumerate_frame_targets`] would have produced from a
-/// live drain (iter-137 Theme A).
-///
-/// Exists because `watchTargets` is **not** repeatable on a connection that is
-/// already watching that target type: Firefox's
-/// `ParentProcessWatcherRegistry.watchTargets` only adds the type to the
-/// session data, so a second subscription on the same connection re-delivers
-/// nothing (documented at `commands/click.rs`'s `fetch_frame_targets`). The
-/// ff-rdp daemon owns the single RDP connection and subscribes once at
-/// startup, so a *proxied* `enumerate_frame_targets` can never re-observe the
-/// targets that were announced before it connected — the whole reason
-/// `click --frame` / `consent accept` reported "0 frame(s) available" in
-/// daemon mode while working under `--no-daemon`.
-///
-/// The daemon therefore records every `target-available-form` /
-/// `target-destroyed-form` it sees and hands the raw packets back on request;
-/// this function turns that recording into `Vec<TargetEvent>` using exactly
-/// the same add/replace/remove rules as the live path, so both connection
-/// modes yield identical snapshots. Packets that are not target lifecycle
-/// events are ignored.
-///
-/// Returns the targets in first-seen order.
-pub fn target_events_from_packets<'a, I>(packets: I) -> Vec<TargetEvent>
-where
-    I: IntoIterator<Item = &'a Value>,
-{
-    let mut targets: Vec<TargetEvent> = Vec::new();
-    for packet in packets {
-        apply_target_event_packet(&mut targets, packet);
-    }
-    targets
-}
-
 /// Apply one raw packet to `targets`: adds/replaces on
 /// `target-available-form`, removes on `target-destroyed-form`, ignores
 /// everything else (resource events, unrelated replies). Shared by
-/// [`enumerate_frame_targets`]'s early-sink drain, its post-subscribe
-/// `recv()` loop, and [`target_events_from_packets`]'s replay so every path
-/// dedupes/applies removals identically.
+/// [`enumerate_frame_targets`]'s early-sink drain and its post-subscribe
+/// `recv()` loop so both paths dedupe/apply removals identically.
 fn apply_target_event_packet(targets: &mut Vec<TargetEvent>, packet: &Value) {
     let Some(event) = WatcherEvent::from_packet(packet) else {
         return;
@@ -564,7 +529,7 @@ pub fn parse_network_resources(event: &Value) -> Vec<NetworkResource> {
 
 /// Parse network resources directly from the inner `[items]` slice of a
 /// `("network-event", [items])` tuple — avoids the `json!({"array": …})`
-/// rewrap (and per-item `Value::clone`) on the daemon's hot fan-out path.
+/// rewrap (and per-item `Value::clone`) on the hot fan-out path.
 ///
 /// Returns an owned `Vec<NetworkResource>`; callers that already own a
 /// destination buffer should prefer extending from
@@ -697,7 +662,7 @@ pub fn parse_console_resources(event: &Value) -> Vec<ConsoleResource> {
 /// Parse console / error resources directly from the inner `[items]` slice
 /// of a `("console-message" | "error-message", [items])` tuple — avoids the
 /// `json!({"array": …})` rewrap (and per-item `Value::clone`) on the
-/// daemon's hot fan-out path.  Returns an owned `Vec<ConsoleResource>`;
+/// hot fan-out path.  Returns an owned `Vec<ConsoleResource>`;
 /// callers with their own destination buffer should extend directly from
 /// `items.iter().filter_map(parse_single_console_resource)` to skip the
 /// intermediate allocation.
@@ -1157,7 +1122,7 @@ enum AnyGripHandle {
 /// When a watcher delivers a resource event the packet may contain object grip
 /// actor IDs.  `ResourceGripGuard` collects those grips and auto-releases them
 /// via the transport release queue when the guard is dropped — preventing
-/// indefinite actor accumulation in long-lived daemon sessions.
+/// indefinite actor accumulation on long-lived connections.
 ///
 /// # Usage
 /// ```no_run
@@ -1888,7 +1853,7 @@ mod tests {
     /// with no `message` wrapper. Recorded verbatim off the wire on Firefox
     /// 155.0.1 while a page logged once per second; before this shape was
     /// understood the item parsed to `None`, so `console --follow` printed
-    /// nothing even on the daemon route, which received every frame.
+    /// nothing even though every frame arrived.
     #[test]
     fn parse_console_resources_flat_console_message_resource() {
         let event = json!({

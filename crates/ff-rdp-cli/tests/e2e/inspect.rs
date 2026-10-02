@@ -10,7 +10,6 @@ fn base_args(port: u16) -> Vec<String> {
         "127.0.0.1".to_owned(),
         "--port".to_owned(),
         port.to_string(),
-        "--no-daemon".to_owned(),
     ]
 }
 
@@ -18,6 +17,13 @@ fn inspect_server() -> MockRdpServer {
     MockRdpServer::new()
         .on("listTabs", load_fixture("list_tabs_response.json"))
         .on("getTarget", load_fixture("get_target_response.json"))
+        // `inspect` evaluates its expression and walks the resulting grip on
+        // the same connection; the recorded object grip is `obj19`.
+        .on_with_followup(
+            "evaluateJSAsync",
+            load_fixture("eval_immediate_response.json"),
+            load_fixture("eval_result_object.json"),
+        )
         .on(
             "prototypeAndProperties",
             load_fixture("prototype_and_properties_response.json"),
@@ -31,10 +37,7 @@ fn inspect_shows_properties() {
     let handle = std::thread::spawn(move || server.serve_one());
 
     let mut args = base_args(port);
-    args.extend([
-        "inspect".to_owned(),
-        "server1.conn0.child2/obj19".to_owned(),
-    ]);
+    args.extend(["inspect".to_owned(), "({a: 1, b: [1, 2]})".to_owned()]);
 
     let output = std::process::Command::new(ff_rdp_bin())
         .args(&args)
@@ -72,7 +75,7 @@ fn inspect_with_jq_filter() {
     let mut args = base_args(port);
     args.extend([
         "inspect".to_owned(),
-        "server1.conn0.child2/obj19".to_owned(),
+        "({a: 1, b: [1, 2]})".to_owned(),
         "--jq".to_owned(),
         ".results.ownProperties.a.value".to_owned(),
     ]);

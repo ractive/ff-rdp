@@ -99,6 +99,63 @@ pub(crate) fn escape_selector(selector: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// In-page element refs (`e<N>`)
+// ---------------------------------------------------------------------------
+
+/// The attribute that carries an element's ref (`e<N>`) in the page.
+///
+/// `--ref e<N>` resolves to `[data-ffrdp-ref="e<N>"]`
+/// (`crate::dispatch::ref_selector`), so a ref is usable from any later
+/// connection for as long as the document lives. A navigation replaces the
+/// document and every ref with it.
+pub(crate) const REF_ATTR: &str = "data-ffrdp-ref";
+
+/// Source of a JS function `__ffrdpStampRef(el)` that returns `el`'s ref,
+/// stamping a new one on first sight.
+///
+/// An element that already carries a ref keeps it, so successive `snapshot` /
+/// `dom` / `--with-page` calls hand out the same handle for the same element.
+/// New refs come from a counter on `window.__ffrdp_refs`; when that counter is
+/// missing (a fresh document, or an evaluation realm that does not share the
+/// page's expandos) it restarts above the highest ref already in the document,
+/// so two calls can never hand out the same ref for different elements.
+///
+/// A page that clones a stamped node (carousels, list templating) copies the
+/// attribute too; the first element an enumeration meets keeps the ref and any
+/// later element carrying the same one is re-stamped, so one call never hands
+/// out a ref twice.
+///
+/// Refs are top-document only: an element in another document (an iframe)
+/// gets `null`, because `--ref` resolves against the top document.
+pub(crate) const STAMP_REF_JS_FN: &str = r"
+  var __ffrdpRefsSeen = {};
+  function __ffrdpStampRef(el) {
+    if (!el || el.nodeType !== 1 || el.ownerDocument !== document) return null;
+    var ATTR = 'data-ffrdp-ref';
+    var existing = el.getAttribute(ATTR);
+    if (existing && !__ffrdpRefsSeen[existing]) {
+      __ffrdpRefsSeen[existing] = true;
+      return existing;
+    }
+    var n = window.__ffrdp_refs;
+    if (typeof n !== 'number') {
+      n = 0;
+      var prior = document.querySelectorAll('[' + ATTR + ']');
+      for (var i = 0; i < prior.length; i++) {
+        var v = parseInt(String(prior[i].getAttribute(ATTR)).slice(1), 10);
+        if (v > n) n = v;
+      }
+    }
+    n += 1;
+    try { window.__ffrdp_refs = n; } catch (e) { /* frozen window: the scan above covers it */ }
+    var id = 'e' + n;
+    el.setAttribute(ATTR, id);
+    __ffrdpRefsSeen[id] = true;
+    return id;
+  }
+";
+
+// ---------------------------------------------------------------------------
 // Unique-selector generation (iter-140 Theme A/F)
 // ---------------------------------------------------------------------------
 
@@ -110,9 +167,6 @@ pub(crate) fn escape_selector(selector: &str) -> String {
 /// This is the single source of truth for "turn a DOM node into a selector
 /// safe to hand back to `document.querySelector` / `DomWalkerActor::query_selector`
 /// unchanged" — used by:
-/// - `dom.rs`'s ARIA-tree ref registration (`--ref e<N>` resolvers), so a ref
-///   round-trips into a real CSS selector instead of a bare JS expression
-///   (iter-140 Theme A bug #1).
 /// - `resolve_disambiguated_target` below, so `--visible`/`--index` on
 ///   `click`/`type`/`styles` resolve to the exact chosen element.
 /// - `page_map`'s landmark/form-submit extraction, so generated page-maps

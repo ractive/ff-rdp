@@ -387,6 +387,7 @@ fn crawl_page(
         cli,
         url,
         &wait_opts,
+        &crate::cli::args::NetworkConditionsArgs::default(),
         &crate::cli::args::PageViewArgs::default(),
     )
     .map_err(|e| anyhow::anyhow!("navigate: {e}"))?;

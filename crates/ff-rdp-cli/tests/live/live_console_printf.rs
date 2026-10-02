@@ -36,7 +36,7 @@
 //! - iter-116 fix: `commands::console::run` now calls
 //!   `start_listeners(["PageError","ConsoleAPI"])` (via the private
 //!   `prime_console_cache` helper) *before* `get_cached_messages`, priming the
-//!   cache so a fresh `--no-daemon` connection sees a message an earlier,
+//!   cache so a fresh connection sees a message an earlier,
 //!   separate `eval` connection logged. The printf substitution itself
 //!   (`parse_console_resources`, the iter-77 Theme C fix this test targets)
 //!   was already correct once the cache is actually primed.

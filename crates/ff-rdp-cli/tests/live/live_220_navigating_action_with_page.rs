@@ -24,9 +24,6 @@
 //! click on a button and a click on a `#fragment` link both have to come back
 //! promptly, not after the settle budget.
 //!
-//! daemon-parity: `--ref` needs the daemon's ref store, so — like
-//! [`super::live_210_act_and_see`] — every test here runs the daemon route.
-//!
 //! # Running
 //!
 //!   FF_RDP_LIVE_TESTS=1 cargo test-live -p ff-rdp-cli \
@@ -55,7 +52,7 @@ const DESTINATION_DELAY: Duration = Duration::from_millis(700);
 /// click that did not navigate.
 const NO_NAVIGATION_BUDGET: Duration = Duration::from_millis(2_500);
 
-fn daemon_args(port: u16) -> Vec<String> {
+fn cli_args(port: u16) -> Vec<String> {
     vec![
         "--host".to_owned(),
         "127.0.0.1".to_owned(),
@@ -66,26 +63,9 @@ fn daemon_args(port: u16) -> Vec<String> {
     ]
 }
 
-fn stop_daemon(port: u16) {
-    let _ = Command::new(ff_rdp_bin())
-        .args(["--host", "127.0.0.1", "--port", &port.to_string()])
-        .args(["daemon", "stop"])
-        .output();
-}
-
-fn firefox_with_daemon(test: &str) -> LiveFirefox {
-    let ff = LiveFirefox::headless_on_random_port();
-    assert!(
-        ff.with_daemon().is_some(),
-        "{test}: the proxy daemon did not start for Firefox on port {}",
-        ff.port()
-    );
-    ff
-}
-
 fn run(port: u16, args: &[&str]) -> Output {
     Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("spawn ff-rdp {args:?}: {e}"))
@@ -106,8 +86,7 @@ fn run_json(port: u16, args: &[&str]) -> Value {
 
 /// The `/slow` body: one `<h1>` plus `count` links, so the collected view is
 /// large enough to travel as a chunked LongString — the code path that hung
-/// on the direct (`--no-daemon`) route while the daemon route hung one step
-/// earlier, in the eval itself.
+/// before iter-220.
 fn heavy_destination(count: usize) -> String {
     let mut body = String::from(
         "<!doctype html><title>t220 destination</title><body><h1>Charles Babbage</h1>",
@@ -182,11 +161,10 @@ fn live_click_with_page_waits_for_slow_destination() {
         eprintln!("live_click_with_page_waits_for_slow_destination: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_click_with_page_waits_for_slow_destination");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(slow_link_fixture()) else {
         eprintln!("live_click_with_page_waits_for_slow_destination: no fixture HTTP — skipping");
-        stop_daemon(port);
         return;
     };
 
@@ -204,8 +182,6 @@ fn live_click_with_page_waits_for_slow_destination() {
         "Charles Babbage",
         "click --with-page must report the destination it navigated to, not the page it left: {click}"
     );
-
-    stop_daemon(port);
 }
 
 /// AC: `type --submit --with-page` takes the identical path and must behave
@@ -217,13 +193,12 @@ fn live_type_submit_with_page_waits_for_slow_destination() {
         eprintln!("live_type_submit_with_page_waits_for_slow_destination: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_type_submit_with_page_waits_for_slow_destination");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(slow_link_fixture()) else {
         eprintln!(
             "live_type_submit_with_page_waits_for_slow_destination: no fixture HTTP — skipping"
         );
-        stop_daemon(port);
         return;
     };
 
@@ -247,8 +222,6 @@ fn live_type_submit_with_page_waits_for_slow_destination() {
         "Charles Babbage",
         "type --submit --with-page must report the page the submission produced: {typed}"
     );
-
-    stop_daemon(port);
 }
 
 /// The destination view must actually be the heavy one — several hundred
@@ -262,11 +235,10 @@ fn live_slow_destination_view_is_the_heavy_one() {
         eprintln!("live_slow_destination_view_is_the_heavy_one: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_slow_destination_view_is_the_heavy_one");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(slow_link_fixture()) else {
         eprintln!("live_slow_destination_view_is_the_heavy_one: no fixture HTTP — skipping");
-        stop_daemon(port);
         return;
     };
 
@@ -280,8 +252,6 @@ fn live_slow_destination_view_is_the_heavy_one() {
         "the destination must be link-heavy enough to exercise the chunked \
          long-string path — interactive_total={total}: {click}"
     );
-
-    stop_daemon(port);
 }
 
 // ---------------------------------------------------------------------------
@@ -296,11 +266,10 @@ fn live_non_navigating_click_with_page_is_not_delayed() {
         eprintln!("live_non_navigating_click_with_page_is_not_delayed: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_non_navigating_click_with_page_is_not_delayed");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(slow_link_fixture()) else {
         eprintln!("live_non_navigating_click_with_page_is_not_delayed: no fixture HTTP — skipping");
-        stop_daemon(port);
         return;
     };
 
@@ -324,8 +293,6 @@ fn live_non_navigating_click_with_page_is_not_delayed() {
         "a non-navigating click --with-page took {elapsed:?}, over the {NO_NAVIGATION_BUDGET:?} \
          bound — the navigation settle loop must not run when nothing navigated; {load}: {click}"
     );
-
-    stop_daemon(port);
 }
 
 /// A same-document `#fragment` click announces a navigation but never changes
@@ -338,11 +305,10 @@ fn live_fragment_click_with_page_is_not_delayed() {
         eprintln!("live_fragment_click_with_page_is_not_delayed: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_fragment_click_with_page_is_not_delayed");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(slow_link_fixture()) else {
         eprintln!("live_fragment_click_with_page_is_not_delayed: no fixture HTTP — skipping");
-        stop_daemon(port);
         return;
     };
 
@@ -362,6 +328,4 @@ fn live_fragment_click_with_page_is_not_delayed() {
          — the settle loop must exit on the URL match instead of waiting for an \
          innerWindowId that never changes: {click}"
     );
-
-    stop_daemon(port);
 }

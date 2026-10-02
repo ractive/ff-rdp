@@ -30,7 +30,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_norway = { workspace = true }
 toml = { version = "0.9", default-features = false, features = ["parse", "serde", "std"] }
-getrandom = { workspace = true }
 tempfile = { workspace = true }
 url = { workspace = true }
 ureq = { workspace = true }
@@ -38,9 +37,7 @@ include_dir = { workspace = true }
 walkdir = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-subtle = { workspace = true }
 thiserror = { workspace = true }
-mio = { version = "1.2.0", features = ["net", "os-poll"] }
 sha2 = { workspace = true }
 # Bounded local langpack inspection only; no encryption or non-deflate codecs.
 zip = { version = "=0.6.6", default-features = false, features = ["deflate"] }
@@ -92,8 +89,8 @@ windows-sys = { workspace = true }
 
 # iter-105 Theme D: this crate cannot inherit the workspace lints table because
 # the workspace default is `unsafe_code = "forbid"` and this crate has real,
-# audited FFI (unix `libc` process-group signalling in daemon/process.rs, unix
-# `setenv` in script/vars.rs tests, `windows-sys` console handlers).  `forbid`
+# audited FFI (unix `libc` process-group signalling in util/process.rs, unix
+# `setenv` in script/vars.rs tests, `windows-sys` process handles).  `forbid`
 # cannot be relaxed per-block, so instead we set `unsafe_code = "deny"` here —
 # every `unsafe` block must be explicit and carry a `// SAFETY:` justification
 # (all current call sites already do), keeping the allowance narrow and

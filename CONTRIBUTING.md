@@ -51,8 +51,7 @@ link.
   `tests/live/main.rs` via `#[path = "../common/mod.rs"] mod common;` (`live_tests_enabled`,
   `live_network_tests_enabled`, `live_sites_tests_enabled`, `LiveFirefox`, …).
 - Launch and kill waits in the harness are bounded and env-overridable
-  (`FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS`, `FF_RDP_TEST_DAEMON_READY_TIMEOUT_S`,
-  `FF_RDP_TEST_KILL_WAIT_TIMEOUT_MS`). A live test that cannot launch Firefox fails; it does not
+  (`FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS`, `FF_RDP_TEST_KILL_WAIT_TIMEOUT_MS`). A live test that cannot launch Firefox fails; it does not
   silently return.
 - A live test that asserts a global property of the machine (e.g. "no managed Firefox is
   running") isolates itself with its own `$FF_RDP_HOME`, because the sweep runs tests in parallel.
@@ -120,7 +119,7 @@ List what exists with `cargo run -q -p xtask -- --help`; do not invent names.
 |---|---|---|
 | `check-iteration-plan <plan or dir>` | CI `discipline` | `status` vocabulary; no two plans share a number (`dogfood_path`/`first_call_sites` are optional warnings) |
 | `check-live-test-layout` | CI `discipline` | no top-level `tests/live_*.rs`; every live `#[test]` is `#[ignore]`-gated |
-| `check-source-invariants` | CI `discipline` | no `.lock().unwrap()` in the daemon; no `eprintln!` + `AppError::Exit(N)` bypass; every `eprintln!` under `commands/` has `// stderr-ok: <reason>` |
+| `check-source-invariants` | CI `discipline` | no `eprintln!` + `AppError::Exit(N)` bypass; every `eprintln!` under `commands/` has `// stderr-ok: <reason>` |
 | `check-skill-drift` / `gen-skill` | CI `discipline` | the generated region of `skills/ff-rdp-debug/SKILL.md` matches the CLI's tables |
 | `check-help-idioms` | CI `discipline` | `ff-rdp --help` still carries the quick-start idioms |
 | `check-vendored-js` | CI `discipline` | vendored Readability bundle matches the hashes in its `VERSION` |

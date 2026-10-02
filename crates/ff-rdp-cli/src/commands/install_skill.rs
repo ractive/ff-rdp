@@ -127,9 +127,8 @@ fn has_any_managed_by(content: &[u8]) -> bool {
 /// set `.env("HOME", tmp)` but the files still landed in the real profile
 /// (`C:\Users\runneradmin\...`) and leaked state across tests in the same
 /// binary. We resolve `HOME` first (Unix convention), then `USERPROFILE`
-/// (Windows convention), then the platform API — matching the precedent in
-/// `daemon::registry::registry_dir` and the `xtask` discipline checks so a
-/// single override works on every platform.
+/// (Windows convention), then the platform API — matching the `xtask`
+/// discipline checks so a single override works on every platform.
 fn resolve_home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .filter(|h| !h.is_empty())

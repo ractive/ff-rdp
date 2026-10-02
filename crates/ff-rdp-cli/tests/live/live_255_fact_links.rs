@@ -1,5 +1,5 @@
-//! Fact links keep their source anchors across query filtering and ref registration.
-//! daemon-parity: live_255_fact_links_direct verifies the same source rows without handles.
+//! Fact links keep their source anchors across query filtering and carry
+//! in-page refs (`data-ffrdp-ref`) a later `click --ref` resolves.
 
 use std::collections::HashMap;
 use std::process::{Command, Output};
@@ -11,7 +11,7 @@ use crate::common::{
     live_tests_enabled,
 };
 
-fn run(ff: &LiveFirefox, direct: bool, args: &[&str]) -> Output {
+fn run(ff: &LiveFirefox, args: &[&str]) -> Output {
     let mut command = Command::new(ff_rdp_bin());
     command.args([
         "--host",
@@ -21,24 +21,18 @@ fn run(ff: &LiveFirefox, direct: bool, args: &[&str]) -> Output {
         "--timeout",
         "20000",
     ]);
-    if direct {
-        command.arg("--no-daemon");
-    }
     let output = command.args(args).output().expect("run checkout binary");
     assert!(output.status.success(), "{args:?}: {output:?}");
     output
 }
 
-fn json(ff: &LiveFirefox, direct: bool, args: &[&str]) -> Value {
-    serde_json::from_slice(&run(ff, direct, args).stdout).expect("JSON envelope")
+fn json(ff: &LiveFirefox, args: &[&str]) -> Value {
+    serde_json::from_slice(&run(ff, args).stdout).expect("JSON envelope")
 }
 
-fn exercise(direct: bool) {
+fn exercise() {
     assert!(live_tests_enabled());
     let ff = LiveFirefox::headless_on_random_port();
-    if !direct {
-        assert!(ff.with_daemon().is_some());
-    }
     let server = FixtureServer::start(HashMap::from([
         ("/".into(), FixtureRoute::html("<!doctype html><title>Fact links</title><main><article>
             <h1>Source facts</h1><table class='infobox'>
@@ -51,11 +45,7 @@ fn exercise(direct: bool) {
         ("/first".into(), FixtureRoute::html("<!doctype html><title>First destination</title><h1>First destination</h1>")),
         ("/second".into(), FixtureRoute::html("<!doctype html><title>Second destination</title><h1>Second destination</h1>")),
     ])).expect("fixture server");
-    let all = json(
-        &ff,
-        direct,
-        &["navigate", &server.base_url(), "--with-page"],
-    );
+    let all = json(&ff, &["navigate", &server.base_url(), "--with-page"]);
     let facts = all["results"]["page"]["facts"]
         .as_array()
         .expect("facts array");
@@ -83,7 +73,6 @@ fn exercise(direct: bool) {
     assert_eq!(facts[3]["links"][0]["href"], "/second");
     let filtered = json(
         &ff,
-        direct,
         &[
             "navigate",
             &server.base_url(),
@@ -101,11 +90,10 @@ fn exercise(direct: bool) {
     assert_eq!(links.len(), 2);
     for link in links {
         assert!(link.get("__resolver").is_none(), "{filtered}");
-        assert_eq!(link.get("ref").is_some(), !direct, "{filtered}");
+        assert!(link.get("ref").is_some(), "{filtered}");
     }
     let text = run(
         &ff,
-        direct,
         &[
             "--format",
             "text",
@@ -122,33 +110,29 @@ fn exercise(direct: bool) {
         text.contains("First → /first") && text.contains("Second → /second"),
         "{text}"
     );
-    assert_eq!(text.contains("[e"), !direct, "{text}");
-    if !direct {
-        // Recollect after the text command navigated: a prior generation's ref
-        // is intentionally invalid, even when the URL happens to be identical.
-        let fresh = json(
-            &ff,
-            direct,
-            &[
-                "navigate",
-                &server.base_url(),
-                "--with-page",
-                "--query",
-                "Developer",
-            ],
-        );
-        let id = fresh["results"]["page"]["facts"][0]["links"][1]["ref"]
-            .as_str()
-            .unwrap();
-        let clicked = json(&ff, direct, &["click", "--ref", id, "--with-page"]);
-        assert!(
-            clicked.to_string().contains("Second destination"),
-            "{clicked}"
-        );
-    }
+    assert!(text.contains("[e"), "{text}");
+    // Recollect after the text command navigated: a prior generation's ref
+    // is intentionally invalid, even when the URL happens to be identical.
+    let fresh = json(
+        &ff,
+        &[
+            "navigate",
+            &server.base_url(),
+            "--with-page",
+            "--query",
+            "Developer",
+        ],
+    );
+    let id = fresh["results"]["page"]["facts"][0]["links"][1]["ref"]
+        .as_str()
+        .unwrap();
+    let clicked = json(&ff, &["click", "--ref", id, "--with-page"]);
+    assert!(
+        clicked.to_string().contains("Second destination"),
+        "{clicked}"
+    );
     let miss = run(
         &ff,
-        direct,
         &[
             "--format",
             "text",
@@ -167,22 +151,13 @@ fn exercise(direct: bool) {
 
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
-fn live_255_fact_links_daemon() {
-    exercise(false);
+fn live_255_fact_links() {
+    exercise();
 }
 
-#[test]
-#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
-fn live_255_fact_links_direct() {
-    exercise(true);
-}
-
-fn exercise_link_budgets(direct: bool) {
+fn exercise_link_budgets() {
     assert!(live_tests_enabled());
     let ff = LiveFirefox::headless_on_random_port();
-    if !direct {
-        assert!(ff.with_daemon().is_some());
-    }
     let images = |count: usize| "<a href='/destination'><img alt='icon'></a>".repeat(count);
     let counts = format!(
         "<table class='infobox'><tr><th>Budget exact</th><td>Value{}</td></tr>
@@ -207,13 +182,14 @@ fn exercise_link_budgets(direct: bool) {
         sized("name over", &"n".repeat(257), "/destination", "no"),
         sized("href exact", "", &format!("/{}", "h".repeat(2047)), "h"),
         sized("href over", "", &format!("/{}", "h".repeat(2048)), "ho"),
-        sized("selector exact", "", "/destination", &"s".repeat(2047)),
-        sized("selector over", "", "/destination", &"s".repeat(2048)),
+        sized("long id", "", "/destination", &"s".repeat(2047)),
+        sized("longer id", "", "/destination", &"s".repeat(2048)),
         sized("after omitted", "Working", "/destination", "working"),
     ]
     .join("");
-    // Four links cost exactly 8192 UTF-16 units including private selectors:
-    // empty name + one-character href + 2047-character #id, across two rows.
+    // The shared budget counts name + href only (refs are stamped in the page,
+    // there is no private selector to pay for), so these four one-character
+    // links, however long their #id, stay far below it.
     let budget_anchor =
         |index: usize| format!("<a id='a{index}{}' href='/'><img></a>", "b".repeat(2044));
     let text_budget = format!(
@@ -238,7 +214,6 @@ fn exercise_link_budgets(direct: bool) {
     let collect = |path: &str| {
         json(
             &ff,
-            direct,
             &[
                 "navigate",
                 &format!("{}{path}", server.base_url()),
@@ -276,23 +251,23 @@ fn exercise_link_budgets(direct: bool) {
     let facts = text_view["results"]["page"]["facts"].as_array().unwrap();
     assert_eq!(
         facts.iter().map(link_count).collect::<Vec<_>>(),
-        [2, 2, 0],
+        [2, 2, 1],
         "{text_view}"
     );
     assert!(facts[1].get("links_truncated").is_none());
-    assert_eq!(facts[2]["links_truncated"], true);
+    assert!(facts[2].get("links_truncated").is_none());
     let fields_view = collect("/fields");
     let facts = fields_view["results"]["page"]["facts"].as_array().unwrap();
     assert_eq!(
         facts.iter().map(link_count).collect::<Vec<_>>(),
-        [1, 0, 1, 0, 1, 0, 1],
+        [1, 0, 1, 0, 1, 1, 1],
         "{fields_view}"
     );
     for (index, fact) in facts.iter().enumerate() {
         assert_eq!(fact["value"], "Short");
-        assert_eq!(fact["links_truncated"] == true, [1, 3, 5].contains(&index));
+        assert_eq!(fact["links_truncated"] == true, [1, 3].contains(&index));
         for link in fact["links"].as_array().into_iter().flatten() {
-            assert_eq!(link.get("ref").is_some(), !direct);
+            assert!(link.get("ref").is_some());
             assert!(link.get("__resolver").is_none());
         }
     }
@@ -301,17 +276,14 @@ fn exercise_link_budgets(direct: bool) {
         facts[2]["links"][0]["href"],
         format!("/{}", "h".repeat(2047))
     );
-    if !direct {
-        let id = facts[4]["links"][0]["ref"].as_str().unwrap();
-        let clicked = json(&ff, false, &["click", "--ref", id, "--with-page"]);
-        assert!(
-            clicked.to_string().contains("Budget destination"),
-            "{clicked}"
-        );
-    }
+    let id = facts[4]["links"][0]["ref"].as_str().unwrap();
+    let clicked = json(&ff, &["click", "--ref", id, "--with-page"]);
+    assert!(
+        clicked.to_string().contains("Budget destination"),
+        "{clicked}"
+    );
     let text = run(
         &ff,
-        direct,
         &[
             "--format",
             "text",
@@ -328,21 +300,15 @@ fn exercise_link_budgets(direct: bool) {
     assert_eq!(
         text.matches("Some fact links omitted (collection limits).")
             .count(),
-        3,
+        2,
         "{text}"
     );
 }
 
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
-fn live_255_fact_link_budgets_daemon() {
-    exercise_link_budgets(false);
-}
-
-#[test]
-#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
-fn live_255_fact_link_budgets_direct() {
-    exercise_link_budgets(true);
+fn live_255_fact_link_budgets() {
+    exercise_link_budgets();
 }
 
 #[test]
@@ -356,10 +322,8 @@ fn live_255_python_fact_click_reaches_psf_formation() {
     }
     assert!(live_tests_enabled() && live_network_tests_enabled());
     let ff = LiveFirefox::headless_on_random_port();
-    assert!(ff.with_daemon().is_some());
     let python = json(
         &ff,
-        false,
         &[
             "navigate",
             "https://en.wikipedia.org/wiki/Python_(programming_language)",
@@ -388,7 +352,6 @@ fn live_255_python_fact_click_reaches_psf_formation() {
     let id = link["ref"].as_str().expect("clickable PSF handle");
     let psf = json(
         &ff,
-        false,
         &[
             "click",
             "--ref",
@@ -406,7 +369,7 @@ fn live_255_python_fact_click_reaches_psf_formation() {
             .any(|fact| fact["key"].as_str() == Some("Formation")),
         "{psf}"
     );
-    let url = json(&ff, false, &["eval", "location.href"]);
+    let url = json(&ff, &["eval", "location.href"]);
     assert!(
         url.to_string()
             .contains("https://en.wikipedia.org/wiki/Python_Software_Foundation"),

@@ -1,4 +1,5 @@
 mod language_initialization;
+mod replace;
 mod startup;
 #[cfg(all(test, unix))]
 mod startup_controls;
@@ -275,15 +276,10 @@ pub(crate) fn build_command(
         //
         // `.keep()` persists the directory past this process's exit so
         // Firefox (a separate process) can keep reading it while it runs.
-        // Cleanup happens in two places, not "on process exit":
-        //   - `daemon stop` removes the *active* profile once the
-        //     SIGTERM→SIGKILL→killpg ladder confirms Firefox is actually
-        //     gone (see `crate::daemon::client::run_daemon_stop`, iter-96
-        //     Theme A).
-        //   - `prune_orphan_profiles` below removes *orphaned* siblings
-        //     older than `FF_RDP_PROFILE_PRUNE_DAYS` to catch crashes,
-        //     `kill -9`, and reboots that never reach `daemon stop`
-        //     (iter-96 Theme B).
+        // Cleanup is not "on process exit": `prune_orphan_profiles` below
+        // removes *orphaned* siblings older than `FF_RDP_PROFILE_PRUNE_DAYS`
+        // (iter-96 Theme B), and `ff-rdp profiles prune` removes the rest
+        // on demand.
         // iter-75 H-1: place the temp profile under the per-user state
         // directory (`~/.local/state/ff-rdp/profiles` on Linux,
         // `~/Library/Application Support/ff-rdp/profiles` on macOS,
@@ -438,7 +434,7 @@ fn browser_command(
     cmd.stderr(std::process::Stdio::piped());
 
     // Put Firefox into its own process group (pgid = child pid) so that
-    // `daemon stop`'s SIGTERM/SIGKILL on the process group does not blast
+    // `launch --replace`'s SIGTERM/SIGKILL on the process group does not blast
     // back up to the caller's shell. Without this, the pgid escalation
     // introduced in iter-95 Theme A would target whatever group launched
     // ff-rdp — including the user's interactive shell.
@@ -496,9 +492,9 @@ fn stop_failed_launch(
     let pid = child.id();
     // build_command puts Firefox in a new group. Validate that fact before
     // touching descendants; injected spawners may use the caller's group.
-    let group = crate::daemon::process::get_process_group_id(pid)
+    let group = crate::util::process::get_process_group_id(pid)
         .filter(|group| i64::from(*group) == i64::from(pid));
-    crate::daemon::process::kill_process_tree(pid, group);
+    crate::util::process::kill_process_tree(pid, group);
     let kill_result = child.kill();
     if let Err(e) = kill_result {
         // The process may have exited between the failed operation and kill.
@@ -651,9 +647,7 @@ impl PortWaitOutcome {
 
 /// The injectable operations `launch` performs against the outside world.
 ///
-/// Mirrors the `EscalationHooks` fn-pointer pattern in
-/// `daemon::client` (`client.rs:63-96`): a struct of plain function pointers,
-/// no dynamic dispatch, real implementations in [`LaunchHooks::real`] and
+/// A struct of plain function pointers, no dynamic dispatch, real implementations in [`LaunchHooks::real`] and
 /// stubs in tests. It exists so the two failure branches Theme A splits apart
 /// — port occupied before the spawn, and Firefox never binding after it — are
 /// testable without a real Firefox.
@@ -696,14 +690,6 @@ pub(crate) struct LaunchHooks {
     /// gated on the real browser being present, which is exactly the reason
     /// this leak went four iterations without a regression test.
     pub(crate) locate_firefox: fn() -> Result<PathBuf, AppError>,
-    /// Read the per-port launch record ff-rdp writes for a Firefox it started
-    /// (iter-210 Theme D).
-    pub(crate) read_launch_record: fn(u16) -> Option<crate::daemon_record::DaemonRecord>,
-    /// Does *some* process still hold this PID?
-    pub(crate) is_pid_alive: fn(u32) -> bool,
-    /// Does this launch record's PID still name the process it was written for?
-    /// See [`crate::daemon_record::record_pid_is_ours`].
-    pub(crate) record_pid_is_ours: fn(&crate::daemon_record::DaemonRecord) -> bool,
     /// Does an owner-PID marker under ff-rdp's managed profile root name this
     /// PID? The fail-closed ownership proof `launch --replace` requires before
     /// it signals a port owner.
@@ -726,9 +712,6 @@ impl LaunchHooks {
             spawn: std::process::Command::spawn,
             try_wait: std::process::Child::try_wait,
             locate_firefox: find_firefox,
-            read_launch_record: |port| crate::daemon_record::read(port).ok().flatten(),
-            is_pid_alive: crate::daemon::process::is_process_alive,
-            record_pid_is_ours: crate::daemon_record::record_pid_is_ours,
             pid_is_ff_rdp_spawned: crate::util::profile_dir::pid_is_ff_rdp_spawned,
         }
     }
@@ -745,9 +728,6 @@ impl LaunchHooks {
     /// override whatever the test actually cares about.
     fn none_running() -> Self {
         Self {
-            read_launch_record: |_port| None,
-            is_pid_alive: |_pid| false,
-            record_pid_is_ours: |_rec| false,
             pid_is_ff_rdp_spawned: |_pid| false,
             ..Self::real()
         }
@@ -759,11 +739,6 @@ impl LaunchHooks {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RunningInstance {
     pub(crate) pid: u32,
-    /// Profile directory, when a launch record recorded one. `None` when the
-    /// instance was identified from the port listener alone.
-    pub(crate) profile: Option<String>,
-    /// Whether that instance was started headless, when known.
-    pub(crate) headless: Option<bool>,
 }
 
 /// Identify an ff-rdp-launched Firefox already holding `port`, if there is one.
@@ -774,41 +749,25 @@ pub(crate) struct RunningInstance {
 /// already running" is not an error; it is the requested state.
 ///
 /// The ownership bar is deliberately the SAME one `--replace` clears before it
-/// is allowed to kill anything (`daemon::client::stop_prior_instance`): a
-/// launch record whose PID is alive *and* still identifies the process the
-/// record was written for, or a port listener with an owner-PID marker naming
-/// it. It fails closed. A Firefox the user started by hand on port 6000, or any
+/// is allowed to kill anything ([`replace::stop_prior_instance`]): a port
+/// listener named by an owner-PID marker under ff-rdp's managed profile root.
+/// It fails closed. A Firefox the user started by hand on port 6000, or any
 /// other listener, is a foreign owner and still gets the error — reporting
 /// someone else's browser as "the instance we launched" would be a lie, and
 /// `results.pid` would name a process this command has no claim on.
 fn identify_running_instance(port: u16, hooks: &LaunchHooks) -> Option<RunningInstance> {
-    if let Some(rec) = (hooks.read_launch_record)(port)
-        && rec.port == port
-        && (hooks.is_pid_alive)(rec.pid)
-        && (hooks.record_pid_is_ours)(&rec)
-    {
-        return Some(RunningInstance {
-            pid: rec.pid,
-            profile: Some(rec.profile_dir.to_string_lossy().into_owned()),
-            headless: Some(rec.headless),
-        });
-    }
-
     let owner = (hooks.find_listener)(port)?;
     if !(hooks.pid_is_ff_rdp_spawned)(owner.pid) {
         return None;
     }
-    Some(RunningInstance {
-        pid: owner.pid,
-        profile: None,
-        headless: None,
-    })
+    Some(RunningInstance { pid: owner.pid })
 }
 
 /// The envelope a no-op `launch` emits (iter-210 Theme D).
 ///
 /// Same keys as a real launch so a caller can read `results.pid` /
-/// `results.port` / `results.profile` without branching, plus
+/// `results.port` without branching (`headless`/`profile` are `null`: ff-rdp
+/// keeps no record of how an earlier launch was configured), plus
 /// `already_running: true` — which is `false` on the launching path, never
 /// absent, so `--jq '.results.already_running'` answers on both.
 fn emit_already_running(
@@ -822,9 +781,9 @@ fn emit_already_running(
         "pid": instance.pid,
         "host": host,
         "port": port,
-        "headless": instance.headless,
-        "profile": instance.profile,
-        "profile_path": instance.profile,
+        "headless": serde_json::Value::Null,
+        "profile": serde_json::Value::Null,
+        "profile_path": serde_json::Value::Null,
     });
     let mut meta = json!({});
     crate::connection_meta::merge_into_if_verbose(&mut meta, host, port, None, cli.is_verbose());
@@ -1042,28 +1001,6 @@ pub(crate) fn run_with_hooks(
         std::env::var(LAUNCH_TIMEOUT_ENV).ok().as_deref(),
     );
 
-    // iter-142 Theme B: opportunistically sweep `~/.ff-rdp/` housekeeping
-    // files on every `launch`, not just the rare daemon-autostart path
-    // (`resolve_connection_target`'s spawn branch, which only runs when no
-    // daemon is already up for the target port). Dogfooding session 63
-    // observed stale spawn locks and throttle-state files accumulate for
-    // exactly this reason: a session that reuses an already-running daemon
-    // across every command never takes the spawn path at all, so the
-    // existing iter-132 sweep never fires. `launch` is the one command every
-    // session actually runs, so anchoring the sweep here gives it real
-    // coverage. Each call is independently best-effort (see their own doc
-    // comments) and must never fail or slow down the launch.
-    crate::daemon::registry::gc_stale_spawn_locks();
-    crate::daemon::registry::gc_legacy_spawn_lock();
-    crate::daemon::throttle_state::gc_stale_throttle_states();
-    // iter-186: launch records were the one `~/.ff-rdp/` file class this
-    // sweep still missed. `daemon_record::remove_in` only runs on a *clean*
-    // daemon stop, and `read_in`'s stale-entry removal is keyed on reading
-    // the same ephemeral port again — which essentially never happens, so it
-    // reclaimed nothing at all. Same placement, same best-effort contract as
-    // the three sweeps above; see `daemon_record`'s GC section comment.
-    crate::daemon_record::gc_stale_launch_records();
-
     // iter-133 Theme A: parse --window-size up front so a malformed value
     // fails fast, before any port-collision check or Firefox spawn.
     let window_size: Option<(u32, u32)> = window_size
@@ -1074,17 +1011,15 @@ pub(crate) fn run_with_hooks(
     // <port> Firefox silently no-ops when the port is already held by another
     // listener, so we surface the conflict ourselves with a hint that points
     // at `doctor` for follow-up diagnosis.
-    // iter-153: captured (not printed) here — `stop_prior_instance` no
-    // longer prints its own envelope, since doing so wrote a second
-    // top-level JSON document to `launch --replace`'s stdout ahead of the
-    // launch envelope below. Folded into this command's own `meta.replaced`
-    // instead, so `launch --replace` always emits exactly one document and
-    // `results.pid` always means the process THIS command started.
-    let mut replaced: Option<crate::daemon::client::StopOutcome> = None;
+    // iter-153: captured (not printed) here and folded into this command's
+    // own `meta.replaced`, so `launch --replace` always emits exactly one
+    // document and `results.pid` always means the process THIS command
+    // started.
+    let mut replaced: Option<replace::StopOutcome> = None;
     if (hooks.is_port_in_use)(port) {
         if replace {
-            // --replace / --force: stop the prior instance gracefully, then proceed.
-            replaced = Some(crate::daemon::client::stop_prior_instance(cli, port)?);
+            // --replace / --force: stop the prior instance, then proceed.
+            replaced = Some(replace::stop_prior_instance(port)?);
         } else if let Some(instance) = identify_running_instance(port, hooks) {
             if url.is_some() || pack.is_some() {
                 return Err(AppError::User(format!(
@@ -1252,12 +1187,9 @@ pub(crate) fn run_with_hooks(
             // an interrupted launch still leaves an attributable profile —
             // see the write site above `try_wait`. Nothing to do here.
 
-            // Write the shared daemon record so `daemon stop` and
-            // `launch --replace` can find and terminate this instance.
-            // `launch` is fire-and-forget (it spawns Firefox and returns), so
-            // no Ctrl-C cleanup is needed here — the record is cleaned up by
-            // whichever stop path runs next.
-            let final_start_token = crate::daemon::process::process_start_token(pid);
+            // The language-pack relaunch must have produced a new process,
+            // not the initializer that installed the pack.
+            let final_start_token = crate::util::process::process_start_token(pid);
             if let Some(initializer) = &initialization
                 && (final_start_token.is_none()
                     || (initializer["pid"].as_u64() == Some(u64::from(pid))
@@ -1267,23 +1199,6 @@ pub(crate) fn run_with_hooks(
                     "operational Firefox identity is unqualified".into(),
                 )));
             }
-            let daemon_rec = crate::daemon_record::DaemonRecord {
-                pid,
-                port,
-                headless,
-                launched_at: chrono::Utc::now(),
-                profile_dir: profile_path.clone().unwrap_or_default(),
-                // iter-191: capture *which incarnation* of `pid` this record
-                // describes, not just the number. Every later reader that is
-                // about to signal `pid` compares this back (see
-                // `daemon_record::record_pid_is_ours`); without it a record
-                // that outlives its Firefox hands the next `launch --replace`
-                // a kill permit for whatever process the OS reissued the PID
-                // to. `None` here (unsupported platform, or the process
-                // already gone) degrades to the owner-PID marker check, the
-                // pre-iter-191 fallback.
-                start_token: final_start_token,
-            };
             // `temp_profile` is true when the caller requested --temp-profile
             // OR when we auto-created one because no profile flag was given.
             let effective_temp_profile = temp_profile || profile.is_none();
@@ -1316,9 +1231,7 @@ pub(crate) fn run_with_hooks(
                 "port": port,
                 "headless": headless,
                 "profile": profile_path_str,
-                // iter-96: explicit alias of "profile" so `daemon stop`'s
-                // `profile_removed_path` can be compared against the same
-                // field name (see live_daemon_stop_profile_path_matches_launch_json).
+                // iter-96: explicit alias of "profile".
                 "profile_path": profile_path_str,
                 "temp_profile": effective_temp_profile,
                 // iter-144 Theme C: renamed from "auto_consent" — `launch`
@@ -1398,10 +1311,6 @@ pub(crate) fn run_with_hooks(
             }
             // Only successful output transfers ownership. A bad jq filter or
             // rendering failure must not leave a browser behind an error result.
-            if let Err(e) = crate::daemon_record::write(&daemon_rec) {
-                // stderr-ok: (b) warn-and-continue — launch still succeeds.
-                eprintln!("warning: could not write daemon record: {e:#}");
-            }
             pending.disarm();
             Ok(())
         }
@@ -1497,40 +1406,6 @@ mod tests {
 
     // ── iter-210 Theme D: idempotent `launch` ───────────────────────────────
 
-    fn record_for(port: u16, pid: u32) -> crate::daemon_record::DaemonRecord {
-        crate::daemon_record::DaemonRecord {
-            pid,
-            port,
-            headless: true,
-            launched_at: chrono::Utc::now(),
-            profile_dir: std::path::PathBuf::from("/tmp/ff-rdp-profile-test"),
-            start_token: None,
-        }
-    }
-
-    /// A live launch record whose PID is still ours identifies the instance —
-    /// pid, profile, and headless all come from the record.
-    #[test]
-    fn unit_210_live_launch_record_identifies_the_running_instance() {
-        let hooks = LaunchHooks {
-            read_launch_record: |port| Some(record_for(port, 4242)),
-            is_pid_alive: |_pid| true,
-            record_pid_is_ours: |_rec| true,
-            // Must not be consulted: the record path answers first.
-            find_listener: |_port| panic!("the record branch must short-circuit"),
-            ..LaunchHooks::none_running()
-        };
-        let found = identify_running_instance(6000, &hooks)
-            .expect("a live, owned record must identify the instance");
-        assert_eq!(found.pid, 4242);
-        assert_eq!(found.headless, Some(true));
-        assert_eq!(
-            found.profile.as_deref(),
-            Some("/tmp/ff-rdp-profile-test"),
-            "the record's profile must be reported so the no-op envelope matches a real launch"
-        );
-    }
-
     /// AC `live_launch_twice_is_a_noop` (foreign-owner half): a listener with
     /// no ownership proof is NOT reported as ours. This is the check that keeps
     /// a hand-started Firefox on port 6000 producing the port-occupied error
@@ -1539,7 +1414,6 @@ mod tests {
     #[test]
     fn unit_210_foreign_port_owner_is_not_a_running_instance() {
         let hooks = LaunchHooks {
-            read_launch_record: |_port| None,
             find_listener: |_port| {
                 Some(port_owner::PortOwner {
                     pid: 51234,
@@ -1557,12 +1431,10 @@ mod tests {
         );
     }
 
-    /// A port listener that DOES carry ff-rdp's owner-PID marker is ours, even
-    /// with no launch record (the record was GC'd, or none was written).
+    /// A port listener that DOES carry ff-rdp's owner-PID marker is ours.
     #[test]
     fn unit_210_marked_port_owner_is_a_running_instance() {
         let hooks = LaunchHooks {
-            read_launch_record: |_port| None,
             find_listener: |_port| {
                 Some(port_owner::PortOwner {
                     pid: 777,
@@ -1576,39 +1448,6 @@ mod tests {
         let found = identify_running_instance(6000, &hooks)
             .expect("an owner-PID-marked listener is an ff-rdp instance");
         assert_eq!(found.pid, 777);
-        assert_eq!(
-            found.profile, None,
-            "no record means no profile path — reporting one would be invention"
-        );
-    }
-
-    /// A record whose PID the OS has recycled onto some other process must not
-    /// be trusted: the same rule `--replace` applies before it signals anything
-    /// (iter-191). Falls through to the port-owner check, which here has no
-    /// proof either.
-    #[test]
-    fn unit_210_recycled_record_pid_falls_through_to_the_owner_check() {
-        let hooks = LaunchHooks {
-            read_launch_record: |port| Some(record_for(port, 4242)),
-            is_pid_alive: |_pid| true,
-            record_pid_is_ours: |_rec| false,
-            find_listener: |_port| None,
-            ..LaunchHooks::none_running()
-        };
-        assert_eq!(identify_running_instance(6000, &hooks), None);
-    }
-
-    /// A record for a DIFFERENT port never identifies this port's instance.
-    #[test]
-    fn unit_210_record_for_another_port_is_ignored() {
-        let hooks = LaunchHooks {
-            read_launch_record: |_port| Some(record_for(9999, 4242)),
-            is_pid_alive: |_pid| true,
-            record_pid_is_ours: |_rec| true,
-            find_listener: |_port| None,
-            ..LaunchHooks::none_running()
-        };
-        assert_eq!(identify_running_instance(6000, &hooks), None);
     }
 
     /// AC: `unit_owner_pid_marker_written_only_for_managed_profiles` — the
@@ -2238,18 +2077,14 @@ mod iter_175_tests {
         let hooks = LaunchHooks {
             locate_firefox: || BINARY.with(|p| Ok(p.borrow().clone())),
             is_port_in_use: |_| true,
-            read_launch_record: |port| {
-                Some(crate::daemon_record::DaemonRecord {
+            find_listener: |_port| {
+                Some(port_owner::PortOwner {
                     pid: 17350,
-                    port,
-                    profile_dir: PathBuf::from("/owned/example"),
-                    launched_at: chrono::Utc::now(),
-                    headless: true,
-                    start_token: Some("owned-token".to_owned()),
+                    process_name: "firefox".to_owned(),
+                    uptime_s: None,
                 })
             },
-            is_pid_alive: |_| true,
-            record_pid_is_ours: |_| true,
+            pid_is_ff_rdp_spawned: |_| true,
             spawn: |_| panic!("occupied pack launch must not spawn"),
             ..LaunchHooks::none_running()
         };
@@ -2346,18 +2181,14 @@ mod iter_175_tests {
     fn unit_147_owned_existing_launch_cannot_silently_ignore_startup_url() {
         let hooks = LaunchHooks {
             is_port_in_use: |_| true,
-            read_launch_record: |port| {
-                Some(crate::daemon_record::DaemonRecord {
+            find_listener: |_port| {
+                Some(port_owner::PortOwner {
                     pid: 17347,
-                    port,
-                    profile_dir: PathBuf::from("/owned/example"),
-                    launched_at: chrono::Utc::now(),
-                    headless: true,
-                    start_token: Some("owned-test-token".to_owned()),
+                    process_name: "firefox".to_owned(),
+                    uptime_s: None,
                 })
             },
-            is_pid_alive: |_| true,
-            record_pid_is_ours: |_| true,
+            pid_is_ff_rdp_spawned: |_| true,
             locate_firefox: || panic!("existing instance should not spawn"),
             spawn: |_| panic!("existing instance should not spawn"),
             ..LaunchHooks::none_running()
@@ -2875,10 +2706,6 @@ mod iter_175_tests {
             "147 isolation home mismatch before launch"
         );
         assert_eq!(
-            crate::daemon_record::record_base_dir().unwrap(),
-            isolated.join(".ff-rdp")
-        );
-        assert_eq!(
             std::fs::read(isolated.join("147-control-owner")).unwrap(),
             b"owned restart control"
         );
@@ -2957,8 +2784,7 @@ mod iter_175_tests {
         let pids = SPAWNS.with(|v| v.borrow().clone());
         let last = *pids.last().unwrap();
         let native = i32::try_from(last).unwrap();
-        let record = crate::daemon_record::read(7363);
-        let birth = crate::daemon::process::process_start_token(last);
+        let birth = crate::util::process::process_start_token(last);
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         let mut status = 0;
         let mut waited = loop {
@@ -2975,7 +2801,7 @@ mod iter_175_tests {
             std::thread::sleep(Duration::from_millis(10));
         };
         if waited == 0 {
-            if birth.is_some() && crate::daemon::process::process_start_token(last) == birth {
+            if birth.is_some() && crate::util::process::process_start_token(last) == birth {
                 // SAFETY: matching birth and unreaped direct-child identity bind
                 // this timeout cleanup to the exact harmless test child.
                 unsafe {
@@ -2995,8 +2821,6 @@ mod iter_175_tests {
             waited, 0,
             "owned child cleanup uncertain; retain profile for recovery, PID {last}"
         );
-        // We have an actual wait; remove only this test's final launch record.
-        crate::daemon_record::remove(7363).unwrap();
         PROFILE.with(|v| std::fs::remove_dir_all(v.borrow().as_ref().unwrap()).unwrap());
         assert!(result.is_ok(), "{result:?}");
         assert_eq!(pids.len(), 2);
@@ -3006,7 +2830,6 @@ mod iter_175_tests {
             "final harmless child was not actually waited"
         );
         assert_eq!(status, 0);
-        assert_eq!(record.unwrap().unwrap().pid, last);
         ENVELOPES.with(|v| {
             let values = v.borrow();
             assert_eq!(values.len(), 1);
@@ -3022,7 +2845,7 @@ mod iter_175_tests {
         });
         let receipt = json!({"pids":pids,"initial_actual_wait":true,"initial_exit":0,
             "final_actual_wait_pid":waited,"final_wait_status":status,"envelope_count":1,
-            "final_record_pid":last,"profile_removed":true,"home":isolated});
+            "profile_removed":true,"home":isolated});
         std::fs::write(
             isolated.join("147-success-control.json"),
             serde_json::to_vec_pretty(&receipt).unwrap(),
@@ -3079,9 +2902,9 @@ mod iter_175_tests {
             // A polling error must not skip the owned kill/reap attempt. Any
             // subsequent wait error is propagated as uncertainty, never success.
             let pid = self.child.id();
-            let group = crate::daemon::process::get_process_group_id(pid)
+            let group = crate::util::process::get_process_group_id(pid)
                 .filter(|g| i64::from(*g) == i64::from(pid));
-            crate::daemon::process::kill_process_tree(pid, group);
+            crate::util::process::kill_process_tree(pid, group);
             let _ = self.child.kill();
             self.poll_until(deadline)
         }
@@ -3145,18 +2968,16 @@ mod iter_175_tests {
         let private = root.join("executor-home");
         std::fs::create_dir(&private).unwrap();
         std::fs::write(private.join("147-control-owner"), b"owned restart control").unwrap();
-        // Model an external state home without writing any actual user's record.
+        // Model an external state home without touching any actual user's.
         // The executor also checks its exact state root before invoking launch.
         let external_home = root.join("external-home");
         let external = external_home.join(".ff-rdp");
         std::fs::create_dir_all(&external).unwrap();
-        let sentinel = external.join("launch-record.7363.json");
-        let sentinel_bytes = b"external launch record must survive unchanged";
+        let sentinel = external.join("external-state.7363.json");
+        let sentinel_bytes = b"external state must survive unchanged";
         std::fs::write(&sentinel, sentinel_bytes).unwrap();
-        // Negative arm gives the executor the external record home but a
-        // mismatching ownership token. It must fail before invoking product code.
-        // Removing that check would reach the real fixed-port write and corrupt
-        // the sentinel, so this is not an unrelated-file survival assertion.
+        // Negative arm gives the executor the external home but a mismatching
+        // ownership token. It must fail before invoking product code.
         for (case, selected_home, success_expected) in [
             ("reject-unisolated", &external_home, false),
             ("isolated", &private, true),
@@ -3223,12 +3044,10 @@ mod iter_175_tests {
         assert_eq!(receipt["initial_actual_wait"], true);
         assert_eq!(receipt["initial_exit"], 0);
         assert_eq!(receipt["final_actual_wait_pid"], receipt["pids"][1]);
-        assert_eq!(receipt["final_record_pid"], receipt["pids"][1]);
         assert_eq!(receipt["final_wait_status"], 0);
         assert_eq!(receipt["envelope_count"], 1);
         assert_eq!(receipt["profile_removed"], true);
         assert_eq!(receipt["home"], json!(private));
-        assert!(!private.join(".ff-rdp/launch-record.7363.json").exists());
         assert_eq!(std::fs::read(&sentinel).unwrap(), sentinel_bytes);
         assert_eq!(std::env::var_os("FF_RDP_HOME"), parent_override);
         std::fs::remove_dir_all(&root).unwrap();

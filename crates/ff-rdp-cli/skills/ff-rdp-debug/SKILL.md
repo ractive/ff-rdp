@@ -33,7 +33,7 @@ drive a live Firefox from the shell — inspect, act on, and measure the page ov
 ## Quick start
 
 ```bash
-ff-rdp                                              # live state: daemon, browser, tabs, page, next steps
+ff-rdp                                              # live state: browser, tabs, page, next steps
 ff-rdp launch --headless                            # no browser yet? start one with the debug port open
 ff-rdp navigate <URL> --with-page --query "<text>"  # go there and read it in one turn: matching text, facts, refs
 ff-rdp a11y summary                                 # landmarks, headings, and interactive entries with refs
@@ -48,13 +48,13 @@ Run bare `ff-rdp` before reaching for `--help`: it costs one turn and answers "i
 
 | Group | Use it for | Commands |
 |---|---|---|
-| Get a browser | start Firefox with the debug port open, then check the stack end to end | `launch`, `doctor`, `tabs`, `daemon` |
+| Get a browser | start Firefox with the debug port open, then check the stack end to end | `launch`, `doctor`, `tabs` |
 | Go somewhere | navigate and wait for what you actually need, not a fixed sleep | `navigate`, `back`, `forward`, `reload`, `wait` |
 | See the page | read structure and text; `a11y summary` is the orientation view and hands out refs | `a11y`, `snapshot`, `dom`, `page-text`, `screenshot`, `inspect` |
 | Act on the page | click and type against a ref or a selector, then scroll | `click`, `type`, `scroll` |
 | Ask the page | evaluate JS and read what the page stored | `eval`, `cookies`, `storage`, `sources` |
-| Watch the page | console and network traffic, buffered by the daemon | `console`, `network` |
-| Measure the page | Web Vitals, contrast, layout, and emulated conditions | `perf`, `geometry`, `styles`, `computed`, `cascade`, `responsive`, `emulate`, `throttle` |
+| Watch the page | console and network traffic: `--follow` streams it, `navigate --with-network` captures a load | `console`, `network` |
+| Measure the page | Web Vitals, contrast, layout, and responsive breakpoints | `perf`, `geometry`, `styles`, `computed`, `cascade`, `responsive` |
 | Automate | record a session, replay it, crawl a site, install the agent surface | `record`, `run`, `index`, `install-skill`, `install-hook`, `completions` |
 
 ## Idioms worth knowing
@@ -105,7 +105,7 @@ faster — interrupt if your symptom is firefox-only."
 
 Every invocation begins with:
 
-1. `ff-rdp doctor` — verify daemon up + Firefox connected. If it fails,
+1. `ff-rdp doctor` — verify Firefox is up and connected. If it fails,
    run `ff-rdp launch --headless --auto-consent` first, then retry
    `doctor`.
 2. `ff-rdp tabs` — pick the active target. If no tab matches the URL the

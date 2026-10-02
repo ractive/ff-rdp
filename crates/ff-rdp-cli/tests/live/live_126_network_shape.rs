@@ -39,19 +39,6 @@ fn base_args(port: u16) -> Vec<String> {
     ]
 }
 
-fn stop_daemon(port: u16) {
-    let _ = Command::new(ff_rdp_bin())
-        .args([
-            "--host",
-            "127.0.0.1",
-            "--port",
-            &port.to_string(),
-            "daemon",
-            "stop",
-        ])
-        .output();
-}
-
 /// Assert the value at `.results.network` is the canonical object with all
 /// entry-level and summary keys present. Returns the object for further checks.
 fn assert_canonical_network(json: &serde_json::Value) {
@@ -137,7 +124,6 @@ fn live_navigate_with_network_shape_quiet_and_busy() {
         .output()
         .expect("navigate quiet --with-network");
     if !quiet.status.success() {
-        stop_daemon(port);
         eprintln!(
             "live_navigate_with_network_shape_quiet_and_busy: quiet navigate failed — {}",
             String::from_utf8_lossy(&quiet.stderr)
@@ -169,7 +155,6 @@ fn live_navigate_with_network_shape_quiet_and_busy() {
         ])
         .output()
         .expect("navigate busy --with-network");
-    stop_daemon(port);
     if !busy.status.success() {
         eprintln!(
             "live_navigate_with_network_shape_quiet_and_busy: busy navigate failed — {}",
@@ -239,7 +224,6 @@ fn live_navigate_with_network_all_keeps_summary() {
         ])
         .output()
         .expect("navigate --with-network --all");
-    stop_daemon(port);
     if !out.status.success() {
         eprintln!(
             "live_navigate_with_network_all_keeps_summary: navigate failed — {}",
@@ -294,14 +278,15 @@ fn live_network_detail_carries_summary() {
     let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
-    // Capture traffic first.
+    // Load a page first. The one-shot `network` below only sees requests made
+    // while it is connected, so its capture may be empty — the summary fields
+    // this test is about must ride along regardless.
     let nav = Command::new(ff_rdp_bin())
         .args(base_args(port))
         .args(["navigate", "https://example.com", "--with-network"])
         .output()
         .expect("navigate --with-network");
     if !nav.status.success() {
-        stop_daemon(port);
         eprintln!(
             "live_network_detail_carries_summary: navigate failed — {}",
             String::from_utf8_lossy(&nav.stderr)
@@ -315,7 +300,6 @@ fn live_network_detail_carries_summary() {
         .args(["network", "--detail", "--jq", "."])
         .output()
         .expect("network --detail --jq");
-    stop_daemon(port);
     if !net.status.success() {
         eprintln!(
             "live_network_detail_carries_summary: network failed — {}",

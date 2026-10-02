@@ -63,6 +63,7 @@ impl NavAction {
 pub fn run(
     cli: &Cli,
     action: NavAction,
+    conditions: &crate::cli::args::NetworkConditionsArgs,
     page_args: &crate::cli::args::PageViewArgs,
 ) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
@@ -85,7 +86,16 @@ pub fn run(
 
     let commit_json = if action.no_wait() {
         // --no-wait: dispatch without reading the ack and skip the commit
-        // wait entirely, mirroring `navigate --no-wait`.
+        // wait entirely, mirroring `navigate --no-wait`. `--throttle` and
+        // `--block` would end with this command before the reload loads, so
+        // they are refused rather than silently ignored.
+        if super::network_conditions::is_requested(conditions) {
+            return Err(AppError::User(
+                "--throttle/--block only last as long as the command's connection — they \
+                 cannot be combined with --no-wait"
+                    .to_owned(),
+            ));
+        }
         let packet = build_packet(action);
         ctx.transport_mut().send(&packet).map_err(AppError::from)?;
         // iter-169 Theme B: `--no-wait` returns before any resource can
@@ -109,11 +119,17 @@ pub fn run(
             NavAction::Back { .. } | NavAction::Forward { .. } => String::new(),
         };
 
-        wait_for_navigation_commit(&mut ctx, cli.timeout, &requested_url, move |transport| {
-            transport
-                .send(&build_packet(action))
-                .map_err(AppError::from)
-        })?
+        wait_for_navigation_commit(
+            &mut ctx,
+            cli.timeout,
+            &requested_url,
+            conditions,
+            move |transport| {
+                transport
+                    .send(&build_packet(action))
+                    .map_err(AppError::from)
+            },
+        )?
     };
 
     let mut result = if force_reload {
@@ -142,10 +158,6 @@ pub fn run(
         None,
         cli.is_verbose(),
     );
-    // iter-134: always present, not gated by --verbose — an
-    // agent can tell how this command executed without a
-    // separate `daemon status` round-trip.
-    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
     let envelope = output::envelope(&result, 1, &meta);
 
     let hint_source = match action {
@@ -164,97 +176,55 @@ pub fn run(
 ///
 /// ## Protocol flow
 ///
-/// **Daemon mode** (default): uses the daemon's streaming API so network events
-/// are forwarded directly to this client instead of being buffered.
-///
-/// **Direct mode**: subscribes to the watcher's `"network-event"` resource type
-/// and drains events from the raw transport.
-///
-/// Both paths:
-/// 1. Set up network event capture.
+/// 1. Subscribe to the watcher's `"network-event"` resource type (and apply
+///    `--throttle`/`--block` on the same watcher).
 /// 2. Send the `reload` request.
-/// 3. Drain events until idle or timeout.
+/// 3. Drain events from the raw transport until idle or timeout.
 /// 4. Emit `{reloaded: true, idle_at_ms: N, requests_observed: M}`.
 pub fn run_reload_wait_idle(
     cli: &Cli,
     idle_ms: u64,
     timeout_ms: u64,
     force: bool,
+    conditions: &crate::cli::args::NetworkConditionsArgs,
     page_args: &crate::cli::args::PageViewArgs,
 ) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
     let target_actor = ctx.target().actor.clone();
+    let tab_actor = ctx.target_tab_actor().clone();
+    let watcher_actor =
+        TabActor::get_watcher(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;
 
-    if ctx.via_daemon {
-        return run_reload_wait_idle_daemon(
-            &mut ctx,
-            cli,
-            &target_actor,
-            idle_ms,
-            timeout_ms,
-            force,
-            page_args,
-        );
-    }
-
-    run_reload_wait_idle_direct(
-        &mut ctx,
-        cli,
-        &target_actor,
-        idle_ms,
-        timeout_ms,
-        force,
-        page_args,
-    )
-}
-
-/// Reload + wait-idle through the daemon proxy.
-///
-/// The daemon intercepts watcher events and buffers them by default, so the
-/// direct `watch_resources` approach never delivers events to this client.
-/// Instead we use `start_daemon_stream` / `stop_daemon_stream_draining` to
-/// receive events in real-time (same pattern as `navigate --with-network`).
-fn run_reload_wait_idle_daemon(
-    ctx: &mut super::connect_tab::ConnectedTab,
-    cli: &Cli,
-    target_actor: &ff_rdp_core::ActorId,
-    idle_ms: u64,
-    timeout_ms: u64,
-    force: bool,
-    page_args: &crate::cli::args::PageViewArgs,
-) -> Result<(), AppError> {
-    // Tell the daemon to stream network events directly to us.
-    crate::daemon::client::start_daemon_stream(ctx.transport_mut(), "network-event")
+    // Subscribe to network events before reloading so we don't miss early requests.
+    WatcherActor::watch_resources(ctx.transport_mut(), &watcher_actor, &["network-event"])
         .map_err(AppError::from)?;
+    let conditions_applied =
+        super::network_conditions::apply(&mut ctx, &watcher_actor, conditions)?;
 
-    // Send reload without reading the ack — events will be streamed inline.
-    let reload_packet = build_reload_packet(target_actor, force);
+    // Send reload without reading the ack.
+    let reload_packet = build_reload_packet(&target_actor, force);
     send_reload_tolerant(ctx.transport_mut(), &reload_packet)?;
 
     let (requests_observed, idle_at_ms) =
         drain_idle_events(ctx.transport_mut(), idle_ms, timeout_ms, cli.timeout)?;
 
-    // Stop streaming and collect any in-flight frames.
-    let inflight_count = match crate::daemon::client::stop_daemon_stream_draining(
-        ctx.transport_mut(),
-        "network-event",
-    ) {
-        Ok(frames) => count_network_events_in_frames(&frames),
-        Err(e) => {
-            // stderr-ok: (b) warn-and-continue — falls back to 0 in-flight
-            // frames; requests_observed above still carries the real count.
-            eprintln!("warning: failed to stop daemon stream: {e:#}");
-            0
-        }
-    };
+    // Unwatch to clean up server-side state — unless `--throttle`/`--block`
+    // are in force (unwatching tears them down before `--with-page`).
+    if conditions_applied.is_none() {
+        let _ = WatcherActor::unwatch_resources(
+            ctx.transport_mut(),
+            &watcher_actor,
+            &["network-event"],
+        );
+    }
 
     emit_reload_result(
-        ctx,
+        &mut ctx,
         cli,
-        requests_observed + inflight_count,
+        requests_observed,
         idle_at_ms,
         force,
-        true,
+        conditions_applied.as_ref(),
         page_args,
     )
 }
@@ -315,46 +285,6 @@ fn build_reload_packet(target_actor: &ff_rdp_core::ActorId, force: bool) -> serd
             "type": "reload",
         })
     }
-}
-
-/// Reload + wait-idle with a direct Firefox connection (no daemon).
-fn run_reload_wait_idle_direct(
-    ctx: &mut super::connect_tab::ConnectedTab,
-    cli: &Cli,
-    target_actor: &ff_rdp_core::ActorId,
-    idle_ms: u64,
-    timeout_ms: u64,
-    force: bool,
-    page_args: &crate::cli::args::PageViewArgs,
-) -> Result<(), AppError> {
-    let tab_actor = ctx.target_tab_actor().clone();
-    let watcher_actor =
-        TabActor::get_watcher(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;
-
-    // Subscribe to network events before reloading so we don't miss early requests.
-    WatcherActor::watch_resources(ctx.transport_mut(), &watcher_actor, &["network-event"])
-        .map_err(AppError::from)?;
-
-    // Send reload without reading the ack.
-    let reload_packet = build_reload_packet(target_actor, force);
-    send_reload_tolerant(ctx.transport_mut(), &reload_packet)?;
-
-    let (requests_observed, idle_at_ms) =
-        drain_idle_events(ctx.transport_mut(), idle_ms, timeout_ms, cli.timeout)?;
-
-    // Unwatch to clean up server-side state.
-    let _ =
-        WatcherActor::unwatch_resources(ctx.transport_mut(), &watcher_actor, &["network-event"]);
-
-    emit_reload_result(
-        ctx,
-        cli,
-        requests_observed,
-        idle_at_ms,
-        force,
-        false,
-        page_args,
-    )
 }
 
 /// Drain network events from `transport` until idle or timeout.
@@ -434,18 +364,13 @@ fn count_network_events(msg: &serde_json::Value) -> u64 {
         }) as u64
 }
 
-/// Count network events across multiple collected frames.
-fn count_network_events_in_frames(frames: &[serde_json::Value]) -> u64 {
-    frames.iter().map(count_network_events).sum()
-}
-
 fn emit_reload_result(
     ctx: &mut super::connect_tab::ConnectedTab,
     cli: &Cli,
     requests_observed: u64,
     idle_at_ms: u64,
     force: bool,
-    via_daemon: bool,
+    conditions_applied: Option<&super::network_conditions::Applied>,
     page_args: &crate::cli::args::PageViewArgs,
 ) -> Result<(), AppError> {
     let mut result = if force {
@@ -470,6 +395,7 @@ fn emit_reload_result(
     if let Some(obj) = result.as_object_mut() {
         obj.extend(super::navigate::not_observed_status());
     }
+    super::network_conditions::insert_echo(&mut result, conditions_applied);
     // iter-210 Theme A: `--with-page`, collected last (after the idle drain)
     // so `reload --wait-idle --with-page` describes the settled document, not
     // whatever was on screen mid-reload. Previously dropped silently by the
@@ -486,8 +412,6 @@ fn emit_reload_result(
         None,
         cli.is_verbose(),
     );
-    // iter-134: always present, not gated by --verbose.
-    crate::connection_meta::merge_route(&mut meta, via_daemon);
     let envelope = output::envelope(&result, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Reload);

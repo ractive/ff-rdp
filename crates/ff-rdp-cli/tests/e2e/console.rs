@@ -11,7 +11,6 @@ fn base_args(port: u16) -> Vec<String> {
         "127.0.0.1".to_owned(),
         "--port".to_owned(),
         port.to_string(),
-        "--no-daemon".to_owned(),
     ]
 }
 
@@ -574,7 +573,7 @@ fn console_follow_streams_messages_as_ndjson() {
 /// Firefox 155.0.1.
 ///
 /// Until iter-252 every such item parsed to `None`, so `console --follow`
-/// printed nothing at all even on the daemon route, which received every frame.
+/// printed nothing at all even though every frame arrived.
 /// That is why iteration 174's attempt to measure `console --follow` saw empty
 /// stdout on both routes and could conclude nothing. The sibling tests above
 /// all use the wrapped shape and therefore could not catch it.

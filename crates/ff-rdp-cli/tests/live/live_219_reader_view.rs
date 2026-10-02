@@ -20,10 +20,6 @@
 //! destination page whose lede carries his birth year — the exact shape of the
 //! benchmark's `wikipedia_link_follow` task.
 //!
-//! daemon-parity: every test uses the daemon route (no `--no-daemon`), because
-//! the daemon owns the ref store and a page view without usable refs proves
-//! the opposite of the point.
-//!
 //! # Running
 //!
 //!   FF_RDP_LIVE_TESTS=1 cargo test-live -p ff-rdp-cli \
@@ -37,7 +33,7 @@ use serde_json::Value;
 
 use crate::common::{FixtureRoute, FixtureServer, LiveFirefox, ff_rdp_bin, live_tests_enabled};
 
-fn daemon_args(port: u16) -> Vec<String> {
+fn cli_args(port: u16) -> Vec<String> {
     vec![
         "--host".to_owned(),
         "127.0.0.1".to_owned(),
@@ -48,26 +44,9 @@ fn daemon_args(port: u16) -> Vec<String> {
     ]
 }
 
-fn stop_daemon(port: u16) {
-    let _ = Command::new(ff_rdp_bin())
-        .args(["--host", "127.0.0.1", "--port", &port.to_string()])
-        .args(["daemon", "stop"])
-        .output();
-}
-
-fn firefox_with_daemon(test: &str) -> LiveFirefox {
-    let ff = LiveFirefox::headless_on_random_port();
-    assert!(
-        ff.with_daemon().is_some(),
-        "{test}: the proxy daemon did not start for Firefox on port {}",
-        ff.port()
-    );
-    ff
-}
-
 fn run(port: u16, args: &[&str]) -> Output {
     Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("spawn ff-rdp {args:?}: {e}"))
@@ -213,11 +192,10 @@ fn live_219_content_links_outrank_chrome_in_the_capped_view() {
         );
         return;
     }
-    let ff = firefox_with_daemon("live_219_content_links_outrank_chrome_in_the_capped_view");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(wiki_shaped_fixture()) else {
         eprintln!("live_219_content_links_outrank_chrome_in_the_capped_view: no fixture HTTP");
-        stop_daemon(port);
         return;
     };
 
@@ -298,8 +276,6 @@ fn live_219_content_links_outrank_chrome_in_the_capped_view() {
         page.get("landmarks").is_none(),
         "iter-219 Theme B drops landmarks from the act-and-see view: {nav}"
     );
-
-    stop_daemon(port);
 }
 
 /// AC 2: `click --ref` on that link returns the destination page's text, so
@@ -313,11 +289,10 @@ fn live_219_click_ref_with_page_returns_the_destination_text() {
         );
         return;
     }
-    let ff = firefox_with_daemon("live_219_click_ref_with_page_returns_the_destination_text");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(wiki_shaped_fixture()) else {
         eprintln!("live_219_click_ref_with_page_returns_the_destination_text: no fixture HTTP");
-        stop_daemon(port);
         return;
     };
 
@@ -340,8 +315,6 @@ fn live_219_click_ref_with_page_returns_the_destination_text() {
         excerpt.contains("1791"),
         "the birth year is the task's answer and must be in the returned page: {excerpt:?}"
     );
-
-    stop_daemon(port);
 }
 
 // ---------------------------------------------------------------------------
@@ -350,8 +323,10 @@ fn live_219_click_ref_with_page_returns_the_destination_text() {
 
 /// AC 3: collection stamps `data-ffrdp-id` on every interactive element and
 /// strips it again in a `finally`, so the document is byte-identical after a
-/// `--with-page` call. `--with-page`'s promise since iter-210 is that looking
-/// at the page does not change it.
+/// `--with-page` call — except for the `data-ffrdp-ref` attributes the view
+/// deliberately leaves behind: refs live in the page (since the 2026-10
+/// reset), so the comparison strips them from a clone of the
+/// document before measuring it.
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
 fn live_219_collection_leaves_the_dom_byte_identical() {
@@ -359,11 +334,10 @@ fn live_219_collection_leaves_the_dom_byte_identical() {
         eprintln!("live_219_collection_leaves_the_dom_byte_identical: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_219_collection_leaves_the_dom_byte_identical");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(wiki_shaped_fixture()) else {
         eprintln!("live_219_collection_leaves_the_dom_byte_identical: no fixture HTTP");
-        stop_daemon(port);
         return;
     };
     run_json(port, &["navigate", &server.base_url()]);
@@ -373,8 +347,10 @@ fn live_219_collection_leaves_the_dom_byte_identical() {
         &[
             "eval",
             "--stringify",
-            "document.documentElement.outerHTML.length + ':' + \
-             document.querySelectorAll('[data-ffrdp-id]').length",
+            "(function () { const c = document.documentElement.cloneNode(true); \
+             c.querySelectorAll('[data-ffrdp-ref]').forEach(e => e.removeAttribute('data-ffrdp-ref')); \
+             return c.outerHTML.length + ':' + \
+             document.querySelectorAll('[data-ffrdp-id]').length; })()",
         ],
     );
     run_json(port, &["scroll", "top", "--with-page"]);
@@ -383,8 +359,10 @@ fn live_219_collection_leaves_the_dom_byte_identical() {
         &[
             "eval",
             "--stringify",
-            "document.documentElement.outerHTML.length + ':' + \
-             document.querySelectorAll('[data-ffrdp-id]').length",
+            "(function () { const c = document.documentElement.cloneNode(true); \
+             c.querySelectorAll('[data-ffrdp-ref]').forEach(e => e.removeAttribute('data-ffrdp-ref')); \
+             return c.outerHTML.length + ':' + \
+             document.querySelectorAll('[data-ffrdp-id]').length; })()",
         ],
     );
 
@@ -396,8 +374,6 @@ fn live_219_collection_leaves_the_dom_byte_identical() {
         after["results"].as_str().is_some_and(|s| s.ends_with(":0")),
         "no data-ffrdp-id attribute may survive collection: {after}"
     );
-
-    stop_daemon(port);
 }
 
 /// Theme D: the ~32 KB bundle is shipped once per document, not once per call.
@@ -408,11 +384,10 @@ fn live_219_readability_is_injected_once_per_document() {
         eprintln!("live_219_readability_is_injected_once_per_document: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_219_readability_is_injected_once_per_document");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(wiki_shaped_fixture()) else {
         eprintln!("live_219_readability_is_injected_once_per_document: no fixture HTTP");
-        stop_daemon(port);
         return;
     };
 
@@ -430,8 +405,6 @@ fn live_219_readability_is_injected_once_per_document() {
         second["results"]["page"]["source"], "readability",
         "…and still produce a reader view: {second}"
     );
-
-    stop_daemon(port);
 }
 
 /// Theme D: a page that replaced `JSON.stringify`, `Array.prototype.push` and
@@ -445,11 +418,10 @@ fn live_219_hostile_builtins_do_not_corrupt_the_view() {
         eprintln!("live_219_hostile_builtins_do_not_corrupt_the_view: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_219_hostile_builtins_do_not_corrupt_the_view");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(hostile_fixture()) else {
         eprintln!("live_219_hostile_builtins_do_not_corrupt_the_view: no fixture HTTP");
-        stop_daemon(port);
         return;
     };
 
@@ -476,8 +448,6 @@ fn live_219_hostile_builtins_do_not_corrupt_the_view() {
         entry_named(page, "Labelled link").is_some(),
         "an aria-labelledby name must survive the patched built-ins: {nav}"
     );
-
-    stop_daemon(port);
 }
 
 // ---------------------------------------------------------------------------
@@ -493,11 +463,10 @@ fn live_219_prose_free_page_falls_back_to_innertext() {
         eprintln!("live_219_prose_free_page_falls_back_to_innertext: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_219_prose_free_page_falls_back_to_innertext");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(form_only_fixture()) else {
         eprintln!("live_219_prose_free_page_falls_back_to_innertext: no fixture HTTP");
-        stop_daemon(port);
         return;
     };
 
@@ -526,8 +495,6 @@ fn live_219_prose_free_page_falls_back_to_innertext() {
         entry_named(page, "Username").is_some(),
         "the form fields must be in the view: {nav}"
     );
-
-    stop_daemon(port);
 }
 
 /// Theme C: `--page-chars` sizes the excerpt and `0` turns it off entirely
@@ -539,11 +506,10 @@ fn live_219_page_chars_sizes_and_disables_the_excerpt() {
         eprintln!("live_219_page_chars_sizes_and_disables_the_excerpt: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_219_page_chars_sizes_and_disables_the_excerpt");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(wiki_shaped_fixture()) else {
         eprintln!("live_219_page_chars_sizes_and_disables_the_excerpt: no fixture HTTP");
-        stop_daemon(port);
         return;
     };
     let url = server.base_url();
@@ -582,8 +548,6 @@ fn live_219_page_chars_sizes_and_disables_the_excerpt() {
         Some(Value::from("content")),
         "…but the zones and the ordering still apply: {structure_only}"
     );
-
-    stop_daemon(port);
 }
 
 /// Theme C: `--query` narrows both halves of the view — the excerpt to the
@@ -596,11 +560,10 @@ fn live_219_query_narrows_the_embedded_page_view() {
         eprintln!("live_219_query_narrows_the_embedded_page_view: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_219_query_narrows_the_embedded_page_view");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(wiki_shaped_fixture()) else {
         eprintln!("live_219_query_narrows_the_embedded_page_view: no fixture HTTP");
-        stop_daemon(port);
         return;
     };
 
@@ -663,6 +626,4 @@ fn live_219_query_narrows_the_embedded_page_view() {
         entry_named(&nav_query["results"]["page"], "Nav item 79").is_some(),
         "--query must reach a control the cap dropped: {nav_query}"
     );
-
-    stop_daemon(port);
 }

@@ -89,10 +89,9 @@ COMMAND REFERENCE:
     ff-rdp geometry <SEL>... [--include-hidden]
     ff-rdp responsive <SEL>... [--widths W1,W2,...]
 
-  Page-environment emulation:
-    ff-rdp emulate [--color-scheme light|dark|none] [--user-agent S] [--dppx F]
-                   [--print on|off] [--touch on|off] [--js on|off]
-                   [--offline on|off] [--cache on|off] [--reset]
+  Network conditions (this load only — they end when the command exits):
+    ff-rdp navigate <URL> [--throttle slow-3g|fast-3g] [--block PATTERN]...
+    ff-rdp reload [--throttle slow-3g|fast-3g] [--block PATTERN]...
 
   PWA & manifest:
     ff-rdp manifest                         # parsed Web App Manifest + conformance errors
@@ -110,7 +109,9 @@ COMMAND REFERENCE:
 
   Monitoring:
     ff-rdp console [--level LEVEL] [--pattern REGEX] [--follow]
-    ff-rdp network [--filter URL] [--method M] [--follow]
+    ff-rdp network [--filter URL] [--method M] [--follow] [--source performance-api]
+    ff-rdp navigate <URL> --with-network   # capture a page load
+    ff-rdp network --follow > net.ndjson & # capture what later commands cause
     ff-rdp network --detail [--headers]    # include request+response headers per entry
     ff-rdp network --security              # per-request TLS/cert detail + insecure_requests count
 
@@ -120,7 +121,7 @@ COMMAND REFERENCE:
 
   Screenshot & debug:
     ff-rdp screenshot [-o PATH | --base64] [--full-page | --viewport-height PX]
-    ff-rdp inspect <ACTOR_ID> [--depth N]
+    ff-rdp inspect <JS_EXPRESSION> [--depth N]
     ff-rdp sources [--filter URL | --pattern REGEX]
 
   Skills (Claude Code):
@@ -232,10 +233,6 @@ COOKBOOK:
 OUTPUT FORMAT (iter-60 compact defaults):
   Default JSON: {\"results\": ..., \"total\": N}  (meta omitted when empty)
   --verbose restores meta.connection (host, port, pid, uptime) to the envelope
-  meta.route (iter-128, all commands since iter-134) is always present on
-    every browser-touching command's envelope — \"daemon\" or \"direct\" —
-    regardless of --verbose, so you can tell how a command executed without a
-    separate `daemon status` call
   Truncated output adds: {\"truncated\": true, \"hint\": \"showing 20 of 84, use --all\"}
   --format json  (default) machine-readable JSON — the stable API contract
   --format text  human-readable tables and trees
@@ -254,7 +251,7 @@ OUTPUT FORMAT (iter-60 compact defaults):
   dom --format html: legacy raw HTML strings (escape hatch for HTML diffing)
 
 TROUBLESHOOTING:
-  When stuck, run `ff-rdp doctor` first — it probes daemon, port owner,
+  When stuck, run `ff-rdp doctor` first — it probes the port owner, the
   RDP handshake, tab count, and Firefox version in one command.
 
   Common failure modes:
@@ -264,8 +261,13 @@ TROUBLESHOOTING:
     \"actor error from server1...\"    -> ff-rdp doctor   # stale connection?
     Connection timeout / hang        -> ff-rdp doctor   # then increase --timeout
 
+  Every command opens its own connection and closes it when it exits:
+    nothing ff-rdp sets up outlives the command that set it up.
+
   Zero results:
-    network returns 0 -> page loaded before connection; use navigate --with-network
+    network returns 0 -> it only sees requests made while it runs; use
+                         navigate --with-network, start network --follow first,
+                         or network --source performance-api
     console returns 0 -> use --follow to stream, or eval 'console.log(\"test\")'
     cookies returns 0 -> consent banner may be blocking; use launch --auto-consent
 
@@ -335,7 +337,7 @@ Command groups (use `ff-rdp <cmd> --help` for details on any command):
   Inspect    dom, styles, computed, cascade, a11y, snapshot, page-text, perf
   Navigate   navigate, reload, click, type, screenshot
   Trace      console, network, eval
-  Lifecycle  launch, daemon
+  Lifecycle  launch, doctor
 
 {}
 'ff-rdp launch' starts a separate Firefox process that won't interfere with
@@ -348,7 +350,7 @@ the -no-remote flag automatically.",
 #[derive(Parser)]
 #[command(
     name = "ff-rdp",
-    about = "Firefox Remote Debugging Protocol CLI\n\nCommand groups (see `ff-rdp <cmd> --help` for details):\n  Inspect    dom, styles, computed, cascade, a11y, snapshot, page-text, perf\n  Navigate   navigate, reload, click, type, screenshot\n  Trace      console, network, eval\n  Lifecycle  launch, daemon\n\nQuick start:  ff-rdp launch --headless   # start Firefox with debugging enabled\n              ff-rdp navigate <URL> --with-page --query \"<text>\"   # open a page and read it",
+    about = "Firefox Remote Debugging Protocol CLI\n\nCommand groups (see `ff-rdp <cmd> --help` for details):\n  Inspect    dom, styles, computed, cascade, a11y, snapshot, page-text, perf\n  Navigate   navigate, reload, click, type, screenshot\n  Trace      console, network, eval\n  Lifecycle  launch, doctor\n\nQuick start:  ff-rdp launch --headless   # start Firefox with debugging enabled\n              ff-rdp navigate <URL> --with-page --query \"<text>\"   # open a page and read it",
     long_about = long_about(),
     after_help = "Tip: Run 'ff-rdp launch' first to start Firefox with remote debugging.\n     It won't affect any existing Firefox windows — safe to run alongside\n     your normal browser.",
     after_long_help = AFTER_LONG_HELP,
@@ -384,14 +386,6 @@ pub struct Cli {
     /// Operation timeout in milliseconds
     #[arg(long, default_value_t = DEFAULT_TIMEOUT_MS, global = true)]
     pub timeout: u64,
-
-    /// Connect directly to Firefox, bypassing the daemon. Use for one-off commands or fresh connections. The daemon (default) keeps a persistent connection and buffers events for streaming commands (--follow).
-    #[arg(long, global = true)]
-    pub no_daemon: bool,
-
-    /// Daemon idle timeout in seconds
-    #[arg(long, default_value_t = 300, global = true)]
-    pub daemon_timeout: u64,
 
     /// Allow javascript: and data: URL schemes in navigate (unsafe)
     #[arg(long, global = true)]
@@ -457,10 +451,6 @@ pub struct Cli {
     /// "trace" enables per-packet wire dumps (ff_rdp_core::transport=trace).
     /// Set FF_RDP_TRACE_RAW=1 to disable redaction of sensitive fields in trace output.
     /// Overrides the RUST_LOG environment variable when specified.
-    ///
-    /// iter-240: also configures a daemon this invocation auto-starts, whose
-    /// output goes to ~/.ff-rdp/daemon.log. A daemon that is *already* running
-    /// keeps the level it started with — stop it first to raise it.
     #[arg(long, global = true, value_name = "LEVEL")]
     pub log_level: Option<LogLevel>,
 
@@ -551,11 +541,18 @@ and resolved directly rather than waiting out the full --timeout (iter-138).
 Use --no-wait to restore the old fire-and-forget behaviour (returns immediately after
 the navigate request is acknowledged, without waiting for the document to commit).
 
+--throttle slow-3g|fast-3g and --block PATTERN (repeatable) shape the network for
+this load: they are set on the command's own connection right before navigating
+and end when the command exits, so they cannot be combined with --no-wait. Blocked
+requests fail with NS_ERROR_ABORT. Throttling does not bypass the HTTP cache. The
+envelope echoes what was applied under results.network_conditions.
+
 The URL is a positional argument (not a flag). There is no --url option.
 
 Examples:
   ff-rdp navigate https://example.com
   ff-rdp navigate https://example.com --with-network
+  ff-rdp navigate https://example.com --with-network --throttle slow-3g --block '*.png'
   ff-rdp navigate https://example.com --wait-text \"Welcome\"
   ff-rdp navigate https://example.com --wait-for selector:.athing
   ff-rdp navigate https://example.com --no-wait
@@ -743,47 +740,44 @@ callers can tell at a glance whether the filter caught what they expected.
 
 The command primes Firefox's message cache (startListeners) before reading it,
 so messages a separate earlier `ff-rdp eval 'console.log(...)'` emitted are
-visible on a fresh --no-daemon connection. Use --follow to stream live messages.
+visible on this fresh connection. Use --follow to stream live messages.
 
 Output: {\"results\": [{\"level\": \"...\", \"message\": \"...\", \"source\": \"...\", \"line\": N, \"timestamp\": N}], \"summary\": {\"total\": N, \"shown\": Z, \"by_level\": {...}, \"matched\": M}, \"total\": N, \"meta\": {...}}")]
     Console(ConsoleArgs),
     /// Show network requests captured by the WatcherActor.
     ///
-    /// In direct mode (--no-daemon), only requests made after connection are
-    /// reliably captured. When no live events are found, falls back to the
-    /// Performance API for historical resource data. Use the daemon (default)
-    /// for continuous buffering, or `navigate --with-network` to capture
-    /// requests triggered by a navigation.
+    /// A one-shot `network` only sees requests made while it is connected.
+    /// Capture a page load with `navigate <url> --with-network`, traffic caused
+    /// by later commands with `network --follow > net.ndjson &` started first,
+    /// or what already loaded with `--source performance-api`.
     #[command(long_about = "Show network requests captured by the WatcherActor.
 
-In direct mode (--no-daemon), only requests made after the connection is
-established are reliably captured. When no live network events are available
-(e.g. the page finished loading before ff-rdp connected), the command
-automatically falls back to the Performance API to retrieve historical
-resource timing data. Fallback entries have source=performance-api in the
-output metadata and method=null/status=null (method and status are not
-available from the Performance API).
+Every ff-rdp command opens its own connection, and Firefox's watcher reports
+the requests made while that connection is subscribed. A one-shot `network`
+therefore arms a watcher, collects for a short window and reports what it saw —
+requests that finished before it connected are not in it. Pick the capture mode
+that matches the question:
 
-Recommended workflows:
-  - Daemon mode (default): run `ff-rdp` without --no-daemon so the daemon
-    buffers events continuously across commands.
-  - Navigate with capture: use `ff-rdp navigate --with-network <url>` to
-    start network monitoring before the page load begins.
+  1. A page load:      ff-rdp navigate <url> --with-network
+                       subscribes before navigating; results.network has every
+                       request of the load with method, status, content type.
+  2. Traffic caused by later commands (clicks, form submits, XHR):
+                       ff-rdp network --follow > net.ndjson &
+                       ff-rdp click ... ; ff-rdp type ... --submit
+                       kill %1; then read net.ndjson (one JSON object per line,
+                       a `request` and a `response` event per request). A
+                       separate connection's watcher sees traffic other
+                       connections cause.
+  3. What already loaded, after the fact:
+                       ff-rdp network --source performance-api
+                       Resource Timing from the page: URLs and timings, but no
+                       method/status/headers.
+
+`click --wait-for-network <pattern>` waits for one matching request on the
+click's own connection.
 
 The --filter and --method flags narrow results after capture; they do not
 affect which requests Firefox records.
-
-Navigation scoping (daemon mode only):
-  By default, `ff-rdp network` returns only entries captured since the most
-  recent navigation — so requests from previous pages don't appear.
-  Use --since to change the scope:
-    --since -1   current navigation (default)
-    --since -2   one navigation back
-    --since all  the full cumulative buffer (pre-61g behaviour)
-  --since requires the daemon: nav-scoped filtering reads the daemon's
-  navigation-boundary buffer. With --no-daemon (or if the daemon can't be
-  reached) an explicit --since fails with error_type \"since_requires_daemon\"
-  rather than silently returning the unfiltered buffer.
 
 Source (--source watcher, the default):
   --source watcher          the RDP resource watcher — the only source with
@@ -791,16 +785,11 @@ Source (--source watcher, the default):
                             buffer reports 0 watcher rows; it is never swapped
                             for a different dataset. (`auto` is a deprecated
                             alias of `watcher`.)
-  --source performance-api  only Resource Timing; identical in both connection
-                            modes, no headers/security detail, and incompatible
-                            with --since (error_type
-                            \"since_requires_watcher_source\")
+  --source performance-api  only Resource Timing; no method/status, no
+                            headers/security detail
 
-iter-159 removed the implicit fallback. `auto` used to mean \"watcher if it
-produced anything, else the Performance API\", which made the same page report
-different row counts in the two connection modes — and, worse, made a daemon
-whose watcher had stopped delivering anything at all look like a page with no
-HTTP metadata. `meta.source` names the source that was actually read.
+There is no implicit fallback (iter-159): an empty watcher capture is reported
+as zero watcher rows. `meta.source` names the source that was actually read.
 
 Field fidelity by source:
   watcher:         method, status, content_type, duration_ms, size_bytes, transfer_size all available.
@@ -812,13 +801,9 @@ Field fidelity by source:
 `hint` is always present (iter-128) — null when there's nothing to report, a
 string when results are truncated, a timeout fired, or the capture was empty.
 
-`meta.route` (iter-128; all browser-touching commands since iter-134) is
-always present — \"daemon\" or \"direct\" — regardless of --verbose, so you
-can tell how this command executed without a separate `daemon status` call.
-
 Default: 20 results, sorted by duration (slowest first).
-Output (summary mode): {\"results\": {\"total_requests\": N, \"total_transfer_bytes\": N, \"by_cause_type\": {...}, \"slowest\": [...], \"timeout_reached\": false, \"hint\": null}, \"total\": N, \"meta\": {\"route\": \"daemon\", ...}}
-Output (--detail): {\"results\": [{\"url\": \"...\", \"method\": \"GET\", \"status\": 200, \"duration_ms\": N, ...}], \"total\": N, \"total_requests\": N, \"total_transfer_bytes\": N, \"by_cause_type\": {...}, \"slowest\": [...], \"timeout_reached\": false, \"hint\": null, \"meta\": {\"route\": \"daemon\", ...}}
+Output (summary mode): {\"results\": {\"total_requests\": N, \"total_transfer_bytes\": N, \"by_cause_type\": {...}, \"slowest\": [...], \"timeout_reached\": false, \"hint\": null}, \"total\": N, \"meta\": {\"source\": \"watcher\", ...}}
+Output (--detail): {\"results\": [{\"url\": \"...\", \"method\": \"GET\", \"status\": 200, \"duration_ms\": N, ...}], \"total\": N, \"total_requests\": N, \"total_transfer_bytes\": N, \"by_cause_type\": {...}, \"slowest\": [...], \"timeout_reached\": false, \"hint\": null, \"meta\": {\"source\": \"watcher\", ...}}
   Note (iter-126): detail mode carries the summary fields (total_requests, total_transfer_bytes, by_cause_type, slowest) alongside the results array, so --detail is a strict superset of the summary envelope.
   Reaching the entry list: pass --detail (or --all/--headers/--security/--sort/--limit/--fields).
   BREAKING (iter-160): --jq no longer switches this command into detail mode. `network --jq
@@ -855,10 +840,8 @@ window `launch` created, which clamps below ~500px CSS width). This
 re-navigates the current tab's URL from scratch: cookies/localStorage/session
 state from the live tab are NOT carried over. No density knob here —
 `layout.css.devPixelsPerPx` was tested against this exact capture path and
-found to have zero effect on the output raster (Firefox 153.0.3); use
-`emulate --dppx` for the LIVE RDP session's devicePixelRatio instead (a
-different, unrelated mechanism). Mutually exclusive with
---full-page/--viewport-height.
+found to have zero effect on the output raster (Firefox 153.0.3). Mutually
+exclusive with --full-page/--viewport-height.
 
 Output: {\"results\": {\"path\": \"...\", \"width\": N, \"height\": N}, \"total\": 1, \"meta\": {...}}
 With --base64: {\"results\": {\"base64\": \"...\"}, \"total\": 1, \"meta\": {...}}
@@ -889,9 +872,10 @@ The selector can be supplied positionally or via --selector:
 
 Both forms are interchangeable; supplying both at once is an error.
 
-Use --ref <id> to click an element by its ARIA-tree ref ID (e.g. 'e3' from a
-previous dom or snapshot call in the same daemon session).  Mutually exclusive
-with positional selector and --selector.  Not available with --no-daemon.
+Use --ref <id> to click an element by the ref (e.g. 'e3') that `snapshot`, `dom`,
+`a11y summary` or `--with-page` handed out on the current page. Refs are stamped
+on the elements themselves (data-ffrdp-ref) and die when the page navigates.
+Mutually exclusive with positional selector and --selector.
 
 Dispatch modes (--dispatch):
   pointer     Full pointer+mouse event sequence (default — Radix/Headless-UI compatible)
@@ -953,8 +937,9 @@ Selector and text can be supplied positionally or via flags:
 
 Both forms work identically; mixing positional and flag for the same value errors.
 
-Use --ref <id> to target an element by its ARIA-tree ref ID (daemon mode only).
-Mutually exclusive with positional selector and --selector.
+Use --ref <id> to target an element by the ref (e.g. 'e3') a `snapshot`, `dom`,
+`a11y summary` or `--with-page` call handed out on the current page; refs die
+when the page navigates. Mutually exclusive with positional selector and --selector.
 
 Auto-waits for the element to be focusable (exists, visible, not disabled, is an
 input/textarea/contenteditable) before typing. Use --no-wait to skip this.
@@ -990,8 +975,9 @@ Output: {\"results\": {\"typed\": true, \"synthetic\": true, \"tag\": \"INPUT\",
 
 Exactly one of --selector, --text, --eval, --ref, or --sleep-ms must be specified.
 
-Use --ref <id> to wait for an element identified by its ARIA-tree ref ID
-(daemon mode only). Equivalent to --selector but uses a stable ref handle.
+Use --ref <id> to wait for an element identified by a ref from `snapshot`/`dom`/
+`--with-page` on the current page. Equivalent to --selector; refs die when the
+page navigates.
 
 Use --sleep-ms <N> for a plain delay with no condition and no Firefox
 connection at all — e.g. `ff-rdp wait --sleep-ms 2000`. Prefer a real
@@ -1056,11 +1042,15 @@ for it to commit (iter-138 Theme E) — the same escape hatch `navigate`
 already has. Conflicts with --wait-idle (which is itself a different kind of
 wait).
 
+--throttle slow-3g|fast-3g and --block PATTERN (repeatable) shape the network for
+this reload only, exactly as on `navigate` (not with --no-wait).
+
 Examples:
   ff-rdp reload
   ff-rdp reload --hard
   ff-rdp reload --no-wait
   ff-rdp reload --wait-idle
+  ff-rdp reload --hard --throttle fast-3g --wait-idle
   ff-rdp reload --hard --wait-idle --idle-ms 1000 --reload-timeout 30000
 
 Output (plain):    {\"results\": {\"action\": \"reload\", \"committed_url\": \"...\", \"ready_state\": \"complete\", \"elapsed_ms\": N, \"status\": 200|null, \"status_reason\": null|\"not_observed\"|\"no_document_request\"|\"no_status_reported\"[, \"force\": true]}, \"total\": 1, \"meta\": {...}}
@@ -1101,14 +1091,21 @@ already has.
 Output:              {\"results\": {\"action\": \"forward\", \"committed_url\": \"...\", \"ready_state\": \"complete\", \"elapsed_ms\": N, \"status\": 200|null, \"status_reason\": null|\"not_observed\"|\"no_document_request\"|\"no_status_reported\"}, \"total\": 1, \"meta\": {...}}
 Output (--no-wait): {\"results\": {\"action\": \"forward\", \"status\": null, \"status_reason\": \"not_observed\"}, \"total\": 1, \"meta\": {...}}")]
     Forward(BackForwardArgs),
-    /// Inspect a remote JavaScript object by its grip actor ID
-    #[command(long_about = "Inspect a remote JavaScript object by its grip actor ID.
+    /// Evaluate a JavaScript expression and inspect the resulting object
+    #[command(
+        long_about = "Evaluate a JavaScript expression and inspect the resulting object.
 
-Actor IDs appear in eval results when the return value is a non-primitive
-(e.g. {\"type\": \"object\", \"actor\": \"server1.conn0.child0/obj12\", ...}).
+The expression is evaluated in the page and its result object is walked on the
+same connection: own properties with their descriptors, and the prototype.
 Use --depth to control how many levels of nested objects are resolved.
+A primitive result (number, string, null, ...) is returned as-is.
 
-Output: {\"results\": {\"actor\": \"...\", \"prototype\": {...}, \"ownProperties\": {...}}, \"total\": 1, \"meta\": {...}}")]
+Examples:
+  ff-rdp inspect 'window.location'
+  ff-rdp inspect 'document.forms[0]' --depth 2
+
+Output: {\"results\": {\"actor\": \"...\", \"prototype\": {...}, \"ownProperties\": {...}}, \"total\": 1, \"meta\": {...}}"
+    )]
     Inspect(InspectArgs),
     /// List JavaScript/WASM sources loaded on the page
     #[command(long_about = "List JavaScript/WASM sources loaded on the page.
@@ -1125,22 +1122,6 @@ single very long source URL can't blow the table out to thousands of columns.")]
 Output: {\"results\": {\"tag\": \"HTML\", \"children\": [...], ...}, \"total\": 1, \"meta\": {...}}"
     )]
     Snapshot(SnapshotArgs),
-    /// Internal: run as background daemon (not for direct use)
-    #[command(name = "_daemon", hide = true)]
-    DaemonInternal,
-
-    /// Manage the background daemon process
-    #[command(long_about = "Manage the background daemon process.
-
-The daemon keeps a persistent Firefox connection and buffers events across
-commands. It starts automatically on the first command that needs it.
-
-Output (status): {\"results\": {\"running\": bool, \"pid\": N, \"port\": N, \"uptime_seconds\": N, \"connections\": N, \"buffer_sizes\": {...}}, \"total\": 1, \"meta\": {...}}
-Output (stop):   {\"results\": {\"stopped\": bool}, \"total\": 1, \"meta\": {...}}")]
-    Daemon {
-        #[command(subcommand)]
-        daemon_command: DaemonCommand,
-    },
     /// Get element geometry: bounding rects, position, z-index, visibility, overflow,
     /// with automatic overlap detection between elements
     #[command(
@@ -1186,96 +1167,6 @@ Pass --include-hidden to receive those elements as well.
 
 Output: {\"results\": {\"breakpoints\": [{\"width\": 320, \"viewport\": {\"width\": N, \"height\": N}, \"media_query_check\": {\"requested\": 320, \"inner_width\": N, \"matches\": bool}, \"elements\": [{\"selector\": \"...\", \"rect\": {...}, \"visible\": bool}]}, ...], \"original_viewport\": {\"width\": N, \"height\": N}, \"warnings\": [...]}, \"total\": N, \"meta\": {...}}")]
     Responsive(ResponsiveArgs),
-    /// Emulate the page environment via the target-configuration actor
-    #[command(
-        long_about = "Emulate the page environment (server-side) via the Firefox \
-target-configuration actor.
-
-Each flag maps to one field of the actor's configuration and only the flags you
-pass are applied — a call patches the live configuration rather than replacing it.
-
-  --user-agent <S>          override navigator.userAgent / User-Agent header
-  --color-scheme light|dark|none   simulate prefers-color-scheme (none = system)
-  --dppx <F>                override window.devicePixelRatio (positive number)
-  --print on|off            toggle @media print simulation (compose with screenshot)
-  --touch on|off            toggle touch-event simulation
-  --js on|off               enable/disable JavaScript (server reloads the document)
-  --offline on|off          take the tab offline (navigator.onLine, fetch failures)
-  --cache on|off            'off' disables the HTTP cache (cold-load perf)
-  --reset                   restore every field to its default (cannot combine with others)
-
-LIFETIME: configuration lives as long as the RDP connection that set it. Under
-the daemon that means until the daemon restarts; with --no-daemon the one-shot
-process disconnects immediately and the setting is discarded — the envelope then
-carries a `lifetime_warning`. Disabling JavaScript or --reset triggers a
-server-side document reload; reload/re-probe to observe the effect.
-
-Examples:
-  ff-rdp emulate --color-scheme dark --user-agent 'ff-rdp-test/1.0'
-  ff-rdp emulate --dppx 2 --touch on
-  ff-rdp emulate --js off        # then `ff-rdp reload` before probing
-  ff-rdp emulate --reset
-
-Output: {\"results\": {\"applied\": {<wire-field>: <value>, ...}, \"reset\": bool, \
-\"lifetime_warning\"?: \"...\", \"note\"?: \"...\"}, \"total\": 1, \"meta\": {...}}"
-    )]
-    Emulate(EmulateArgs),
-    /// Throttle the network and/or block request URLs (network-parent actor)
-    #[command(
-        long_about = "Throttle network speed and/or block request URLs (server-side) via the \
-Firefox network-parent actor.
-
-Throttling and blocking are configured on the parent-process network-parent
-actor obtained from the watcher.  A positional PROFILE sets a throttling tier;
-`--block` replaces the URL block-list.  At least one must be supplied.
-
-  throttle slow-3g          ~400 kbit/s, 400 ms latency
-  throttle fast-3g          ~1.6 Mbit/s, 150 ms latency
-  throttle off              clear throttling (full speed)
-  throttle status           report the profile last applied via the daemon
-  throttle --block <PAT>    block requests whose URL matches PAT (repeatable)
-  throttle --unblock        clear the URL block-list
-
-PROFILE and --block compose: `throttle slow-3g --block '*.png'` throttles AND
-blocks in one call.  Blocked requests fail with NS_ERROR_ABORT and show up as
-errored entries in `network` output while other requests succeed.
-
-PREREQUISITE: this command subscribes to network-event resources first (the
-network-parent actor throws \"Not listening for network events\" otherwise).
-
-LIFETIME: throttling and blocking live as long as the RDP connection that set
-them.  Under the daemon that means until the daemon restarts; with --no-daemon
-the one-shot process disconnects immediately and the setting is discarded — the
-envelope then carries a `lifetime_warning`.  Both survive `navigate` and
-`reload` under the daemon (iter-164: they used not to — navigate's resource
-teardown destroyed the block-list on the shared connection, so `--block` was
-accepted, echoed here, and then not enforced).
-
-STATUS (iter-131): `throttle status` reports the profile the daemon last
-applied. Firefox's network-parent actor has no getter for the active
-throttling state, so this is client-side bookkeeping (a small file next to the
-daemon registry), not a live read from the browser — it reports `null` when no
-daemon is running, no `throttle <profile>` has been applied since it started,
-or the daemon has since restarted (which itself clears Firefox's throttling).
-Read-only: combining `status` with --block/--unblock is rejected.
-
-CACHE CAVEAT: throttling does not bypass the HTTP cache — a `reload` while
-throttled may still be served from cache and look far faster than the profile
-alone would suggest. Use `reload --hard` to force a network fetch.
-
-Examples:
-  ff-rdp throttle slow-3g
-  ff-rdp throttle fast-3g --block 'ads.example.com' --block '*.gif'
-  ff-rdp throttle off
-  ff-rdp throttle status
-  ff-rdp throttle --unblock
-
-Output (set): {\"results\": {\"profile\": \"slow-3g\"|\"fast-3g\"|\"off\"|null, \
-\"blocked_urls\": [\"...\"]|null, \"lifetime_warning\"?: \"...\"}, \"total\": 1, \"meta\": {...}}
-Output (status): {\"results\": {\"profile\": \"slow-3g\"|\"fast-3g\"|null, \
-\"note\"?: \"...\", \"cache_caveat\": \"...\"}, \"total\": 1, \"meta\": {...}}"
-    )]
-    Throttle(ThrottleArgs),
     /// Fetch and validate the page's Web App Manifest (PWA-readiness audit)
     #[command(
         long_about = "Fetch and validate the current page's Web App Manifest via the Firefox \
@@ -1522,7 +1413,7 @@ Output: {\"results\": {\"target\": \"...\", \"scope\": \"...\", \"path\": \"...\
     )]
     InstallHook(InstallHookArgs),
 
-    /// Live state: daemon, browser, tabs, the current page, and what to run next
+    /// Live state: browser, tabs, the current page, and what to run next
     ///
     /// This is what bare `ff-rdp` runs. Hidden from the command list because
     /// the no-argument invocation is the interface; the named form exists so
@@ -1538,15 +1429,15 @@ Output: {\"results\": {\"target\": \"...\", \"scope\": \"...\", \"path\": \"...\
     #[command(hide = true)]
     SkillDoc,
 
-    /// Diagnose the connection: daemon, port owner, RDP handshake, tabs, version
+    /// Diagnose the connection: port owner, RDP handshake, tabs, version
     #[command(long_about = "Diagnose the ff-rdp connection top-to-bottom.
 
 Probes (in order):
-  1. Daemon registry — is a daemon running and reachable?
-  2. Port owner     — who is listening on --port (PID, process, uptime)?
-  3. RDP handshake  — can we receive a Firefox greeting?
-  4. Tabs           — how many tabs are exposed by the connected target?
-  5. Firefox version — within the tested compatibility range?
+  1. Port owner     — who is listening on --port (PID, process, uptime)?
+  2. RDP handshake  — can we receive a Firefox greeting?
+  3. Tabs           — how many tabs are exposed by the connected target?
+  4. Firefox version — within the tested compatibility range?
+  5. Binary staleness and profile disk usage.
 
 Run this whenever a command fails with \"no tabs available\", a connection
 timeout, or any error you don't immediately understand. Exits 0 when every
@@ -1559,7 +1450,7 @@ Output: {\"results\": [{\"name\": \"...\", \"status\": \"pass|warn|fail\", \"det
     #[command(
         long_about = "Inspect and clean up the ephemeral Firefox profile directories ff-rdp creates for itself under its secure per-user profile root (see `ff-rdp launch`).
 
-`daemon stop` and `launch` already clean these up automatically (see their --help). This command is the manual escape hatch for whatever they missed — e.g. after a crash or `kill -9` that never reached `daemon stop`.
+`launch` prunes stale ones automatically (see its --help). A launched Firefox is never stopped by ff-rdp on its own, so its profile stays until it is pruned: this command is the manual way to reclaim them.
 
 Only directories matching the `ff-rdp-profile-<16 alphanumeric chars>` naming convention are ever listed or removed — a `--profile` directory you passed to `launch` yourself is never touched, even if it happens to live under the same root.
 
@@ -1602,8 +1493,7 @@ step N+1, and a step `timeout` bounds only how long it waits for a request
 still in flight.  If that subscription cannot be armed, `run` says so on stderr
 and each assertion falls back to per-step arming, which can miss a request that
 completed before the step started; the step's `diagnostics.subscription` then
-reads `step` rather than `playbook`.  Under the daemon nothing changes — it
-already holds a standing subscription.")]
+reads `step` rather than `playbook`.")]
     Run(RunArgs),
 
     /// Record browser commands to a replayable script
@@ -1631,7 +1521,7 @@ The page-map is a pre-computed site index that lets an agent skip the
 \"discovery\" turns (what's on this page? what forms are here?) by reading
 a single JSON file before starting a script run.
 
-The crawl reuses the current daemon tab's session cookies so logged-in
+The crawl reuses the current tab's session cookies so logged-in
 areas are crawled automatically. For CI or headless flows, supply
 --login-script to authenticate first.
 
@@ -1757,6 +1647,8 @@ pub struct NavigateArgs {
     #[arg(long)]
     pub auto_consent: bool,
     #[command(flatten)]
+    pub conditions: NetworkConditionsArgs,
+    #[command(flatten)]
     pub page: PageViewArgs,
 }
 
@@ -1852,7 +1744,7 @@ pub struct PageViewArgs {
     /// After the action completes, embed the resulting page under
     /// `results.page`: `headings`, an article `excerpt`, and `interactive`
     /// elements — each with a `ref` you can pass straight to `click --ref` /
-    /// `type --ref` (daemon mode; see `meta.page_refs_registered`).
+    /// `type --ref` until the page navigates.
     ///
     /// Ordering: the page is collected LAST — after the command's own
     /// readiness wait, after `--wait-for`/`--settle` where those apply, and
@@ -1957,7 +1849,8 @@ pub struct DomArgs {
     /// CSS selector to match elements
     #[arg(group = "dom_target")]
     pub selector: Option<String>,
-    /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
+    /// Element ref (e.g. 'e3') handed out by `snapshot`, `dom`, `a11y summary` or
+    /// `--with-page` on the current page; refs die when the page navigates
     #[arg(long = "ref", value_name = "REF_ID", group = "dom_target")]
     pub ref_id: Option<String>,
     /// Output outer HTML (default)
@@ -2046,14 +1939,6 @@ pub struct NetworkArgs {
     /// source has no security info); implies detail output.
     #[arg(long)]
     pub security: bool,
-    /// Scope the result to a specific navigation window (daemon mode only).
-    /// -1 = current navigation (default), -2 = one back, 'all' = full cumulative buffer.
-    /// Positive integers are treated as 1-based indices from the oldest boundary.
-    ///
-    /// `allow_hyphen_values` lets the negative forms be passed as either
-    /// `--since -1` or `--since=-1` without clap mistaking `-1` for a flag.
-    #[arg(long, value_name = "NAV_INDEX_OR_ALL", allow_hyphen_values = true)]
-    pub since: Option<String>,
     /// Which capture source produces the rows.
     ///
     /// `watcher` (the default) reads the RDP resource watcher, the only source
@@ -2073,16 +1958,15 @@ pub struct NetworkArgs {
 /// Capture source for `ff-rdp network` (iter-137 Theme C, narrowed in iter-159).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum NetworkSource {
-    /// The watcher/daemon resource buffer. Reports zero rows rather than
-    /// silently substituting a different dataset.
+    /// The RDP resource watcher. Reports zero rows rather than silently
+    /// substituting a different dataset.
     ///
     /// `auto` is a deprecated alias: until iter-159 it meant "watcher if
-    /// non-empty, else performance-api", and that silent substitution is what
-    /// hid a daemon watcher that had been delivering nothing since iter-137.
+    /// non-empty, else performance-api".
     #[value(alias = "auto")]
     Watcher,
     /// Only `performance.getEntriesByType('resource')`, evaluated in the page.
-    /// Identical in daemon and direct mode; no headers or security detail.
+    /// No method/status, headers or security detail.
     #[value(name = "performance-api")]
     PerformanceApi,
 }
@@ -2136,7 +2020,7 @@ pub struct ScreenshotArgs {
     /// one-shot `firefox --headless --window-size --screenshot` subprocess
     /// — the only path to a TRUE sub-500px mobile raster (bypasses the live
     /// viewport floor `launch --window-size` hits below ~500px). Runs in a
-    /// fresh scratch profile separate from the live RDP session/daemon: the
+    /// fresh scratch profile separate from the live RDP session: the
     /// current tab's URL is re-navigated from scratch, so cookies/localStorage/
     /// session state from the live tab are NOT carried over. No density knob:
     /// `layout.css.devPixelsPerPx` was tested against this exact capture path
@@ -2154,7 +2038,8 @@ pub struct ClickArgs {
     /// CSS selector of the element to click (flag form)
     #[arg(long = "selector", value_name = "SELECTOR", group = "click_target")]
     pub selector_flag: Option<String>,
-    /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
+    /// Element ref (e.g. 'e3') handed out by `snapshot`, `dom`, `a11y summary` or
+    /// `--with-page` on the current page; refs die when the page navigates
     #[arg(long = "ref", value_name = "REF_ID", group = "click_target")]
     pub ref_id: Option<String>,
     /// After clicking, wait for a network request whose URL contains this pattern.
@@ -2210,7 +2095,8 @@ pub struct TypeArgs {
     /// Text to type into the element (flag form)
     #[arg(long = "text", value_name = "TEXT")]
     pub text_flag: Option<String>,
-    /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
+    /// Element ref (e.g. 'e3') handed out by `snapshot`, `dom`, `a11y summary` or
+    /// `--with-page` on the current page; refs die when the page navigates
     #[arg(long = "ref", value_name = "REF_ID", group = "type_target")]
     pub ref_id: Option<String>,
     /// Clear the element's current value before typing
@@ -2277,7 +2163,8 @@ pub struct WaitArgs {
     /// Wait until this JavaScript expression returns a truthy value
     #[arg(long, group = "condition")]
     pub eval: Option<String>,
-    /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
+    /// Element ref (e.g. 'e3') handed out by `snapshot`, `dom`, `a11y summary` or
+    /// `--with-page` on the current page; refs die when the page navigates
     #[arg(long = "ref", value_name = "REF_ID", group = "condition")]
     pub ref_id: Option<String>,
     /// Plain sleep for this many milliseconds — no condition, no Firefox
@@ -2348,7 +2235,8 @@ pub struct A11yArgs {
     /// CSS selector to root the tree at a specific element
     #[arg(long, group = "a11y_target")]
     pub selector: Option<String>,
-    /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
+    /// Element ref (e.g. 'e3') handed out by `snapshot`, `dom`, `a11y summary` or
+    /// `--with-page` on the current page; refs die when the page navigates
     #[arg(long = "ref", value_name = "REF_ID", group = "a11y_target")]
     pub ref_id: Option<String>,
     /// Only show interactive elements (buttons, links, inputs, etc.)
@@ -2394,6 +2282,8 @@ pub struct ReloadArgs {
     #[arg(long, conflicts_with = "wait_idle")]
     pub no_wait: bool,
     #[command(flatten)]
+    pub conditions: NetworkConditionsArgs,
+    #[command(flatten)]
     pub page: PageViewArgs,
 }
 
@@ -2410,8 +2300,9 @@ pub struct BackForwardArgs {
 
 #[derive(clap::Args)]
 pub struct InspectArgs {
-    /// The actor ID of the object grip to inspect
-    pub actor_id: String,
+    /// JavaScript expression whose result to inspect (e.g. 'window.location',
+    /// 'document.forms[0]'). Evaluated and inspected on one connection.
+    pub expression: String,
     /// Recursion depth for nested objects (default: 1)
     #[arg(long, default_value_t = 1)]
     pub depth: u32,
@@ -2432,10 +2323,8 @@ pub struct SnapshotArgs {
     /// Maximum tree depth to traverse (default: 6). Alias: --max-depth.
     ///
     /// Every node marked `interactive: true` carries a `ref` handle usable with
-    /// `click --ref` / `type --ref` (iter-210). Refs live in the daemon, so
-    /// they appear only on the daemon route; `meta.refs_registered` says
-    /// whether the ones in this output are usable, and a navigation clears
-    /// them. For a much smaller orientation view — headings, landmarks and
+    /// `click --ref` / `type --ref` (iter-210). Refs are stamped on the
+    /// elements (`data-ffrdp-ref`) and die when the page navigates. For a much smaller orientation view — headings, landmarks and
     /// interactive elements only, also ref-carrying — use `a11y summary`.
     #[arg(long, default_value_t = 6)]
     pub depth: u32,
@@ -2461,7 +2350,8 @@ pub struct GeometryArgs {
     /// One or more CSS selectors to query
     #[arg(group = "geo_target")]
     pub selectors: Vec<String>,
-    /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
+    /// Element ref (e.g. 'e3') handed out by `snapshot`, `dom`, `a11y summary` or
+    /// `--with-page` on the current page; refs die when the page navigates
     #[arg(long = "ref", value_name = "REF_ID", group = "geo_target")]
     pub ref_id: Option<String>,
     /// Include hidden elements (zero-size, display:none, visibility:hidden, opacity:0).
@@ -2476,7 +2366,8 @@ pub struct ResponsiveArgs {
     /// One or more CSS selectors to query at each breakpoint
     #[arg(group = "resp_target")]
     pub selectors: Vec<String>,
-    /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
+    /// Element ref (e.g. 'e3') handed out by `snapshot`, `dom`, `a11y summary` or
+    /// `--with-page` on the current page; refs die when the page navigates
     #[arg(long = "ref", value_name = "REF_ID", group = "resp_target")]
     pub ref_id: Option<String>,
     /// Comma-separated viewport widths in pixels
@@ -2494,65 +2385,8 @@ pub struct ResponsiveArgs {
     pub strict: bool,
 }
 
-/// `prefers-color-scheme` simulation value for `emulate --color-scheme`.
-///
-/// Maps to the target-configuration actor's `colorSchemeSimulation` field:
-/// `none` restores the system default.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
-pub enum ColorScheme {
-    Light,
-    Dark,
-    None,
-}
-
-/// A generic on/off toggle used by several `emulate` flags
-/// (`--print`, `--touch`, `--js`, `--offline`, `--cache`).
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
-pub enum OnOff {
-    On,
-    Off,
-}
-
-/// Arguments for `emulate` — one option per target-configuration field.
-///
-/// Every flag is optional; a call applies only the fields the user names.
-/// `--reset` restores every field to its documented default and must be used
-/// on its own (enforced at runtime, not by clap, so the error is descriptive).
-#[derive(clap::Args)]
-pub struct EmulateArgs {
-    /// Override navigator.userAgent and the User-Agent request header
-    #[arg(long, value_name = "STRING")]
-    pub user_agent: Option<String>,
-    /// Simulate prefers-color-scheme (none = system default)
-    #[arg(long, value_enum, value_name = "SCHEME")]
-    pub color_scheme: Option<ColorScheme>,
-    /// Override window.devicePixelRatio (positive number, e.g. 2 for retina)
-    #[arg(long, value_name = "FLOAT")]
-    pub dppx: Option<f64>,
-    /// Toggle @media print simulation
-    #[arg(long, value_enum, value_name = "ON_OFF")]
-    pub print: Option<OnOff>,
-    /// Toggle touch-event simulation
-    #[arg(long, value_enum, value_name = "ON_OFF")]
-    pub touch: Option<OnOff>,
-    /// Enable/disable JavaScript (server reloads the document on change)
-    #[arg(long, value_enum, value_name = "ON_OFF")]
-    pub js: Option<OnOff>,
-    /// Take the tab offline (navigator.onLine === false, network requests fail)
-    #[arg(long, value_enum, value_name = "ON_OFF")]
-    pub offline: Option<OnOff>,
-    /// Toggle the HTTP cache ('off' disables it — maps to cacheDisabled=true)
-    #[arg(long, value_enum, value_name = "ON_OFF")]
-    pub cache: Option<OnOff>,
-    /// Restore every emulation field to its default (use on its own)
-    #[arg(long)]
-    pub reset: bool,
-}
-
-/// Network-throttling profile for `throttle` (positional).
 ///
 /// Maps to the network-parent actor's `setNetworkThrottling` options.
-/// `off` clears any active throttling (Firefox restores full speed).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 pub enum ThrottleProfileArg {
     /// Slow 3G: ~400 kbit/s, 400 ms round-trip latency.
@@ -2561,34 +2395,24 @@ pub enum ThrottleProfileArg {
     /// Fast 3G: ~1.6 Mbit/s, 150 ms round-trip latency.
     #[value(name = "fast-3g")]
     Fast3g,
-    /// Clear throttling and restore full-speed network behaviour.
-    Off,
-    /// Report the profile last applied via the daemon (iter-131 Theme D).
-    /// Read-only: does not touch throttling/blocking. Firefox's
-    /// network-parent actor has no getter, so this recalls client-side
-    /// bookkeeping rather than querying the browser — see `throttle --help`.
-    Status,
 }
 
-/// Arguments for `throttle` — network throttling and URL blocking.
+/// Network conditions applied on the command's own connection before it
+/// navigates (`navigate`, `reload`).
 ///
-/// The positional PROFILE sets a throttling tier (or `off`); `--block` replaces
-/// the URL block-list. At least one must be supplied. The envelope echoes the
-/// active profile and block-list so scripts can confirm what was applied.
-#[derive(clap::Args)]
-pub struct ThrottleArgs {
-    /// Throttling profile: slow-3g, fast-3g, off (clears throttling), or
-    /// status (read-only: reports the profile last applied via the daemon)
-    #[arg(value_enum, value_name = "PROFILE")]
-    pub profile: Option<ThrottleProfileArg>,
-    /// Block requests whose URL matches PATTERN (repeatable; substring/glob
-    /// match). Pass `--block` with no value list, or an empty `--block ''`,
-    /// to clear the block-list.
+/// Throttling and URL blocking live on the connection's network-parent actor
+/// and end when the command disconnects, so they are flags on the navigating
+/// command rather than a standalone `throttle` command.
+#[derive(clap::Args, Clone, Default)]
+pub struct NetworkConditionsArgs {
+    /// Throttle the network for this load: slow-3g (~400 kbit/s, 400 ms) or
+    /// fast-3g (~1.6 Mbit/s, 150 ms). Ends when the command exits.
+    #[arg(long, value_enum, value_name = "PROFILE")]
+    pub throttle: Option<ThrottleProfileArg>,
+    /// Block requests whose URL matches PATTERN for this load (repeatable;
+    /// substring/glob match). Blocked requests fail with NS_ERROR_ABORT.
     #[arg(long, value_name = "PATTERN", action = clap::ArgAction::Append)]
     pub block: Vec<String>,
-    /// Clear the URL block-list (equivalent to `--block` with no patterns)
-    #[arg(long, conflicts_with = "block")]
-    pub unblock: bool,
 }
 
 #[derive(clap::Args)]
@@ -2600,7 +2424,8 @@ pub struct ComputedArgs {
     /// CSS selector to match elements (flag form)
     #[arg(long = "selector", value_name = "SELECTOR", group = "computed_target")]
     pub selector_flag: Option<String>,
-    /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
+    /// Element ref (e.g. 'e3') handed out by `snapshot`, `dom`, `a11y summary` or
+    /// `--with-page` on the current page; refs die when the page navigates
     #[arg(long = "ref", value_name = "REF_ID", group = "computed_target")]
     pub ref_id: Option<String>,
     /// Return only specific property values (repeatable: --prop color --prop font-size).
@@ -2622,7 +2447,8 @@ pub struct StylesArgs {
     /// CSS selector to match the element (flag form)
     #[arg(long = "selector", value_name = "SELECTOR", group = "styles_target")]
     pub selector_flag: Option<String>,
-    /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
+    /// Element ref (e.g. 'e3') handed out by `snapshot`, `dom`, `a11y summary` or
+    /// `--with-page` on the current page; refs die when the page navigates
     #[arg(long = "ref", value_name = "REF_ID", group = "styles_target")]
     pub ref_id: Option<String>,
     /// Show applied CSS rules with source locations instead of computed styles
@@ -2654,7 +2480,8 @@ pub struct CascadeArgs {
     /// CSS selector to match the element (flag form)
     #[arg(long = "selector", value_name = "SELECTOR", group = "cascade_target")]
     pub selector_flag: Option<String>,
-    /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
+    /// Element ref (e.g. 'e3') handed out by `snapshot`, `dom`, `a11y summary` or
+    /// `--with-page` on the current page; refs die when the page navigates
     #[arg(long = "ref", value_name = "REF_ID", group = "cascade_target")]
     pub ref_id: Option<String>,
     /// CSS property to explain (e.g. `--prop display`).  Defaults to all
@@ -2785,7 +2612,7 @@ pub struct RunArgs {
 
 #[derive(clap::Args)]
 pub struct IndexArgs {
-    /// Base URL to crawl (defaults to the current daemon tab's origin)
+    /// Base URL to crawl (defaults to the current tab's origin)
     pub base_url: Option<String>,
 
     /// Output path for the page-map file
@@ -2970,10 +2797,9 @@ against tens of kilobytes for `snapshot`'s DOM tree.
 Since iter-210 every `interactive` entry carries a `ref` you can pass straight
 to `click --ref` / `type --ref`, so this command is a complete answer to \"what
 can I do on this page\" — no `dom <selector>` round-trip, and no guessing a
-selector in order to get a handle. Refs are stored by the daemon, so they exist
-only on the daemon route (the default); `meta.refs_registered` says whether the
-ones in this output are usable, and `meta.source` names how the view was
-produced. A navigation clears them.
+selector in order to get a handle. Refs are stamped on the elements themselves
+(`data-ffrdp-ref`), so any later command can use them until the page
+navigates. `meta.source` names how the view was produced.
 
 `--limit N` caps the interactive list (default 50); `--all` lifts the cap.
 `interactive_total` and `interactive_truncated` appear when the cap bit.
@@ -2984,7 +2810,7 @@ written against one works on the other. Two keys are act-and-see only, because
 they are reader-view work this command deliberately does not pay for: the
 article `excerpt` (iter-219) and the infobox `facts` (iter-225).
 
-Output: {\"results\": {\"landmarks\": [...], \"headings\": [...], \"interactive\": [{\"role\": \"link\", \"name\": \"...\", \"href\": \"...\", \"ref\": \"e3\"}]}, \"total\": 1, \"meta\": {\"refs_registered\": bool, \"source\": \"js-fallback\", ...}}"
+Output: {\"results\": {\"landmarks\": [...], \"headings\": [...], \"interactive\": [{\"role\": \"link\", \"name\": \"...\", \"href\": \"...\", \"ref\": \"e3\"}]}, \"total\": 1, \"meta\": {\"source\": \"js-fallback\", ...}}"
     )]
     Summary {
         /// Keep only the headings/landmarks/interactive entries whose text or
@@ -3033,7 +2859,8 @@ Output: {\"results\": {\"scrolled\": true, \"selector\": \"...\", \"viewport\": 
         /// CSS selector of the element to scroll into view
         #[arg(group = "scroll_to_target")]
         selector: Option<String>,
-        /// ARIA-tree ref ID from a previous dom/snapshot call (daemon mode only, e.g. 'e3')
+        /// Element ref (e.g. 'e3') handed out by `snapshot`, `dom`, `a11y summary` or
+        /// `--with-page` on the current page; refs die when the page navigates
         #[arg(long = "ref", value_name = "REF_ID", group = "scroll_to_target")]
         ref_id: Option<String>,
         /// Block alignment [default: top]. Aliases: top=start, bottom=end
@@ -3163,35 +2990,6 @@ Output: {\"results\": {\"scrolled\": true, \"text\": \"...\", \"viewport\": {...
         #[command(flatten)]
         page: PageViewArgs,
     },
-}
-
-#[derive(Subcommand)]
-pub enum DaemonCommand {
-    /// Print daemon status as JSON
-    #[command(long_about = "Print the current daemon status as JSON.
-
-If no daemon is running, reports running=false.
-
-Output: {\"results\": {\"running\": bool, \"pid\": N, \"port\": N, \"uptime_seconds\": N, \"connections\": N, \"buffer_sizes\": {...}}, \"total\": 1, \"meta\": {...}}")]
-    Status,
-    /// Gracefully stop the running daemon
-    #[command(long_about = "Gracefully stop the running daemon.
-
-Sends a shutdown RPC to the daemon. Falls back to SIGTERM if the RPC does
-not succeed within 2 seconds. Cleans up the daemon's per-port registry file
-(daemon.<port>.json) on success.
-
-When Firefox was started via `launch`, stopping it also removes its
-temporary profile directory (never a directory passed via --profile).
-
-When the profile directory is NOT removed, `profile_skip_reason` names why:
-`outside-profile-root` / `not-managed-basename` (a --profile directory, refused by design),
-`no-profile-root` (the per-user root could not be resolved), or `remove-failed`
-(a managed directory that should have gone away and did not). It is null when the
-profile was removed, and when the stop itself failed so cleanup was never attempted.
-
-Output: {\"results\": {\"stopped\": bool, \"pid\": N, \"port\": N, \"profile_removed\": bool, \"profile_removed_path\": \"...\"|null, \"profile_skip_reason\": \"...\"|null}, \"total\": 1, \"meta\": {...}}")]
-    Stop,
 }
 
 #[derive(Subcommand)]

@@ -114,10 +114,6 @@ pub struct PageView {
     /// cap bit, and the reader keys (`excerpt`, `readerable`, `source`,
     /// `zone` per entry) when the reader pass ran.
     pub view: Value,
-    /// Whether the `ref` handles in `view.interactive` are backed by the
-    /// daemon and therefore usable with `--ref`. When `false`, no entry
-    /// carries a `ref` at all (an inert handle is worse than none).
-    pub refs_registered: bool,
     /// How the view was produced — see [`PAGE_SOURCE_JS_FALLBACK`].
     pub source: &'static str,
     /// Whether `document.readyState` reached `complete` before collection.
@@ -189,9 +185,9 @@ impl CollectOptions {
 ///
 /// Ordering matters and is documented in every `--with-page` `--help`: the
 /// readiness wait runs *first*, so the view describes the document the action
-/// produced rather than the one it left. Ref registration runs last, against
-/// the already-sorted and already-capped entry list, so exactly the handles a
-/// caller can see are the handles the daemon holds.
+/// produced rather than the one it left. The collector stamps each element's
+/// ref in the page as it enumerates it, so every `ref` in the view resolves
+/// from any later command until the document goes away.
 pub fn collect(
     ctx: &mut ConnectedTab,
     console_actor: &ActorId,
@@ -239,8 +235,8 @@ pub fn collect(
     }
 
     // 3. Reader post-processing: excerpt, zone sort, `--query`. Runs before the
-    //    cap so the cap sees content-first order, and before refs so a ref is
-    //    minted for exactly the entries the caller receives.
+    //    cap so the cap sees content-first order. Refs were already stamped
+    //    in the page by the collector.
     let parse_ms = view.get("parse_ms").and_then(Value::as_f64);
     if let Some(reader) = opts.reader.as_ref()
         && finish_reader_view(&mut view, reader) == QueryOutcome::NeedsPageText
@@ -255,14 +251,8 @@ pub fn collect(
     }
     apply_interactive_limit(&mut view, opts.interactive_limit);
 
-    // 4. Refs. Daemon route only, exactly as `dom` does — without a daemon
-    //    there is nowhere to store the resolver, so a `ref` would be inert.
-    let refs_registered = register_interactive_refs(ctx, &mut view);
-    strip_resolvers(&mut view);
-
     Ok(PageView {
         view,
-        refs_registered,
         source: PAGE_SOURCE_JS_FALLBACK,
         ready,
         parse_ms,
@@ -781,107 +771,11 @@ pub(crate) fn apply_interactive_limit(view: &mut Value, limit: Option<usize>) {
     }
 }
 
-/// Allocate and register a `ref` for every interactive entry and fact link
-/// carrying a `__resolver`, returning whether registration succeeded.
-///
-/// On any failure (no daemon, allocation refused, the page navigated between
-/// alloc and register) no `ref` field is added at all — the same fail-closed
-/// rule `dom` applies, because a handle that cannot resolve is a trap.
-fn register_interactive_refs(ctx: &mut ConnectedTab, view: &mut Value) -> bool {
-    if !ctx.via_daemon {
-        return false;
-    }
-    let count = ref_entries(view)
-        .filter(|e| e.get("__resolver").and_then(Value::as_str).is_some())
-        .count();
-    if count == 0 {
-        return false;
-    }
-
-    let Ok((start, nav_gen)) = crate::daemon::client::alloc_refs(ctx.transport_mut(), count as u64)
-    else {
-        return false;
-    };
-
-    let mut entries: Vec<crate::daemon::client::RefEntry> = Vec::with_capacity(count);
-    let mut next = start;
-    for_each_ref_entry_mut(view, |node| {
-        let Some(map) = node.as_object_mut() else {
-            return;
-        };
-        let Some(resolver) = map.get("__resolver").and_then(Value::as_str) else {
-            return;
-        };
-        let id = format!("e{next}");
-        next += 1;
-        entries.push(crate::daemon::client::RefEntry {
-            id: id.clone(),
-            resolver: resolver.to_owned(),
-        });
-        map.insert("ref".to_owned(), json!(id));
-    });
-
-    if crate::daemon::client::register_refs(ctx.transport_mut(), nav_gen, &entries).is_ok() {
-        true
-    } else {
-        strip_ref_fields(view);
-        false
-    }
-}
-
 /// Iterate the `interactive` entries of a page view.
 fn interactive_entries(view: &Value) -> impl Iterator<Item = &Value> {
     view.get("interactive")
         .and_then(Value::as_array)
         .map_or_else(|| [].iter(), |a| a.iter())
-}
-
-fn ref_entries(view: &Value) -> impl Iterator<Item = &Value> {
-    interactive_entries(view).chain(
-        view.get("facts")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .flat_map(|fact| {
-                fact.get("links")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-            }),
-    )
-}
-
-fn for_each_ref_entry_mut(view: &mut Value, mut visit: impl FnMut(&mut Value)) {
-    if let Some(arr) = view.get_mut("interactive").and_then(Value::as_array_mut) {
-        for node in arr {
-            visit(node);
-        }
-    }
-    if let Some(facts) = view.get_mut("facts").and_then(Value::as_array_mut) {
-        for fact in facts {
-            if let Some(links) = fact.get_mut("links").and_then(Value::as_array_mut) {
-                for link in links {
-                    visit(link);
-                }
-            }
-        }
-    }
-}
-
-fn strip_resolvers(view: &mut Value) {
-    for_each_ref_entry_mut(view, |node| {
-        if let Some(map) = node.as_object_mut() {
-            map.remove("__resolver");
-        }
-    });
-}
-
-fn strip_ref_fields(view: &mut Value) {
-    for_each_ref_entry_mut(view, |node| {
-        if let Some(map) = node.as_object_mut() {
-            map.remove("ref");
-        }
-    });
 }
 
 /// Collect a page view and attach it to a command's `results` (iter-210
@@ -891,7 +785,7 @@ fn strip_ref_fields(view: &mut Value) {
 /// the command still owns its connection. Adds two keys:
 ///
 /// - `results.page` — the view itself.
-/// - `results.page_meta` — `{source, ready, refs_registered, parse_ms,
+/// - `results.page_meta` — `{source, ready, parse_ms,
 ///   readability_injected}`, which [`lift_meta`] moves into the envelope's
 ///   `meta` before printing. It rides in `results` only because the commands
 ///   that collect the page (`navigate`/`click`/`type`) build their envelope in
@@ -1031,7 +925,7 @@ const NAV_COLLECT_ATTEMPTS: usize = 3;
 ///
 /// One is the observed need: the reset arrives once, mid-collection, and the
 /// very next connection collects the destination without trouble. A second
-/// reconnect would mean the daemon is dropping every client it gets, which is
+/// reconnect would mean Firefox is dropping every client it gets, which is
 /// a condition to report rather than to paper over — and `NAV_COLLECT_ATTEMPTS`
 /// still caps the total work either way.
 const NAV_RECONNECT_ATTEMPTS: usize = 1;
@@ -1056,29 +950,18 @@ pub(crate) struct SettledPage {
 /// Did this error mean "the connection is gone", as opposed to "Firefox said
 /// no"? (iter-224)
 ///
-/// Three shapes, all of them the same event seen from different distances:
+/// Two shapes, both the same event seen from different distances:
 ///
 /// - [`AppError::RdpTransport`] — the socket errored. `recv failed: Connection
 ///   reset by peer (os error 54)` and `recv failed: failed to fill whole
-///   buffer` (a FIN mid-frame) are the two reproduced on the daemon route.
+///   buffer` (a FIN mid-frame).
 /// - [`AppError::RdpRemoteClosed`] — a clean EOF between frames.
-/// - [`AppError::RdpProtocol`] from actor `daemon` with name
-///   [`DAEMON_CLIENT_CLOSED`] — the daemon telling us, in words, that it is
-///   about to do the above. This is the shape the daemon half of iter-224
-///   produces; the first two are what a daemon that never got to speak leaves
-///   behind.
 ///
 /// Deliberately narrow: an actor error from Firefox, a timeout, a shape
 /// mismatch are all *answers*, and reconnecting would only ask the same
 /// question again on a healthier socket.
 fn is_connection_lost(e: &AppError) -> bool {
-    match e {
-        AppError::RdpTransport(_) | AppError::RdpRemoteClosed(_) => true,
-        AppError::RdpProtocol { actor, name, .. } => {
-            actor == "daemon" && name == crate::daemon::server::DAEMON_CLIENT_CLOSED
-        }
-        _ => false,
-    }
+    matches!(e, AppError::RdpTransport(_) | AppError::RdpRemoteClosed(_))
 }
 
 /// Collect the page view against the document the action actually produced.
@@ -1210,9 +1093,8 @@ fn collect_settled(
                 pending = latched.or(pending);
                 last_err = Some(e);
             }
-            // iter-224. The connection died under us mid-collection. On the
-            // daemon route this is a ~1-in-15 event on a page that navigates,
-            // and it used to end the command at exit 6 with `error_type:
+            // iter-224. The connection died under us mid-collection. It used
+            // to end the command at exit 6 with `error_type:
             // "Transport"` and nothing a caller could do but re-navigate by
             // URL and lose the click. The document is fine; only the socket is
             // gone — so build a new one and collect again inside the budget
@@ -1349,14 +1231,13 @@ fn insert_page(results: &mut Value, settled: SettledPage) {
         json!({
             "source": page.source,
             "ready": page.ready,
-            "refs_registered": page.refs_registered,
             "parse_ms": page.parse_ms,
             "readability_injected": page.readability_injected,
             // iter-224: what the view cost. `attempts > 1` means a navigation
             // landed mid-collection (or the connection died) and the view you
             // are reading came from a later pass; `reconnects > 0` means the
-            // daemon dropped this client and the CLI rebuilt the connection
-            // rather than failing the command.
+            // connection died and the CLI rebuilt it rather than failing the
+            // command.
             "attempts": attempts,
             "reconnects": reconnects,
         }),
@@ -1364,7 +1245,7 @@ fn insert_page(results: &mut Value, settled: SettledPage) {
 }
 
 /// Move [`attach`]'s `results.page_meta` into the envelope's `meta` as
-/// `page_source` / `page_ready` / `page_refs_registered` / `page_parse_ms` /
+/// `page_source` / `page_ready` / `page_parse_ms` /
 /// `page_readability_injected`, and — in `--format text` without `--jq` — take
 /// `results.page` out so the caller can print it with [`render_text_section`]
 /// beneath its own line.
@@ -1381,7 +1262,6 @@ pub(crate) fn lift_meta(cli: &Cli, results: &mut Value, meta: &mut Value) -> Opt
         for (from, to) in [
             ("source", "page_source"),
             ("ready", "page_ready"),
-            ("refs_registered", "page_refs_registered"),
             ("parse_ms", "page_parse_ms"),
             ("readability_injected", "page_readability_injected"),
             ("attempts", "page_attempts"),
@@ -1787,198 +1667,6 @@ mod tests {
     }
 
     #[test]
-    fn watched_snapshot_settlement_refreshes_same_document_url() {
-        use ff_rdp_core::RdpTransport;
-        use ff_rdp_core::transport::{encode_frame, recv_from};
-        use std::io::{BufReader, Write};
-        use std::net::TcpListener;
-        for (fresh_url, expected) in [("https://a/", false), ("https://a/#here", true)] {
-            let side = TcpListener::bind("127.0.0.1:0").unwrap();
-            let endpoint = crate::daemon::client::TargetEndpoint::new(
-                side.local_addr().unwrap().port(),
-                "token",
-            );
-            let snapshots = std::thread::spawn(move || {
-                let (mut stream, _) = side.accept().unwrap();
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                recv_from(&mut reader).unwrap();
-                stream.write_all(encode_frame(&json!({"protocol_version":crate::daemon::server::DAEMON_PROTOCOL_VERSION}).to_string()).as_bytes()).unwrap();
-                assert_eq!(
-                    recv_from(&mut reader).unwrap()["type"],
-                    "resolve-tab-target"
-                );
-                stream.write_all(encode_frame(&json!({"from":"daemon","type":"resolve-tab-target","state":"live",
-                    "target":{"actor":"target-a","consoleActor":"console-a","innerWindowId":7,"url":"https://a/"}}).to_string()).as_bytes()).unwrap();
-            });
-            let main = TcpListener::bind("127.0.0.1:0").unwrap();
-            let mut ctx = ConnectedTab::for_test(
-                RdpTransport::connect_raw(
-                    "127.0.0.1",
-                    main.local_addr().unwrap().port(),
-                    Duration::from_secs(2),
-                )
-                .unwrap(),
-                "console-a".into(),
-            );
-            let (mut stream, _) = main.accept().unwrap();
-            let metadata = std::thread::spawn(move || {
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                let request = recv_from(&mut reader).unwrap();
-                assert_eq!(request, json!({"to":"target-a","type":"listFrames"}));
-                stream
-                    .write_all(
-                        encode_frame(
-                            &json!({"from":"target-a","frames":[
-                    {"id":2,"parentID":1,"isTopLevel":false,"url":"https://a/#here"},
-                    {"id":1,"isTopLevel":true,"url":fresh_url}]})
-                            .to_string(),
-                        )
-                        .as_bytes(),
-                    )
-                    .unwrap();
-            });
-            ctx.target_endpoint = Some(endpoint);
-            ctx.set_target_metadata_for_test(Some(7), Some("https://a/".to_owned()));
-            let origin = NavigationOrigin::capture(&ctx);
-            assert_eq!(
-                settle_after_navigation(&mut ctx, "https://a/#here", &origin, Duration::ZERO),
-                expected
-            );
-            assert_eq!(ctx.target().inner_window_id, Some(7));
-            snapshots.join().unwrap();
-            metadata.join().unwrap();
-        }
-    }
-
-    #[test]
-    fn watched_settlement_owns_pending_retries_and_preserves_unsuccessful_metadata() {
-        use ff_rdp_core::RdpTransport;
-        use ff_rdp_core::transport::{encode_frame, recv_from};
-        use std::io::{BufReader, Read, Write};
-        use std::net::TcpListener;
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicBool, Ordering};
-
-        // A replacement queued after Pending must not be consumed inside a
-        // zero-budget or no-identity caller's single best-effort observation.
-        // The nonzero identifiable case instead retries in settlement itself.
-        for (budget, has_identity, replacement, expected) in [
-            (Duration::ZERO, true, false, false),
-            (Duration::from_millis(75), true, false, false),
-            (Duration::ZERO, true, true, false),
-            (Duration::from_millis(200), true, true, true),
-            (Duration::from_millis(200), false, false, false),
-            (Duration::from_millis(200), false, true, false),
-        ] {
-            let side = TcpListener::bind("127.0.0.1:0").unwrap();
-            side.set_nonblocking(true).unwrap();
-            let endpoint = crate::daemon::client::TargetEndpoint::new(
-                side.local_addr().unwrap().port(),
-                "token",
-            );
-            let done = Arc::new(AtomicBool::new(false));
-            let worker_done = Arc::clone(&done);
-            let snapshots = std::thread::spawn(move || {
-                let mut count = 0;
-                while !worker_done.load(Ordering::Acquire) {
-                    let (mut stream, _) = match side.accept() {
-                        Ok(pair) => pair,
-                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            std::thread::sleep(Duration::from_millis(1));
-                            continue;
-                        }
-                        Err(e) => panic!("snapshot accept: {e}"),
-                    };
-                    // Accepted sockets inherit listener nonblocking mode on macOS.
-                    stream.set_nonblocking(false).unwrap();
-                    stream
-                        .set_read_timeout(Some(Duration::from_secs(2)))
-                        .unwrap();
-                    let mut reader = BufReader::new(stream.try_clone().unwrap());
-                    assert_eq!(recv_from(&mut reader).unwrap()["auth"], "token");
-                    stream.write_all(encode_frame(&json!({"protocol_version":crate::daemon::server::DAEMON_PROTOCOL_VERSION}).to_string()).as_bytes()).unwrap();
-                    let request = recv_from(&mut reader).unwrap();
-                    assert_eq!(request["type"], "resolve-tab-target");
-                    assert_eq!(request["descriptor"], "conn0/tab1");
-                    count += 1;
-                    let response = if replacement && count > 1 {
-                        json!({"from":"daemon","type":"resolve-tab-target","state":"live",
-                            "target":{"actor":"replacement","consoleActor":"new-console","innerWindowId":8,"url":"https://b/"}})
-                    } else {
-                        json!({"from":"daemon","type":"resolve-tab-target","state":"pending"})
-                    };
-                    stream
-                        .write_all(encode_frame(&response.to_string()).as_bytes())
-                        .unwrap();
-                }
-                count
-            });
-            let main = TcpListener::bind("127.0.0.1:0").unwrap();
-            let transport = RdpTransport::connect_raw(
-                "127.0.0.1",
-                main.local_addr().unwrap().port(),
-                Duration::from_secs(2),
-            )
-            .unwrap();
-            let (mut stream, _) = main.accept().unwrap();
-            let metadata = std::thread::spawn(move || {
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(2)))
-                    .unwrap();
-                if expected {
-                    let mut reader = BufReader::new(stream.try_clone().unwrap());
-                    assert_eq!(
-                        recv_from(&mut reader).unwrap(),
-                        json!({"to":"replacement","type":"listFrames"})
-                    );
-                    stream.write_all(encode_frame(&json!({"from":"replacement","frames":[{"isTopLevel":true,"url":"https://b/"}]}).to_string()).as_bytes()).unwrap();
-                }
-                // No legacy lookup (or any other main-stream request) is
-                // allowed in Pending, even after the settlement budget expires.
-                let mut byte = [0];
-                assert_eq!(stream.read(&mut byte).unwrap(), 0);
-            });
-            let mut ctx = ConnectedTab::for_test(transport, "old-console".into());
-            ctx.target_endpoint = Some(endpoint);
-            ctx.set_target_metadata_for_test(
-                has_identity.then_some(7),
-                has_identity.then(|| "https://a/".to_owned()),
-            );
-            let original_actor = ctx.target().actor.clone();
-            let original_url = ctx.target().url.clone();
-            let origin = NavigationOrigin::capture(&ctx);
-            let start = Instant::now();
-            let settled = settle_after_navigation(&mut ctx, "https://b/", &origin, budget);
-            let elapsed = start.elapsed();
-            done.store(true, Ordering::Release);
-            let count = snapshots.join().unwrap();
-            assert_eq!(settled, expected);
-            assert!(
-                elapsed < Duration::from_secs(2),
-                "responsive Pending must not spend the five-second CLI timeout: {elapsed:?}"
-            );
-            if budget.is_zero() || !has_identity {
-                assert_eq!(count, 1, "one best-effort observation, no inner polling");
-            } else {
-                assert!(count >= 2, "settlement caller must retry Pending");
-            }
-            if expected {
-                assert_eq!(ctx.target().actor.as_ref(), "replacement");
-                assert_eq!(ctx.target().console_actor.as_ref(), "new-console");
-                assert_eq!(ctx.target().inner_window_id, Some(8));
-                assert_eq!(ctx.target().url.as_deref(), Some("https://b/"));
-            } else {
-                assert_eq!(ctx.target().actor, original_actor);
-                assert_eq!(ctx.target().console_actor.as_ref(), "old-console");
-                assert_eq!(ctx.target().inner_window_id, has_identity.then_some(7));
-                assert_eq!(ctx.target().url, original_url);
-            }
-            drop(ctx);
-            metadata.join().unwrap();
-        }
-    }
-
-    #[test]
     fn unit_253_settlement_requires_positive_document_evidence() {
         use ff_rdp_core::RdpTransport;
         use ff_rdp_core::transport::{encode_frame, recv_from};
@@ -2176,7 +1864,6 @@ mod tests {
                 "127.0.0.1",
                 "--port",
                 &port.to_string(),
-                "--no-daemon",
                 "tabs",
             ]);
             let mut opts = CollectOptions::with_page(DEFAULT_PAGE_CHARS, no_query(), 2);
@@ -2543,118 +2230,6 @@ mod tests {
     // ── unchanged iter-210 contracts ────────────────────────────────────────
 
     #[test]
-    fn strip_helpers_remove_their_fields() {
-        let mut view = json!({
-            "interactive": [{"role": "link", "ref": "e1", "__resolver": "a:nth-child(1)"}]
-        });
-        strip_resolvers(&mut view);
-        assert!(view["interactive"][0].get("__resolver").is_none());
-        strip_ref_fields(&mut view);
-        assert!(view["interactive"][0].get("ref").is_none());
-    }
-
-    #[test]
-    fn unit_255_fact_refs_register_independently_and_fail_closed() {
-        use ff_rdp_core::RdpTransport;
-        use ff_rdp_core::transport::{encode_frame, recv_from};
-        use std::io::{BufReader, Write as _};
-        use std::net::TcpListener;
-
-        for scenario in [
-            "success",
-            "direct",
-            "alloc-failure",
-            "generation-mismatch",
-            "register-failure",
-        ] {
-            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-            let port = listener.local_addr().unwrap().port();
-            let server = std::thread::spawn(move || {
-                let (mut stream, _) = listener.accept().unwrap();
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(2)))
-                    .unwrap();
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                let send = |stream: &mut std::net::TcpStream, value: Value| {
-                    stream
-                        .write_all(encode_frame(&value.to_string()).as_bytes())
-                        .unwrap();
-                };
-                if scenario == "direct" {
-                    return;
-                }
-                let alloc = recv_from(&mut reader).unwrap();
-                assert_eq!(alloc["type"], "alloc-refs");
-                assert_eq!(alloc["count"], 2);
-                if scenario == "alloc-failure" {
-                    send(
-                        &mut stream,
-                        json!({"from":"daemon", "error":"allocation refused"}),
-                    );
-                    return;
-                }
-                send(
-                    &mut stream,
-                    json!({"from":"daemon", "start":71, "nav_generation":19}),
-                );
-                let registration = recv_from(&mut reader).unwrap();
-                assert_eq!(registration["type"], "register-refs");
-                assert_eq!(registration["nav_generation"], 19);
-                assert_eq!(
-                    registration["refs"],
-                    json!([
-                        {"id":"e71", "resolver":"#first"}, {"id":"e72", "resolver":"#second"}
-                    ])
-                );
-                send(
-                    &mut stream,
-                    match scenario {
-                        "success" => json!({"from":"daemon"}),
-                        "generation-mismatch" => {
-                            json!({"from":"daemon", "error":"stale", "stale":true})
-                        }
-                        _ => json!({"from":"daemon", "error":"registration refused"}),
-                    },
-                );
-            });
-            let transport =
-                RdpTransport::connect_raw("127.0.0.1", port, Duration::from_secs(2)).unwrap();
-            let mut ctx = ConnectedTab::for_test(transport, ActorId::from("conn0/console1"));
-            ctx.via_daemon = scenario != "direct";
-            let mut view = json!({"interactive":[{"name":"capped", "__resolver":"#capped"}],
-            "facts":[{"key":"Developer", "value":"First Second", "links_truncated":true, "links":[
-                {"name":"First", "href":"/first", "__resolver":"#first"},
-                {"name":"Second", "href":"/second", "__resolver":"#second"}
-            ]}, {"key":"Developer omitted", "value":"Short", "links_truncated":true}]});
-            filter_page_view(&mut view, &query("Developer"));
-            apply_interactive_limit(&mut view, Some(0));
-            assert_eq!(
-                register_interactive_refs(&mut ctx, &mut view),
-                scenario == "success"
-            );
-            strip_resolvers(&mut view);
-            for (index, link) in view["facts"][0]["links"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .enumerate()
-            {
-                assert!(link.get("__resolver").is_none(), "{scenario}: {view}");
-                if scenario == "success" {
-                    assert_eq!(link["ref"], format!("e{}", 71 + index));
-                } else {
-                    assert!(link.get("ref").is_none(), "{scenario}: {view}");
-                }
-            }
-            assert_eq!(view["facts"][0]["value"], "First Second");
-            assert_eq!(view["facts"][0]["links_truncated"], true);
-            assert_eq!(view["facts"][1]["links_truncated"], true);
-            assert!(view["facts"][1].get("links").is_none());
-            server.join().unwrap();
-        }
-    }
-
-    #[test]
     fn unit_255_zero_match_reports_only_collected_candidate_keys() {
         for page_chars in [0, DEFAULT_PAGE_CHARS] {
             let mut view = json!({"facts":[{"key":"Developer", "value":"PSF"},
@@ -2725,7 +2300,6 @@ mod tests {
     fn sample_page() -> PageView {
         PageView {
             view: sample_view(),
-            refs_registered: true,
             source: PAGE_SOURCE_JS_FALLBACK,
             ready: true,
             parse_ms: Some(9.5),
@@ -2743,7 +2317,7 @@ mod tests {
     }
 
     /// `results.page` is the collected view verbatim: the realistic regression
-    /// is someone folding `source`/`ready`/`refs_registered` into `page`
+    /// is someone folding `source`/`ready` into `page`
     /// because it is convenient, which would put provenance in the payload.
     #[test]
     fn insert_page_publishes_the_view_verbatim() {
@@ -2780,7 +2354,6 @@ mod tests {
         );
         assert_eq!(meta["page_source"], json!(PAGE_SOURCE_JS_FALLBACK));
         assert_eq!(meta["page_ready"], json!(true));
-        assert_eq!(meta["page_refs_registered"], json!(true));
         assert_eq!(meta["page_parse_ms"], json!(9.5));
         assert_eq!(meta["page_readability_injected"], json!(true));
         assert!(
@@ -2861,7 +2434,7 @@ mod tests {
     /// Without them a hop that cost three collections and a rebuilt connection
     /// is indistinguishable in the JSON from one that succeeded on the first
     /// try, which is precisely the signal iter-224 needed and did not have
-    /// while diagnosing the daemon reset.
+    /// while diagnosing the connection reset.
     #[test]
     fn lift_meta_reports_what_the_view_cost() {
         let mut results = json!({"clicked": true});
@@ -2897,10 +2470,10 @@ mod tests {
         assert_eq!(meta["page_reconnects"], json!(0), "{meta}");
     }
 
-    /// The three shapes a dead connection arrives in, all of which must send
+    /// The shapes a dead connection arrives in, all of which must send
     /// `collect_settled` to the reconnect arm.
     #[test]
-    fn connection_lost_covers_reset_eof_and_the_daemon_saying_so() {
+    fn connection_lost_covers_reset_and_eof() {
         assert!(
             is_connection_lost(&AppError::RdpTransport(
                 "recv failed: Connection reset by peer (os error 54)".to_owned()
@@ -2916,14 +2489,6 @@ mod tests {
         assert!(
             is_connection_lost(&AppError::RdpRemoteClosed("closed".to_owned())),
             "a clean EOF between frames is a lost connection"
-        );
-        assert!(
-            is_connection_lost(&AppError::RdpProtocol {
-                actor: "daemon".to_owned(),
-                name: crate::daemon::server::DAEMON_CLIENT_CLOSED.to_owned(),
-                message: "the daemon closed this connection".to_owned(),
-            }),
-            "the daemon's own closing frame is a lost connection"
         );
     }
 
@@ -2944,14 +2509,6 @@ mod tests {
             name: "noSuchActor".to_owned(),
             message: String::new(),
         }));
-        assert!(
-            !is_connection_lost(&AppError::RdpProtocol {
-                actor: "conn0/consoleActor1".to_owned(),
-                name: crate::daemon::server::DAEMON_CLIENT_CLOSED.to_owned(),
-                message: String::new(),
-            }),
-            "only the daemon may claim to have closed the daemon connection"
-        );
     }
 }
 

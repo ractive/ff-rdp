@@ -3,7 +3,7 @@
 // allow-ungated-live: Firefox-free; runs only an exact ignored case in this executable with both live env gates removed, without --include-ignored.
 #[test]
 fn test_155_skipped_live_test_is_not_counted_passed() {
-    let target_name = "live_109_throttle_block::live_block_url_pattern";
+    let target_name = "live_109_throttle_block::live_navigate_throttle_slow3g_slows_load";
     // Exact selection excludes this guard, so the child cannot recurse.
     let output = std::process::Command::new(std::env::current_exe().expect("live test executable"))
         .args(["--exact", target_name, "--format=pretty"])

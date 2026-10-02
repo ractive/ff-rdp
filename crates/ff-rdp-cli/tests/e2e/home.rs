@@ -29,7 +29,6 @@ fn run(extra: &[&str]) -> std::process::Output {
             "127.0.0.1",
             "--port",
             &dark_port().to_string(),
-            "--no-daemon",
             "--timeout",
             "1500",
         ])
@@ -347,7 +346,6 @@ mod single_connect {
                 "127.0.0.1",
                 "--port",
                 &mock.port.to_string(),
-                "--no-daemon",
                 "--timeout",
                 "5000",
                 "--format",

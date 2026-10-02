@@ -30,9 +30,6 @@
 //! The unit tests in `commands/eval.rs` (`unit_170_*`) pin the boundary sets
 //! that produce it. See DEC-042.
 //!
-//! daemon-parity: these use the default daemon path, like every real
-//! invocation.
-//!
 //! # Running
 //!
 //!   FF_RDP_LIVE_TESTS=1 cargo test-live -p ff-rdp-cli \
@@ -44,7 +41,7 @@ use serde_json::Value;
 
 use crate::common::{LiveFirefox, ff_rdp_bin, live_tests_enabled};
 
-fn daemon_args(port: u16) -> Vec<String> {
+fn cli_args(port: u16) -> Vec<String> {
     vec![
         "--host".to_owned(),
         "127.0.0.1".to_owned(),
@@ -55,29 +52,9 @@ fn daemon_args(port: u16) -> Vec<String> {
     ]
 }
 
-fn stop_daemon(port: u16) {
-    let _ = Command::new(ff_rdp_bin())
-        .args(["--host", "127.0.0.1", "--port", &port.to_string()])
-        .args(["daemon", "stop"])
-        .output();
-}
-
-/// Bring up Firefox with a running daemon, panicking on failure (iter-158
-/// Theme D: an `Option` here made every caller `return`, which libtest
-/// reports as `ok`).
-fn firefox_with_daemon(test: &str) -> LiveFirefox {
-    let ff = LiveFirefox::headless_on_random_port();
-    assert!(
-        ff.with_daemon().is_some(),
-        "{test}: the proxy daemon did not start for Firefox on port {}",
-        ff.port()
-    );
-    ff
-}
-
 fn run(port: u16, args: &[&str]) -> Output {
     Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("spawn ff-rdp {args:?}: {e}"))
@@ -138,7 +115,7 @@ fn live_170_interpolation_is_scanned_as_code() {
         eprintln!("live_170_interpolation_is_scanned_as_code: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_170_interpolation_is_scanned_as_code");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let cases: &[(&str, Value)] = &[
@@ -170,8 +147,6 @@ fn live_170_interpolation_is_scanned_as_code() {
             );
         }
     }
-
-    stop_daemon(port);
 }
 
 /// Gap 2 and its guard rail: a `/` after a *block*'s `}` opens a regex, a `/`
@@ -188,7 +163,7 @@ fn live_170_brace_kind_decides_regex_and_boundary() {
         eprintln!("live_170_brace_kind_decides_regex_and_boundary: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_170_brace_kind_decides_regex_and_boundary");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let cases: &[(&str, Value)] = &[
@@ -249,6 +224,4 @@ fn live_170_brace_kind_decides_regex_and_boundary() {
             }
         }
     }
-
-    stop_daemon(port);
 }

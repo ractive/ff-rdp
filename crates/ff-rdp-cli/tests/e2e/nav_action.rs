@@ -11,7 +11,6 @@ fn base_args(port: u16) -> Vec<String> {
         "127.0.0.1".to_owned(),
         "--port".to_owned(),
         port.to_string(),
-        "--no-daemon".to_owned(),
     ]
 }
 
@@ -176,7 +175,7 @@ fn reload_outputs_json_envelope() {
 /// `dom-interactive` / `dom-complete` never runs. Everything still *looks*
 /// connected — `watchTargets("frame")` and `watchResources` are acked, and the
 /// parent-process resources (`will-navigate`, `network-event`) keep arriving —
-/// which is why `reload --no-daemon` spent 21 011 ms of a 30 000 ms budget
+/// which is why a direct `reload` spent 21 011 ms of a 30 000 ms budget
 /// waiting for an event that could not come, then answered from the
 /// `document.readyState` fallback with a correct-looking envelope.
 ///

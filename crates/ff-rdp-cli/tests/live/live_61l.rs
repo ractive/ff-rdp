@@ -196,7 +196,6 @@ fn base_args(port: u16) -> Vec<String> {
         "127.0.0.1".to_owned(),
         "--port".to_owned(),
         port.to_string(),
-        "--no-daemon".to_owned(),
     ]
 }
 
@@ -379,9 +378,8 @@ fn live_locale_pin_launch_sets_lang_env() {
 /// only because the direct route received no document events at all and so
 /// always timed out. Once iter-174 fixed that, the commit succeeded and this
 /// test went red; `run_core` now also checks `listTabs` on the success path
-/// when no HTTP status was observed. `live_174_dns_failure_exits_nav_dns_fail_both_routes`
-/// is the daemon-parity half — the daemon route had been exiting 0 here all
-/// along, which this direct-only suite could not see.
+/// when no HTTP status was observed (see also
+/// `live_174_dns_failure_exits_nav_dns_fail`).
 #[test]
 #[ignore = "requires live Firefox — set FF_RDP_LIVE_TESTS=1"]
 fn live_navigate_dnsfail() {
@@ -671,8 +669,8 @@ fn live_navigate_invalidates_console_actor() {
 /// Theme E then removed from the envelope entirely.
 ///
 /// The `"chrome"` assertion was thus testing behaviour that no longer exists —
-/// which is exactly why it surfaced as `"page-await"` once un-masked by the
-/// iter-100 daemon-autostart fix.  The correct, still-load-bearing guarantee is
+/// which is exactly why it surfaced as `"page-await"` once un-masked by an
+/// iter-100 harness fix.  The correct, still-load-bearing guarantee is
 /// the *observable* one: eval must succeed and return the right value on a page
 /// whose CSP blocks `eval()`.  This test now asserts that, unconditionally (the
 /// `FF_RDP_ALLOW_KNOWN_FAILING_CHROME_CSP` gate is gone).  `live_eval_csp` above

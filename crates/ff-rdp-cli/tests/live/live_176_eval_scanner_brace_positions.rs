@@ -34,9 +34,6 @@
 //! The unit tests in `commands/eval.rs` (`unit_176_*`) pin the boundary sets
 //! that produce it. See DEC-042.
 //!
-//! daemon-parity: these use the default daemon path, like every real
-//! invocation.
-//!
 //! # Running
 //!
 //!   FF_RDP_LIVE_TESTS=1 cargo test-live -p ff-rdp-cli \
@@ -48,7 +45,7 @@ use serde_json::Value;
 
 use crate::common::{LiveFirefox, ff_rdp_bin, live_tests_enabled};
 
-fn daemon_args(port: u16) -> Vec<String> {
+fn cli_args(port: u16) -> Vec<String> {
     vec![
         "--host".to_owned(),
         "127.0.0.1".to_owned(),
@@ -59,29 +56,9 @@ fn daemon_args(port: u16) -> Vec<String> {
     ]
 }
 
-fn stop_daemon(port: u16) {
-    let _ = Command::new(ff_rdp_bin())
-        .args(["--host", "127.0.0.1", "--port", &port.to_string()])
-        .args(["daemon", "stop"])
-        .output();
-}
-
-/// Bring up Firefox with a running daemon, panicking on failure (iter-158
-/// Theme D: an `Option` here made every caller `return`, which libtest
-/// reports as `ok`).
-fn firefox_with_daemon(test: &str) -> LiveFirefox {
-    let ff = LiveFirefox::headless_on_random_port();
-    assert!(
-        ff.with_daemon().is_some(),
-        "{test}: the proxy daemon did not start for Firefox on port {}",
-        ff.port()
-    );
-    ff
-}
-
 fn run(port: u16, args: &[&str]) -> Output {
     Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("spawn ff-rdp {args:?}: {e}"))
@@ -164,7 +141,7 @@ fn live_176_arrow_class_and_label_bodies_are_blocks() {
         eprintln!("live_176_arrow_class_and_label_bodies_are_blocks: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_176_arrow_class_and_label_bodies_are_blocks");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let cases: &[(&str, Value)] = &[
@@ -208,8 +185,6 @@ fn live_176_arrow_class_and_label_bodies_are_blocks() {
     for (script, expected) in cases {
         assert_evaluates(port, script, expected);
     }
-
-    stop_daemon(port);
 }
 
 // ---------------------------------------------------------------------------
@@ -227,7 +202,7 @@ fn live_176_object_literals_and_expressions_still_divide() {
         eprintln!("live_176_object_literals_and_expressions_still_divide: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_176_object_literals_and_expressions_still_divide");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let cases: &[(&str, Value)] = &[
@@ -271,6 +246,4 @@ fn live_176_object_literals_and_expressions_still_divide() {
     for (script, expected) in cases {
         assert_evaluates(port, script, expected);
     }
-
-    stop_daemon(port);
 }

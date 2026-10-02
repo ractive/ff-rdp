@@ -14,25 +14,21 @@
 //! - C: `type --submit` presses Enter and falls back to `form.requestSubmit()`.
 //! - D: a second `launch` on a port ff-rdp already owns is a no-op, exit 0.
 //!
-//! daemon-parity: every test uses [`daemon_args`] (no `--no-daemon`). The
-//! daemon owns the ref store, so `refs_registered` is only ever true on this
-//! route — testing the direct route would prove the opposite of the point.
-//!
 //! # Running
 //!
 //!   FF_RDP_LIVE_TESTS=1 cargo test-live -p ff-rdp-cli \
 //!       --test live live_210_act_and_see -- --nocapture
 
 use std::collections::HashMap;
-use std::process::{Command, Output};
+use std::process::Output;
 
 use serde_json::Value;
 
 use crate::common::{
-    FixtureRoute, FixtureServer, LiveFirefox, ff_rdp_bin, ff_rdp_launch_command, live_tests_enabled,
+    FixtureRoute, FixtureServer, LiveFirefox, ff_rdp_launch_command, live_tests_enabled,
 };
 
-fn daemon_args(port: u16) -> Vec<String> {
+fn cli_args(port: u16) -> Vec<String> {
     vec![
         "--host".to_owned(),
         "127.0.0.1".to_owned(),
@@ -41,23 +37,6 @@ fn daemon_args(port: u16) -> Vec<String> {
         "--timeout".to_owned(),
         "20000".to_owned(),
     ]
-}
-
-fn stop_daemon(port: u16) {
-    let _ = Command::new(ff_rdp_bin())
-        .args(["--host", "127.0.0.1", "--port", &port.to_string()])
-        .args(["daemon", "stop"])
-        .output();
-}
-
-fn firefox_with_daemon(test: &str) -> LiveFirefox {
-    let ff = LiveFirefox::headless_on_random_port();
-    assert!(
-        ff.with_daemon().is_some(),
-        "{test}: the proxy daemon did not start for Firefox on port {}",
-        ff.port()
-    );
-    ff
 }
 
 ///
@@ -71,7 +50,7 @@ fn firefox_with_daemon(test: &str) -> LiveFirefox {
 /// reads it when it creates a managed profile.
 fn run(port: u16, args: &[&str]) -> Output {
     ff_rdp_launch_command()
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("spawn ff-rdp {args:?}: {e}"))
@@ -140,11 +119,10 @@ fn live_navigate_with_page_returns_headings_and_refs() {
         eprintln!("live_navigate_with_page_returns_headings_and_refs: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_navigate_with_page_returns_headings_and_refs");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(link_fixture()) else {
         eprintln!("live_navigate_with_page_returns_headings_and_refs: no fixture HTTP — skipping");
-        stop_daemon(port);
         return;
     };
 
@@ -157,10 +135,6 @@ fn live_navigate_with_page_returns_headings_and_refs() {
     assert_eq!(
         nav["meta"]["page_source"], "js-fallback",
         "meta.page_source must name how the view was produced: {nav}"
-    );
-    assert_eq!(
-        nav["meta"]["page_refs_registered"], true,
-        "the daemon route must register the page's refs: {nav}"
     );
 
     let interactive = page["interactive"]
@@ -179,8 +153,6 @@ fn live_navigate_with_page_returns_headings_and_refs() {
             "ref {r:?} must match ^e\\d+$: {nav}"
         );
     }
-
-    stop_daemon(port);
 }
 
 /// AC `live_click_ref_from_with_page_lands_on_target`: the refs `navigate
@@ -193,11 +165,10 @@ fn live_click_ref_from_with_page_lands_on_target() {
         eprintln!("live_click_ref_from_with_page_lands_on_target: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_click_ref_from_with_page_lands_on_target");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(link_fixture()) else {
         eprintln!("live_click_ref_from_with_page_lands_on_target: no fixture HTTP — skipping");
-        stop_daemon(port);
         return;
     };
 
@@ -213,8 +184,6 @@ fn live_click_ref_from_with_page_lands_on_target() {
         click["results"]["text"], "Charles Babbage",
         "the clicked element's text must be the ref's name: {click}"
     );
-
-    stop_daemon(port);
 }
 
 /// AC `live_click_with_page_reflects_post_click_document`: after clicking a
@@ -230,11 +199,10 @@ fn live_click_with_page_reflects_post_click_document() {
         eprintln!("live_click_with_page_reflects_post_click_document: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_click_with_page_reflects_post_click_document");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(link_fixture()) else {
         eprintln!("live_click_with_page_reflects_post_click_document: no fixture HTTP — skipping");
-        stop_daemon(port);
         return;
     };
 
@@ -246,8 +214,6 @@ fn live_click_with_page_reflects_post_click_document() {
         click["results"]["page"]["headings"][0]["text"], "Charles Babbage",
         "click --with-page must report the destination page's heading, not the origin's: {click}"
     );
-
-    stop_daemon(port);
 }
 
 // ---------------------------------------------------------------------------
@@ -262,20 +228,15 @@ fn live_a11y_summary_registers_refs() {
         eprintln!("live_a11y_summary_registers_refs: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_a11y_summary_registers_refs");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(link_fixture()) else {
         eprintln!("live_a11y_summary_registers_refs: no fixture HTTP — skipping");
-        stop_daemon(port);
         return;
     };
 
     run_json(port, &["navigate", &server.base_url()]);
     let summary = run_json(port, &["a11y", "summary"]);
-    assert_eq!(
-        summary["meta"]["refs_registered"], true,
-        "a11y summary must register refs on the daemon route: {summary}"
-    );
 
     let first_ref = summary["results"]["interactive"][0]["ref"]
         .as_str()
@@ -286,8 +247,6 @@ fn live_a11y_summary_registers_refs() {
         click["results"]["clicked"], true,
         "a ref from a11y summary must be clickable: {click}"
     );
-
-    stop_daemon(port);
 }
 
 /// AC `live_snapshot_interactive_nodes_carry_refs`.
@@ -298,20 +257,15 @@ fn live_snapshot_interactive_nodes_carry_refs() {
         eprintln!("live_snapshot_interactive_nodes_carry_refs: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_snapshot_interactive_nodes_carry_refs");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(link_fixture()) else {
         eprintln!("live_snapshot_interactive_nodes_carry_refs: no fixture HTTP — skipping");
-        stop_daemon(port);
         return;
     };
 
     run_json(port, &["navigate", &server.base_url()]);
     let snap = run_json(port, &["snapshot"]);
-    assert_eq!(
-        snap["meta"]["refs_registered"], true,
-        "snapshot must register refs on the daemon route: {snap}"
-    );
 
     let mut interactive = Vec::new();
     collect_interactive(&snap["results"], &mut interactive);
@@ -325,8 +279,6 @@ fn live_snapshot_interactive_nodes_carry_refs() {
             "interactive snapshot node without a ref: {node} in {snap}"
         );
     }
-
-    stop_daemon(port);
 }
 
 /// Depth-first collection of `interactive: true` nodes from a snapshot tree.
@@ -361,7 +313,7 @@ fn live_type_submit_navigates_search_form() {
         eprintln!("live_type_submit_navigates_search_form: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_type_submit_navigates_search_form");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let mut routes = HashMap::new();
@@ -382,7 +334,6 @@ fn live_type_submit_navigates_search_form() {
     );
     let Some(server) = FixtureServer::start(routes) else {
         eprintln!("live_type_submit_navigates_search_form: no fixture HTTP — skipping");
-        stop_daemon(port);
         return;
     };
 
@@ -399,8 +350,6 @@ fn live_type_submit_navigates_search_form() {
         href.contains("q=turing"),
         "the resulting URL must carry the query: {href} (from {typed})"
     );
-
-    stop_daemon(port);
 }
 
 // ---------------------------------------------------------------------------
@@ -422,8 +371,8 @@ fn live_launch_twice_is_a_noop() {
         eprintln!("live_launch_twice_is_a_noop: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    // Not `firefox_with_daemon`: this test launches through the CLI itself,
-    // which is the behaviour under test.
+    // This test launches through the CLI itself, which is the behaviour under
+    // test.
     let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
@@ -453,6 +402,4 @@ fn live_launch_twice_is_a_noop() {
         Some(u64::from(ff.pid())),
         "the reported pid must be the instance already running: {json}"
     );
-
-    stop_daemon(port);
 }

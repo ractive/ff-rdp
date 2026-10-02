@@ -71,8 +71,8 @@ fn completions_unknown_shell_fails_with_clap_parse_error() {
     );
 }
 
-/// `completions` requires no `--host`/`--port`/`--no-daemon` flags — it never
-/// touches Firefox or the daemon.
+/// `completions` requires no `--host`/`--port` flags — it never touches
+/// Firefox.
 #[test]
 fn completions_requires_no_connection_flags() {
     let output = std::process::Command::new(ff_rdp_bin())

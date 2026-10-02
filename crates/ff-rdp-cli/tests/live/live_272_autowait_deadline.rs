@@ -1,13 +1,22 @@
-//! Auto-wait's500ms stability budget must also bound diagnostic reads.
-//! Run the actual CLI on owned Firefox instances, on direct and daemon routes.
-//! daemon-parity: live_272_diagnostics_and_blocked_stability_both_routes exercises both routes.
-use std::process::Output;
+//! Auto-wait's 500ms stability budget must also bound diagnostic reads.
+//! Run the actual CLI on an owned Firefox instance.
+use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
-use crate::common::{LiveFirefox, bounded_command_output, live_tests_enabled};
+use crate::common::{LiveFirefox, bounded_command_output, ff_rdp_bin, live_tests_enabled};
 
-fn run(port: u16, direct: bool, args: &[&str]) -> Output {
-    let mut command = crate::common::action_route::command(port, direct, args);
+fn run(port: u16, args: &[&str]) -> Output {
+    let mut command = Command::new(ff_rdp_bin());
+    command
+        .args([
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+            "--timeout",
+            "4000",
+        ])
+        .args(args);
     bounded_command_output(&mut command, Duration::from_secs(20), "iteration272 CLI")
         .unwrap_or_else(|error| panic!("{args:?}: {error}"))
 }
@@ -20,8 +29,8 @@ fn text(output: &Output) -> String {
     )
 }
 
-fn eval(port: u16, direct: bool, expression: &str) -> serde_json::Value {
-    let output = run(port, direct, &["eval", expression]);
+fn eval(port: u16, expression: &str) -> serde_json::Value {
+    let output = run(port, &["eval", expression]);
     assert!(
         output.status.success(),
         "eval {expression}: {}",
@@ -32,12 +41,11 @@ fn eval(port: u16, direct: bool, expression: &str) -> serde_json::Value {
 
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
-fn live_272_diagnostics_and_blocked_stability_both_routes() {
+fn live_272_diagnostics_and_blocked_stability() {
     assert!(live_tests_enabled(), "set FF_RDP_LIVE_TESTS=1");
     let firefox = LiveFirefox::headless_on_random_port();
-    firefox.with_daemon_or_reason().unwrap();
     let port = firefox.port();
-    for direct in [true, false] {
+    {
         for case in [
             "absent",
             "hidden",
@@ -60,41 +68,32 @@ fn live_272_diagnostics_and_blocked_stability_both_routes() {
                 _ => {}
             }
             setup.push_str("true");
-            assert_eq!(eval(port, direct, &setup), true);
+            assert_eq!(eval(port, &setup), true);
             let start = Instant::now();
             let output = if matches!(case, "absent" | "moving") {
-                run(port, direct, &["click", selector])
+                run(port, &["click", selector])
             } else {
-                run(port, direct, &["type", selector, "hello"])
+                run(port, &["type", selector, "hello"])
             };
             let elapsed = start.elapsed();
             let message = text(&output);
-            let action = if matches!(case, "absent" | "moving") {
-                "click"
-            } else {
-                "type"
-            };
-            crate::common::action_route::require_action_route(&output.stderr, action, !direct)
-                .unwrap_or_else(|error| panic!("{case}: {error}: {message}"));
             eprintln!(
-                "ITER272 route={} case={case} wall_ms={} status={} output={message}",
-                if direct { "direct" } else { "daemon" },
+                "ITER272 case={case} wall_ms={} status={} output={message}",
                 elapsed.as_millis(),
                 output.status
             );
             // A timed-out console operation can still be running in Firefox.
-            // This finite read-back waits for the fixture's2500ms operation,
+            // This finite read-back waits for the fixture's 2500ms operation,
             // proves it ran, and resets only our page hook.
             let calls = eval(
                 port,
-                direct,
                 "if(window.__qs){document.querySelector=window.__qs;delete window.__qs;}window.__probeCalls",
             );
             if case == "blocked_readiness" {
                 assert!(output.status.success(), "{message}");
                 assert!(calls.as_u64().is_some_and(|count| count > 0));
                 assert_eq!(
-                    eval(port, direct, "document.getElementById('target').value"),
+                    eval(port, "document.getElementById('target').value"),
                     "hello"
                 );
                 continue;
@@ -120,13 +119,11 @@ fn live_272_diagnostics_and_blocked_stability_both_routes() {
                     "blocked is not moving: {message}"
                 );
                 assert_eq!(
-                    eval(port, direct, "document.getElementById('target').value"),
+                    eval(port, "document.getElementById('target').value"),
                     "",
                     "no type action after failed readiness"
                 );
             }
         }
     }
-    let stop = run(port, false, &["daemon", "stop"]);
-    assert!(stop.status.success(), "{}", text(&stop));
 }

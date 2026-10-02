@@ -14,11 +14,6 @@
 //! Theme G: `navigate --with-network` keeps `committed_url`/`ready_state`
 //! (and now `status`) alongside the captured network data.
 //!
-//! daemon-parity: every test in this file drives the CLI over the **default**
-//! (daemon) connection — no test here passes `--no-daemon`. Per iter-137 Run
-//! guidance (this plan's own Notes section), a live test that only exercises
-//! `--no-daemon` proves nothing about the path real invocations use.
-//!
 //! # Running
 //!
 //!   FF_RDP_LIVE_TESTS=1 cargo test-live -p ff-rdp-cli --test live live_138 -- --nocapture
@@ -29,10 +24,7 @@ use std::time::Instant;
 
 use crate::common::{FixtureRoute, FixtureServer, LiveFirefox, ff_rdp_bin};
 
-/// Global args for the **default** connection mode: no `--no-daemon`, so the
-/// CLI auto-starts and proxies through the daemon — mirrors
-/// `live_137_daemon_mode_parity::daemon_args`.
-fn daemon_args(port: u16) -> Vec<String> {
+fn cli_args(port: u16) -> Vec<String> {
     vec![
         "--host".to_owned(),
         "127.0.0.1".to_owned(),
@@ -65,27 +57,6 @@ fn combined(output: &Output) -> String {
     )
 }
 
-fn stop_daemon(port: u16) {
-    let _ = Command::new(ff_rdp_bin())
-        .args(["--host", "127.0.0.1", "--port", &port.to_string()])
-        .args(["daemon", "stop"])
-        .output();
-}
-
-/// Launch Firefox and bring up its proxy daemon.
-///
-/// Panics on either failure (iter-158 Theme D) — the `Option` this used to
-/// return made every caller `return` early, which libtest reports as `ok`.
-fn firefox_with_daemon(test: &str) -> LiveFirefox {
-    let ff = LiveFirefox::headless_on_random_port();
-    assert!(
-        ff.with_daemon().is_some(),
-        "{test}: the proxy daemon did not start for Firefox on port {}",
-        ff.port()
-    );
-    ff
-}
-
 /// AC: `live_138_navigate_reports_404` — `navigate` to a known 404 reports
 /// status 404.
 #[test]
@@ -95,25 +66,23 @@ fn live_138_navigate_reports_404() {
         eprintln!("live_138_navigate_reports_404: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let ff = firefox_with_daemon("live_138_navigate_reports_404");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     // No routes registered — FixtureServer answers every path with a real
     // `404 Not Found` (see `handle_connection`'s fallback in tests/common).
     let Some(server) = FixtureServer::start(HashMap::new()) else {
         eprintln!("live_138_navigate_reports_404: could not bind local HTTP — skipping");
-        stop_daemon(port);
         return;
     };
     let url = format!("{}/this-page-does-not-exist-xyz", server.base_url());
 
     let nav = Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(["navigate", &url])
         .output()
         .expect("navigate 404 page");
     let out = combined(&nav);
-    stop_daemon(port);
 
     assert!(
         nav.status.success(),
@@ -136,7 +105,7 @@ fn live_138_navigate_reports_200() {
         eprintln!("live_138_navigate_reports_200: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let ff = firefox_with_daemon("live_138_navigate_reports_200");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let mut routes = HashMap::new();
@@ -146,18 +115,16 @@ fn live_138_navigate_reports_200() {
     );
     let Some(server) = FixtureServer::start(routes) else {
         eprintln!("live_138_navigate_reports_200: could not bind local HTTP — skipping");
-        stop_daemon(port);
         return;
     };
     let url = format!("{}/page", server.base_url());
 
     let nav = Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(["navigate", &url])
         .output()
         .expect("navigate 200 page");
     let out = combined(&nav);
-    stop_daemon(port);
 
     assert!(nav.status.success(), "navigate must succeed: {out}");
     let r = results(&nav);
@@ -180,7 +147,7 @@ fn live_138_pushstate_back_succeeds() {
         eprintln!("live_138_pushstate_back_succeeds: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let ff = firefox_with_daemon("live_138_pushstate_back_succeeds");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let mut routes = HashMap::new();
@@ -190,13 +157,12 @@ fn live_138_pushstate_back_succeeds() {
     );
     let Some(server) = FixtureServer::start(routes) else {
         eprintln!("live_138_pushstate_back_succeeds: could not bind local HTTP — skipping");
-        stop_daemon(port);
         return;
     };
     let url = format!("{}/page", server.base_url());
 
     let nav = Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(["navigate", &url])
         .output()
         .expect("navigate");
@@ -205,12 +171,11 @@ fn live_138_pushstate_back_succeeds() {
             "live_138_pushstate_back_succeeds: navigate failed — {}",
             combined(&nav)
         );
-        stop_daemon(port);
         return;
     }
 
     let push = Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(["eval", "history.pushState({}, '', '/route1')"])
         .output()
         .expect("pushState");
@@ -223,13 +188,12 @@ fn live_138_pushstate_back_succeeds() {
     let timeout_ms: u64 = 8000;
     let started = Instant::now();
     let back = Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(["back", "--timeout", &timeout_ms.to_string()])
         .output()
         .expect("back");
     let wall_ms = started.elapsed().as_millis();
     let out = combined(&back);
-    stop_daemon(port);
 
     assert!(
         back.status.success(),
@@ -263,7 +227,7 @@ fn live_138_fragment_navigate_succeeds() {
         eprintln!("live_138_fragment_navigate_succeeds: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let ff = firefox_with_daemon("live_138_fragment_navigate_succeeds");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let mut routes = HashMap::new();
@@ -275,13 +239,12 @@ fn live_138_fragment_navigate_succeeds() {
     );
     let Some(server) = FixtureServer::start(routes) else {
         eprintln!("live_138_fragment_navigate_succeeds: could not bind local HTTP — skipping");
-        stop_daemon(port);
         return;
     };
     let url = format!("{}/page", server.base_url());
 
     let nav = Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(["navigate", &url])
         .output()
         .expect("navigate");
@@ -290,7 +253,6 @@ fn live_138_fragment_navigate_succeeds() {
             "live_138_fragment_navigate_succeeds: navigate failed — {}",
             combined(&nav)
         );
-        stop_daemon(port);
         return;
     }
 
@@ -298,13 +260,12 @@ fn live_138_fragment_navigate_succeeds() {
     let timeout_ms: u64 = 8000;
     let started = Instant::now();
     let frag_nav = Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(["navigate", &frag_url, "--timeout", &timeout_ms.to_string()])
         .output()
         .expect("fragment navigate");
     let wall_ms = started.elapsed().as_millis();
     let out = combined(&frag_nav);
-    stop_daemon(port);
 
     assert!(
         frag_nav.status.success(),
@@ -339,19 +300,18 @@ fn live_138_timeout_message_matches_wall_clock() {
         eprintln!("live_138_timeout_message_matches_wall_clock: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let ff = firefox_with_daemon("live_138_timeout_message_matches_wall_clock");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let timeout_ms: u64 = 3000;
     let started = Instant::now();
     let back = Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(["back", "--timeout", &timeout_ms.to_string()])
         .output()
         .expect("back with no history");
     let wall_ms = started.elapsed().as_millis();
     let out = combined(&back);
-    stop_daemon(port);
 
     if back.status.success() {
         // Some Firefox versions may report an actor-level error for a no-op
@@ -415,7 +375,7 @@ fn live_138_back_forward_committed_url_is_top_frame() {
         );
         return;
     }
-    let ff = firefox_with_daemon("live_138_back_forward_committed_url_is_top_frame");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let mut iframe_routes = HashMap::new();
@@ -427,7 +387,6 @@ fn live_138_back_forward_committed_url_is_top_frame() {
         eprintln!(
             "live_138_back_forward_committed_url_is_top_frame: could not bind subframe HTTP — skipping"
         );
-        stop_daemon(port);
         return;
     };
 
@@ -448,7 +407,6 @@ fn live_138_back_forward_committed_url_is_top_frame() {
         eprintln!(
             "live_138_back_forward_committed_url_is_top_frame: could not bind top HTTP — skipping"
         );
-        stop_daemon(port);
         return;
     };
     let url_a = format!("{}/a", server.base_url());
@@ -456,7 +414,7 @@ fn live_138_back_forward_committed_url_is_top_frame() {
 
     for url in [&url_a, &url_b] {
         let nav = Command::new(ff_rdp_bin())
-            .args(daemon_args(port))
+            .args(cli_args(port))
             .args(["navigate", url])
             .output()
             .expect("navigate");
@@ -465,13 +423,12 @@ fn live_138_back_forward_committed_url_is_top_frame() {
                 "live_138_back_forward_committed_url_is_top_frame: navigate {url} failed — {}",
                 combined(&nav)
             );
-            stop_daemon(port);
             return;
         }
     }
 
     let back = Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(["back"])
         .output()
         .expect("back");
@@ -487,11 +444,10 @@ fn live_138_back_forward_committed_url_is_top_frame() {
         .to_owned();
 
     let eval_href = Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(["eval", "location.href"])
         .output()
         .expect("eval location.href");
-    stop_daemon(port);
     assert!(
         eval_href.status.success(),
         "eval location.href must succeed: {}",
@@ -520,7 +476,7 @@ fn live_138_with_network_keeps_envelope() {
         eprintln!("live_138_with_network_keeps_envelope: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let ff = firefox_with_daemon("live_138_with_network_keeps_envelope");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let mut routes = HashMap::new();
@@ -530,18 +486,16 @@ fn live_138_with_network_keeps_envelope() {
     );
     let Some(server) = FixtureServer::start(routes) else {
         eprintln!("live_138_with_network_keeps_envelope: could not bind local HTTP — skipping");
-        stop_daemon(port);
         return;
     };
     let url = format!("{}/page", server.base_url());
 
     let nav = Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(["navigate", &url, "--with-network"])
         .output()
         .expect("navigate --with-network");
     let out = combined(&nav);
-    stop_daemon(port);
 
     assert!(
         nav.status.success(),

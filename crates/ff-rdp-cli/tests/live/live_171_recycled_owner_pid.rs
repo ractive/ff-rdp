@@ -125,7 +125,7 @@ fn live_171_recycled_owner_pid_no_longer_reads_as_live() {
 
     // 3. Kill the owner and confirm the leak: process gone, directory (and its
     //    now-stale markers) still on disk. This is the state every interrupted
-    //    or daemon-stop-less live test leaves behind.
+    //    or stop-less live test leaves behind.
     kill_pid_and_wait(pid);
     assert!(
         profile_dir.is_dir(),
