@@ -77,10 +77,7 @@ pub enum SafeIoError {
     /// would follow the reparse point to a possibly attacker-controlled
     /// location.  Application-layer reparse tags (AppExecutionAlias etc.)
     /// are not flagged.
-    ///
-    /// Only constructed on Windows builds; carried in the cross-platform
-    /// enum so callers can match exhaustively without `cfg` shenanigans.
-    #[allow(dead_code)]
+    #[cfg(windows)]
     #[error(
         "refusing to write under reparse point at '{}' (tag=0x{tag:x})",
         path.display()

@@ -505,7 +505,6 @@ fn resolve_step_vars(
     let ctx = VarContext {
         vars,
         step_results,
-        show_secrets: false,
         env_policy,
     };
 

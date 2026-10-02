@@ -47,7 +47,6 @@ pub enum AppError {
     /// Internal/unexpected error
     Internal(anyhow::Error),
     /// Exit with specific code (reserved for commands that need a precise exit code)
-    #[allow(dead_code)]
     Exit(i32),
     /// Connection failure (could not reach Firefox) — exit 3
     Connection(String),
