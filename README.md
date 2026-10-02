@@ -701,6 +701,38 @@ ff-rdp click 'button[type=submit]' --wait-for-network /api/login
   explicit escape hatch) but logs a warning per directory and lists each such
   basename under `removed_live` in the JSON output.
 
+## Environment variables
+
+Every `FF_RDP_*` variable ff-rdp or its test harness reads. A flag always wins
+over its variable.
+
+| Variable | Read by | Meaning |
+|---|---|---|
+| `FF_RDP_PORT` | every command | Debug-server port when `--port` is absent (default 6000). `FF_RDP_PORT=6195 ff-rdp launch` then `ff-rdp tabs` finds the browser with no flag. |
+| `FF_RDP_HOME` | `launch`, `profiles`, `doctor` | Base directory of the temporary-profile root (see [Connections](#connections)). |
+| `FF_RDP_LAUNCH_TIMEOUT_SECS` | `launch` | Seconds to wait for the debug port (default 30); `--launch-timeout` wins. |
+| `FF_RDP_PROFILE_PRUNE_DAYS` | `launch` | Age after which leftover temporary profiles are pruned (default 7). |
+| `FF_RDP_PROFILE_PRUNE_MAX` | `launch`, `doctor` | Upper bound on temporary profiles kept (default 50). |
+| `FF_RDP_TRACE_RAW` | every command | `1` disables redaction of sensitive fields in `--log-level trace` output. |
+
+Test and tooling gates (contributors only — see `CONTRIBUTING.md`):
+
+| Variable | Read by | Meaning |
+|---|---|---|
+| `FF_RDP_LIVE_TESTS` | live tests | `1` launches headless Firefox locally. |
+| `FF_RDP_LIVE_NETWORK_TESTS` | live tests | `1` also allows real network requests. |
+| `FF_RDP_LIVE_SITES_TESTS` | live tests | `1` also drives third-party sites (weekly canary). |
+| `FF_RDP_LIVE_TESTS_RECORD` | `ff-rdp-core` fixture recorder | `1` records fixtures from a running Firefox. |
+| `FF_RDP_PORT` | `ff-rdp-core` live tests | Port of an already-running Firefox (default 6000). |
+| `FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS` | live harness | Launch wait for harness-spawned Firefox. |
+| `FF_RDP_LIVE_LAUNCH_LOG` | live harness | Path to append harness launch diagnostics to. |
+| `FF_RDP_TEST_KILL_WAIT_TIMEOUT_MS` | live harness | How long teardown waits for a killed Firefox. |
+| `FF_RDP_LIVE_TEST_NAME` | live harness → `launch` | Set by the harness so a launched profile records which test owns it. |
+| `FF_RDP_LIVE_SUITE_CHECK` | `live_151` | `1` opts into the nested whole-chunk orphan check. |
+| `FF_RDP_BIN` | `xtask` | Built `ff-rdp` binary to use instead of `cargo run`. |
+| `FF_RDP_FIREFOX_PATH` | `xtask check-firefox-refs` | Path to a Firefox **source** checkout. |
+| `CARGO_FF_RDP_FORCE_NO_GIT` | `build.rs` | Build without embedding the git SHA/date. |
+
 ## Security
 
 ff-rdp has the same power as Firefox DevTools — it can read httpOnly cookies, execute arbitrary JavaScript, capture screenshots, and navigate to URLs. The security model is "same as opening DevTools": the user is the operator.

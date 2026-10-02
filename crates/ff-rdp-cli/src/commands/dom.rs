@@ -454,7 +454,9 @@ fn build_stats_js() -> String {
     format!(
         r"(function() {{
   var nodeCount = document.getElementsByTagName('*').length;
-  var docSize = document.documentElement.outerHTML.length;
+  // Element refs are stamped onto the page as data-ffrdp-ref; they are ff-rdp's,
+  // not the site's, so they must not inflate the measured size.
+  var docSize = document.documentElement.outerHTML.replace(/ data-ffrdp-ref=\x22e[0-9]+\x22/g, '').length;
   var scripts = document.getElementsByTagName('script');
   var inlineScriptCount = 0;
   for (var i = 0; i < scripts.length; i++) {{
@@ -536,6 +538,17 @@ pub fn run_stats(cli: &Cli) -> Result<(), AppError> {
 mod tests {
     use super::super::js_helpers::escape_selector;
     use super::*;
+
+    #[test]
+    fn stats_document_size_excludes_ref_stamps() {
+        let js = build_stats_js();
+        assert!(
+            js.contains(
+                r"outerHTML.replace(/ data-ffrdp-ref=\x22e[0-9]+\x22/g, '').length"
+            ),
+            "docSize must be measured with ff-rdp's ref stamps stripped: {js}"
+        );
+    }
 
     #[test]
     fn build_js_outer_html() {
