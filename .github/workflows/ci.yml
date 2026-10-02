@@ -147,9 +147,9 @@ jobs:
       # copies of two scripts in sync, and those scripts are gone),
       # check-firefox-refs (same — it needs a Firefox checkout no runner has; kept
       # as a local gate, it is the best one in the repo), and check-actor-kb-sync
-      # (a docs-sync reminder, now local-only). check-daemon-locks,
-      # check-error-envelope-paths and check-stderr-annotations were merged into
-      # check-source-invariants — same three scans, one step, named results.
+      # (a docs-sync reminder, now local-only). check-error-envelope-paths and
+      # check-stderr-annotations were merged into check-source-invariants — same
+      # scans, one step, named results.
       - name: Check every iteration plan lints (iter-233)
         # `check-iteration-plan` has been required by CLAUDE.md before filing a
         # plan since long before anything ran it — "required by a document" means
@@ -171,11 +171,8 @@ jobs:
         # binary reappears. Live suites must be modules of tests/live/main.rs so
         # a plain `cargo test` links one live target instead of ~45.
         run: ./target/debug/xtask check-live-test-layout
-      - name: Check source invariants (daemon locks, error envelope, stderr annotations)
-        # Three regex scans of product source, each with its own named result line:
-        #   daemon-locks (iter-63)          — no `.lock().unwrap()` under daemon/;
-        #                                     use lock_or_recover! so a poisoned
-        #                                     mutex doesn't kill the process.
+      - name: Check source invariants (error envelope, stderr annotations)
+        # Two regex scans of product source, each with its own named result line:
         #   error-envelope-paths (iter-145) — no eprintln! immediately followed by
         #                                     AppError::Exit(N), the bypass that let
         #                                     click-time JS exceptions skip the JSON

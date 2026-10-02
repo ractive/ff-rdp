@@ -317,8 +317,7 @@ pub enum ProtocolError {
     /// stay on the wire, so the peer's framer resumes reading *inside* a
     /// payload and reports something like
     /// `invalid packet: unexpected byte 0x3d in length prefix` — the exact
-    /// line iteration 224 found in `~/.ff-rdp/daemon.log` and could not
-    /// explain.
+    /// line iteration 224 found in its logs and could not explain.
     ///
     /// The distinction from [`Timeout`](Self::Timeout) matters: a timeout that
     /// wrote nothing leaves an aligned stream and may be retried, whereas this
@@ -390,8 +389,8 @@ impl ProtocolError {
     ///
     /// Transient errors:
     /// - `Timeout` — the socket read timed out; Firefox may respond on retry.
-    /// - `ConnectionClosed` (expressed as a recv/send I/O error) — the daemon or
-    ///   Firefox closed the connection mid-stream; a fresh connection may work.
+    /// - `ConnectionClosed` (expressed as a recv/send I/O error) — Firefox
+    ///   closed the connection mid-stream; a fresh connection may work.
     /// - `ActorError { UnknownActor }` — the actor was garbage-collected (e.g.
     ///   after a soft navigation); retrying after reconnect may resolve this.
     ///

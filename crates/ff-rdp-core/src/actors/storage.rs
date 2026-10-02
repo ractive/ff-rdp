@@ -93,8 +93,7 @@ impl StorageActor {
         // (missing httpOnly cookies and all flags).  See iter-121.
         //
         // We install a temporary collector sink around the `watchResources`
-        // call, restoring whatever sink was there before (e.g. a
-        // daemon-installed one) afterwards.
+        // call, restoring whatever sink was there before afterwards.
         let (event_tx, event_rx) = std::sync::mpsc::channel::<Value>();
         let prev_sink = transport.swap_event_sink(Some(event_tx));
 

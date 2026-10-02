@@ -3815,15 +3815,13 @@ fn unit_send_raw_rejects_oneway() {
 // ===========================================================================
 
 /// Record a `resources-available-array` frame produced by a watcher created
-/// **exactly the way the daemon creates it** — `getWatcher` with
-/// `isServerTargetSwitchingEnabled: true`.
+/// with `getWatcher` + `isServerTargetSwitchingEnabled: true` — the way
+/// `navigate` creates it.
 ///
 /// iter-159 needed to know whether that flag moves `network-event` delivery off
 /// the watcher actor and onto the per-document target actor, which would make
-/// the daemon's `is_watcher_event` predicate (a `from == watcher` equality
-/// test) silently discard every network event.  The recorded frame answers it
-/// on the wire instead of by reading the spec twice; the unit test that pins
-/// the answer is `daemon::server::tests::unit_159_daemon_resource_routing_pinned`.
+/// a `from == watcher` routing test silently discard every network event. The
+/// recorded frame answers it on the wire instead of by reading the spec twice.
 ///
 /// Fixture: `ff-rdp-cli/tests/fixtures/resources_available_network_server_target_switching.json`
 #[test]
@@ -3844,7 +3842,7 @@ fn live_159_record_resources_available_with_server_target_switching() {
         .expect("tab actor")
         .to_owned();
 
-    // The daemon's exact call (daemon/server.rs `establish_watcher`).
+    // Server-side target switching on, as `navigate` requests it.
     transport
         .send(&json!({
             "to": &tab_actor,

@@ -28,7 +28,7 @@ Operating rules:
    - packaging files
 2. Detect the app type before designing the pipeline:
    - CLI
-   - daemon/service
+   - background service
    - desktop app
    - library
 3. Prefer standard GitHub Actions patterns:

@@ -1,24 +1,19 @@
-//! One subcommand, one CI step, three source-scanning invariants.
+//! One subcommand, one CI step, two source-scanning invariants.
 //!
-//! iter-162a merged `check-daemon-locks` (iter-63), `check-error-envelope-paths`
-//! (iter-145 Theme C) and `check-stderr-annotations` (iter-148) into this file.
-//! All three did the same thing — regex-scan product source for one specific
-//! defect shape — and two of them already shared [`crate::stderr_scan`]'s walk.
-//! Each invariant keeps its own named result line, so a failure still says which
-//! one fired and how to fix it.
+//! iter-162a merged `check-error-envelope-paths` (iter-145 Theme C) and
+//! `check-stderr-annotations` (iter-148) into this file (a third, a
+//! `.lock().unwrap()` scan, was retired with the code it scanned). Both scan
+//! source for one specific defect shape and share [`crate::stderr_scan`]'s
+//! walk. Each invariant keeps its own named result line, so a failure still
+//! says which one fired and how to fix it.
 
 use crate::stderr_scan::{locate_repo_root, scan_rs_files, strip_test_module};
 use anyhow::{Context, Result};
 use clap::Args as ClapArgs;
-use regex::Regex;
 use std::path::{Path, PathBuf};
 
 #[derive(ClapArgs)]
 pub struct Args {
-    /// Directory scanned by the `daemon-locks` invariant (relative to repo root).
-    #[arg(long, default_value = "crates/ff-rdp-cli/src/daemon")]
-    daemon_dir: PathBuf,
-
     /// Directory scanned by the `error-envelope-paths` and `stderr-annotations`
     /// invariants (relative to repo root).
     #[arg(long, default_value = "crates/ff-rdp-cli/src/commands")]
@@ -36,67 +31,6 @@ pub struct Finding {
 const LOOKAHEAD_LINES: usize = 6;
 const LOOKBACK_JUSTIFICATION_LINES: usize = 2;
 const JUSTIFICATION_MARKER: &str = "// stderr-ok:";
-
-// --- invariant: daemon-locks (iter-63) ---------------------------------------
-
-/// Matches `.lock().unwrap()`, including rustfmt-split chains like
-/// `firefox_writer\n    .lock()\n    .unwrap()` — those were bypassing the
-/// original check until iter-63's post-review hardening added the `\s*`.
-///
-/// `.lock().expect(...)` is intentionally NOT matched: `#[cfg(test)]` modules
-/// still use that form against a `buffer` mutex where panic-on-poison is the
-/// desired test behaviour.
-fn lock_unwrap_regex() -> Result<Regex> {
-    Regex::new(r"\.lock\(\)\s*\.unwrap\(\)").context("compiling lock-unwrap regex")
-}
-
-/// Scan one file for `.lock().unwrap()`. The daemon must use `lock_or_recover!`
-/// so a poisoned mutex doesn't take the whole process down.
-pub fn check_daemon_locks_source(file_label: &str, src: &str, pattern: &Regex) -> Vec<Finding> {
-    let mut findings = Vec::new();
-    let lines: Vec<&str> = src.lines().collect();
-    let mut i = 0usize;
-
-    while i < lines.len() {
-        // Single-line match.
-        if pattern.is_match(lines[i]) {
-            findings.push(Finding {
-                file: file_label.to_owned(),
-                line: i + 1,
-                content: lines[i].trim().to_owned(),
-            });
-            i += 1;
-            continue;
-        }
-        // Two- then three-line windows, whitespace-normalised, for split chains.
-        let mut matched = false;
-        for window_len in 2..=3 {
-            if i + window_len > lines.len() {
-                break;
-            }
-            let window = lines[i..i + window_len]
-                .iter()
-                .map(|l| l.trim())
-                .collect::<Vec<_>>()
-                .join(" ");
-            if pattern.is_match(&window) {
-                findings.push(Finding {
-                    file: file_label.to_owned(),
-                    line: i + 1,
-                    content: lines[i].trim().to_owned(),
-                });
-                i += window_len;
-                matched = true;
-                break;
-            }
-        }
-        if !matched {
-            i += 1;
-        }
-    }
-
-    findings
-}
 
 // --- invariant: error-envelope-paths (iter-145 Theme C) ----------------------
 
@@ -171,10 +105,6 @@ fn is_justified(lines: &[&str], idx: usize) -> bool {
 /// Remediation text printed under a failing invariant.
 fn remedy(invariant: &str) -> &'static str {
     match invariant {
-        "daemon-locks" => {
-            "  Use `lock_or_recover!` instead of `.lock().unwrap()` so a poisoned mutex\n  \
-             doesn't take the whole daemon process down (iter-63)."
-        }
         "error-envelope-paths" => {
             "  Route the error through the standard AppError envelope (e.g. AppError::User /\n  \
              AppError::Timeout) instead of `eprintln!` + `AppError::Exit(N)`, or add a\n  \
@@ -217,13 +147,8 @@ fn resolve_dir(repo_root: &Path, dir: &Path) -> Result<PathBuf> {
 
 pub fn run(args: Args) -> Result<()> {
     let repo_root = locate_repo_root()?;
-    let daemon_dir = resolve_dir(&repo_root, &args.daemon_dir)?;
     let commands_dir = resolve_dir(&repo_root, &args.commands_dir)?;
 
-    let pattern = lock_unwrap_regex()?;
-    let daemon_findings = scan_rs_files(&daemon_dir, &repo_root, &mut |label, src| {
-        check_daemon_locks_source(label, src, &pattern)
-    })?;
     let envelope_findings =
         scan_rs_files(&commands_dir, &repo_root, &mut check_error_envelope_source)?;
     let annotation_findings = scan_rs_files(
@@ -233,7 +158,6 @@ pub fn run(args: Args) -> Result<()> {
     )?;
 
     let mut ok = true;
-    ok &= report("daemon-locks", &daemon_findings);
     ok &= report("error-envelope-paths", &envelope_findings);
     ok &= report("stderr-annotations", &annotation_findings);
 
@@ -247,37 +171,6 @@ pub fn run(args: Args) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn daemon_findings(src: &str) -> Vec<Finding> {
-        let pattern = lock_unwrap_regex().unwrap();
-        check_daemon_locks_source("fake.rs", src, &pattern)
-    }
-
-    #[test]
-    fn daemon_locks_pass_when_no_unwraps() {
-        assert!(daemon_findings("fn f() { let _ = lock_or_recover!(state.x); }\n").is_empty());
-    }
-
-    #[test]
-    fn daemon_locks_catch_single_line() {
-        let findings = daemon_findings("fn f() { let _ = state.mu.lock().unwrap(); }\n");
-        assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].line, 1);
-    }
-
-    #[test]
-    fn daemon_locks_catch_rustfmt_split_chain() {
-        // The post-review gap that motivated the `\s*` combination in iter-63.
-        let src = "fn f() {\n    firefox_writer\n        .lock()\n        .unwrap()\n        .send(&msg);\n}\n";
-        let findings = daemon_findings(src);
-        assert_eq!(findings.len(), 1, "multiline split must still be caught");
-    }
-
-    #[test]
-    fn daemon_locks_allow_lock_expect() {
-        // `.lock().expect(...)` is deliberately out of scope — test modules use it.
-        assert!(daemon_findings("let g = m.lock().expect(\"poisoned\");\n").is_empty());
-    }
 
     #[test]
     fn envelope_detects_eprintln_immediately_before_exit_bypass() {

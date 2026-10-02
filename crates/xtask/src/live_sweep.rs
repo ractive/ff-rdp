@@ -254,10 +254,8 @@ impl PhaseBounds {
 /// Concurrency ceiling for phase 1 (iter-188 Theme C).
 ///
 /// Chosen from repeated whole-tier runs on a 10-core / 32 GB machine, not
-/// from a single one: at 8 workers four extra tests fail
-/// (`live_emulate_color_scheme_dark`, `live_137_consent_accept_via_daemon`,
-/// `live_138_back_forward_committed_url_is_top_frame`,
-/// `live_runner_page_map_resolution`) purely from contention. A gate whose
+/// from a single one: at 8 workers four extra tests failed purely from
+/// contention. A gate whose
 /// job is to not lie about what passed cannot be allowed to manufacture reds,
 /// so the extra ~15% of wall clock is refused.
 pub const MAX_SWEEP_JOBS: usize = 6;
@@ -345,8 +343,8 @@ const PREEXISTING_MARKERS: &[&str] = &[
 /// Task D).
 ///
 /// The positive markers are bare substrings, and one of them — `firefox_port`
-/// — is also the name of a field in `daemon.<port>.json`. Any `ff-rdp-cli`
-/// live test that reads the registry back and asserts on that field was
+/// — is also an ordinary JSON field name. Any `ff-rdp-cli` live test that
+/// asserts on such a field was
 /// therefore silently reclassified as needing a Firefox somebody else started
 /// on port 6000, even though it launches one itself. iter-172 hit this while
 /// writing `live_172_published_record_is_complete_and_lock_is_a_sibling`: the
@@ -380,7 +378,7 @@ pub fn source_needs_preexisting_instance(src: &str) -> bool {
 ///
 /// Theme F decision: **classify, do not launch.** Port 6000 is ff-rdp's
 /// documented default and the port a human is most likely to already be using
-/// by hand; the fails-closed ownership guard in `daemon/client.rs` exists
+/// by hand; the fails-closed ownership guard in `launch --replace` exists
 /// precisely because ff-rdp once killed a hand-started Firefox on it. A sweep
 /// that binds 6000 itself either collides with the user or inherits that whole
 /// ownership problem. One TCP probe is honest about what it did.
@@ -402,7 +400,7 @@ pub fn preexisting_instance_available() -> bool {
 /// (`ff-rdp-core`'s `tests/live_*.rs`).
 ///
 /// The ignore attribute may span multiple lines (a reason string can use `\`
-/// line continuation — see `live_daemon_watch_targets.rs`), and a `#[cfg(…)]`
+/// line continuation), and a `#[cfg(…)]`
 /// may sit between the `#[ignore]` and the `fn`. Both are handled by scanning
 /// the whole file as one string rather than line-by-line.
 pub fn scan_source(src: &str, module_prefix: Option<&str>) -> Vec<GatedTest> {
@@ -2436,8 +2434,8 @@ pub fn run(args: Args) -> Result<()> {
         }
 
         // iter-245 Part A: phase 1 is over, so every self-launching test in
-        // this target has either cleaned up after itself (`daemon stop` /
-        // `LiveFirefox::drop`, iter-146 and iter-168) or is already accounted
+        // this target has either cleaned up after itself (`LiveFirefox::drop`,
+        // iter-146 and iter-168) or is already accounted
         // for above. Anything still holding a live-owned profile in the real
         // root at this instant is a leak — the whole-suite guarantee that
         // stopped being asserted anywhere when iteration 188 deleted the
@@ -2661,12 +2659,12 @@ fn live_throttle_slow3g_slows_fetch() {
         );
     }
 
-    /// Regression fixture: mirrors `live_daemon_watch_targets.rs`'s real
-    /// multi-line `#[ignore = "…\` reason (backslash line-continuation).
+    /// Regression fixture: a real multi-line `#[ignore = "…\` reason
+    /// (backslash line-continuation).
     #[test]
     fn scan_source_handles_multiline_reason() {
-        let src = "#[test]\n#[ignore = \"requires Firefox and FF_RDP_LIVE_TESTS=1; KNOWN FAILING pending \\\n            iteration-101 Theme A (watchTargets re-engagement) — see doc comment\"]\nfn live_daemon_watch_targets() {}\n";
-        let got = scan_source(src, Some("live_daemon_watch_targets"));
+        let src = "#[test]\n#[ignore = \"requires Firefox and FF_RDP_LIVE_TESTS=1; KNOWN FAILING pending \\\n            iteration-101 Theme A (watchTargets re-engagement) — see doc comment\"]\nfn live_watch_targets() {}\n";
+        let got = scan_source(src, Some("live_watch_targets"));
         assert_eq!(
             got.len(),
             1,
@@ -2676,7 +2674,7 @@ fn live_throttle_slow3g_slows_fetch() {
         assert!(!got[0].needs_network);
         assert_eq!(
             got[0].full_name,
-            "live_daemon_watch_targets::live_daemon_watch_targets"
+            "live_watch_targets::live_watch_targets"
         );
     }
 
@@ -2957,8 +2955,8 @@ fn live_on_bbc() {}
     // iter-173 Task D — a self-launching suite is never `preexisting`
     // -----------------------------------------------------------------------
 
-    /// AC4: an `ff-rdp-cli` live source that *names* `firefox_port` (the field
-    /// in `daemon.<port>.json`) but launches its own Firefox must classify as
+    /// AC4: an `ff-rdp-cli` live source that *names* `firefox_port` (an
+    /// ordinary JSON field name) but launches its own Firefox must classify as
     /// executed, not `preexisting`. On `main` the bare-substring marker put it
     /// in the wrong bucket, so with nothing on port 6000 it would be reported
     /// `ignored` instead of run — iter-155's false green by another road.
@@ -3115,12 +3113,12 @@ test result: FAILED. 0 passed; 2 failed; 0 ignored
     fn test_173_launch_timeout_is_classified_separately_from_a_real_failure() {
         let stdout = "\
 running 2 tests
-test live_123_daemon_autostart_and_registry::live_daemon_autostart_tabless ... FAILED
+test live_123_launch_registry::live_launch_tabless ... FAILED
 test live_140_eval::live_eval_returns_number ... FAILED
 
 failures:
 
----- live_123_daemon_autostart_and_registry::live_daemon_autostart_tabless stdout ----
+---- live_123_launch_registry::live_launch_tabless stdout ----
 thread 'main' panicked at crates/ff-rdp-cli/tests/common/mod.rs:1008:
 RawFirefox: /Applications/Firefox.app/Contents/MacOS/firefox (pid 43844) never opened debug port 64638 within 30s (raise FF_RDP_LIVE_LAUNCH_TIMEOUT_SECS)
 
@@ -3131,7 +3129,7 @@ assertion `left == right` failed
  right: 4
 
 failures:
-    live_123_daemon_autostart_and_registry::live_daemon_autostart_tabless
+    live_123_launch_registry::live_launch_tabless
     live_140_eval::live_eval_returns_number
 
 test result: FAILED. 0 passed; 2 failed; 0 ignored
@@ -3140,7 +3138,7 @@ test result: FAILED. 0 passed; 2 failed; 0 ignored
         assert_eq!(
             verdict.launch_timeout,
             vec![
-                "live_123_daemon_autostart_and_registry::live_daemon_autostart_tabless".to_owned()
+                "live_123_launch_registry::live_launch_tabless".to_owned()
             ]
         );
         assert_eq!(
@@ -4327,7 +4325,7 @@ not-a-process-line
         assert!(
             !capture_hook_should_fire(&[
                 "live_a::one".to_owned(),
-                "live_90_daemon_lifecycle::live_daemon_stop".to_owned(),
+                "live_90_lifecycle::live_stop".to_owned(),
             ]),
             "an unrelated timed-out set must not trigger a capture"
         );

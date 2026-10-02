@@ -306,8 +306,8 @@ impl ResourceCommand {
     /// last subscriber was pruned via dead-channel detection in
     /// [`dispatch_event`].
     ///
-    /// Call this periodically — e.g. after each event-loop cycle in the daemon,
-    /// or before returning from a CLI helper — to ensure Firefox is informed
+    /// Call this periodically — e.g. before returning from a CLI helper — to
+    /// ensure Firefox is informed
     /// that we no longer want events for abandoned types.
     ///
     /// Types whose ref-count has climbed back above zero (because a new
@@ -367,70 +367,6 @@ impl ResourceCommand {
         }
     }
 
-    /// Flush pending `unwatchResources` wire calls using a write-only transport.
-    ///
-    /// Like [`gc`](Self::gc) but uses a [`FramedWriter`] (write half of a split
-    /// transport) instead of a full [`RdpTransport`].  This is the correct API
-    /// for contexts where the transport has been split and only the write half is
-    /// available — e.g. the daemon's event-dispatcher thread.
-    ///
-    /// The packet is sent **fire-and-forget**: no reply is read.  Firefox will
-    /// send an `unwatchResources` acknowledgement but the daemon's reader thread
-    /// will consume it; we do not need to wait for it here.
-    ///
-    /// On success, `pending_unwatch` is cleared and zero-count `ref_counts`
-    /// entries are removed.  On failure, `pending_unwatch` is kept so the next
-    /// call can retry.
-    pub fn gc_fire_forget(&mut self, writer: &mut FramedWriter) {
-        if self.pending_unwatch.is_empty() {
-            return;
-        }
-
-        self.pending_unwatch
-            .sort_unstable_by_key(|t| t.as_wire_str());
-        self.pending_unwatch.dedup();
-        let to_unwatch: Vec<ResourceType> = self
-            .pending_unwatch
-            .iter()
-            .filter(|t| self.ref_counts.get(*t).copied().unwrap_or(0) == 0)
-            .copied()
-            .collect();
-
-        if to_unwatch.is_empty() {
-            self.pending_unwatch.clear();
-            return;
-        }
-
-        let types: Vec<serde_json::Value> = to_unwatch
-            .iter()
-            .map(|t| serde_json::json!(t.as_wire_str()))
-            .collect();
-        let packet = serde_json::json!({
-            "to": self.watcher_actor.as_ref(),
-            "type": "unwatchResources",
-            "resourceTypes": types,
-        });
-
-        match writer.send(&packet) {
-            Ok(()) => {
-                self.pending_unwatch.clear();
-                for t in &to_unwatch {
-                    self.ref_counts.remove(t);
-                }
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "gc_fire_forget: failed to send unwatchResources for {:?}: {e:#}",
-                    to_unwatch
-                        .iter()
-                        .map(|t| t.as_wire_str())
-                        .collect::<Vec<_>>()
-                );
-                // Keep pending_unwatch for retry on next cycle.
-            }
-        }
-    }
-
     /// Parse a `resources-available-array` event into typed [`Resource`] items.
     fn parse_available_resources(event: &Value) -> Vec<Resource> {
         let mut out = Vec::new();
@@ -447,7 +383,7 @@ impl ResourceCommand {
 
             let resource_type_str = sub_arr[0].as_str().unwrap_or_default();
 
-            // Hot path on the daemon's fan-out — pass the inner items slice
+            // Hot path on event fan-out — pass the inner items slice
             // directly to the typed parsers (iter-72 Theme B); the previous
             // implementation rewrapped each sub-array, allocating a Map +
             // Vec per resource on every event.
@@ -1004,8 +940,8 @@ mod tests {
 
     /// `gc_drops_flushed_ref_counts` (iter-71b AC):
     /// After `gc()` flushes a type that was pruned via dead-channel detection,
-    /// `ref_counts` must no longer contain that key.  Long-lived daemons must
-    /// not accumulate stale zero-valued map entries.
+    /// `ref_counts` must no longer contain that key, so a long-lived
+    /// subscription does not accumulate stale zero-valued map entries.
     #[test]
     fn gc_drops_flushed_ref_counts() {
         use std::io::{BufReader, Write as _};

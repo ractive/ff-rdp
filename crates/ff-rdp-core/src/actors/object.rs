@@ -53,8 +53,8 @@ impl GripKind for LongStringGrip {
 /// A pending release request enqueued by a dropped [`GripHandle<K>`].
 ///
 /// The actor ID and release method are recorded at drop time so the queue
-/// can be drained later — either by the demux reader thread (daemon mode)
-/// or by the next `actor_request` call (synchronous CLI mode).
+/// can be drained later — by a background drainer or by the next
+/// `actor_request` call.
 #[derive(Debug)]
 pub struct ReleaseRequest {
     /// The actor ID to send the release packet to.
@@ -66,7 +66,7 @@ pub struct ReleaseRequest {
 /// Sender half of the release queue, shared across all [`ScopedGrip`] instances.
 ///
 /// Obtained by calling [`release_queue`].  Pass the matching receiver to a
-/// background drainer (daemon mode) or drain inline (synchronous mode).
+/// background drainer or drain inline.
 pub type ReleaseQueueTx = mpsc::SyncSender<ReleaseRequest>;
 
 /// Receiver half of the release queue.
@@ -118,8 +118,8 @@ impl ObjectActor {
     /// Release the server-side object actor, freeing the associated memory.
     ///
     /// Firefox allocates a server-side actor for each object or long-string
-    /// grip returned by `evaluateJSAsync`.  In long-lived daemon connections
-    /// these actors accumulate and are never reclaimed.  Sending `release`
+    /// grip returned by `evaluateJSAsync`.  On a long-lived connection these
+    /// actors accumulate and are never reclaimed.  Sending `release`
     /// to the grip actor asks Firefox to destroy it.
     ///
     /// Note: closing the underlying RDP connection also releases all actors
@@ -147,10 +147,10 @@ impl ObjectActor {
 /// parameterised by a [`GripKind`] marker.
 ///
 /// Firefox allocates server-side actors for `object` and `longString` grips
-/// returned by `evaluateJSAsync`.  In long-lived daemon connections these
-/// actors accumulate without bound.  `GripHandle<K>` wraps the actor ID and
-/// enqueues a [`ReleaseRequest`] on drop — the queue is drained by the demux
-/// reader thread (daemon mode) or by the next `actor_request` call (sync CLI).
+/// returned by `evaluateJSAsync`.  On a long-lived connection these actors
+/// accumulate without bound.  `GripHandle<K>` wraps the actor ID and enqueues
+/// a [`ReleaseRequest`] on drop — the queue is drained by a background drainer
+/// or by the next `actor_request` call.
 ///
 /// When no release queue is set (constructed via [`ScopedGrip::without_queue`]),
 /// dropping the guard is a no-op and the actor leaks until the connection
@@ -296,8 +296,8 @@ impl<K: GripKind> std::fmt::Debug for GripHandle<K> {
 /// sends the release packet immediately over the transport.  Drop does NOT
 /// enqueue a release — callers must call `release` explicitly.
 ///
-/// New code targeting the daemon should prefer [`GripHandle<K>`] with a
-/// release queue for automatic cleanup on drop.
+/// Prefer [`GripHandle<K>`] with a release queue for automatic cleanup on
+/// drop.
 #[derive(Debug)]
 pub struct ScopedGrip {
     inner: Grip,

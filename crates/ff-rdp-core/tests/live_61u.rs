@@ -22,8 +22,8 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Verify that `unwatchTargets` (now oneway) does not hang on shutdown.
 ///
-/// AC: `ff-rdp tabs && ff-rdp navigate ... && ff-rdp daemon stop` exits cleanly
-/// under 200ms (no hang on `unwatchTargets`).
+/// AC: a connection that watched frame targets closes cleanly under 200ms
+/// (no hang on `unwatchTargets`).
 #[test]
 #[ignore = "requires live Firefox — FF_RDP_LIVE_TESTS=1"]
 fn live_unwatch_targets_does_not_hang() {

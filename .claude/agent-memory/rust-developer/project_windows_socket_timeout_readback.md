@@ -10,7 +10,7 @@ metadata:
 asserts a literal `Some(SOME_CONST)` therefore passes on two of the three CI platforms and fails
 on `test (windows-latest)` against perfectly correct code.
 
-**Why:** discovered 2026-09-07 on PR #243 (iteration 240) — a daemon test asserting that the
+**Why:** discovered 2026-09-07 on PR #243 (iteration 240) — a (since removed) test asserting that the
 goodbye frame leaves the client socket on `CLIENT_WRITE_DEADLINE` was green locally on macOS and
 red on Windows with `left: None, right: Some(10s)`. Windows' `getsockopt(SO_SNDTIMEO)` does not
 round-trip what `setsockopt` accepted.
@@ -20,6 +20,5 @@ capture a baseline with `write_timeout()` on the same socket first and assert th
 equals the baseline. That is true on every platform, and keeps its teeth on the ones that answer
 (it still fails 3/3 on macOS against the pre-fix code). The same caution applies to
 `read_timeout()`. Relatedly, Windows loopback buffers differ enough that a single large frame can
-be swallowed whole where macOS/Linux block — see the comments in
-`unit_240_non_reading_client_does_not_stop_the_dispatcher`, which pumps until a condition rather
-than asserting on one write. Related: [[daemon-architecture]].
+be swallowed whole where macOS/Linux block — pump until a condition rather than asserting on one
+write.

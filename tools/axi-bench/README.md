@@ -203,8 +203,8 @@ bash tools/axi-bench/test-ambient-mutations.sh
 
 Port 6000 must be free. The lifecycle launches a private raw headless Firefox,
 checks that its recorded PID owns that listener, and uses a private `FF_RDP_HOME`
-and unique product binary for daemon ownership. Cleanup checks PID start time and
-command identity before each signal. It never calls global `daemon stop`, `pkill`,
+and unique product binary. Cleanup checks PID start time and
+command identity before each signal. It never calls `pkill`,
 or upstream's broad orphaned-Chrome cleanup. Each task gets a fresh profile/state.
 An occupied port or an intruder PID is refused and left alone.
 
