@@ -50,10 +50,9 @@ impl NavAction {
 /// this command used to return immediately after dispatch. The action's own
 /// request (`reload`/`goBack`/`goForward`) is sent as a **raw** write from
 /// inside the `dispatch` closure — see `wait_for_navigation_commit`'s doc
-/// comment for why routing it through the old blocking
-/// `WindowGlobalTarget::reload`/`go_back`/`go_forward` (which read the ack via
-/// `recv_reply_from`) risks silently losing a `document-event` that races
-/// ahead of that ack.
+/// comment for why routing it through a blocking `actor_request` (which reads
+/// the ack via `recv_reply_from`) risks silently losing a `document-event`
+/// that races ahead of that ack.
 ///
 /// iter-138 Theme E: `--no-wait` on any of the three skips the commit wait
 /// entirely and returns the bare `{"action": "..."}` envelope this command

@@ -68,7 +68,7 @@ pub use actors::watcher::{
 };
 pub use connection::{COMPATIBLE_FIREFOX_MAX, COMPATIBLE_FIREFOX_MIN, RdpConnection};
 pub use error::{ActorErrorKind, NavCause, ProtocolError, RdpError, RdpResult};
-pub use registry::{Front, FrontKind, IsActorGone, Registry, call_with_refresh};
+pub use registry::{Front, FrontKind, Registry};
 pub use resources::{Resource, ResourceCommand, ResourceType, SubscriptionId};
 pub use session::Session;
 pub use transport::{FramedReader, FramedWriter, RdpTransport};

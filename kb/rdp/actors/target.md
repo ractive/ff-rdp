@@ -50,10 +50,10 @@ is reached through a target. Obtained by calling `getTarget()` on a descriptor.
   **reset/structure-core update (2026-10):** `TargetFront` had no non-test
   consumer by the time of the collapse — `ff-rdp reload --hard` and the rest
   of `nav_action.rs` drive `reload`/`go_back`/`go_forward` via a raw
-  `transport.send(...)`, not through `TargetFront` or
-  `WindowGlobalTarget::reload`/`go_back`/`go_forward` (`actors/target.rs`,
-  also currently without a non-test consumer) — and was deleted along with
-  the rest of `fronts/`. The matched-reply behaviour this section documents
+  `transport.send(...)`, not through `TargetFront` — and was deleted along with
+  the rest of `fronts/`. The typed `WindowGlobalTarget::reload`/`go_back`/
+  `go_forward` wrappers in `actors/target.rs` had no non-test consumer either
+  and were deleted in the same change. The matched-reply behaviour this section documents
   is preserved only by `TargetFront`'s former unit tests, which were removed
   with it; the matched-request pattern itself (`actor_request`/
   `recv_reply_from`) lives on in `crate::actor` and is still exercised by
