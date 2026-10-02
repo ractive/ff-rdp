@@ -735,11 +735,5 @@ fn describe_wait_condition(opts: &WaitAfterNav<'_>) -> String {
     }
 }
 
-// `tests.rs` holds this file's original, unmodified test tail: the
-// `#[cfg(test)] mod tests { ... }` block plus its sibling `#[cfg(test)] mod`
-// blocks, each already self-gated. `include!` (rather than `#[path] mod
-// tests;`) splices it in verbatim at this exact point in `navigate`'s own
-// scope, so every test keeps its original path (`navigate::tests::…`,
-// `navigate::blank_shortcut_tests::…`, …) instead of nesting one level
-// deeper under a new `tests` module.
-include!("tests.rs");
+#[cfg(test)]
+mod tests;
