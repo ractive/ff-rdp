@@ -1,8 +1,6 @@
 mod language_initialization;
 mod replace;
 mod startup;
-#[cfg(all(test, unix))]
-mod startup_controls;
 
 use std::net::ToSocketAddrs as _;
 use std::path::{Path, PathBuf};
