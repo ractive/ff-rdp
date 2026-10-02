@@ -13,7 +13,7 @@
 
 use std::process::Command;
 
-use crate::common::{LiveFirefox, ff_rdp_bin, live_tests_enabled, pid_alive};
+use crate::common::{LiveFirefox, current_live_home, ff_rdp_bin, live_tests_enabled, pid_alive};
 
 // iter-242 Theme E: the owner-marker scan and the two marker-name literals
 // used to be copy-pasted here (and in `live_151_residual_leak.rs`, and in the
@@ -26,9 +26,15 @@ use crate::common::{LiveFirefox, ff_rdp_bin, live_tests_enabled, pid_alive};
 use crate::common::live_owned_profile_dirs;
 
 /// The managed profile root, as the product itself reports it.
+///
+/// Scoped to this test thread's isolated `FF_RDP_HOME` (2026-10-02 reset
+/// phase 4b, second pass) — the same one `LiveFirefox::headless_on_random_port`
+/// below already launches into — rather than the developer's real per-user
+/// root, which no live-test launch writes into any more.
 fn profile_root() -> String {
     let out = Command::new(ff_rdp_bin())
         .args(["profiles", "list"])
+        .env("FF_RDP_HOME", current_live_home())
         .output()
         .expect("live_168_adjacent_tests_leave_no_live_owner: profiles list spawn failed");
     assert!(
@@ -69,7 +75,7 @@ fn live_168_adjacent_tests_leave_no_live_owner() {
     // while it is alive, the post-drop assertion below would pass vacuously.
     let before = live_owned_profile_dirs(&root);
     assert!(
-        before.iter().any(|(_, p, _)| *p == pid),
+        before.iter().any(|(_, p)| *p == pid),
         "live_168_adjacent_tests_leave_no_live_owner: a running LiveFirefox (pid {pid}) must \
          appear as a live owner under {root}; without that this test cannot detect a leak. \
          Saw: {before:?}"
@@ -86,7 +92,7 @@ fn live_168_adjacent_tests_leave_no_live_owner() {
     );
     let after = live_owned_profile_dirs(&root);
     assert!(
-        !after.iter().any(|(_, p, _)| *p == pid),
+        !after.iter().any(|(_, p)| *p == pid),
         "live_168_adjacent_tests_leave_no_live_owner: profile dir under {root} is still owned \
          by the dropped instance's pid {pid} — this is exactly what makes \
          `profiles prune --all` refuse in live_96_profile_cleanup. Saw: {after:?}"

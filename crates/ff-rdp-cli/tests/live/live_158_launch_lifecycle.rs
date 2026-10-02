@@ -24,8 +24,7 @@ use std::time::Duration;
 
 use crate::common::{
     FirefoxGuard, LIVE_LAUNCH_LOG_ENV, LiveFirefox, base_args, current_test_name, ff_rdp_bin,
-    ff_rdp_launch_command, ff_rdp_launch_command_for, live_tests_enabled, pid_alive,
-    recorded_launch_output,
+    ff_rdp_launch_command, live_tests_enabled, pid_alive, recorded_launch_output,
 };
 
 /// Parse a `ff-rdp` stdout buffer into JSON, with the raw text in the panic
@@ -56,10 +55,11 @@ fn live_158_launch_survives_contended_bind() {
     // Four at once: enough contention to reproduce the >5 s bind, launched in
     // parallel threads so they genuinely compete rather than queue.
     //
-    // iter-171: the owner-test name is captured *here*, on the test's own
-    // thread. Historically the unnamed workers stamped profiles `unknown`;
-    // iteration 282 also gives each worker this name for its outcome ledger.
-    // The iteration-168 postmortem could not attribute four abandoned profiles.
+    // The owning test's name is captured *here*, on the test's own thread,
+    // and given to each worker thread via `Builder::name` below so its
+    // outcome ledger (iteration 282) reads as this test rather than
+    // `unknown`. Each worker also gets its own isolated `FF_RDP_HOME`
+    // (`ff_rdp_launch_command`'s doc comment) regardless of its thread name.
     let owner = current_test_name();
     let ledger = std::env::var_os(LIVE_LAUNCH_LOG_ENV).map_or_else(
         || ff_rdp_bin().parent().unwrap().join("../live-launches.log"),
@@ -76,7 +76,7 @@ fn live_158_launch_survives_contended_bind() {
                 .spawn(move || {
                     let port = 7101 + u16::from(i);
                     let out = recorded_launch_output(
-                        ff_rdp_launch_command_for(&owner)
+                        ff_rdp_launch_command()
                             .args(["launch", "--headless"])
                             .args(["--debug-port", &port.to_string()]),
                         &ledger,

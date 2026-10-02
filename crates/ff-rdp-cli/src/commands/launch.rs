@@ -1,8 +1,6 @@
 mod language_initialization;
 mod replace;
 mod startup;
-#[cfg(all(test, unix))]
-mod startup_controls;
 
 use std::net::ToSocketAddrs as _;
 use std::path::{Path, PathBuf};
@@ -1146,18 +1144,6 @@ pub(crate) fn run_with_hooks(
         && let Some(dir) = profile_path.as_deref()
     {
         crate::util::profile_dir::write_owner_pid_marker(dir, child.id());
-
-        // iter-151 Theme A: if the caller identifies itself (the live-test
-        // harness sets this env var on every `ff-rdp launch` it spawns — see
-        // `tests/common/mod.rs`), record it alongside the owner PID so a
-        // leaked profile can be traced back to the exact test that spawned
-        // it, instead of a bisection hunt across ~200 live tests. Absent for
-        // a normal interactive `ff-rdp launch` — no marker is written.
-        if let Ok(test_name) = std::env::var(crate::util::profile_dir::SPAWNING_TEST_ENV)
-            && !test_name.trim().is_empty()
-        {
-            crate::util::profile_dir::write_owner_test_marker(dir, test_name.trim());
-        }
     }
 
     let mut observation = startup::Observation {

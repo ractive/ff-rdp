@@ -147,25 +147,6 @@ const MANAGED_PROFILE_PREFIX: &str = "ff-rdp-profile-";
 /// no marker (pre-97 dirs, or an owner whose PID has since been reused).
 pub(crate) const OWNER_PID_MARKER: &str = ".ff-rdp-owner-pid";
 
-/// Sibling marker recording *who* asked for the profile (iter-151 Theme A).
-///
-/// Only ever written when [`SPAWNING_TEST_ENV`] is set in `launch`'s own
-/// environment — i.e. only when the live-test harness spawned this `launch`.
-/// As of iter-171 that covers both routes: `LiveFirefox`, and every direct
-/// `ff-rdp launch` in the live suite, which now goes through the harness's
-/// `ff_rdp_launch_command()` rather than a bare `Command` (see
-/// `tests/common/mod.rs`). Before that, the ~20 direct call sites produced
-/// markers reading `spawned by unknown test`. A normal interactive `ff-rdp
-/// launch` never sets that env var, so this marker is simply absent for every
-/// real user profile.
-///
-/// Before this, a leaked profile carried only [`OWNER_PID_MARKER`] — a bare
-/// PID with no way to tell which of ~200 live tests spawned it, turning every
-/// occurrence into a bisection hunt (see the iter-146 postmortem this
-/// iteration follows up on). This marker converts that hunt into a lookup:
-/// `cat <profile>/.ff-rdp-owner-test` names the exact test function.
-pub(crate) const OWNER_TEST_MARKER: &str = ".ff-rdp-owner-test";
-
 /// Sibling marker recording the owning process's *identity*, not just its PID
 /// (iter-171).
 ///
@@ -185,26 +166,11 @@ pub(crate) const OWNER_TEST_MARKER: &str = ".ff-rdp-owner-test";
 /// when the token is absent (every pre-iter-171 profile) or unobtainable.
 ///
 /// Deliberately a **sibling file** rather than a second line inside
-/// [`OWNER_PID_MARKER`]: three out-of-crate readers parse that file with
-/// `read_to_string(..).trim().parse::<u32>()` (the live suite's `live_96`,
-/// `live_151` and `live_168` all duplicate the constant locally), and a
-/// two-line body would make every one of them silently stop matching — which
-/// for `live_96` means its precondition quietly stops firing.
+/// [`OWNER_PID_MARKER`]: out-of-crate readers parse that file with
+/// `read_to_string(..).trim().parse::<u32>()` (the live suite's `live_151` and
+/// `live_168` both duplicate the constant locally), and a two-line body would
+/// make every one of them silently stop matching.
 const OWNER_START_MARKER: &str = ".ff-rdp-owner-start";
-
-/// Env var the live-test harness sets on every `ff-rdp launch` it spawns —
-/// both via `LiveFirefox` and, since iter-171, via `ff_rdp_launch_command()`
-/// for the direct call sites that previously used a bare `Command` and so
-/// recorded no test name at all (see `tests/common/mod.rs`'s
-/// identically-named constant —
-/// duplicated rather than imported because this crate ships no `[lib]`
-/// target for an integration-test binary to pull the constant from, the same
-/// reason that file already duplicates [`OWNER_PID_MARKER`] locally).
-///
-/// `launch` reads this (see `commands::launch::run`) and, when present and
-/// non-empty, writes it into [`OWNER_TEST_MARKER`] alongside the owner-PID
-/// marker.
-pub(crate) const SPAWNING_TEST_ENV: &str = "FF_RDP_LIVE_TEST_NAME";
 
 /// Number of random alphanumeric characters `tempfile::Builder::rand_bytes`
 /// appends after [`MANAGED_PROFILE_PREFIX`].
@@ -401,33 +367,6 @@ fn write_marker_atomically(marker: &Path, contents: &str) -> std::io::Result<()>
         return Err(e);
     }
     Ok(())
-}
-
-/// Write the owner-test marker ([`OWNER_TEST_MARKER`]) holding `test_name`
-/// into the managed profile directory `dir` (iter-151 Theme A).
-///
-/// Warn-not-fail, same rationale as [`write_owner_pid_marker`]: this is a
-/// diagnostic aid layered on top of the owner-PID marker, never load-bearing
-/// for correctness, so a write failure must never fail a launch.
-pub(crate) fn write_owner_test_marker(dir: &Path, test_name: &str) {
-    let marker = dir.join(OWNER_TEST_MARKER);
-    if let Err(e) = std::fs::write(&marker, test_name) {
-        tracing::warn!(
-            "write_owner_test_marker: could not write {}: {e}",
-            marker.display()
-        );
-    }
-}
-
-/// Read back the test name recorded in `dir`'s [`OWNER_TEST_MARKER`], if any.
-///
-/// Returns `None` when the marker is absent (every real user profile, and
-/// any pre-iter-151 profile) — callers must treat that as "unknown spawner",
-/// not as evidence the profile is unmanaged.
-pub(crate) fn read_owner_test_marker(dir: &Path) -> Option<String> {
-    let contents = std::fs::read_to_string(dir.join(OWNER_TEST_MARKER)).ok()?;
-    let trimmed = contents.trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
 /// How a managed profile directory's owner markers grade against the live
@@ -1758,26 +1697,6 @@ mod tests {
         std::fs::write(dir.path().join(OWNER_PID_MARKER), b"not-a-pid\n").expect("overwrite");
         assert_eq!(owner_liveness(dir.path()), OwnerLiveness::Unreadable);
         assert!(!owner_liveness_of(dir.path()).keeps_profile_alive());
-    }
-
-    /// AC: `live_151_leaked_profile_names_its_test` (unit half) —
-    /// `write_owner_test_marker` + `read_owner_test_marker` round trip, an
-    /// absent marker reads back `None`, and an all-whitespace marker (a
-    /// degenerate but technically-written env var) also reads back `None`
-    /// rather than an empty-but-`Some` string.
-    #[test]
-    fn unit_owner_test_marker_roundtrip() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        assert_eq!(read_owner_test_marker(dir.path()), None);
-
-        write_owner_test_marker(dir.path(), "live_151_leaked_profile_names_its_test");
-        assert_eq!(
-            read_owner_test_marker(dir.path()),
-            Some("live_151_leaked_profile_names_its_test".to_owned())
-        );
-
-        std::fs::write(dir.path().join(OWNER_TEST_MARKER), b"   \n").expect("overwrite blank");
-        assert_eq!(read_owner_test_marker(dir.path()), None);
     }
 
     // -----------------------------------------------------------------

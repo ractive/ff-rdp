@@ -10,12 +10,15 @@
 //! Two mechanical properties are required of every `"launch"` invocation under
 //! `crates/ff-rdp-cli/tests/live/`:
 //!
-//! 1. It is built from `common::ff_rdp_launch_command[_for]()`, never a bare
-//!    `Command::new(ff_rdp_bin())`. That helper pre-sets `FF_RDP_LIVE_TEST_NAME`,
-//!    which is what makes a leaked profile name the test that spawned it
-//!    (`.ff-rdp-owner-test`) instead of reading `spawned by unknown test` —
-//!    the attribution iteration 151 Theme A was supposed to deliver suite-wide
-//!    and delivered only for `common::LiveFirefox`.
+//! 1. It is built from `common::ff_rdp_launch_command()`, never a bare
+//!    `Command::new(ff_rdp_bin())`. That helper pre-sets `FF_RDP_HOME` to this
+//!    test thread's own isolated temp directory (see `common::ISOLATED_LIVE_HOME`),
+//!    which is what keeps a managed profile this launch creates out of the
+//!    developer's real per-user profile root. (Before the 2026-10-02 reset
+//!    phase 4b second pass, this property was about attribution — tagging a
+//!    leaked profile with the spawning test's name — rather than isolation;
+//!    the attribution marker is gone, but the "route every launch through one
+//!    helper" property turned out to matter for a second, independent reason.)
 //! 2. The enclosing function binds an RAII owner for the resulting PID —
 //!    `common::FirefoxGuard` or `common::LiveFirefox` — or hands one back to
 //!    its caller in its return type. A function that parses a PID out of
@@ -124,10 +127,10 @@ fn is_allowed(file: &str, reason_out: &mut Option<&'static str>) -> bool {
 }
 
 /// AC (iter-242 Part B): no `"launch"` invocation under `tests/live/` is
-/// spawned without an owner-test marker, and none sits in a function with no
-/// RAII owner for the PID it produces.
+/// spawned outside this test thread's isolated `FF_RDP_HOME`, and none sits
+/// in a function with no RAII owner for the PID it produces.
 #[test]
-fn iter_242_every_live_launch_site_is_owned_and_attributed() {
+fn iter_242_every_live_launch_site_is_owned_and_isolated() {
     let mut violations: Vec<String> = Vec::new();
 
     for path in live_test_files() {
@@ -159,8 +162,9 @@ fn iter_242_every_live_launch_site_is_owned_and_attributed() {
             // whole file is searched rather than the enclosing function only.
             if !src.contains("ff_rdp_launch_command") {
                 violations.push(format!(
-                    "{file}:{}: spawns `launch` without `common::ff_rdp_launch_command()` — a \
-                     profile leaked here would record `spawned by unknown test`",
+                    "{file}:{}: spawns `launch` without `common::ff_rdp_launch_command()` — its \
+                     managed profile would land in the developer's real per-user profile root \
+                     instead of this test thread's isolated `FF_RDP_HOME`",
                     idx + 1
                 ));
             }
@@ -192,7 +196,7 @@ fn iter_242_every_live_launch_site_is_owned_and_attributed() {
 
     assert!(
         violations.is_empty(),
-        "unowned or unattributed live launch sites ({}):\n  {}",
+        "unowned or non-isolated live launch sites ({}):\n  {}",
         violations.len(),
         violations.join("\n  ")
     );
