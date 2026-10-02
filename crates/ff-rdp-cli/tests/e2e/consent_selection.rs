@@ -686,7 +686,7 @@ mod oracle_controls {
 
     fn trace_from(targets: &[String]) -> String {
         format!(
-            "2026-09-25T10:00:00Z DEBUG ff_rdp_cli::frame_targets: FRAME_TARGETS_BEGIN pid=42 via_daemon=true\n2026-09-25T10:00:01Z DEBUG ff_rdp_cli::frame_targets: FRAME_TARGETS_END pid=42 via_daemon=true elapsed_ns=100 result=Ok([{}])\n",
+            "2026-09-25T10:00:00Z DEBUG ff_rdp_cli::frame_targets: FRAME_TARGETS_BEGIN pid=42\n2026-09-25T10:00:01Z DEBUG ff_rdp_cli::frame_targets: FRAME_TARGETS_END pid=42 elapsed_ns=100 result=Ok([{}])\n",
             targets.join(", ")
         )
     }
@@ -754,14 +754,9 @@ mod oracle_controls {
 
     fn positive(case: &str, controls: [bool; 3], order: [&str; 2], literal: &Value) {
         let before = before(case, controls);
-        let expected = oracle::expectation(
-            &before,
-            case,
-            BASE,
-            &trace_from(&targets(&before, order)),
-            true,
-        )
-        .unwrap();
+        let expected =
+            oracle::expectation(&before, case, BASE, &trace_from(&targets(&before, order)))
+                .unwrap();
         assert_eq!(expected.order, order);
         let mut actual = expected.record();
         actual.as_object_mut().unwrap().remove("order");
@@ -785,7 +780,6 @@ mod oracle_controls {
             "all-miss",
             BASE,
             &trace_from(&targets(&all_miss, order)),
-            true,
         )
         .unwrap();
         let miss_result = json!({"cmp":"sourcepoint","action":null,"status":"detected_not_actioned","error_type":"consent_not_actioned"});
@@ -802,14 +796,9 @@ mod oracle_controls {
         );
 
         let first = before("first", [true, true, false]);
-        let expected = oracle::expectation(
-            &first,
-            "first",
-            BASE,
-            &trace_from(&targets(&first, order)),
-            true,
-        )
-        .unwrap();
+        let expected =
+            oracle::expectation(&first, "first", BASE, &trace_from(&targets(&first, order)))
+                .unwrap();
         let success =
             json!({"results":{"cmp":"sourcepoint","action":"accepted","status":"accepted"}});
         assert!(
@@ -841,7 +830,6 @@ mod oracle_controls {
             "bbc.com-native",
             BASE,
             &trace_from(&targets(&native, order)),
-            true,
         )
         .unwrap();
         let native_result =
@@ -940,7 +928,6 @@ mod oracle_controls {
             "no-cmp",
             BASE,
             &trace_from(&targets(&no_cmp, order)),
-            true,
         )
         .unwrap();
         let absent = json!({"cmp":null,"action":null,"status":"no_cmp_detected","error_type":"consent_no_cmp"});
@@ -965,14 +952,9 @@ mod oracle_controls {
         );
 
         let first = before("first", [true, true, false]);
-        let expected = oracle::expectation(
-            &first,
-            "first",
-            BASE,
-            &trace_from(&targets(&first, order)),
-            true,
-        )
-        .unwrap();
+        let expected =
+            oracle::expectation(&first, "first", BASE, &trace_from(&targets(&first, order)))
+                .unwrap();
         let mut missing_effect = observed(&first, &["first"], &["first"]);
         missing_effect["frames"][0]["present"] = json!(true);
         assert!(
@@ -981,14 +963,9 @@ mod oracle_controls {
         );
 
         let later = before("later", [false, true, false]);
-        let expected = oracle::expectation(
-            &later,
-            "later",
-            BASE,
-            &trace_from(&targets(&later, order)),
-            true,
-        )
-        .unwrap();
+        let expected =
+            oracle::expectation(&later, "later", BASE, &trace_from(&targets(&later, order)))
+                .unwrap();
         assert!(
             oracle::validate(
                 &later,
@@ -1019,10 +996,6 @@ mod oracle_controls {
         for (label, invalid) in [
             ("missing END", lines[0].to_string()),
             ("duplicate END", format!("{valid}{}\n", lines[1])),
-            (
-                "wrong route",
-                valid.replace("via_daemon=true", "via_daemon=false"),
-            ),
             ("duplicate frame", trace_from(&duplicate)),
             ("missing frame", trace_from(&targets[..2])),
             ("unexpected fourth target", trace_from(&extra)),
@@ -1032,7 +1005,7 @@ mod oracle_controls {
             ),
         ] {
             assert!(
-                oracle::expectation(&before, "later", BASE, &invalid, true).is_err(),
+                oracle::expectation(&before, "later", BASE, &invalid).is_err(),
                 "{label}"
             );
         }
@@ -1111,8 +1084,7 @@ mod oracle_controls {
                 .expect("case URL");
             let logs = std::fs::read_to_string(directory.join(format!("{prefix}-consent.stderr")))
                 .expect("actual command stderr");
-            let expected =
-                oracle::expectation(&before, case, base, &logs, route == "daemon").unwrap();
+            let expected = oracle::expectation(&before, case, base, &logs).unwrap();
             assert_eq!(
                 expected.selectors, selected,
                 "retained selector expectation"

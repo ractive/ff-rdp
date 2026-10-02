@@ -2,9 +2,8 @@
 //!
 //! `profiles list` and `profiles prune` both resolve
 //! `util::profile_dir::secure_profile_root()`, which — until iter-188 — was
-//! the one per-user path that ignored `$FF_RDP_HOME`, while
-//! `daemon/registry.rs` and `daemon_record.rs` both honoured it and both
-//! documented it as "the same convention". Setting the override therefore
+//! the one per-user path that ignored `$FF_RDP_HOME`, while the other state
+//! files honoured it and documented it as "the same convention". Setting the override therefore
 //! produced a *split* state directory. These tests pin the override down for
 //! every command that reads the root, without needing a Firefox.
 

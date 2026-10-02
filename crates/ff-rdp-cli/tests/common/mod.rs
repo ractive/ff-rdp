@@ -1086,7 +1086,7 @@ impl IsolatedLiveFirefox {
         let mut failures = Vec::new();
         if let Some(ff) = self.firefox.take() {
             // The receipt's PID is the Firefox this session launched; there is
-            // no daemon to stop, and ff-rdp keeps no other handle on it.
+            // ff-rdp keeps no other handle on it.
             kill_pid_and_wait(ff.firefox_pid);
             if pid_alive(ff.firefox_pid) {
                 failures.push(format!(

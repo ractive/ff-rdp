@@ -14,9 +14,6 @@
 //! stays in Rust — there is no in-process JS parser to check the wrap
 //! against), so the contract is asserted here rather than in a unit test.
 //!
-//! daemon-parity: these use the default daemon path, like every real
-//! invocation.
-//!
 //! # Running
 //!
 //!   FF_RDP_LIVE_TESTS=1 cargo test-live -p ff-rdp-cli \
@@ -30,7 +27,7 @@ use crate::common::{
     IsolatedLiveFirefox, LiveFirefox, ProfilePreference, ff_rdp_bin, live_tests_enabled,
 };
 
-fn daemon_args(port: u16) -> Vec<String> {
+fn cli_args(port: u16) -> Vec<String> {
     vec![
         "--host".to_owned(),
         "127.0.0.1".to_owned(),
@@ -41,29 +38,9 @@ fn daemon_args(port: u16) -> Vec<String> {
     ]
 }
 
-fn stop_daemon(port: u16) {
-    let _ = Command::new(ff_rdp_bin())
-        .args(["--host", "127.0.0.1", "--port", &port.to_string()])
-        .args(["daemon", "stop"])
-        .output();
-}
-
-/// Bring up Firefox with a running daemon, panicking on failure (iter-158
-/// Theme D: an `Option` here made every caller `return`, which libtest
-/// reports as `ok`).
-fn firefox_with_daemon(test: &str) -> LiveFirefox {
-    let ff = LiveFirefox::headless_on_random_port();
-    assert!(
-        ff.with_daemon().is_some(),
-        "{test}: the proxy daemon did not start for Firefox on port {}",
-        ff.port()
-    );
-    ff
-}
-
 fn run(port: u16, args: &[&str]) -> Output {
     Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("spawn ff-rdp {args:?}: {e}"))
@@ -98,7 +75,7 @@ fn eval_ok(port: u16, script: &str, flags: &[&str]) -> Value {
 }
 
 fn eval_ok_in_session(session: &IsolatedLiveFirefox, script: &str, flags: &[&str]) -> Value {
-    let mut args = daemon_args(session.firefox().port());
+    let mut args = cli_args(session.firefox().port());
     args.push("eval".to_owned());
     args.extend(flags.iter().map(|flag| (*flag).to_owned()));
     args.push(script.to_owned());
@@ -137,15 +114,11 @@ fn live_165_repeated_const_matches_help() {
         "browser.aboutwelcome.enabled".to_owned(),
         ProfilePreference::Bool(false),
     );
-    let mut session = IsolatedLiveFirefox::launch_with_preferences(
+    let session = IsolatedLiveFirefox::launch_with_preferences(
         &ff_rdp_bin(),
         std::slice::from_ref(&requested_pref),
     )
     .unwrap_or_else(|why| panic!("live_165_repeated_const_matches_help: {why}"));
-    let daemon_port = session
-        .with_daemon()
-        .unwrap_or_else(|why| panic!("live_165_repeated_const_matches_help: daemon: {why}"));
-    assert!(daemon_port > 0, "daemon must report a proxy port");
     assert!(
         !session.receipt().firefox_version.is_empty(),
         "receipt must name Firefox version"
@@ -207,7 +180,7 @@ fn live_165_scope_behaviour_table() {
         eprintln!("live_165_scope_behaviour_table: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_165_scope_behaviour_table");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     // (script, binding name) — each runs twice on the plain path and twice on
@@ -303,8 +276,6 @@ fn live_165_scope_behaviour_table() {
         Value::from("number"),
         "--no-isolate must leave its declaration in the tab's global scope"
     );
-
-    stop_daemon(port);
 }
 
 // ---------------------------------------------------------------------------
@@ -324,7 +295,7 @@ fn live_165_wrap_trigger_is_confined_to_declaring_scripts() {
         );
         return;
     }
-    let ff = firefox_with_daemon("live_165_wrap_trigger_is_confined_to_declaring_scripts");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     // A declaration-free statement script keeps its script completion value —
@@ -374,6 +345,4 @@ fn live_165_wrap_trigger_is_confined_to_declaring_scripts() {
         "the other documented workaround — --no-isolate — must restore the \
          script completion value"
     );
-
-    stop_daemon(port);
 }

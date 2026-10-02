@@ -92,8 +92,8 @@ windows-sys = { workspace = true }
 
 # iter-105 Theme D: this crate cannot inherit the workspace lints table because
 # the workspace default is `unsafe_code = "forbid"` and this crate has real,
-# audited FFI (unix `libc` process-group signalling in daemon/process.rs, unix
-# `setenv` in script/vars.rs tests, `windows-sys` console handlers).  `forbid`
+# audited FFI (unix `libc` process-group signalling in util/process.rs, unix
+# `setenv` in script/vars.rs tests, `windows-sys` process handles).  `forbid`
 # cannot be relaxed per-block, so instead we set `unsafe_code = "deny"` here —
 # every `unsafe` block must be explicit and carry a `// SAFETY:` justification
 # (all current call sites already do), keeping the allowance narrow and

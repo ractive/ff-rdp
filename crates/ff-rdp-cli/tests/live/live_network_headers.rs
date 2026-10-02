@@ -27,8 +27,8 @@ fn parse_json(output: &Output) -> serde_json::Value {
 }
 
 /// `live_network_headers`:
-/// Navigate to example.com with `--with-network`, then call
-/// `ff-rdp network --detail --headers` and assert:
+/// Run `ff-rdp network --detail --headers` while navigating to example.com
+/// from a second process, and assert:
 /// - `meta.source == "watcher"`
 /// - At least one entry has a non-empty `headers.response` map
 ///   containing `Content-Type` or `Server`.
@@ -42,60 +42,34 @@ fn live_network_headers() {
 
     let ff = LiveFirefox::headless_on_random_port();
 
-    let daemon_args = || {
-        vec![
-            "--host".to_owned(),
-            "127.0.0.1".to_owned(),
-            "--port".to_owned(),
-            ff.port().to_string(),
-            "--timeout".to_owned(),
-            "20000".to_owned(),
-        ]
-    };
+    // A one-shot `network` only sees requests made while it is connected, so
+    // start it first (it drains until the stream has been quiet for
+    // `--timeout`) and navigate from a second process while it listens.
+    let port = ff.port().to_string();
+    let watcher = Command::new(ff_rdp_bin())
+        .args(["--host", "127.0.0.1", "--port", &port, "--timeout", "8000"])
+        .args(["network", "--detail", "--headers", "--format", "json"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn network --detail --headers");
+    std::thread::sleep(std::time::Duration::from_millis(1500));
 
-    // Navigate to example.com with --with-network to capture watcher events.
     let nav = Command::new(ff_rdp_bin())
-        .args(daemon_args())
-        .args(["navigate", "https://example.com", "--with-network"])
+        .args(["--host", "127.0.0.1", "--port", &port, "--timeout", "20000"])
+        .args(["navigate", "https://example.com"])
         .output()
-        .expect("navigate --with-network");
-
+        .expect("navigate");
+    let network = watcher
+        .wait_with_output()
+        .expect("network --detail --headers output");
     if !nav.status.success() {
         eprintln!(
             "live_network_headers: navigate failed — {}",
             String::from_utf8_lossy(&nav.stderr)
         );
-        let _ = Command::new(ff_rdp_bin())
-            .args([
-                "--host",
-                "127.0.0.1",
-                "--port",
-                &ff.port().to_string(),
-                "daemon",
-                "stop",
-            ])
-            .output();
         return;
     }
-
-    // Call `ff-rdp network --detail --headers` — should return enriched entries.
-    let network = Command::new(ff_rdp_bin())
-        .args(daemon_args())
-        .args(["network", "--detail", "--headers", "--format", "json"])
-        .output()
-        .expect("network --detail --headers");
-
-    // Clean up daemon before asserting.
-    let _ = Command::new(ff_rdp_bin())
-        .args([
-            "--host",
-            "127.0.0.1",
-            "--port",
-            &ff.port().to_string(),
-            "daemon",
-            "stop",
-        ])
-        .output();
 
     let net_json = parse_json(&network);
 

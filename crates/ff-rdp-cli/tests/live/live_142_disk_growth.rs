@@ -1,27 +1,17 @@
-//! Live tests for iter-142 Theme B: disk growth (temp profiles, throttle
-//! state files).
+//! Live tests for iter-142 Theme B: disk growth (temp profiles).
 //!
 //! Dogfooding session 63 observed 62 temp profiles / 2.7 GB accumulate in a
-//! single day, plus 5 `daemon.*.throttle.json` files for dead daemon pids.
-//! Both existed because the safety nets that should reclaim them either
-//! never fired for a same-day workload (`prune_orphan_profiles`'s default
-//! 7-day age gate never lets a dead-owner profile go before a week has
-//! passed) or never covered the file at all (`gc_stale_spawn_locks_in`
-//! deliberately skips `*.throttle.json`, see `registry.rs`). iter-142 fixes
-//! both: a dead-owner profile is now reclaimed immediately regardless of
-//! age, and a dedicated GC sweep (wired into every `launch`) collects stale
-//! throttle-state files.
+//! single day, because `prune_orphan_profiles`'s default 7-day age gate never
+//! let a dead-owner profile go before a week had passed. iter-142 reclaims a
+//! dead-owner profile immediately regardless of age.
 //!
 //! Run with:
 //!   FF_RDP_LIVE_TESTS=1 cargo test-live -p ff-rdp-cli \
 //!       --test live live_142_disk_growth -- --nocapture
 
-use std::process::Command;
 use std::time::Duration;
 
-use crate::common::{
-    FirefoxGuard, ff_rdp_bin, ff_rdp_launch_command, kill_pid, live_tests_enabled,
-};
+use crate::common::{FirefoxGuard, ff_rdp_launch_command, kill_pid, live_tests_enabled};
 
 /// Attempt to bind `:0` to discover a free port.
 fn free_port() -> Option<u16> {
@@ -31,10 +21,9 @@ fn free_port() -> Option<u16> {
 
 // The RAII guard used throughout this file is `common::FirefoxGuard`.
 //
-// This file cannot reuse `common::LiveFirefox` outright:
-// `live_142_throttle_json_gc` needs a custom `FF_RDP_HOME` env var on its
-// `launch` invocation, which `LiveFirefox::try_launch` doesn't expose. Both
-// tests below used to launch via a bare `Command` with no guard at all and
+// This file cannot reuse `common::LiveFirefox` outright: it needs the raw
+// `launch` envelope (`results.profile_path`), which `LiveFirefox::try_launch`
+// doesn't expose. The test below used to launch via a bare `Command` with no guard at all and
 // rely entirely on a *manual*, later `kill_pid` call for cleanup — the
 // exact "no RAII guard across an assertion" shape iter-146 fixed in
 // `live_96_profile_cleanup.rs`'s `launch_headless` (see that file's doc
@@ -80,21 +69,6 @@ fn launch_headless() -> (FirefoxGuard, u16, serde_json::Value) {
     (guard, port, results)
 }
 
-/// Spawn+reap a trivial child process, returning its now-dead PID.
-fn spawn_and_reap_child_pid() -> u32 {
-    #[cfg(unix)]
-    let mut child = Command::new("true").spawn().expect("spawn `true`");
-    #[cfg(windows)]
-    let mut child = Command::new("cmd")
-        .args(["/C", "exit", "0"])
-        .spawn()
-        .expect("spawn cmd exit");
-    let pid = child.id();
-    child.wait().expect("child exits");
-    std::thread::sleep(Duration::from_millis(50));
-    pid
-}
-
 /// AC: `live_142_profile_growth_bounded`
 ///
 /// Policy under test: a temp profile whose owner PID is confirmed dead is
@@ -103,9 +77,8 @@ fn spawn_and_reap_child_pid() -> u32 {
 ///
 /// 1. Launch Firefox headless (creates a managed temp profile + owner-PID
 ///    marker).
-/// 2. Force-kill it directly (SIGKILL), bypassing `daemon stop` — the normal
-///    cleanup path never runs, so the profile dir is only reclaimable via
-///    the orphan sweep.
+/// 2. Force-kill it directly (SIGKILL), so the profile dir is only
+///    reclaimable via the orphan sweep.
 /// 3. Launch a second Firefox headless immediately (same process, no delay,
 ///    no artificial aging of the first profile's mtime).
 /// 4. Assert instance A's profile directory is gone — proves growth is
@@ -129,9 +102,8 @@ fn live_142_profile_growth_bounded() {
         "live_142_profile_growth_bounded: profile {profile_a} must exist right after launch"
     );
 
-    // Force-kill instance A directly — bypasses `daemon stop`'s own cleanup,
-    // so the profile dir is orphaned exactly like a crash or `kill -9` would
-    // leave it.
+    // Force-kill instance A directly, so the profile dir is orphaned exactly
+    // like a crash or `kill -9` would leave it.
     kill_pid(pid_a);
     std::thread::sleep(Duration::from_millis(500));
 
@@ -159,120 +131,5 @@ fn live_142_profile_growth_bounded() {
     );
 
     // Clean up instance B.
-    let _ = Command::new(ff_rdp_bin())
-        .args([
-            "--port",
-            &port_b.to_string(),
-            "--timeout",
-            "15000",
-            "daemon",
-            "stop",
-        ])
-        .output();
     kill_pid(pid_b);
-}
-
-/// AC: `live_142_throttle_json_gc`
-///
-/// A `daemon.<port>.throttle.json` file whose recorded `daemon_pid` is dead
-/// is collected by the next `launch`'s sweep (`gc_stale_throttle_states`,
-/// wired into `commands::launch::run`); one whose `daemon_pid` is alive
-/// survives. Runs against an isolated `FF_RDP_HOME` so it never touches the
-/// real `~/.ff-rdp/` directory (same isolation pattern as
-/// `live_123_daemon_autostart_and_registry.rs`).
-#[test]
-#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
-fn live_142_throttle_json_gc() {
-    if !live_tests_enabled() {
-        return;
-    }
-
-    let home = tempfile::tempdir().expect("tempdir for FF_RDP_HOME");
-    let registry_dir = home.path().join(".ff-rdp");
-    std::fs::create_dir_all(&registry_dir).expect("create registry dir");
-
-    let dead_pid = spawn_and_reap_child_pid();
-    let live_pid = std::process::id();
-
-    let dead_json = serde_json::json!({
-        "profile": "slow-3g",
-        "set_at": "2026-08-09T00:00:00Z",
-        "daemon_pid": dead_pid,
-    });
-    let live_json = serde_json::json!({
-        "profile": "slow-3g",
-        "set_at": "2026-08-09T00:00:00Z",
-        "daemon_pid": live_pid,
-    });
-    let dead_path = registry_dir.join("daemon.19100.throttle.json");
-    let live_path = registry_dir.join("daemon.19101.throttle.json");
-    std::fs::write(
-        &dead_path,
-        serde_json::to_string_pretty(&dead_json).unwrap(),
-    )
-    .expect("write dead throttle state");
-    std::fs::write(
-        &live_path,
-        serde_json::to_string_pretty(&live_json).unwrap(),
-    )
-    .expect("write live throttle state");
-
-    // Any `launch` sweeps the whole registry directory regardless of which
-    // port it targets — trigger it with a throwaway instance under the same
-    // isolated FF_RDP_HOME.
-    let Some(port) = free_port() else {
-        eprintln!("live_142_throttle_json_gc: no free port — skipping");
-        return;
-    };
-    let out = ff_rdp_launch_command()
-        .env("FF_RDP_HOME", home.path())
-        .args(["launch", "--headless", "--debug-port", &port.to_string()])
-        .output()
-        .expect("launch spawn failed");
-    // iter-151 Theme B: construct the guard before the assertions below — see
-    // `FirefoxGuard`'s doc comment for why this file can't just use
-    // `common::LiveFirefox` here (the custom `FF_RDP_HOME` env var above).
-    // iter-242 Theme B: and before the *success* assertion and the two
-    // `expect`s that used to sit between the spawn and the guard.
-    let guard = crate::common::guard_launched_firefox(&out);
-    assert!(
-        out.status.success(),
-        "live_142_throttle_json_gc: `ff-rdp launch --headless --debug-port {port}` exited {}\n  stdout: {}\n  stderr: {}",
-        out.status,
-        String::from_utf8_lossy(&out.stdout).trim(),
-        String::from_utf8_lossy(&out.stderr).trim(),
-    );
-    assert!(
-        guard.is_some(),
-        "live_142_throttle_json_gc: successful launch reported no results.pid; stdout: {}",
-        String::from_utf8_lossy(&out.stdout).trim()
-    );
-
-    assert!(
-        !dead_path.exists(),
-        "live_142_throttle_json_gc: FAIL — dead-pid throttle state must be \
-         collected by the next launch's sweep"
-    );
-    assert!(
-        live_path.exists(),
-        "live_142_throttle_json_gc: live-pid throttle state must survive the sweep"
-    );
-
-    eprintln!("live_142_throttle_json_gc: PASS — dead entry collected, live entry survived");
-
-    // Clean up the throwaway instance.
-    let _ = Command::new(ff_rdp_bin())
-        .env("FF_RDP_HOME", home.path())
-        .args([
-            "--port",
-            &port.to_string(),
-            "--timeout",
-            "15000",
-            "daemon",
-            "stop",
-        ])
-        .output();
-    // The guard reaps whatever `daemon stop` did not, and skips the PID
-    // entirely when it is already gone (iter-242 Theme D).
-    drop(guard);
 }

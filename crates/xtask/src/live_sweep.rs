@@ -3420,8 +3420,8 @@ failures:
         let live_109 = cli_target
             .gated
             .iter()
-            .find(|t| t.full_name == "live_109_throttle_block::live_block_url_pattern")
-            .expect("live_109_throttle_block::live_block_url_pattern must be discovered");
+            .find(|t| t.full_name == "live_109_throttle_block::live_navigate_throttle_slow3g_slows_load")
+            .expect("live_109_throttle_block::live_navigate_throttle_slow3g_slows_load must be discovered");
         assert!(live_109.needs_network);
     }
 
@@ -3562,7 +3562,7 @@ failures:
         let workspace_root = manifest_dir.join("..").join("..");
         let cli_live_dir = workspace_root.join("crates/ff-rdp-cli/tests/live");
         let gated = scan_modules_dir(&cli_live_dir).expect("scan_modules_dir");
-        let target_name = "live_109_throttle_block::live_block_url_pattern";
+        let target_name = "live_109_throttle_block::live_navigate_throttle_slow3g_slows_load";
         let target = gated
             .iter()
             .find(|t| t.full_name == target_name)

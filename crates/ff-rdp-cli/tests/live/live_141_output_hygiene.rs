@@ -11,12 +11,6 @@
 //! - Theme D: an empty `--format text` result still reports sample-size and
 //!   capped-state metadata instead of a bare `[]`.
 //!
-//! daemon-parity: every test here uses [`daemon_args`] (no `--no-daemon`) —
-//! the default connection mode is exactly what a real invocation uses, and
-//! iteration 137 already established the daemon-parity pattern this suite
-//! follows (see `live_140_element_targeting.rs`, which this file's helpers
-//! are modeled on).
-//!
 //! # Running
 //!
 //!   FF_RDP_LIVE_TESTS=1 cargo test-live -p ff-rdp-cli \
@@ -29,10 +23,7 @@ use serde_json::Value;
 
 use crate::common::{FixtureRoute, FixtureServer, LiveFirefox, ff_rdp_bin, live_tests_enabled};
 
-/// Args for the **default** connection mode: no `--no-daemon`, so the CLI
-/// auto-starts and proxies through the daemon — see the module-level
-/// `daemon-parity` note.
-fn daemon_args(port: u16) -> Vec<String> {
+fn cli_args(port: u16) -> Vec<String> {
     vec![
         "--host".to_owned(),
         "127.0.0.1".to_owned(),
@@ -43,30 +34,9 @@ fn daemon_args(port: u16) -> Vec<String> {
     ]
 }
 
-fn stop_daemon(port: u16) {
-    let _ = Command::new(ff_rdp_bin())
-        .args(["--host", "127.0.0.1", "--port", &port.to_string()])
-        .args(["daemon", "stop"])
-        .output();
-}
-
-/// Bring up Firefox with a running daemon.
-///
-/// Panics on either failure (iter-158 Theme D) — the `Option` this used to
-/// return made every caller `return` early, which libtest reports as `ok`.
-fn firefox_with_daemon(test: &str) -> LiveFirefox {
-    let ff = LiveFirefox::headless_on_random_port();
-    assert!(
-        ff.with_daemon().is_some(),
-        "{test}: the proxy daemon did not start for Firefox on port {}",
-        ff.port()
-    );
-    ff
-}
-
 fn navigate(port: u16, url: &str) {
     let nav = Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(["navigate", url])
         .output()
         .expect("ff-rdp navigate");
@@ -77,11 +47,11 @@ fn navigate(port: u16, url: &str) {
     );
 }
 
-/// Run `ff-rdp <args>` over the daemon connection and return the raw output
+/// Run `ff-rdp <args>` and return the raw output
 /// (caller decides success/failure).
 fn run(port: u16, args: &[&str]) -> Output {
     Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("spawn ff-rdp {args:?}: {e}"))
@@ -120,7 +90,7 @@ fn live_141_console_text_bounded() {
         eprintln!("live_141_console_text_bounded: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_141_console_text_bounded");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let mut routes = HashMap::new();
@@ -130,7 +100,6 @@ fn live_141_console_text_bounded() {
     );
     let Some(server) = FixtureServer::start(routes) else {
         eprintln!("live_141_console_text_bounded: could not bind fixture HTTP — skipping");
-        stop_daemon(port);
         return;
     };
 
@@ -171,8 +140,6 @@ fn live_141_console_text_bounded() {
             line.chars().count()
         );
     }
-
-    stop_daemon(port);
 }
 
 // ---------------------------------------------------------------------------
@@ -194,7 +161,7 @@ fn live_141_index_single_json_document() {
         eprintln!("live_141_index_single_json_document: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_141_index_single_json_document");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let mut routes = HashMap::new();
@@ -215,7 +182,6 @@ fn live_141_index_single_json_document() {
     );
     let Some(site) = FixtureServer::start(routes) else {
         eprintln!("live_141_index_single_json_document: could not bind fixture HTTP — skipping");
-        stop_daemon(port);
         return;
     };
 
@@ -255,8 +221,6 @@ fn live_141_index_single_json_document() {
         summary["results"]["pages"].as_u64().unwrap_or(0) >= 1,
         "expected at least one crawled page: {summary}"
     );
-
-    stop_daemon(port);
 }
 
 /// AC: `live_141_index_robots_user_agent_groups` — a robots.txt with a
@@ -276,7 +240,7 @@ fn live_141_index_robots_user_agent_groups() {
         eprintln!("live_141_index_robots_user_agent_groups: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_141_index_robots_user_agent_groups");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let mut routes = HashMap::new();
@@ -309,7 +273,6 @@ fn live_141_index_robots_user_agent_groups() {
         eprintln!(
             "live_141_index_robots_user_agent_groups: could not bind fixture HTTP — skipping"
         );
-        stop_daemon(port);
         return;
     };
 
@@ -335,8 +298,6 @@ fn live_141_index_robots_user_agent_groups() {
         "the deepcrawl-scoped 'Disallow: /' must not block a generic crawl \
          — expected all 3 reachable pages, got: {summary}"
     );
-
-    stop_daemon(port);
 }
 
 // ---------------------------------------------------------------------------
@@ -353,7 +314,7 @@ fn live_141_snapshot_truncation_in_meta() {
         eprintln!("live_141_snapshot_truncation_in_meta: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_141_snapshot_truncation_in_meta");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     // Enough markup that a tiny --max-chars budget cannot possibly fit it
@@ -373,7 +334,6 @@ fn live_141_snapshot_truncation_in_meta() {
     routes.insert("/".to_owned(), FixtureRoute::html(html));
     let Some(server) = FixtureServer::start(routes) else {
         eprintln!("live_141_snapshot_truncation_in_meta: could not bind fixture HTTP — skipping");
-        stop_daemon(port);
         return;
     };
 
@@ -394,8 +354,6 @@ fn live_141_snapshot_truncation_in_meta() {
         "meta.text_truncated must always be present (nullable-key \
          convention), got: {snap}"
     );
-
-    stop_daemon(port);
 }
 
 // ---------------------------------------------------------------------------
@@ -413,7 +371,7 @@ fn live_141_text_empty_result_keeps_metadata() {
         eprintln!("live_141_text_empty_result_keeps_metadata: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_141_text_empty_result_keeps_metadata");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     // Plain black-on-white text — every element should pass WCAG AA, so
@@ -433,7 +391,6 @@ fn live_141_text_empty_result_keeps_metadata() {
         eprintln!(
             "live_141_text_empty_result_keeps_metadata: could not bind fixture HTTP — skipping"
         );
-        stop_daemon(port);
         return;
     };
 
@@ -469,6 +426,4 @@ fn live_141_text_empty_result_keeps_metadata() {
         stdout.contains(&sampled.to_string()),
         "text output must surface the sampled count ({sampled}), got:\n{stdout}"
     );
-
-    stop_daemon(port);
 }

@@ -7,12 +7,6 @@
 //! (`error_type: "User"`), matching `eval.rs`'s iter-141 Theme E handling of
 //! a thrown script exception.
 //!
-//! daemon-parity: every test here uses [`daemon_args`] (no `--no-daemon`) —
-//! the default connection mode is exactly what a real invocation uses,
-//! following the pattern iteration 137 established
-//! (`live_137_daemon_mode_parity.rs`) and iteration 141 continued
-//! (`live_141_output_hygiene.rs`).
-//!
 //! # Running
 //!
 //!   FF_RDP_LIVE_TESTS=1 cargo test-live -p ff-rdp-cli \
@@ -25,10 +19,7 @@ use serde_json::Value;
 
 use crate::common::{FixtureRoute, FixtureServer, LiveFirefox, ff_rdp_bin, live_tests_enabled};
 
-/// Args for the **default** connection mode: no `--no-daemon`, so the CLI
-/// auto-starts and proxies through the daemon — see the module-level
-/// `daemon-parity` note.
-fn daemon_args(port: u16) -> Vec<String> {
+fn cli_args(port: u16) -> Vec<String> {
     vec![
         "--host".to_owned(),
         "127.0.0.1".to_owned(),
@@ -39,41 +30,20 @@ fn daemon_args(port: u16) -> Vec<String> {
     ]
 }
 
-fn stop_daemon(port: u16) {
-    let _ = Command::new(ff_rdp_bin())
-        .args(["--host", "127.0.0.1", "--port", &port.to_string()])
-        .args(["daemon", "stop"])
-        .output();
-}
-
-/// Bring up Firefox with a running daemon.
-///
-/// Panics on either failure (iter-158 Theme D) — the `Option` this used to
-/// return made every caller `return` early, which libtest reports as `ok`.
-fn firefox_with_daemon(test: &str) -> LiveFirefox {
-    let ff = LiveFirefox::headless_on_random_port();
-    assert!(
-        ff.with_daemon().is_some(),
-        "{test}: the proxy daemon did not start for Firefox on port {}",
-        ff.port()
-    );
-    ff
-}
-
 fn navigate(port: u16, url: &str) -> Output {
     Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(["navigate", url])
         .output()
         .expect("ff-rdp navigate")
 }
 
-/// Run `ff-rdp <args>` over the daemon connection and return the raw output
+/// Run `ff-rdp <args>` and return the raw output
 /// (caller decides success/failure — these tests are specifically about
 /// *failure* shapes).
 fn run(port: u16, args: &[&str]) -> Output {
     Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("spawn ff-rdp {args:?}: {e}"))
@@ -144,12 +114,11 @@ fn live_145_click_js_exception_envelope() {
         eprintln!("live_145_click_js_exception_envelope: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let ff = firefox_with_daemon("live_145_click_js_exception_envelope");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let Some(server) = start_iframe_fixture() else {
         eprintln!("live_145_click_js_exception_envelope: could not bind fixture HTTP — skipping");
-        stop_daemon(port);
         return;
     };
 
@@ -159,7 +128,6 @@ fn live_145_click_js_exception_envelope() {
             "live_145_click_js_exception_envelope: navigate failed — {}",
             combined(&nav)
         );
-        stop_daemon(port);
         return;
     }
 
@@ -167,7 +135,6 @@ fn live_145_click_js_exception_envelope() {
     // auto-wait pre-check (a separate, unaudited code path — out of scope
     // for this iteration; see the plan's Theme A).
     let click = run(port, &["click", INVALID_SELECTOR, "--no-wait"]);
-    stop_daemon(port);
 
     assert!(
         !click.status.success(),
@@ -207,14 +174,13 @@ fn live_145_click_frame_scan_js_exception_envelope() {
         );
         return;
     }
-    let ff = firefox_with_daemon("live_145_click_frame_scan_js_exception_envelope");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let Some(server) = start_iframe_fixture() else {
         eprintln!(
             "live_145_click_frame_scan_js_exception_envelope: could not bind fixture HTTP — skipping"
         );
-        stop_daemon(port);
         return;
     };
 
@@ -224,19 +190,10 @@ fn live_145_click_frame_scan_js_exception_envelope() {
             "live_145_click_frame_scan_js_exception_envelope: navigate failed — {}",
             combined(&nav)
         );
-        stop_daemon(port);
         return;
     }
 
-    let wait = crate::common::wait_for_live_targets(port);
-    assert!(
-        wait.reached,
-        "daemon never reported live frame targets — {}",
-        wait.note()
-    );
-
     let click = run(port, &["click", INVALID_SELECTOR, "--frame", "/frame"]);
-    stop_daemon(port);
 
     assert!(
         !click.status.success(),
@@ -277,14 +234,13 @@ fn live_145_click_element_not_found_unchanged() {
         eprintln!("live_145_click_element_not_found_unchanged: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let ff = firefox_with_daemon("live_145_click_element_not_found_unchanged");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let Some(server) = start_iframe_fixture() else {
         eprintln!(
             "live_145_click_element_not_found_unchanged: could not bind fixture HTTP — skipping"
         );
-        stop_daemon(port);
         return;
     };
 
@@ -294,21 +250,12 @@ fn live_145_click_element_not_found_unchanged() {
             "live_145_click_element_not_found_unchanged: navigate failed — {}",
             combined(&nav)
         );
-        stop_daemon(port);
         return;
     }
-
-    let wait = crate::common::wait_for_live_targets(port);
-    assert!(
-        wait.reached,
-        "daemon never reported live frame targets — {}",
-        wait.note()
-    );
 
     let started = std::time::Instant::now();
     let click = run(port, &["click", ".nonexistent-selector-xyz", "--no-wait"]);
     let elapsed = started.elapsed();
-    stop_daemon(port);
 
     assert!(
         !click.status.success(),

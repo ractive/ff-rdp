@@ -10,13 +10,11 @@
 //! events never runs. `watchTargets("frame")` and `watchResources` are both
 //! accepted and acked, and the *parent*-process resources (`will-navigate`,
 //! `network-event`) keep arriving — which is why this looked like a working
-//! connection for four iterations. The daemon's `establish_watcher` always
-//! passed the flag, hence the ~190x split between the two routes:
+//! connection for four iterations:
 //!
 //! ```text
-//! ff-rdp --no-daemon --timeout 30000 reload   → elapsed_ms 21011   (before)
-//! ff-rdp --no-daemon --timeout 30000 reload   → elapsed_ms   115   (after)
-//! ff-rdp --timeout 30000 reload  (daemon)     → elapsed_ms   111   (both)
+//! ff-rdp --timeout 30000 reload   → elapsed_ms 21011   (before)
+//! ff-rdp --timeout 30000 reload   → elapsed_ms   115   (after)
 //! ```
 //!
 //! Why the defect survived four iterations: `live_130_reload_envelope` and
@@ -35,14 +33,7 @@
 //! `document-event` (measured: `dom-loading` url =
 //! `https://…invalid/`, never `about:neterror`), so only `listTabs` can tell
 //! the two apart. `run_core` now runs that check on the success path when no
-//! HTTP status was observed. The daemon route had been returning `exit 0` with
-//! a success envelope for a DNS failure all along — `live_61l::live_navigate_dnsfail`
-//! is direct-only and never looked.
-//!
-//! daemon-parity: every assertion below runs on both routes —
-//! `live_174_nav_verbs_resolve_from_events_direct` is the `--no-daemon` leg and
-//! `live_174_nav_verbs_resolve_from_events_daemon` the proxied one, because the
-//! bug was precisely a divergence between them.
+//! HTTP status was observed.
 //!
 //! # Running
 //!
@@ -73,7 +64,7 @@ const TIMEOUT_MS: &str = "30000";
 /// RFC 2606 precisely so it never resolves.
 const BAD_HOST: &str = "https://this-domain-totally-does-not-exist-174-zzz.invalid";
 
-fn daemon_args(port: u16) -> Vec<String> {
+fn cli_args(port: u16) -> Vec<String> {
     vec![
         "--host".to_owned(),
         "127.0.0.1".to_owned(),
@@ -82,19 +73,6 @@ fn daemon_args(port: u16) -> Vec<String> {
         "--timeout".to_owned(),
         TIMEOUT_MS.to_owned(),
     ]
-}
-
-fn direct_args(port: u16) -> Vec<String> {
-    let mut args = daemon_args(port);
-    args.push("--no-daemon".to_owned());
-    args
-}
-
-fn stop_daemon(port: u16) {
-    let _ = Command::new(ff_rdp_bin())
-        .args(["--host", "127.0.0.1", "--port", &port.to_string()])
-        .args(["daemon", "stop"])
-        .output();
 }
 
 fn combined(out: &Output) -> String {
@@ -223,38 +201,31 @@ fn exercise_events_path(global: &[String], route: &str) {
     assert_resolved_from_events(&results, &label);
 }
 
-/// A DNS failure must exit 7 (`nav_dns_fail`) on **both** routes.
+/// A DNS failure must exit 7 (`nav_dns_fail`).
 ///
-/// Direct: this is a regression guard for the fix — before iteration 174 it
-/// passed only because the events wait timed out and
-/// `reclassify_timeout_as_neterror` caught it on the way out.
-/// Daemon: this never passed before iteration 174. `navigate` to a
-/// non-resolving host returned `exit 0` with
-/// `{"committed_url": "https://…invalid/", "ready_state": "complete"}` — a
-/// success envelope for a page that never loaded.
+/// A regression guard for the fix — before iteration 174 it passed only
+/// because the events wait timed out and `reclassify_timeout_as_neterror`
+/// caught it on the way out; with the events path working, a success envelope
+/// for a page that never loaded is the failure mode.
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
-fn live_174_dns_failure_exits_nav_dns_fail_both_routes() {
+fn live_174_dns_failure_exits_nav_dns_fail() {
     if !live_tests_enabled() {
-        eprintln!("live_174_dns_failure_exits_nav_dns_fail_both_routes: set FF_RDP_LIVE_TESTS=1");
+        eprintln!("live_174_dns_failure_exits_nav_dns_fail: set FF_RDP_LIVE_TESTS=1");
         return;
     }
     if std::env::var("FF_RDP_LIVE_NETWORK_TESTS").is_err() {
         eprintln!(
-            "live_174_dns_failure_exits_nav_dns_fail_both_routes: requires real DNS; set \
+            "live_174_dns_failure_exits_nav_dns_fail: requires real DNS; set \
              FF_RDP_LIVE_NETWORK_TESTS=1 to run"
         );
         return;
     }
     let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
-    assert!(
-        ff.with_daemon().is_some(),
-        "live_174_dns_failure_exits_nav_dns_fail_both_routes: the proxy daemon did \
-         not start for Firefox on port {port}"
-    );
 
-    for (route, global) in [("direct", direct_args(port)), ("daemon", daemon_args(port))] {
+    {
+        let (route, global) = ("direct", cli_args(port));
         let out = Command::new(ff_rdp_bin())
             .args(&global)
             .args(["navigate", BAD_HOST])
@@ -271,10 +242,9 @@ fn live_174_dns_failure_exits_nav_dns_fail_both_routes() {
             "{route}: the failure must be classified, not a bare timeout. Got: {all}"
         );
     }
-    stop_daemon(port);
 }
 
-/// AC: "`ff-rdp --no-daemon --timeout 30000 reload` on a static localhost page
+/// AC: "`ff-rdp --timeout 30000 reload` on a static localhost page
 /// reports `elapsed_ms` under 2 000 ms" and "`back`/`forward` exit 0 on a page
 /// with history" — the leg that reproduces the defect.
 #[test]
@@ -285,27 +255,5 @@ fn live_174_nav_verbs_resolve_from_events_direct() {
         return;
     }
     let ff = LiveFirefox::headless_on_random_port();
-    exercise_events_path(&direct_args(ff.port()), "direct");
-}
-
-/// The daemon leg of the same assertions. It passed before this iteration too
-/// — that is the point: it is the reference the direct route silently drifted
-/// away from, and pinning both is what keeps them from drifting again.
-#[test]
-#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
-fn live_174_nav_verbs_resolve_from_events_daemon() {
-    if !live_tests_enabled() {
-        eprintln!("live_174_nav_verbs_resolve_from_events_daemon: set FF_RDP_LIVE_TESTS=1");
-        return;
-    }
-    let ff = LiveFirefox::headless_on_random_port();
-    assert!(
-        ff.with_daemon().is_some(),
-        "live_174_nav_verbs_resolve_from_events_daemon: the proxy daemon did not \
-         start for Firefox on port {}",
-        ff.port()
-    );
-    let port = ff.port();
-    exercise_events_path(&daemon_args(port), "daemon");
-    stop_daemon(port);
+    exercise_events_path(&cli_args(ff.port()), "direct");
 }

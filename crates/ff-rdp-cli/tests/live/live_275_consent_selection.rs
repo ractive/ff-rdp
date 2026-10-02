@@ -1,5 +1,4 @@
 //! Actual-document consent selection. Local fixtures are not historical Guardian reproductions.
-//! daemon-parity: consent_selection_daemon covers the proxied path.
 #[path = "../support/fixture275_selection.rs"]
 mod fixture;
 #[path = "../support/initial_tab275.rs"]
@@ -170,7 +169,7 @@ fn output(command: &mut Command, label: &str) -> Output {
     result
 }
 
-fn command(session: &IsolatedLiveFirefox, daemon: bool) -> Command {
+fn command(session: &IsolatedLiveFirefox) -> Command {
     let mut cmd = session.command();
     cmd.args([
         "--host",
@@ -180,15 +179,12 @@ fn command(session: &IsolatedLiveFirefox, daemon: bool) -> Command {
         "--timeout",
         "30000",
     ]);
-    if !daemon {
-        cmd.arg("--no-daemon");
-    }
     cmd
 }
 
-fn readback(session: &IsolatedLiveFirefox, daemon: bool, label: &str) -> Value {
+fn readback(session: &IsolatedLiveFirefox, label: &str) -> Value {
     let out = output(
-        command(session, daemon).args(["eval", "JSON.stringify(window.readProof())"]),
+        command(session).args(["eval", "JSON.stringify(window.readProof())"]),
         label,
     );
     assert!(out.status.success(), "{}", output_note(&out));
@@ -197,12 +193,12 @@ fn readback(session: &IsolatedLiveFirefox, daemon: bool, label: &str) -> Value {
         .expect("fixture state")
 }
 
-fn run(daemon: bool) {
+fn run() {
     const PHASE: &str = "after";
     assert_eq!(std::env::var("FF_RDP_LIVE_TESTS").as_deref(), Ok("1"));
     let mut fixture =
         fixture::Fixture::start("selection", pages(), fixture::Fault::None).expect("fixture start");
-    let mut session = IsolatedLiveFirefox::launch(&ff_rdp_bin()).expect("owned Firefox launch");
+    let session = IsolatedLiveFirefox::launch(&ff_rdp_bin()).expect("owned Firefox launch");
     eprintln!("275 launch={:?}", session.receipt());
     initial_tab::observe(session.receipt().pid, session.receipt().port).unwrap_or_else(|failure| {
         panic!(
@@ -210,9 +206,6 @@ fn run(daemon: bool) {
             failure.reason, failure.report
         )
     });
-    if daemon {
-        session.with_daemon().expect("daemon autostart");
-    }
     let cases = [
         Case::Later,
         Case::First,
@@ -221,22 +214,18 @@ fn run(daemon: bool) {
         Case::Native,
     ];
     for case in cases {
-        let prefix = format!(
-            "{}-{}",
-            if daemon { "daemon" } else { "direct" },
-            case.name()
-        );
+        let prefix = format!("direct-{}", case.name());
         let url = format!("{}/{}", fixture.base_url(), case.name());
         let nav = output(
-            command(&session, daemon).args(["navigate", &url]),
+            command(&session).args(["navigate", &url]),
             &format!("{prefix}-navigate"),
         );
         assert!(nav.status.success(), "{}", output_note(&nav));
-        let before = readback(&session, daemon, &format!("{prefix}-before"));
+        let before = readback(&session, &format!("{prefix}-before"));
         oracle::qualify_before(&before, case.name(), &fixture.base_url())
             .expect("qualified static fixture inputs");
         let action = output(
-            command(&session, daemon)
+            command(&session)
                 .env(
                     "RUST_LOG",
                     "ff_rdp_cli::frame_targets=debug,ff_rdp_core::transport=trace",
@@ -245,18 +234,17 @@ fn run(daemon: bool) {
                 .args(["consent", "accept"]),
             &format!("{prefix}-consent"),
         );
-        let after = readback(&session, daemon, &format!("{prefix}-after"));
+        let after = readback(&session, &format!("{prefix}-after"));
         eprintln!(
             "275 boundary {}",
-            json!({"phase":PHASE,"route":if daemon{"daemon"}else{"direct"},"case":case.name(),"before":before,"after":after})
+            json!({"phase":PHASE,"route":"direct","case":case.name(),"before":before,"after":after})
         );
         let logs = String::from_utf8_lossy(&action.stderr);
-        let expected =
-            oracle::expectation(&before, case.name(), &fixture.base_url(), &logs, daemon)
-                .expect("one qualified actual target enumeration");
+        let expected = oracle::expectation(&before, case.name(), &fixture.base_url(), &logs)
+            .expect("one qualified actual target enumeration");
         eprintln!(
             "275 expectation {}",
-            json!({"case":case.name(),"route_daemon":daemon,
+            json!({"case":case.name(),
             "before_href":before["href"],"before_epoch":before["epoch"],"expected":expected.record()})
         );
         let envelope: Value = serde_json::from_slice(&action.stdout).expect("consent envelope");
@@ -274,16 +262,11 @@ fn run(daemon: bool) {
     );
     let _ = std::io::stderr()
         .lock()
-        .write_all(format!("275 completed phase={PHASE} route_daemon={daemon}\n").as_bytes());
+        .write_all(format!("275 completed phase={PHASE}\n").as_bytes());
 }
 
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
 fn consent_selection_direct() {
-    run(false);
-}
-#[test]
-#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
-fn consent_selection_daemon() {
-    run(true);
+    run();
 }

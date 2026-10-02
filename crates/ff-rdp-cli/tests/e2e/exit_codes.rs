@@ -4,7 +4,7 @@
 ///   0   success
 ///   1   runtime / user error (selector not found, invalid args passed through, etc.)
 ///   2   usage error (clap parse failure — unknown flag, missing subcommand)
-///   3   connection failure (could not reach Firefox or daemon)
+///   3   connection failure (could not reach Firefox)
 ///   124 timeout (operation exceeded its deadline)
 use super::support::{self, MockRdpServer, load_fixture};
 
@@ -12,7 +12,7 @@ fn ff_rdp_bin() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_ff-rdp"))
 }
 
-/// Base args that bypass the daemon and talk to a known port.
+/// Base args that talk to a known port.
 fn base_args(port: u16) -> Vec<String> {
     vec![
         "--host".to_owned(),

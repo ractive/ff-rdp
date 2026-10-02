@@ -76,7 +76,7 @@ impl MockRdpServer {
     ///
     /// `call_counter` answers "was this method called?"; this answers "with
     /// what arguments?" — which is what iter-174 needed: `getWatcher` was
-    /// being called on every route, but only the daemon's carried
+    /// being called everywhere, but only one call site carried
     /// `isServerTargetSwitchingEnabled: true`, and without that flag Firefox
     /// never delivers the content-process `dom-*` document events. A counter
     /// cannot see that difference; the packet can.

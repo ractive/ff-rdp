@@ -45,7 +45,7 @@ use crate::actors::watcher::{
 use crate::error::ProtocolError;
 use crate::resources::resource::Resource;
 use crate::resources::resource_type::ResourceType;
-use crate::transport::{FramedWriter, RdpTransport};
+use crate::transport::RdpTransport;
 use crate::types::ActorId;
 
 // ---------------------------------------------------------------------------

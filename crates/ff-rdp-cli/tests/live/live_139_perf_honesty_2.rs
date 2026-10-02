@@ -19,10 +19,6 @@
 //! - Theme D: `perf summary --format text` "Top 5 Slowest Resources" printed
 //!   raw (untruncated) URLs — lines of 6000+ chars on ad-heavy pages.
 //!
-//! daemon-parity: every test here uses [`daemon_args`] (no `--no-daemon`) —
-//! these commands go through `evaluateJSAsync` on the already-resolved tab
-//! target, the same path iter-137 fixed for the default connection mode.
-//!
 //! # Running
 //!
 //!   FF_RDP_LIVE_TESTS=1 cargo test-live -p ff-rdp-cli \
@@ -43,10 +39,7 @@ const PIXEL_GIF: &[u8] = &[
     0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02, 0x44, 0x01, 0x00, 0x3b,
 ];
 
-/// Args for the **default** connection mode: no `--no-daemon`, so the CLI
-/// auto-starts and proxies through the daemon — the path every real
-/// invocation uses (see the module-level `daemon-parity` note).
-fn daemon_args(port: u16) -> Vec<String> {
+fn cli_args(port: u16) -> Vec<String> {
     vec![
         "--host".to_owned(),
         "127.0.0.1".to_owned(),
@@ -57,30 +50,9 @@ fn daemon_args(port: u16) -> Vec<String> {
     ]
 }
 
-fn stop_daemon(port: u16) {
-    let _ = Command::new(ff_rdp_bin())
-        .args(["--host", "127.0.0.1", "--port", &port.to_string()])
-        .args(["daemon", "stop"])
-        .output();
-}
-
-/// Bring up Firefox with a running daemon.
-///
-/// Panics on either failure (iter-158 Theme D) — the `Option` this used to
-/// return made every caller `return` early, which libtest reports as `ok`.
-fn firefox_with_daemon(test: &str) -> LiveFirefox {
-    let ff = LiveFirefox::headless_on_random_port();
-    assert!(
-        ff.with_daemon().is_some(),
-        "{test}: the proxy daemon did not start for Firefox on port {}",
-        ff.port()
-    );
-    ff
-}
-
 fn navigate(port: u16, url: &str) {
     let nav = Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(["navigate", url])
         .output()
         .expect("ff-rdp navigate");
@@ -93,7 +65,7 @@ fn navigate(port: u16, url: &str) {
 
 fn run_json(port: u16, args: &[&str]) -> Value {
     let out = Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("spawn ff-rdp {args:?}: {e}"));
@@ -110,7 +82,7 @@ fn run_json(port: u16, args: &[&str]) -> Value {
 
 fn run_text(port: u16, args: &[&str]) -> String {
     let out = Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("spawn ff-rdp {args:?}: {e}"));
@@ -134,7 +106,7 @@ fn wait_for_images_loaded(port: u16, n: usize, timeout: Duration) -> bool {
     );
     loop {
         let out = Command::new(ff_rdp_bin())
-            .args(daemon_args(port))
+            .args(cli_args(port))
             .args(["eval", &expr])
             .output();
         if let Ok(o) = out
@@ -157,7 +129,7 @@ fn wait_for_images_loaded(port: u16, n: usize, timeout: Duration) -> bool {
 // Theme A — CLS/TBT unavailable, never a fabricated "good"
 // ---------------------------------------------------------------------------
 
-/// `live_139_cls_unavailable`: on a real (default-daemon-path) page, `perf
+/// `live_139_cls_unavailable`: on a real page, `perf
 /// vitals` must report `cls: null` / `cls_rating: "unavailable"` with a note
 /// naming `layout-shift` — never the old `0.0` / `"good"` false all-clear.
 /// `perf audit`'s `vitals.cls` must agree.
@@ -168,7 +140,7 @@ fn live_139_cls_unavailable() {
         eprintln!("live_139_cls_unavailable: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_139_cls_unavailable");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     navigate(port, "https://example.com");
 
@@ -194,7 +166,6 @@ fn live_139_cls_unavailable() {
         "perf audit must agree with perf vitals on cls: {audit}"
     );
 
-    stop_daemon(port);
     eprintln!("live_139_cls_unavailable: PASSED");
 }
 
@@ -206,7 +177,7 @@ fn live_139_tbt_unavailable() {
         eprintln!("live_139_tbt_unavailable: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_139_tbt_unavailable");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     navigate(port, "https://example.com");
 
@@ -232,7 +203,6 @@ fn live_139_tbt_unavailable() {
         "perf audit must agree with perf vitals on tbt: {audit}"
     );
 
-    stop_daemon(port);
     eprintln!("live_139_tbt_unavailable: PASSED");
 }
 
@@ -251,7 +221,7 @@ fn live_139_audit_document_bytes_agree() {
         eprintln!("live_139_audit_document_bytes_agree: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_139_audit_document_bytes_agree");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let Some(server) = FixtureServer::start(HashMap::from([(
@@ -289,7 +259,6 @@ fn live_139_audit_document_bytes_agree() {
          the page's own bytes: {audit}"
     );
 
-    stop_daemon(port);
     eprintln!(
         "live_139_audit_document_bytes_agree: PASSED — document={doc_transfer_size} \
          navigation={nav_transfer_size}"
@@ -308,7 +277,7 @@ fn live_139_audit_opaque_flagged_per_type() {
         eprintln!("live_139_audit_opaque_flagged_per_type: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_139_audit_opaque_flagged_per_type");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let Some(image_origin) = FixtureServer::start(HashMap::from([(
@@ -375,8 +344,6 @@ fn live_139_audit_opaque_flagged_per_type() {
         "live_139_audit_opaque_flagged_per_type: PASSED — image bucket and domain {:?} both flagged",
         image_domain_entry["domain"]
     );
-
-    stop_daemon(port);
 }
 
 /// `live_139_third_party_excludes_first_party`: on a page with genuine
@@ -391,7 +358,7 @@ fn live_139_third_party_excludes_first_party() {
         eprintln!("live_139_third_party_excludes_first_party: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_139_third_party_excludes_first_party");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     // Single-origin fixture: the page and its only sub-resource share a
@@ -435,7 +402,6 @@ fn live_139_third_party_excludes_first_party() {
          document itself is always first-party: {audit}"
     );
 
-    stop_daemon(port);
     eprintln!(
         "live_139_third_party_excludes_first_party: PASSED — third_party={third_party} \
          total={total}"
@@ -456,7 +422,7 @@ fn live_139_vitals_page_identity() {
         eprintln!("live_139_vitals_page_identity: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_139_vitals_page_identity");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let Some(server) = FixtureServer::start(HashMap::from([(
@@ -496,7 +462,6 @@ fn live_139_vitals_page_identity() {
          window [{before}, {after}]: {vitals}"
     );
 
-    stop_daemon(port);
     eprintln!("live_139_vitals_page_identity: PASSED — page_url={page_url}");
 }
 
@@ -516,7 +481,7 @@ fn live_139_perf_summary_text_bounded() {
         eprintln!("live_139_perf_summary_text_bounded: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_139_perf_summary_text_bounded");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     // The server matches routes on path only (query string stripped), so the
@@ -556,6 +521,5 @@ fn live_139_perf_summary_text_bounded() {
          (~120), not thousands — full output:\n{text}"
     );
 
-    stop_daemon(port);
     eprintln!("live_139_perf_summary_text_bounded: PASSED — longest line = {longest} chars");
 }

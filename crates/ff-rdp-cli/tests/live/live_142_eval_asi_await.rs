@@ -13,9 +13,6 @@
 //! (`missing ) in parenthetical`). Post-fix it must both parse and honor
 //! the trailing expression's value (`42`), not silently return `undefined`.
 //!
-//! Runs on the default daemon-mode connection path (no direct-connection
-//! flag anywhere in this suite), per the iteration's run guidance.
-//!
 //! Run with:
 //!   FF_RDP_LIVE_TESTS=1 cargo test-live -p ff-rdp-cli \
 //!       --test live live_142_eval_asi_await -- --nocapture

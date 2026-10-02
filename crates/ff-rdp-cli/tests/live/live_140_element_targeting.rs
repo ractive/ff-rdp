@@ -33,15 +33,11 @@
 //! committed URL on almost every RDP round-trip, each emitting its own
 //! `isTopLevel: true` `frameUpdate` — so the narrowed rule *still* wiped the
 //! store between two ref resolutions with zero real navigation involved. The
-//! actual fix (`is_navigation_event` in `daemon/server.rs`) additionally
-//! compares the frame's URL against the last `tabNavigated`-committed URL and
-//! only treats a same-`isTopLevel`-but-different-URL frameUpdate as a
-//! navigation.
-//!
-//! daemon-parity: every test here uses [`daemon_args`] (no `--no-daemon`) —
-//! the daemon owns the ref store (`--ref` is daemon-only) and frame-target
-//! enumeration through the proxy is exactly what iter-137 fixed for the
-//! default connection mode.
+//! actual fix additionally compared the frame's URL against the last
+//! `tabNavigated`-committed URL and only treated a
+//! same-`isTopLevel`-but-different-URL frameUpdate as a navigation. (Refs now
+//! live in the page itself as `data-ffrdp-ref`, so no client-side store can be
+//! wiped at all; a navigation replaces the document and its refs with it.)
 //!
 //! # Running
 //!
@@ -55,10 +51,7 @@ use serde_json::Value;
 
 use crate::common::{FixtureRoute, FixtureServer, LiveFirefox, ff_rdp_bin, live_tests_enabled};
 
-/// Args for the **default** connection mode: no `--no-daemon`, so the CLI
-/// auto-starts and proxies through the daemon — the path every real
-/// invocation uses (see the module-level `daemon-parity` note).
-fn daemon_args(port: u16) -> Vec<String> {
+fn cli_args(port: u16) -> Vec<String> {
     vec![
         "--host".to_owned(),
         "127.0.0.1".to_owned(),
@@ -69,30 +62,9 @@ fn daemon_args(port: u16) -> Vec<String> {
     ]
 }
 
-fn stop_daemon(port: u16) {
-    let _ = Command::new(ff_rdp_bin())
-        .args(["--host", "127.0.0.1", "--port", &port.to_string()])
-        .args(["daemon", "stop"])
-        .output();
-}
-
-/// Bring up Firefox with a running daemon.
-///
-/// Panics on either failure (iter-158 Theme D) — the `Option` this used to
-/// return made every caller `return` early, which libtest reports as `ok`.
-fn firefox_with_daemon(test: &str) -> LiveFirefox {
-    let ff = LiveFirefox::headless_on_random_port();
-    assert!(
-        ff.with_daemon().is_some(),
-        "{test}: the proxy daemon did not start for Firefox on port {}",
-        ff.port()
-    );
-    ff
-}
-
 fn navigate(port: u16, url: &str) {
     let nav = Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(["navigate", url])
         .output()
         .expect("ff-rdp navigate");
@@ -103,11 +75,11 @@ fn navigate(port: u16, url: &str) {
     );
 }
 
-/// Run `ff-rdp <args>` over the daemon connection and return the raw output
+/// Run `ff-rdp <args>` and return the raw output
 /// (caller decides success/failure — several tests here assert on errors).
 fn run(port: u16, args: &[&str]) -> Output {
     Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("spawn ff-rdp {args:?}: {e}"))
@@ -152,7 +124,7 @@ fn live_140_ref_click_resolves() {
         eprintln!("live_140_ref_click_resolves: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_140_ref_click_resolves");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let mut routes = HashMap::new();
@@ -165,7 +137,6 @@ fn live_140_ref_click_resolves() {
     );
     let Some(server) = FixtureServer::start(routes) else {
         eprintln!("live_140_ref_click_resolves: could not bind fixture HTTP — skipping");
-        stop_daemon(port);
         return;
     };
 
@@ -192,8 +163,6 @@ fn live_140_ref_click_resolves() {
         click["results"]["text"], "Two",
         "the ref must resolve to the SECOND button, not just any button: {click}"
     );
-
-    stop_daemon(port);
 }
 
 /// AC: `live_140_ref_reusable` — resolving the same ref twice in a row
@@ -209,7 +178,7 @@ fn live_140_ref_reusable() {
         eprintln!("live_140_ref_reusable: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_140_ref_reusable");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let mut routes = HashMap::new();
@@ -219,7 +188,6 @@ fn live_140_ref_reusable() {
     );
     let Some(server) = FixtureServer::start(routes) else {
         eprintln!("live_140_ref_reusable: could not bind fixture HTTP — skipping");
-        stop_daemon(port);
         return;
     };
 
@@ -239,15 +207,12 @@ fn live_140_ref_reusable() {
             "resolve #{attempt} of ref {ref_id} must succeed with a non-empty style list: {styles}"
         );
     }
-
-    stop_daemon(port);
 }
 
-/// AC: `live_140_ref_expiry_message` — a ref invalidated by navigation
-/// reports expiry, not "not registered". Before iter-140 the daemon compared
-/// against `next` (which resets to 1 on every `clear()`), so immediately
-/// after a real navigation every previously-valid id looked "never
-/// allocated" instead of "expired".
+/// AC: `live_140_ref_expiry_message` — a ref invalidated by navigation no
+/// longer resolves, and the failure names the ref the caller passed. Refs are
+/// stamped on the elements of one document (`data-ffrdp-ref`), so a
+/// navigation removes them with the document.
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
 fn live_140_ref_expiry_message() {
@@ -255,7 +220,7 @@ fn live_140_ref_expiry_message() {
         eprintln!("live_140_ref_expiry_message: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_140_ref_expiry_message");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let mut routes = HashMap::new();
@@ -269,7 +234,6 @@ fn live_140_ref_expiry_message() {
     );
     let Some(server) = FixtureServer::start(routes) else {
         eprintln!("live_140_ref_expiry_message: could not bind fixture HTTP — skipping");
-        stop_daemon(port);
         return;
     };
 
@@ -290,15 +254,9 @@ fn live_140_ref_expiry_message() {
     );
     let text = combined(&out);
     assert!(
-        text.contains("expired"),
-        "a ref allocated before navigation must report expiry: {text}"
+        text.contains(&ref_id),
+        "the failure must name the stale ref so the caller can see what died: {text}"
     );
-    assert!(
-        !text.contains("not registered"),
-        "must not fall back to the generic 'not registered' message: {text}"
-    );
-
-    stop_daemon(port);
 }
 
 // ---------------------------------------------------------------------------
@@ -324,7 +282,7 @@ fn live_140_ambiguous_selector_reports_count() {
         eprintln!("live_140_ambiguous_selector_reports_count: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_140_ambiguous_selector_reports_count");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let mut routes = HashMap::new();
@@ -333,7 +291,6 @@ fn live_140_ambiguous_selector_reports_count() {
         eprintln!(
             "live_140_ambiguous_selector_reports_count: could not bind fixture HTTP — skipping"
         );
-        stop_daemon(port);
         return;
     };
     navigate(port, &server.base_url());
@@ -366,8 +323,6 @@ fn live_140_ambiguous_selector_reports_count() {
         text.contains("hidden"),
         "error must distinguish 'hidden' from a bare not-found: {text}"
     );
-
-    stop_daemon(port);
 }
 
 /// AC: `live_140_visible_flag_targets_visible` — `--visible` (or `--index`)
@@ -380,14 +335,13 @@ fn live_140_visible_flag_targets_visible() {
         eprintln!("live_140_visible_flag_targets_visible: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_140_visible_flag_targets_visible");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let mut routes = HashMap::new();
     routes.insert("/".to_owned(), FixtureRoute::html(AMBIGUOUS_INPUT_HTML));
     let Some(server) = FixtureServer::start(routes) else {
         eprintln!("live_140_visible_flag_targets_visible: could not bind fixture HTTP — skipping");
-        stop_daemon(port);
         return;
     };
     navigate(port, &server.base_url());
@@ -429,8 +383,6 @@ fn live_140_visible_flag_targets_visible() {
         vec!["hidden-slot".to_owned(), "passport renewal".to_owned()],
         "hidden input's original value must be untouched; visible one gets the typed text"
     );
-
-    stop_daemon(port);
 }
 
 // ---------------------------------------------------------------------------
@@ -485,12 +437,11 @@ fn live_140_frame_error_bounded() {
         eprintln!("live_140_frame_error_bounded: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_140_frame_error_bounded");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let Some(server) = FixtureServer::start(many_iframes_routes(MANY_IFRAMES_N)) else {
         eprintln!("live_140_frame_error_bounded: could not bind fixture HTTP — skipping");
-        stop_daemon(port);
         return;
     };
     navigate(port, &server.base_url());
@@ -519,8 +470,6 @@ fn live_140_frame_error_bounded() {
         "error must report the true total frame count ({}): {text}",
         MANY_IFRAMES_N + 1
     );
-
-    stop_daemon(port);
 }
 
 /// AC: `live_140_frame_filter_count_accurate` — `--frame` reports the
@@ -535,14 +484,13 @@ fn live_140_frame_filter_count_accurate() {
         eprintln!("live_140_frame_filter_count_accurate: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_140_frame_filter_count_accurate");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     // leaf1, leaf10, leaf11, leaf12, leaf13 all contain the substring "leaf1"
     // — 5 of the 14 leaf frames (15 targets total including top).
     let Some(server) = FixtureServer::start(many_iframes_routes(MANY_IFRAMES_N)) else {
         eprintln!("live_140_frame_filter_count_accurate: could not bind fixture HTTP — skipping");
-        stop_daemon(port);
         return;
     };
     navigate(port, &server.base_url());
@@ -577,8 +525,6 @@ fn live_140_frame_filter_count_accurate() {
         !text.contains(&format!("matched in 0 of {} frame", MANY_IFRAMES_N + 1)),
         "must NOT claim every frame was tried when --frame narrowed the scan: {text}"
     );
-
-    stop_daemon(port);
 }
 
 // ---------------------------------------------------------------------------
@@ -596,7 +542,7 @@ fn live_140_page_map_selectors_unique() {
         eprintln!("live_140_page_map_selectors_unique: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_140_page_map_selectors_unique");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let mut routes = HashMap::new();
@@ -613,7 +559,6 @@ fn live_140_page_map_selectors_unique() {
     );
     let Some(server) = FixtureServer::start(routes) else {
         eprintln!("live_140_page_map_selectors_unique: could not bind fixture HTTP — skipping");
-        stop_daemon(port);
         return;
     };
     let base = server.base_url();
@@ -702,6 +647,4 @@ fn live_140_page_map_selectors_unique() {
             "generated selector {sel:?} must resolve to exactly one element: {count}"
         );
     }
-
-    stop_daemon(port);
 }

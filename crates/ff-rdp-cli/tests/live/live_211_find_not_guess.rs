@@ -15,11 +15,6 @@
 //!   100 characters, so a `<h3><a>Bug: <span>…</span></a></h3>` issue title
 //!   came back partial.
 //!
-//! daemon-parity: the `a11y summary` test uses the daemon route (no
-//! `--no-daemon`) because the daemon owns the ref store and the point of that
-//! AC is that refs survive filtering. The rest are route-agnostic and use the
-//! same route for consistency.
-//!
 //! # Running
 //!
 //!   FF_RDP_LIVE_TESTS=1 cargo test-live -p ff-rdp-cli \
@@ -34,7 +29,7 @@ use crate::common::{
     FixtureRoute, FixtureServer, LiveFirefox, ff_rdp_bin, live_tests_enabled, output_note,
 };
 
-fn daemon_args(port: u16) -> Vec<String> {
+fn cli_args(port: u16) -> Vec<String> {
     vec![
         "--host".to_owned(),
         "127.0.0.1".to_owned(),
@@ -45,26 +40,9 @@ fn daemon_args(port: u16) -> Vec<String> {
     ]
 }
 
-fn stop_daemon(port: u16) {
-    let _ = Command::new(ff_rdp_bin())
-        .args(["--host", "127.0.0.1", "--port", &port.to_string()])
-        .args(["daemon", "stop"])
-        .output();
-}
-
-fn firefox_with_daemon(test: &str) -> LiveFirefox {
-    let ff = LiveFirefox::headless_on_random_port();
-    assert!(
-        ff.with_daemon().is_some(),
-        "{test}: the proxy daemon did not start for Firefox on port {}",
-        ff.port()
-    );
-    ff
-}
-
 fn run(port: u16, args: &[&str]) -> Output {
     Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("spawn ff-rdp {args:?}: {e}"))
@@ -193,13 +171,12 @@ fn live_page_text_query_returns_only_matching_lines_with_context() {
         );
         return;
     }
-    let ff = firefox_with_daemon("live_page_text_query_returns_only_matching_lines_with_context");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(needle_fixture()) else {
         eprintln!(
             "live_page_text_query_returns_only_matching_lines_with_context: no fixture HTTP — skipping"
         );
-        stop_daemon(port);
         return;
     };
 
@@ -251,8 +228,6 @@ fn live_page_text_query_returns_only_matching_lines_with_context() {
         tight["results"], "the needle is here",
         "--context 0 keeps only the match: {tight}"
     );
-
-    stop_daemon(port);
 }
 
 /// AC `live_page_text_is_capped_by_default`.
@@ -263,11 +238,10 @@ fn live_page_text_is_capped_by_default() {
         eprintln!("live_page_text_is_capped_by_default: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_page_text_is_capped_by_default");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(needle_fixture()) else {
         eprintln!("live_page_text_is_capped_by_default: no fixture HTTP — skipping");
-        stop_daemon(port);
         return;
     };
 
@@ -328,8 +302,6 @@ fn live_page_text_is_capped_by_default() {
         "the error must name the flag: {}",
         output_note(&zero)
     );
-
-    stop_daemon(port);
 }
 
 // ---------------------------------------------------------------------------
@@ -344,11 +316,10 @@ fn live_snapshot_query_keeps_ancestors_of_matches() {
         eprintln!("live_snapshot_query_keeps_ancestors_of_matches: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_snapshot_query_keeps_ancestors_of_matches");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(table_fixture()) else {
         eprintln!("live_snapshot_query_keeps_ancestors_of_matches: no fixture HTTP — skipping");
-        stop_daemon(port);
         return;
     };
 
@@ -394,8 +365,6 @@ fn live_snapshot_query_keeps_ancestors_of_matches() {
     let empty = run_json(port, &["snapshot", "--query", "no-such-token-211"]);
     assert_eq!(empty["meta"]["matches"], 0, "{empty}");
     assert_eq!(empty["results"], Value::Null, "{empty}");
-
-    stop_daemon(port);
 }
 
 // ---------------------------------------------------------------------------
@@ -411,21 +380,16 @@ fn live_a11y_summary_query_filters_and_keeps_refs() {
         eprintln!("live_a11y_summary_query_filters_and_keeps_refs: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_a11y_summary_query_filters_and_keeps_refs");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(names_fixture()) else {
         eprintln!("live_a11y_summary_query_filters_and_keeps_refs: no fixture HTTP — skipping");
-        stop_daemon(port);
         return;
     };
 
     run_json(port, &["navigate", &server.base_url()]);
 
     let out = run_json(port, &["a11y", "summary", "--query", "Babbage"]);
-    assert_eq!(
-        out["meta"]["refs_registered"], true,
-        "the daemon route must still register refs under --query: {out}"
-    );
     let interactive = out["results"]["interactive"]
         .as_array()
         .unwrap_or_else(|| panic!("results.interactive must be an array: {out}"));
@@ -455,8 +419,6 @@ fn live_a11y_summary_query_filters_and_keeps_refs() {
         click["results"]["clicked"], true,
         "click --ref {ref_id} must work on a filtered entry: {click}"
     );
-
-    stop_daemon(port);
 }
 
 // ---------------------------------------------------------------------------
@@ -474,11 +436,10 @@ fn live_dom_text_returns_full_accessible_name() {
         eprintln!("live_dom_text_returns_full_accessible_name: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_dom_text_returns_full_accessible_name");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(names_fixture()) else {
         eprintln!("live_dom_text_returns_full_accessible_name: no fixture HTTP — skipping");
-        stop_daemon(port);
         return;
     };
 
@@ -501,6 +462,4 @@ fn live_dom_text_returns_full_accessible_name() {
     let queried = run_json(port, &["dom", "a", "--query", "title"]);
     assert_eq!(queried["meta"]["matches"], 1, "{queried}");
     assert_eq!(queried["results"][0]["name"], "Bug: title", "{queried}");
-
-    stop_daemon(port);
 }

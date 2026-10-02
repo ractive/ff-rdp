@@ -3,7 +3,7 @@
 //! # The defect
 //!
 //! After [`super::live_220_navigating_action_with_page`] removed the recv-timeout
-//! hang, `click --ref <link> --with-page` on the daemon route still failed
+//! hang, `click --ref <link> --with-page` still failed
 //! intermittently:
 //!
 //! ```text
@@ -11,16 +11,14 @@
 //! ```
 //!
 //! exit 6, in ~0.45 s — far too fast to be the settle budget or `--timeout`.
-//! Measured on `5a0071d` against `en.wikipedia.org`, daemon route: **2 failures
+//! Measured on `5a0071d` against `en.wikipedia.org`: **2 failures
 //! in 30 hops** (`recv failed: Connection reset by peer` once, `recv failed:
 //! failed to fill whole buffer` — a FIN mid-frame — once). The click had
 //! already been performed; only the view of where it landed was lost, and the
 //! agent re-navigated by URL and re-read the page rather than trust it.
 //!
-//! Two fixes, one on each side of the socket:
+//! The fix that survives today:
 //!
-//! - the daemon writes a structured `daemon_client_closed` frame before
-//!   abandoning a client, instead of dropping the socket silently;
 //! - `page_view::collect_settled` treats a lost connection the way it already
 //!   treated a destroyed target — rebuild it and collect again inside the
 //!   caller's own budget.
@@ -40,12 +38,8 @@
 //!   failure the iteration exists to remove.
 //!
 //! The end-to-end evidence for the 1-in-15 itself lives in
-//! `kb/iterations/iteration-224-with-page-daemon-connection-reset.md` and in
+//! the iteration-224 plan (`kb/iterations/`) and in
 //! its `.dogfood.sh`, which drives the same hop against the real page.
-//!
-//! daemon-parity: `--ref` needs the daemon's ref store, so — like
-//! [`super::live_220_navigating_action_with_page`] — every test here runs the
-//! daemon route.
 //!
 //! # Running
 //!
@@ -75,7 +69,7 @@ const HOPS: usize = 12;
 /// the window iter-220 opened and this test keeps open.
 const DESTINATION_DELAY: Duration = Duration::from_millis(250);
 
-fn daemon_args(port: u16) -> Vec<String> {
+fn cli_args(port: u16) -> Vec<String> {
     vec![
         "--host".to_owned(),
         "127.0.0.1".to_owned(),
@@ -86,26 +80,9 @@ fn daemon_args(port: u16) -> Vec<String> {
     ]
 }
 
-fn stop_daemon(port: u16) {
-    let _ = Command::new(ff_rdp_bin())
-        .args(["--host", "127.0.0.1", "--port", &port.to_string()])
-        .args(["daemon", "stop"])
-        .output();
-}
-
-fn firefox_with_daemon(test: &str) -> LiveFirefox {
-    let ff = LiveFirefox::headless_on_random_port();
-    assert!(
-        ff.with_daemon().is_some(),
-        "{test}: the proxy daemon did not start for Firefox on port {}",
-        ff.port()
-    );
-    ff
-}
-
 fn run(port: u16, args: &[&str]) -> Output {
     Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("spawn ff-rdp {args:?}: {e}"))
@@ -188,11 +165,10 @@ fn live_repeated_hop_never_loses_the_connection() {
         eprintln!("live_repeated_hop_never_loses_the_connection: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_repeated_hop_never_loses_the_connection");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(hop_fixture()) else {
         eprintln!("live_repeated_hop_never_loses_the_connection: no fixture HTTP — skipping");
-        stop_daemon(port);
         return;
     };
 
@@ -240,8 +216,6 @@ fn live_repeated_hop_never_loses_the_connection() {
         "live_repeated_hop_never_loses_the_connection: {HOPS} hops, {reconnects} reconnect(s) \
          absorbed"
     );
-
-    stop_daemon(port);
 }
 
 /// AC: the cost of a view is always reported.
@@ -258,11 +232,10 @@ fn live_page_view_reports_what_it_cost() {
         eprintln!("live_page_view_reports_what_it_cost: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_page_view_reports_what_it_cost");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(hop_fixture()) else {
         eprintln!("live_page_view_reports_what_it_cost: no fixture HTTP — skipping");
-        stop_daemon(port);
         return;
     };
 
@@ -292,6 +265,4 @@ fn live_page_view_reports_what_it_cost() {
         click["meta"]["page_reconnects"].as_u64().is_some(),
         "meta.page_reconnects must be reported on a navigating click: {click}"
     );
-
-    stop_daemon(port);
 }

@@ -1,13 +1,13 @@
 //! Live tests for iter-61q — ResourceCommand bus ACs.
 //!
 //! ACs covered here:
-//!   AC1 — `live_network_default_watcher`: `network` returns `source: watcher`
-//!          with populated `status`, `method`, `transfer_size`.
-//!   AC2 — `live_network_detail_headers`: `network --detail --headers` returns
-//!          real response headers per entry, `meta.source` stays `watcher`.
-//!   AC3 — `live_resource_dedupe`: two simultaneous CLI invocations produce
-//!          exactly one `watchResources` call (asserted via tracing / daemon log).
-//!   AC4 — `live_console_tail`: `console --follow` streams messages as they arrive.
+//!   AC3 — `live_resource_dedupe`: two concurrent bus subscribers produce
+//!          exactly one `watchResources` call.
+//!   AC4 — `live_console_tail`: `console` returns messages the page emitted.
+//!
+//! (AC1/AC2 read a buffer a previous invocation filled, which no longer
+//! exists: every command has its own connection. `live_network_headers` covers
+//! headers by capturing while a navigation runs.)
 //!
 //! # Running
 //!
@@ -40,189 +40,12 @@ fn require_env(var: &str) -> bool {
     true
 }
 
-/// `live_network_default_watcher`:
-/// Navigate to example.com with `--with-network`, then call `ff-rdp network`
-/// (no flags).  Assert `source: "watcher"` with non-null `status` and `method`
-/// for at least one entry, and that `transfer_size` is present.
-///
-/// Re-greens iter-61l C; exercises the `ResourceCommand` bus network path.
-///
-/// # iter-106 Theme D — cross-invocation daemon buffer now visible
-///
-/// This asserts the cross-invocation contract: a first CLI invocation
-/// (`navigate --with-network`) streams events and stores them in the daemon
-/// buffer, then a second, separate invocation (`network`) drains that buffer
-/// under the default `--since -1` scope.  It used to return zero entries — the
-/// daemon's `store-events` handler inserted the batch, but the Firefox reader
-/// loop recorded the matching `tabNavigated` boundary on another thread, which
-/// could land *after* the inserts and scope `--since -1` past every stored
-/// event.  iter-106 makes `navigate --with-network` pass `navUrl` to
-/// `store-events`, and the daemon records the boundary **atomically** with the
-/// inserts (`ResourceBuffer::record_boundary_and_insert`), so the batch is
-/// always visible.  The `FF_RDP_ALLOW_KNOWN_FAILING_NETWORK_WATCHER` gate is
-/// removed.
-#[test]
-#[ignore = "requires Firefox, network access, FF_RDP_LIVE_TESTS=1 and FF_RDP_LIVE_NETWORK_TESTS=1"]
-fn live_network_default_watcher() {
-    if !require_env("FF_RDP_LIVE_TESTS") || !require_env("FF_RDP_LIVE_NETWORK_TESTS") {
-        return;
-    }
-
-    let ff = LiveFirefox::headless_on_random_port();
-
-    let base = || {
-        vec![
-            "--host".to_owned(),
-            "127.0.0.1".to_owned(),
-            "--port".to_owned(),
-            ff.port().to_string(),
-        ]
-    };
-
-    // Navigate with network capture.
-    let nav_output = std::process::Command::new(ff_rdp_bin())
-        .args(base())
-        .args(["navigate", "https://example.com/", "--with-network"])
-        .output()
-        .expect("navigate");
-    assert!(
-        nav_output.status.success(),
-        "navigate failed: {}",
-        crate::common::output_note(&nav_output)
-    );
-
-    // Query the network buffer.  Use `--detail` so `results` is the per-entry
-    // array this test's field-level assertions read: the default `network`
-    // output is a summary object (`total_requests`, `slowest`, …), not an
-    // array, and has been since iter-49's output-size controls landed.
-    let net_output = std::process::Command::new(ff_rdp_bin())
-        .args(base())
-        .args(["network", "--detail"])
-        .output()
-        .expect("network");
-    assert!(
-        net_output.status.success(),
-        "network failed: {}",
-        crate::common::output_note(&net_output)
-    );
-
-    let json = parse_json(&net_output);
-    let entries = json["results"].as_array().expect("results array");
-    assert!(
-        !entries.is_empty(),
-        "live_network_default_watcher: expected at least one network entry"
-    );
-
-    let first = &entries[0];
-    assert_eq!(
-        first["source"].as_str(),
-        Some("watcher"),
-        "live_network_default_watcher: expected source=watcher, got: {first}"
-    );
-    assert!(
-        first["method"].as_str().is_some(),
-        "live_network_default_watcher: expected non-null method"
-    );
-    assert!(
-        first["status"].as_str().is_some() || first["status"].as_i64().is_some(),
-        "live_network_default_watcher: expected non-null status"
-    );
-    // transfer_size may be 0 for cached/small responses, but must be present.
-    assert!(
-        first.get("transfer_size").is_some(),
-        "live_network_default_watcher: transfer_size field must be present"
-    );
-}
-
-/// `live_network_detail_headers`:
-/// Navigate, then call `ff-rdp network --detail --headers`.
-/// Asserts real response headers per entry and `meta.source: "watcher"`.
-///
-/// Closes iter-61l N1 regression.
-///
-/// iter-106 Theme D: same cross-invocation daemon-buffer visibility fix as
-/// `live_network_default_watcher` above (atomic boundary + inserts in the
-/// daemon's `store-events` handler).  The
-/// `FF_RDP_ALLOW_KNOWN_FAILING_NETWORK_WATCHER` gate is removed.
-#[test]
-#[ignore = "requires Firefox, network access, FF_RDP_LIVE_TESTS=1 and FF_RDP_LIVE_NETWORK_TESTS=1"]
-fn live_network_detail_headers() {
-    if !require_env("FF_RDP_LIVE_TESTS") || !require_env("FF_RDP_LIVE_NETWORK_TESTS") {
-        return;
-    }
-
-    let ff = LiveFirefox::headless_on_random_port();
-
-    let base = || {
-        vec![
-            "--host".to_owned(),
-            "127.0.0.1".to_owned(),
-            "--port".to_owned(),
-            ff.port().to_string(),
-        ]
-    };
-
-    // Navigate with network capture.
-    let nav_output = std::process::Command::new(ff_rdp_bin())
-        .args(base())
-        .args(["navigate", "https://example.com/", "--with-network"])
-        .output()
-        .expect("navigate");
-    assert!(nav_output.status.success(), "navigate failed");
-
-    // Query with headers.
-    let net_output = std::process::Command::new(ff_rdp_bin())
-        .args(base())
-        .args(["network", "--detail", "--headers"])
-        .output()
-        .expect("network --detail --headers");
-    assert!(
-        net_output.status.success(),
-        "network --detail --headers failed: {}",
-        crate::common::output_note(&net_output)
-    );
-
-    let json = parse_json(&net_output);
-    let entries = json["results"].as_array().expect("results array");
-    assert!(
-        !entries.is_empty(),
-        "live_network_detail_headers: expected at least one entry"
-    );
-
-    // Check meta.source.
-    let source = json["meta"]["source"].as_str();
-    assert_eq!(
-        source,
-        Some("watcher"),
-        "live_network_detail_headers: expected meta.source=watcher, got: {source:?}"
-    );
-
-    // At least one entry should have response headers.  `--headers` attaches
-    // them under `headers.response` (the request/response pair), fetched from
-    // the NetworkEventActor — which stays valid across invocations via the
-    // daemon connection, so the cross-invocation drain can still resolve them.
-    let has_headers = entries.iter().any(|e| {
-        e.get("headers")
-            .and_then(|h| h.get("response"))
-            .and_then(|h| h.as_array())
-            .is_some_and(|a| !a.is_empty())
-    });
-    assert!(
-        has_headers,
-        "live_network_detail_headers: expected at least one entry with headers.response; \
-         entries: {entries:?}"
-    );
-}
-
 /// `live_resource_dedupe`:
 /// This test verifies that two concurrent subscribers to the same resource type
 /// produce exactly one `watchResources` call at the library level.
 ///
-/// Note: The full "two CLI invocations → one wire call" assertion requires the
-/// daemon's subscription deduplication which is deferred to iter-61r when the
-/// daemon is rewritten on top of the bus. This test instead exercises the
-/// `ResourceCommand` library-level deduplication directly (mirrors AC5 at the
-/// library level). The mock-server test `resource_command_bus_test.rs` is the
+/// This exercises the `ResourceCommand` library-level deduplication directly
+/// (mirrors AC5 at the library level). The mock-server test `resource_command_bus_test.rs` is the
 /// primary validator for this AC.
 #[test]
 #[ignore = "requires FF_RDP_LIVE_TESTS=1"]
@@ -325,8 +148,8 @@ fn live_resource_dedupe() {
 
 /// `live_console_tail`:
 /// `console` command returns console messages that were emitted by the page.
-/// Full `--follow` streaming is a daemon-mode feature deferred to iter-61r;
-/// this test validates that the console command returns watcher-sourced messages.
+/// This test validates that the console command returns watcher-sourced
+/// messages; `console --follow` is covered by `live_252`.
 #[test]
 #[ignore = "requires Firefox and FF_RDP_LIVE_TESTS=1"]
 fn live_console_tail() {
@@ -342,7 +165,6 @@ fn live_console_tail() {
             "127.0.0.1".to_owned(),
             "--port".to_owned(),
             ff.port().to_string(),
-            "--no-daemon".to_owned(),
         ]
     };
 

@@ -7,10 +7,6 @@
 //! `click` cannot resolve is worse than no `ref` at all, because the agent
 //! spends a turn discovering it.
 //!
-//! daemon-parity: these run on the daemon route (no `--no-daemon`) because the
-//! daemon owns the ref store, and the whole point of the `page` block is the
-//! handles it hands out.
-//!
 //! # Running
 //!
 //!   FF_RDP_LIVE_TESTS=1 cargo test-live -p ff-rdp-cli \
@@ -27,7 +23,7 @@ use serde_json::Value;
 
 use crate::common::{FixtureRoute, FixtureServer, LiveFirefox, ff_rdp_bin, live_tests_enabled};
 
-fn daemon_args(port: u16) -> Vec<String> {
+fn cli_args(port: u16) -> Vec<String> {
     vec![
         "--host".to_owned(),
         "127.0.0.1".to_owned(),
@@ -38,26 +34,9 @@ fn daemon_args(port: u16) -> Vec<String> {
     ]
 }
 
-fn stop_daemon(port: u16) {
-    let _ = Command::new(ff_rdp_bin())
-        .args(["--host", "127.0.0.1", "--port", &port.to_string()])
-        .args(["daemon", "stop"])
-        .output();
-}
-
-fn firefox_with_daemon(test: &str) -> LiveFirefox {
-    let ff = LiveFirefox::headless_on_random_port();
-    assert!(
-        ff.with_daemon().is_some(),
-        "{test}: the proxy daemon did not start for Firefox on port {}",
-        ff.port()
-    );
-    ff
-}
-
 fn run(port: u16, args: &[&str]) -> Output {
     Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("spawn ff-rdp {args:?}: {e}"))
@@ -109,11 +88,10 @@ fn live_home_with_page_lists_tabs_and_refs() {
         eprintln!("live_home_with_page_lists_tabs_and_refs: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_home_with_page_lists_tabs_and_refs");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(fixture()) else {
         eprintln!("live_home_with_page_lists_tabs_and_refs: no fixture HTTP — skipping");
-        stop_daemon(port);
         return;
     };
     let url = server.base_url();
@@ -123,8 +101,6 @@ fn live_home_with_page_lists_tabs_and_refs() {
     // `--format json` because the home view renders text by default; the hook
     // and any script consume this shape.
     home_ref_flow::check(&url, |args| run_json(port, args));
-
-    stop_daemon(port);
 }
 
 /// A browser with nothing loaded must still exit 0 and say so — the state
@@ -136,7 +112,7 @@ fn live_home_with_blank_tab_asks_for_a_navigate() {
         eprintln!("live_home_with_blank_tab_asks_for_a_navigate: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_home_with_blank_tab_asks_for_a_navigate");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     run_json(port, &["navigate", "about:blank"]);
@@ -169,14 +145,12 @@ fn live_home_with_blank_tab_asks_for_a_navigate() {
         !hints.iter().any(|h| h.contains("--ref")),
         "no refs exist on a blank tab, so none may be offered: {hints:?}"
     );
-
-    stop_daemon(port);
 }
 
 /// The `--hook` form is what a session hook runs on every session, so its
 /// output has to stay small: landmarks dropped, interactive capped at 15.
 /// Its next steps must also drive the first real actions without confusing a
-/// daemon ref with a CSS selector (iter 270).
+/// ref with a CSS selector (iter 270).
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
 fn live_home_hook_form_is_trimmed() {
@@ -184,7 +158,7 @@ fn live_home_hook_form_is_trimmed() {
         eprintln!("live_home_hook_form_is_trimmed: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_home_hook_form_is_trimmed");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     // One link plus 40 inputs exceeds the hook's 15-entry budget but stays below
@@ -210,7 +184,6 @@ fn live_home_hook_form_is_trimmed() {
     );
     let Some(server) = FixtureServer::start(routes) else {
         eprintln!("live_home_hook_form_is_trimmed: no fixture HTTP — skipping");
-        stop_daemon(port);
         return;
     };
     run_json(port, &["navigate", &server.base_url()]);
@@ -329,6 +302,4 @@ fn live_home_hook_form_is_trimmed() {
         Value::String("Hook action arrived".to_owned()),
         "the advertised first action must reach its destination: {clicked}"
     );
-
-    stop_daemon(port);
 }

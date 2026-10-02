@@ -5,7 +5,7 @@
 //! onwards and did not deliver one: measured on `main` at 07a9c03, plain
 //! `ff-rdp navigate https://example.com` returned
 //! `{"committed_url":"https://example.com/","ready_state":"complete","status":null}`
-//! on the daemon route, the `--no-daemon` route AND the `--with-network` route.
+//! on every connection route AND the `--with-network` route.
 //! The cause was an exact-string URL comparison — Firefox canonicalises
 //! `https://example.com` to `https://example.com/` before requesting it, so the
 //! `cause_type == "document"` resource carrying the 200 never matched.
@@ -15,13 +15,7 @@
 //! `live_138_navigation_truthfulness_2` assert `committed_url` and
 //! `ready_state` only, and the status field was exercised solely through
 //! `--with-network`, whose separate code path carried a separate copy of the
-//! same bug. These tests close that gap on **both** connection routes, per
-//! CONTRIBUTING's daemon-parity rule.
-//!
-//! daemon-parity: `live_166_navigate_reports_document_status` is the daemon
-//! leg (the mode every real invocation uses) and
-//! `live_166_navigate_status_direct_parity` is the `--no-daemon` leg, so the
-//! two cannot diverge again unnoticed.
+//! same bug. These tests close that gap.
 //!
 //! # Running
 //!
@@ -39,9 +33,7 @@ use crate::common::{
     live_tests_enabled,
 };
 
-/// Global args for the **default** connection mode: no `--no-daemon`, so the
-/// CLI auto-starts and proxies through the daemon.
-fn daemon_args(port: u16) -> Vec<String> {
+fn cli_args(port: u16) -> Vec<String> {
     vec![
         "--host".to_owned(),
         "127.0.0.1".to_owned(),
@@ -50,33 +42,6 @@ fn daemon_args(port: u16) -> Vec<String> {
         "--timeout".to_owned(),
         "30000".to_owned(),
     ]
-}
-
-/// Global args for a direct connection — the other half of daemon parity.
-fn direct_args(port: u16) -> Vec<String> {
-    let mut args = daemon_args(port);
-    args.push("--no-daemon".to_owned());
-    args
-}
-
-fn stop_daemon(port: u16) {
-    let _ = Command::new(ff_rdp_bin())
-        .args(["--host", "127.0.0.1", "--port", &port.to_string()])
-        .args(["daemon", "stop"])
-        .output();
-}
-
-/// Bring up Firefox with a running daemon, panicking on failure (iter-158
-/// Theme D: an `Option` here made every caller `return`, which libtest
-/// reports as `ok`).
-fn firefox_with_daemon(test: &str) -> LiveFirefox {
-    let ff = LiveFirefox::headless_on_random_port();
-    assert!(
-        ff.with_daemon().is_some(),
-        "{test}: the proxy daemon did not start for Firefox on port {}",
-        ff.port()
-    );
-    ff
 }
 
 fn combined(out: &Output) -> String {
@@ -205,7 +170,7 @@ fn uncached_example_url(path: &str) -> (String, String) {
 
 /// AC: `live_166_navigate_reports_document_status`.
 ///
-/// The exact `dogfood_path` repro over the **daemon** route. Measured on main
+/// The exact `dogfood_path` repro. Measured on main
 /// before the fix: `status: null`. It must be 200 — and it must be 200 for the
 /// URL as a caller actually types it, without the trailing slash Firefox adds,
 /// because that missing slash *was* the defect.
@@ -223,79 +188,33 @@ fn live_166_navigate_reports_document_status() {
         );
         return;
     }
-    let ff = firefox_with_daemon("live_166_navigate_reports_document_status");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
-    let global = daemon_args(port);
+    let global = cli_args(port);
 
     // No trailing slash — the form the plan's dogfood_path uses and the form
     // that reported `null` on main. Each leg gets its own cache-busting query
     // so the fetch is unconditional and `200` stays the honest expectation;
     // see `uncached_example_url`.
     let (url, canonical) = uncached_example_url("");
-    let results = navigate_ok(&global, &[&url], "daemon");
+    let results = navigate_ok(&global, &[&url], "plain");
     assert_eq!(
         results["committed_url"], canonical,
         "sanity: the navigation itself must have succeeded, got {results}"
     );
     assert_eq!(results["ready_state"], "complete");
-    assert_status(&results, 200, "daemon, no trailing slash");
+    assert_status(&results, 200, "no trailing slash");
 
     // The canonical form must agree — it worked on main and must not regress.
     let (url, _) = uncached_example_url("/");
-    let results = navigate_ok(&global, &[&url], "daemon");
-    assert_status(&results, 200, "daemon, trailing slash");
+    let results = navigate_ok(&global, &[&url], "plain");
+    assert_status(&results, 200, "trailing slash");
 
     // `--with-network` reaches the status through an entirely separate code
-    // path (it drains the daemon buffer rather than correlating a streamed
-    // event). It reported `null` on main too, and must now agree.
+    // path. It reported `null` on main too, and must now agree.
     let (url, _) = uncached_example_url("");
-    let results = navigate_ok(&global, &[&url, "--with-network"], "daemon --with-network");
-    assert_status(&results, 200, "daemon --with-network");
-
-    stop_daemon(port);
-}
-
-// ---------------------------------------------------------------------------
-// AC live_166_navigate_status_direct_parity
-// ---------------------------------------------------------------------------
-
-/// AC: `live_166_navigate_status_direct_parity`.
-///
-/// The same assertion over `--no-daemon`. The plan's Theme A expected the
-/// defect to be daemon-specific; the measurement disproved that — direct mode
-/// reported `null` too — so this leg is not a formality, it is half the bug.
-#[test]
-#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
-fn live_166_navigate_status_direct_parity() {
-    if !live_tests_enabled() {
-        eprintln!("live_166_navigate_status_direct_parity: set FF_RDP_LIVE_TESTS=1");
-        return;
-    }
-    if !live_network_tests_enabled() {
-        eprintln!(
-            "live_166_navigate_status_direct_parity: set FF_RDP_LIVE_NETWORK_TESTS=1 \
-             (this test fetches https://example.com, the plan's dogfood_path)"
-        );
-        return;
-    }
-    let ff = LiveFirefox::headless_on_random_port();
-    let port = ff.port();
-    let global = direct_args(port);
-
-    // Fresh URL per leg — see `uncached_example_url` for why a repeat fetch
-    // would legitimately report 304 and why widening the assertion to accept
-    // it was the wrong fix.
-    let (url, canonical) = uncached_example_url("");
-    let results = navigate_ok(&global, &[&url], "direct");
-    assert_eq!(
-        results["committed_url"], canonical,
-        "sanity: the navigation itself must have succeeded, got {results}"
-    );
-    assert_status(&results, 200, "--no-daemon, no trailing slash");
-
-    let (url, _) = uncached_example_url("");
-    let results = navigate_ok(&global, &[&url, "--with-network"], "direct --with-network");
-    assert_status(&results, 200, "--no-daemon --with-network");
+    let results = navigate_ok(&global, &[&url, "--with-network"], "--with-network");
+    assert_status(&results, 200, "--with-network");
 }
 
 // ---------------------------------------------------------------------------
@@ -304,7 +223,7 @@ fn live_166_navigate_status_direct_parity() {
 
 /// A 200 that is always 200 proves nothing. Against a local fixture server
 /// (no network gate needed), a served route reports 200 and an unknown path
-/// reports the server's 404 — on both routes.
+/// reports the server's 404.
 ///
 /// The fixture server's base URL has no path at all
 /// (`http://127.0.0.1:<port>/missing` does, but `…:<port>` alone does not),
@@ -320,10 +239,11 @@ fn live_166_navigate_status_reflects_the_server() {
         panic!("live_166_navigate_status_reflects_the_server: could not bind a fixture server");
     };
     let base = server.base_url();
-    let ff = firefox_with_daemon("live_166_navigate_status_reflects_the_server");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
-    for (label, global) in [("daemon", daemon_args(port)), ("direct", direct_args(port))] {
+    {
+        let (label, global) = ("plain", cli_args(port));
         let ok_url = format!("{base}/ok");
         let results = navigate_ok(&global, &[&ok_url], label);
         assert_status(&results, 200, &format!("{label} /ok"));
@@ -332,8 +252,6 @@ fn live_166_navigate_status_reflects_the_server() {
         let results = navigate_ok(&global, &[&missing_url], label);
         assert_status(&results, 404, &format!("{label} /definitely-not-here"));
     }
-
-    stop_daemon(port);
 }
 
 // ---------------------------------------------------------------------------
@@ -359,9 +277,9 @@ fn live_166_null_status_carries_a_reason() {
         panic!("live_166_null_status_carries_a_reason: could not bind a fixture server");
     };
     let base = server.base_url();
-    let ff = firefox_with_daemon("live_166_null_status_carries_a_reason");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
-    let global = daemon_args(port);
+    let global = cli_args(port);
 
     // A document that issues no network request of its own.
     let results = navigate_ok(
@@ -389,6 +307,4 @@ fn live_166_null_status_carries_a_reason() {
         "`--no-wait` never subscribes, so it must not imply the server was \
          silent, got {results}"
     );
-
-    stop_daemon(port);
 }

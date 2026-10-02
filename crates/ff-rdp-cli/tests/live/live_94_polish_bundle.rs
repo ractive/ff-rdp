@@ -1,7 +1,6 @@
 //! Live tests for iter-94: session-59 polish bundle.
 //!
 //! Covers:
-//!   A — `daemon stop` bounded wait + pkill fallback
 //!   B — shared render_blocking classifier (live parity)
 //!   C — cascade emits `inherited_or_default` note
 //!   D — network text suppresses null-keyed rows (live smoke)
@@ -11,106 +10,9 @@
 //!       --test live live_94_polish_bundle -- --nocapture
 
 use std::process::Command;
-use std::time::Duration;
 
 use crate::common::{LiveFirefox, base_args, ff_rdp_bin};
 use crate::common::{live_network_tests_enabled, live_tests_enabled};
-
-// ---------------------------------------------------------------------------
-// Theme A — daemon stop no residual process
-// ---------------------------------------------------------------------------
-
-/// AC: `live_daemon_stop_no_residual_process`
-///
-/// After `ff-rdp daemon stop`, the Firefox PID we stopped must be gone.
-/// This verifies that the port-free-wait bound and SIGKILL escalation
-/// actually terminate the process, not just close the socket.
-#[test]
-#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
-fn live_daemon_stop_no_residual_process() {
-    if !live_tests_enabled() {
-        return;
-    }
-
-    let ff = LiveFirefox::headless_on_random_port();
-    let port = ff.port();
-    let firefox_pid = ff.pid();
-
-    // Confirm the process is alive before stopping.
-    assert!(
-        is_pid_alive(firefox_pid),
-        "live_daemon_stop_no_residual_process: Firefox pid {firefox_pid} should be alive before stop"
-    );
-
-    // Issue daemon stop via DaemonRecord path (no daemon proxy needed).
-    let stop = Command::new(ff_rdp_bin())
-        .args([
-            "--host",
-            "127.0.0.1",
-            "--port",
-            &port.to_string(),
-            "--no-daemon",
-            "daemon",
-            "stop",
-        ])
-        .output()
-        .expect("live_daemon_stop_no_residual_process: ff-rdp daemon stop failed to spawn");
-
-    // daemon stop may succeed or report "not running" — both are fine here;
-    // what we care about is that the process is gone.
-    let _ = stop.status;
-
-    // Poll for up to 10 s (the bounded wait is 8 s, so 10 s gives a margin).
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    let mut pid_gone = false;
-    while std::time::Instant::now() < deadline {
-        if !is_pid_alive(firefox_pid) {
-            pid_gone = true;
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    }
-
-    assert!(
-        pid_gone,
-        "live_daemon_stop_no_residual_process: Firefox pid {firefox_pid} is still alive after daemon stop"
-    );
-}
-
-fn is_pid_alive(pid: u32) -> bool {
-    // Use kill(pid, 0) on Unix: returns 0 if the process exists, ESRCH if not,
-    // EPERM if it exists but we cannot signal it. Treat EPERM as "alive".
-    #[cfg(unix)]
-    {
-        // SAFETY: kill(pid, 0) is a no-op signal that only checks process
-        // existence; it does not deliver a signal or modify any state.
-        let ret = unsafe { libc::kill(pid.cast_signed(), 0) };
-        if ret == 0 {
-            return true;
-        }
-        let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
-        errno == libc::EPERM
-    }
-    #[cfg(not(unix))]
-    {
-        // On Windows, use tasklist /FO CSV with an exact PID field match.
-        use std::process::Command;
-        let pid_str = pid.to_string();
-        Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
-            .output()
-            .map(|o| {
-                let out = String::from_utf8_lossy(&o.stdout);
-                out.lines().any(|l| {
-                    l.split(',')
-                        .nth(1)
-                        .map(|f| f.trim_matches('"') == pid_str)
-                        .unwrap_or(false)
-                })
-            })
-            .unwrap_or(false)
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Theme B — render_blocking parity on real network

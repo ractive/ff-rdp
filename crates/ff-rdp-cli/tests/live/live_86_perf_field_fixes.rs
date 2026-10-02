@@ -1,7 +1,7 @@
 //! Live tests for iter-86: perf field-report fixes.
 //!
 //! Covers all five themes:
-//!   A — `daemon stop` frees the Firefox RDP port (kills process group)
+//!   A — `launch --replace` handles a prior instance holding the port
 //!   B — `lcp_note` does NOT mention "headless" (verified under headless launch;
 //!         the message is constructed without consulting launch mode, so this
 //!         covers the regardless-of-mode guarantee in the only mode CI can run)
@@ -14,83 +14,13 @@
 //!       --test live live_86_perf_field_fixes -- --nocapture
 
 use std::process::Command;
-use std::time::Duration;
 
 use crate::common::live_tests_enabled;
 use crate::common::{FirefoxGuard, LiveFirefox, base_args, ff_rdp_bin, ff_rdp_launch_command};
 
 // ---------------------------------------------------------------------------
-// Theme A — daemon stop frees port
+// Theme A — launch --replace
 // ---------------------------------------------------------------------------
-
-/// `live_daemon_stop_frees_port`:
-/// After `ff-rdp daemon stop`, the Firefox RDP port (random, self-launched)
-/// must be closed (i.e. no TCP listener) within 3 seconds.
-///
-/// Pre-condition: Firefox running (launched by this test), daemon started.
-/// Post-condition: `TcpStream::connect("127.0.0.1:<port>")` fails after stop.
-#[test]
-#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
-fn live_daemon_stop_frees_port() {
-    if !live_tests_enabled() {
-        return;
-    }
-
-    let ff = LiveFirefox::headless_on_random_port();
-    let port = ff.port();
-
-    // Start the daemon.
-    let Some(_daemon_port) = ff.with_daemon() else {
-        eprintln!("live_daemon_stop_frees_port: daemon did not start — skipping");
-        return;
-    };
-
-    // Confirm the port is in use before we stop.
-    assert!(
-        std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_ok(),
-        "live_daemon_stop_frees_port: expected Firefox RDP port {port} to be open before stop"
-    );
-
-    // Issue daemon stop.  The daemon kills the Firefox process group and waits
-    // for the port to close (Theme A).
-    let stop = Command::new(ff_rdp_bin())
-        .args([
-            "--host",
-            "127.0.0.1",
-            "--port",
-            &port.to_string(),
-            "daemon",
-            "stop",
-        ])
-        .output()
-        .expect("live_daemon_stop_frees_port: ff-rdp daemon stop failed to spawn");
-
-    assert!(
-        stop.status.success(),
-        "live_daemon_stop_frees_port: daemon stop returned non-zero — {}",
-        crate::common::output_note(&stop)
-    );
-
-    // The port must be closed within 3 s (daemon already waited up to 3 s).
-    let deadline = std::time::Instant::now() + Duration::from_secs(4);
-    let mut port_closed = false;
-    while std::time::Instant::now() < deadline {
-        if std::net::TcpStream::connect(format!("127.0.0.1:{port}")).is_err() {
-            port_closed = true;
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-
-    // LiveFirefox Drop will attempt kill_pid — fine if process is already gone.
-    assert!(
-        port_closed,
-        "live_daemon_stop_frees_port: FAIL — Firefox RDP port {port} still \
-         listening after daemon stop (Theme A regression)"
-    );
-
-    eprintln!("live_daemon_stop_frees_port: PASS — port {port} closed after daemon stop");
-}
 
 /// `live_launch_replace_handles_stuck_prior`:
 /// When a prior Firefox instance holds the default port, `ff-rdp launch --replace`
@@ -432,9 +362,9 @@ fn live_jq_missing_path_silent_default() {
 /// written — predates iter-100) checked `stderr`, which the CLI never
 /// writes to for this error path, so the assertion always failed once
 /// actually reached. Found while un-masking `live_86_perf_field_fixes.rs`
-/// during iter-100 PR review (a separate, since-fixed bug in
-/// `LiveFirefox::with_daemon` meant CI's `live-tests` job never previously
-/// ran a test binary late enough alphabetically to reach this one).
+/// during iter-100 PR review (a separate, since-fixed harness bug meant CI's
+/// `live-tests` job never previously ran a test binary late enough
+/// alphabetically to reach this one).
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
 fn live_jq_missing_path_strict_exits_nonzero() {

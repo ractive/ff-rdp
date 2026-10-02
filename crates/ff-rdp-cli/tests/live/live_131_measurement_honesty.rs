@@ -1,5 +1,5 @@
 //! Live tests for iter-131 — measurement honesty: perf transfer sizes,
-//! responsive simulation fields, snapshot bounds, throttle state.
+//! responsive simulation fields, snapshot bounds.
 //!
 //! ACs (see kb/iterations/iteration-131-measurement-honesty.md):
 //!   - live_131_perf_opaque_transfer: cross-origin resources without
@@ -11,8 +11,6 @@
 //!     `media_queries_applied` + `simulation` per breakpoint.
 //!   - live_131_snapshot_max_chars_bounds: `snapshot --max-chars` bounds the
 //!     WHOLE serialized tree, not just leaf text.
-//!   - live_131_throttle_status: `throttle status` recalls the profile last
-//!     applied via the daemon.
 //!
 //! # Running
 //!
@@ -37,33 +35,6 @@ const PIXEL_GIF: &[u8] = &[
     0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02, 0x44, 0x01, 0x00, 0x3b,
 ];
 
-/// Daemon-path args (no `--no-daemon`): commands share the persistent daemon
-/// connection, so state set by one command (e.g. `throttle`'s bookkeeping) is
-/// visible to the next. Mirrors `live_109_throttle_block.rs::daemon_args`.
-fn daemon_args(port: u16) -> Vec<String> {
-    vec![
-        "--host".to_owned(),
-        "127.0.0.1".to_owned(),
-        "--port".to_owned(),
-        port.to_string(),
-        "--timeout".to_owned(),
-        "30000".to_owned(),
-    ]
-}
-
-fn stop_daemon(port: u16) {
-    let _ = Command::new(ff_rdp_bin())
-        .args([
-            "--host",
-            "127.0.0.1",
-            "--port",
-            &port.to_string(),
-            "daemon",
-            "stop",
-        ])
-        .output();
-}
-
 fn navigate(port: u16, url: &str) {
     let nav = Command::new(ff_rdp_bin())
         .args(base_args(port))
@@ -79,13 +50,6 @@ fn navigate(port: u16, url: &str) {
 
 fn run_json(port: u16, args: &[&str]) -> Value {
     run_json_with(&base_args(port), args)
-}
-
-/// Like [`run_json`] but over the daemon path (see [`daemon_args`]) — used by
-/// the throttle-status test, which needs state to persist across separate
-/// `ff-rdp` invocations.
-fn run_json_daemon(port: u16, args: &[&str]) -> Value {
-    run_json_with(&daemon_args(port), args)
 }
 
 fn run_json_with(base: &[String], args: &[&str]) -> Value {
@@ -469,61 +433,4 @@ fn live_131_snapshot_max_chars_bounds() {
     eprintln!(
         "live_131_snapshot_max_chars_bounds: PASSED — full={full_len} bytes, bounded={bounded_len} bytes"
     );
-}
-
-// ---------------------------------------------------------------------------
-// Theme D — throttle status
-// ---------------------------------------------------------------------------
-
-/// `live_131_throttle_status`:
-///
-/// After `throttle slow-3g` (daemon path), `throttle status` reports
-/// `profile: "slow-3g"`; after `throttle off` it reports `profile: null`
-/// (none active) — `throttle` is no longer write-only.
-#[test]
-#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
-fn live_131_throttle_status() {
-    if !live_tests_enabled() {
-        eprintln!("live_131_throttle_status: set FF_RDP_LIVE_TESTS=1");
-        return;
-    }
-    let ff = LiveFirefox::headless_on_random_port();
-    if ff.with_daemon().is_none() {
-        eprintln!("live_131_throttle_status: daemon did not start — skipping");
-        return;
-    }
-    let port = ff.port();
-
-    // Every call here must go over the daemon path (no `--no-daemon`) —
-    // throttle state is client-side bookkeeping keyed to *this* daemon
-    // process (Theme D), so a one-shot connection would never see it.
-    let applied = run_json_daemon(port, &["throttle", "slow-3g"]);
-    assert_eq!(
-        applied["results"]["profile"], "slow-3g",
-        "throttle slow-3g must echo the applied profile: {applied}"
-    );
-
-    let status = run_json_daemon(port, &["throttle", "status"]);
-    assert_eq!(
-        status["results"]["profile"], "slow-3g",
-        "throttle status must recall the last-applied profile: {status}"
-    );
-    assert!(
-        status["results"]["cache_caveat"]
-            .as_str()
-            .is_some_and(|c| c.contains("cache")),
-        "throttle status must carry the cache caveat: {status}"
-    );
-
-    let off = run_json_daemon(port, &["throttle", "off"]);
-    assert_eq!(off["results"]["profile"], "off");
-
-    let status_after_off = run_json_daemon(port, &["throttle", "status"]);
-    assert!(
-        status_after_off["results"]["profile"].is_null(),
-        "after throttle off, status must report no active profile: {status_after_off}"
-    );
-
-    stop_daemon(port);
-    eprintln!("live_131_throttle_status: PASSED");
 }

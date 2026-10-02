@@ -131,12 +131,12 @@ pub fn qualify_before(before: &Value, case: &str, base: &str) -> Check {
 // arbitrary titles or partially consumed records are accepted as fixture proof.
 static BEGIN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-    r"^[0-9TZ:.+-]+ DEBUG ff_rdp_cli::frame_targets: FRAME_TARGETS_BEGIN pid=([0-9]+) via_daemon=(true|false)$"
+    r"^[0-9TZ:.+-]+ DEBUG ff_rdp_cli::frame_targets: FRAME_TARGETS_BEGIN pid=([0-9]+)(?: via_daemon=(?:true|false))?$"
 ).unwrap()
 });
 static END: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-    r"^[0-9TZ:.+-]+ DEBUG ff_rdp_cli::frame_targets: FRAME_TARGETS_END pid=([0-9]+) via_daemon=(true|false) elapsed_ns=([0-9]+) result=Ok\(\[(.*)\]\)$"
+    r"^[0-9TZ:.+-]+ DEBUG ff_rdp_cli::frame_targets: FRAME_TARGETS_END pid=([0-9]+)(?: via_daemon=(?:true|false))? elapsed_ns=([0-9]+) result=Ok\(\[(.*)\]\)$"
 ).unwrap()
 });
 static TARGET: LazyLock<Regex> = LazyLock::new(|| {
@@ -150,7 +150,7 @@ static TARGET: LazyLock<Regex> = LazyLock::new(|| {
 )).unwrap()
 });
 
-fn returned_order(logs: &str, base: &str, case: &str, daemon: bool) -> Check<Vec<&'static str>> {
+fn returned_order(logs: &str, base: &str, case: &str) -> Check<Vec<&'static str>> {
     let begins: Vec<_> = logs
         .lines()
         .filter(|l| l.contains("FRAME_TARGETS_BEGIN"))
@@ -169,12 +169,7 @@ fn returned_order(logs: &str, base: &str, case: &str, daemon: bool) -> Check<Vec
         begin[1] == end[1] && begin[1].parse::<u32>().is_ok_and(|pid| pid > 0),
         "matching positive invocation pid"
     );
-    let route = if daemon { "true" } else { "false" };
-    require!(
-        &begin[2] == route && &end[2] == route,
-        "actual invocation route"
-    );
-    require!(end[3].parse::<u128>().is_ok(), "elapsed integer");
+    require!(end[2].parse::<u128>().is_ok(), "elapsed integer");
     require!(
         logs.find(begins[0]) < logs.find(ends[0]),
         "BEGIN before END"
@@ -187,7 +182,7 @@ fn returned_order(logs: &str, base: &str, case: &str, daemon: bool) -> Check<Vec
     let mut seen = HashSet::new();
     let mut identities = HashSet::new();
     let mut order = Vec::new();
-    let mut remaining = &end[4];
+    let mut remaining = &end[3];
     loop {
         let target = TARGET
             .captures(remaining)
@@ -233,15 +228,9 @@ fn returned_order(logs: &str, base: &str, case: &str, daemon: bool) -> Check<Vec
 }
 
 /// Inputs deliberately exclude action stdout/status, selector rows and after state.
-pub fn expectation(
-    before: &Value,
-    case: &str,
-    base: &str,
-    logs: &str,
-    daemon: bool,
-) -> Check<Expectation> {
+pub fn expectation(before: &Value, case: &str, base: &str, logs: &str) -> Check<Expectation> {
     qualify_before(before, case, base)?;
-    let order = returned_order(logs, base, case, daemon)?;
+    let order = returned_order(logs, base, case)?;
     let mut selectors = Vec::new();
     let mut accepted = None;
     if case == "bbc.com-native" {

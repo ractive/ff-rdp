@@ -1,5 +1,5 @@
 //! Iter153 paired ownership fixture. Every home and command receipt survives unwind.
-//! Native start-token lookup mirrors daemon/process.rs because the CLI has no lib target.
+//! Native start-token lookup mirrors src/util/process.rs because the CLI has no lib target.
 use crate::common::{self, LIVE_LAUNCH_LOG_ENV, OWNER_PID_MARKER, OWNER_TEST_MARKER};
 use serde_json::{Value, json};
 use std::fs::{self, OpenOptions};
@@ -294,30 +294,12 @@ pub fn guard_launched_firefox(bytes: &[u8], home: &Path) -> Option<ProcessGuard>
         .map(|pid| ProcessGuard::new(pid, home))
 }
 
-#[derive(serde::Deserialize)]
-struct LaunchRecord {
-    pid: u32,
-    port: u16,
-    profile_dir: PathBuf,
-    start_token: String,
-}
-#[derive(serde::Deserialize)]
-struct ProxyRecord {
-    pid: u32,
-    firefox_port: u16,
-    firefox_host: String,
-    proxy_port: u16,
-    start_token: String,
-}
-
 pub struct Browser {
     guard: ProcessGuard,
     port: u16,
     home: PathBuf,
     profile: PathBuf,
-    record: Vec<u8>,
     markers: Vec<(String, Vec<u8>)>,
-    proxies: Vec<ProcessGuard>,
 }
 impl Browser {
     pub fn pid(&self) -> u32 {
@@ -326,10 +308,6 @@ impl Browser {
     pub fn port(&self) -> u16 {
         self.port
     }
-    fn record_path(&self) -> PathBuf {
-        self.home
-            .join(format!(".ff-rdp/launch-record.{}.json", self.port))
-    }
     pub fn assert_survives(&self, label: &str) {
         assert_eq!(
             process_start_token(self.pid()).as_ref(),
@@ -337,10 +315,6 @@ impl Browser {
             "original Firefox incarnation must survive"
         );
         assert!(self.profile.is_dir(), "original profile must survive");
-        assert_eq!(
-            fs::read(self.record_path()).expect("original launch record survives"),
-            self.record
-        );
         self.assert_markers();
         assert_listener(self.port, self.pid(), &self.home, label);
         assert_eq!(
@@ -350,7 +324,7 @@ impl Browser {
         );
         save_json(
             &self.home.join(format!("{label}-survival.json")),
-            &json!({"pid":self.pid(),"birth":self.guard.token,"profile":self.profile,"listener_pid":self.pid(),"record_and_markers_unchanged":true,"before_cleanup":true}),
+            &json!({"pid":self.pid(),"birth":self.guard.token,"profile":self.profile,"listener_pid":self.pid(),"markers_unchanged":true,"before_cleanup":true}),
         );
     }
     fn assert_markers(&self) {
@@ -374,38 +348,6 @@ impl Browser {
             &json!({"pid":self.pid(),"prior_birth":self.guard.token,"observed_birth":current,"pid_alive":common::pid_alive(self.pid()),"worker_return_inferred":false}),
         );
     }
-    fn archive_lookup(&self) {
-        self.assert_survives("before-record-removal");
-        archive_record(
-            &self.record_path(),
-            &self.home.join("fixture-launch-record.archive.json"),
-            &self.record,
-        );
-        assert!(
-            !self.record_path().exists(),
-            "registry branch requires no active launch record"
-        );
-        self.assert_markers();
-        save_json(
-            &self.home.join("registry-fallback-precondition.json"),
-            &json!({"arrangement":"archive and remove only fixture-generated active lookup","pid":self.pid(),"birth":self.guard.token,"profile":self.profile,"launch_record_absent":true,"markers_unchanged":true}),
-        );
-    }
-}
-fn archive_record(active: &Path, archive: &Path, expected: &[u8]) {
-    assert_eq!(
-        fs::read(active).expect("read own active record"),
-        expected,
-        "active record changed; refuse fixture removal"
-    );
-    save(archive, expected);
-    assert_eq!(fs::read(archive).expect("reread durable archive"), expected);
-    assert_eq!(
-        fs::read(active).expect("recheck active record"),
-        expected,
-        "active record changed; refuse fixture removal"
-    );
-    fs::remove_file(active).expect("remove only fixture's archived active launch record");
 }
 fn trusted_root(root: &Path) {
     let meta = fs::symlink_metadata(root).expect("configured profile root");
@@ -535,13 +477,6 @@ pub fn launch(home: &Path) -> Browser {
         std::thread::sleep(Duration::from_millis(200));
         attempt = attempt.checked_add(1).expect("bounded tabs attempt count");
     }
-    let record = fs::read(home.join(format!(".ff-rdp/launch-record.{port}.json")))
-        .expect("fixture-generated browser record");
-    let rec: LaunchRecord = serde_json::from_slice(&record).expect("launch record type");
-    assert_eq!(rec.pid, guard.pid);
-    assert_eq!(rec.port, port);
-    assert_eq!(rec.start_token, guard.token);
-    assert_eq!(rec.profile_dir, profile);
     let root = home.join("ff-rdp/profiles");
     trusted_root(&root);
     assert_eq!(
@@ -577,73 +512,10 @@ pub fn launch(home: &Path) -> Browser {
         port,
         home: home.to_path_buf(),
         profile,
-        record,
         markers,
-        proxies: Vec::new(),
     };
     browser.assert_survives("initial");
     browser
-}
-pub fn establish_registry(browser: &mut Browser, home: &Path, eval_stdout: &[u8], owned: bool) {
-    let eval: Value = serde_json::from_slice(eval_stdout).expect("complete eval output");
-    assert_eq!(
-        eval["meta"]["route"], "daemon",
-        "setup must actually route through daemon"
-    );
-    let bytes = fs::read(home.join(format!(".ff-rdp/daemon.{}.json", browser.port)))
-        .expect("real daemon registry");
-    let proxy: ProxyRecord = serde_json::from_slice(&bytes).expect("proxy record type");
-    assert!(proxy.pid > 1);
-    assert_ne!(proxy.pid, browser.pid());
-    assert_eq!(proxy.firefox_port, browser.port);
-    assert_eq!(proxy.firefox_host, "127.0.0.1");
-    assert_ne!(proxy.proxy_port, 0);
-    assert_eq!(
-        process_start_token(proxy.pid).as_ref(),
-        Some(&proxy.start_token),
-        "native proxy identity"
-    );
-    // Separate authority: this fixture-created registry and native token own
-    // only the proxy, never the Firefox to which it is connected.
-    browser.proxies.push(ProcessGuard {
-        pid: proxy.pid,
-        token: proxy.start_token.clone(),
-        home: home.to_path_buf(),
-        role: "proxy",
-    });
-    save(&home.join("fixture-proxy-registry.archive.json"), &bytes);
-    save_json(
-        &home.join("daemon-precondition.json"),
-        &json!({"browser_pid":browser.pid(),"proxy_pid":proxy.pid,"proxy_birth":proxy.start_token,"route":"daemon","owned_configured_root":owned}),
-    );
-    if owned {
-        assert_eq!(home, browser.home);
-        browser.archive_lookup();
-    } else {
-        assert_ne!(home, browser.home);
-        assert!(
-            !home
-                .join(format!(".ff-rdp/launch-record.{}.json", browser.port))
-                .exists()
-        );
-        browser.assert_survives("before-negative-replace");
-    }
-}
-
-// allow-ungated-live: browser-free exact record archive/refusal control.
-#[test]
-fn unit_282_record_archive_refuses_changed_lookup_and_preserves_bytes() {
-    let dir = tempfile::tempdir().unwrap();
-    let active = dir.path().join("launch-record.1.json");
-    let archive = dir.path().join("archive.json");
-    fs::write(&active, b"exact fixture record").unwrap();
-    let refused = std::panic::catch_unwind(|| archive_record(&active, &archive, b"other record"));
-    assert!(refused.is_err());
-    assert_eq!(fs::read(&active).unwrap(), b"exact fixture record");
-    assert!(!archive.exists());
-    archive_record(&active, &archive, b"exact fixture record");
-    assert!(!active.exists());
-    assert_eq!(fs::read(&archive).unwrap(), b"exact fixture record");
 }
 #[cfg(unix)]
 // allow-ungated-live: actual owned /bin/sleep cleanup control; no Firefox.

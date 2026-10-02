@@ -28,15 +28,6 @@
 //! `enable_service` is unaffected, so the service really is left enabled
 //! afterward.
 //!
-//! # Daemon routing
-//!
-//! `a11y` always calls `connect_direct` (like `screenshot`, `cookies`,
-//! `storage`, `sources`, `computed`) — confirmed by reading
-//! `crates/ff-rdp-cli/src/commands/a11y.rs` before writing these tests, per
-//! the plan's "verify on the wire first" rule. There is no daemon-routed
-//! code path for `a11y` to additionally exercise: every invocation here
-//! already takes the one and only connection path this command has.
-//!
 //! # Running
 //!
 //!   FF_RDP_LIVE_TESTS=1 cargo test-live -p ff-rdp-cli \

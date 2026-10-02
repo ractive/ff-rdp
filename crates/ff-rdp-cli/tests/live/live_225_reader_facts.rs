@@ -28,9 +28,6 @@
 //! "Stable release" row exists nowhere in the prose, a definition list, and an
 //! `[itemprop]` microdata element.
 //!
-//! daemon-parity: every test uses the daemon route (the default), like the
-//! iter-219/220/224 suites it extends.
-//!
 //! # Running
 //!
 //!   FF_RDP_LIVE_TESTS=1 cargo test-live -p ff-rdp-cli \
@@ -43,7 +40,7 @@ use serde_json::Value;
 
 use crate::common::{FixtureRoute, FixtureServer, LiveFirefox, ff_rdp_bin, live_tests_enabled};
 
-fn daemon_args(port: u16) -> Vec<String> {
+fn cli_args(port: u16) -> Vec<String> {
     vec![
         "--host".to_owned(),
         "127.0.0.1".to_owned(),
@@ -54,26 +51,9 @@ fn daemon_args(port: u16) -> Vec<String> {
     ]
 }
 
-fn stop_daemon(port: u16) {
-    let _ = Command::new(ff_rdp_bin())
-        .args(["--host", "127.0.0.1", "--port", &port.to_string()])
-        .args(["daemon", "stop"])
-        .output();
-}
-
-fn firefox_with_daemon(test: &str) -> LiveFirefox {
-    let ff = LiveFirefox::headless_on_random_port();
-    assert!(
-        ff.with_daemon().is_some(),
-        "{test}: the proxy daemon did not start for Firefox on port {}",
-        ff.port()
-    );
-    ff
-}
-
 fn run(port: u16, args: &[&str]) -> Output {
     Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("spawn ff-rdp {args:?}: {e}"))
@@ -142,11 +122,10 @@ fn live_225_facts_carry_the_infobox_rows_the_excerpt_drops() {
         );
         return;
     }
-    let ff = firefox_with_daemon("live_225_facts_carry_the_infobox_rows_the_excerpt_drops");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(infobox_fixture()) else {
         eprintln!("live_225_facts_carry_the_infobox_rows_the_excerpt_drops: no fixture HTTP");
-        stop_daemon(port);
         return;
     };
 
@@ -211,8 +190,6 @@ fn live_225_facts_carry_the_infobox_rows_the_excerpt_drops() {
         !keys.contains(&"Python"),
         "a header-only row has no value and must be skipped: {keys:?}"
     );
-
-    stop_daemon(port);
 }
 
 /// Theme A / acceptance criterion 2: `--query` reaches the facts, so the
@@ -224,11 +201,10 @@ fn live_225_query_answers_from_the_facts_in_one_command() {
         eprintln!("live_225_query_answers_from_the_facts_in_one_command: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_225_query_answers_from_the_facts_in_one_command");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(infobox_fixture()) else {
         eprintln!("live_225_query_answers_from_the_facts_in_one_command: no fixture HTTP");
-        stop_daemon(port);
         return;
     };
 
@@ -264,8 +240,6 @@ fn live_225_query_answers_from_the_facts_in_one_command() {
             .contains("3.13.5"),
         "{nav}"
     );
-
-    stop_daemon(port);
 }
 
 /// Theme B: a query the reader text and the facts both miss falls back to a
@@ -278,11 +252,10 @@ fn live_225_query_falls_back_to_the_rendered_text() {
         eprintln!("live_225_query_falls_back_to_the_rendered_text: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_225_query_falls_back_to_the_rendered_text");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(infobox_fixture()) else {
         eprintln!("live_225_query_falls_back_to_the_rendered_text: no fixture HTTP");
-        stop_daemon(port);
         return;
     };
 
@@ -315,8 +288,6 @@ fn live_225_query_falls_back_to_the_rendered_text() {
         "a fallback hit is still a hit: {nav}"
     );
     assert!(page.get("hint").is_none(), "a hit needs no hint: {nav}");
-
-    stop_daemon(port);
 }
 
 /// Theme B, the honest half: nothing on the page matches, so the view says
@@ -328,11 +299,10 @@ fn live_225_a_miss_everywhere_reports_zero_and_hints() {
         eprintln!("live_225_a_miss_everywhere_reports_zero_and_hints: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_225_a_miss_everywhere_reports_zero_and_hints");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(infobox_fixture()) else {
         eprintln!("live_225_a_miss_everywhere_reports_zero_and_hints: no fixture HTTP");
-        stop_daemon(port);
         return;
     };
 
@@ -358,8 +328,6 @@ fn live_225_a_miss_everywhere_reports_zero_and_hints() {
         hint.contains("page-text --full --query"),
         "the miss must name the exhaustive next step: {hint:?} in {nav}"
     );
-
-    stop_daemon(port);
 }
 
 /// The facts pass reads the document and never writes to it — the same
@@ -372,11 +340,10 @@ fn live_225_the_facts_pass_leaves_the_dom_untouched() {
         eprintln!("live_225_the_facts_pass_leaves_the_dom_untouched: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_225_the_facts_pass_leaves_the_dom_untouched");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(server) = FixtureServer::start(infobox_fixture()) else {
         eprintln!("live_225_the_facts_pass_leaves_the_dom_untouched: no fixture HTTP");
-        stop_daemon(port);
         return;
     };
 
@@ -394,6 +361,4 @@ fn live_225_the_facts_pass_leaves_the_dom_untouched() {
         before["results"], after["results"],
         "a --with-page call must leave the document byte-identical"
     );
-
-    stop_daemon(port);
 }

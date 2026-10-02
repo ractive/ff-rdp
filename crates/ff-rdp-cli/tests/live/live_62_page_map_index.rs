@@ -37,8 +37,7 @@ const INDEX_HTML: &str = "<!DOCTYPE html><html><head><title>Fixture Home</title>
 /// the test since iteration 181.
 ///
 /// Before 181 the fetch was deliberately delayed by 150 ms, because
-/// `assert_network` on the direct route (which these tests always take, via
-/// `base_args`'s `--no-daemon`) armed its `network-event` watcher only when the
+/// `assert_network` armed its `network-event` watcher only when the
 /// `assert_network` step itself started — so a request that completed while the
 /// `click` step was still finishing was never delivered. The delay was papering
 /// over a race, and under load it stopped working: iteration 179 measured 8/8

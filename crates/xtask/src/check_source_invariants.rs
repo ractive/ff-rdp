@@ -8,7 +8,7 @@
 //! says which one fired and how to fix it.
 
 use crate::stderr_scan::{locate_repo_root, scan_rs_files, strip_test_module};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Args as ClapArgs;
 use std::path::{Path, PathBuf};
 

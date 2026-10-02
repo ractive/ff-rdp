@@ -548,7 +548,7 @@ fn screenshot_has_no_dppx_flag() {
 
 /// A malformed `--window-size` value is rejected with a user error naming
 /// the expected `WxH` form — before any RDP connection is attempted, so
-/// this needs neither a live daemon nor Firefox (port 1 is unroutable).
+/// this needs no Firefox (port 1 is unroutable).
 #[test]
 fn screenshot_window_size_invalid_rejected() {
     let output = std::process::Command::new(ff_rdp_bin())

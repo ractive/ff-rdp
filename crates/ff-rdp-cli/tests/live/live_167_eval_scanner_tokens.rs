@@ -27,9 +27,6 @@
 //! script parse" is asserted here rather than in a unit test. The unit tests in
 //! `commands/eval.rs` (`unit_167_*`) pin the boundary sets that produce it.
 //!
-//! daemon-parity: these use the default daemon path, like every real
-//! invocation.
-//!
 //! # Running
 //!
 //!   FF_RDP_LIVE_TESTS=1 cargo test-live -p ff-rdp-cli \
@@ -41,7 +38,7 @@ use serde_json::Value;
 
 use crate::common::{LiveFirefox, ff_rdp_bin, live_tests_enabled};
 
-fn daemon_args(port: u16) -> Vec<String> {
+fn cli_args(port: u16) -> Vec<String> {
     vec![
         "--host".to_owned(),
         "127.0.0.1".to_owned(),
@@ -52,29 +49,9 @@ fn daemon_args(port: u16) -> Vec<String> {
     ]
 }
 
-fn stop_daemon(port: u16) {
-    let _ = Command::new(ff_rdp_bin())
-        .args(["--host", "127.0.0.1", "--port", &port.to_string()])
-        .args(["daemon", "stop"])
-        .output();
-}
-
-/// Bring up Firefox with a running daemon, panicking on failure (iter-158
-/// Theme D: an `Option` here made every caller `return`, which libtest
-/// reports as `ok`).
-fn firefox_with_daemon(test: &str) -> LiveFirefox {
-    let ff = LiveFirefox::headless_on_random_port();
-    assert!(
-        ff.with_daemon().is_some(),
-        "{test}: the proxy daemon did not start for Firefox on port {}",
-        ff.port()
-    );
-    ff
-}
-
 fn run(port: u16, args: &[&str]) -> Output {
     Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("spawn ff-rdp {args:?}: {e}"))
@@ -144,7 +121,7 @@ fn live_167_regex_literal_survives_every_wrap() {
         eprintln!("live_167_regex_literal_survives_every_wrap: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_167_regex_literal_survives_every_wrap");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let regex_call = r#"/a;b/.test("a;b")"#;
@@ -188,8 +165,6 @@ fn live_167_regex_literal_survives_every_wrap() {
         Value::Bool(true),
         "a regex as the last statement of an await script must survive"
     );
-
-    stop_daemon(port);
 }
 
 // ---------------------------------------------------------------------------
@@ -210,7 +185,7 @@ fn live_167_comments_and_escapes_do_not_split_scripts() {
         eprintln!("live_167_comments_and_escapes_do_not_split_scripts: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_167_comments_and_escapes_do_not_split_scripts");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let cases: &[(&str, Value)] = &[
@@ -248,8 +223,6 @@ fn live_167_comments_and_escapes_do_not_split_scripts() {
             );
         }
     }
-
-    stop_daemon(port);
 }
 
 /// iter-165's per-call scope must reach a declaration that sits behind a
@@ -267,7 +240,7 @@ fn live_167_commented_declaration_is_still_isolated() {
         eprintln!("live_167_commented_declaration_is_still_isolated: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_167_commented_declaration_is_still_isolated");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     for attempt in 1..=3 {
@@ -277,6 +250,4 @@ fn live_167_commented_declaration_is_still_isolated() {
             "attempt {attempt}: a commented declaration must stay call-local"
         );
     }
-
-    stop_daemon(port);
 }

@@ -4,7 +4,7 @@
 //! 1 failed each, with a *different* single failure and both green in
 //! isolation. One of them, `live_61r_eval::live_eval_on_hn`, got `""` back for
 //! `document.title` on news.ycombinator.com. Iteration 181's sweep then hit
-//! the same shape on theguardian.com through `live_137_consent_accept_via_daemon`.
+//! the same shape on theguardian.com through a consent-accept test (since removed).
 //! Two named instances make it a class, not a test.
 //!
 //! This scan is the class's inventory. It is Firefox-free and network-free: it
@@ -29,17 +29,16 @@
 //! - Only **five** of the fourteen assert on a third-party page's *content*
 //!   rather than merely needing a real page: `live_eval_on_hn` (exact
 //!   `document.title`), `live_eval_works_on_real_mdn` (a substring, so it
-//!   survives a redesign), `live_137_consent_accept_via_daemon` (a consent
-//!   banner and live frame targets), `live_cascade_real_site_cli` (an `h1`
+//!   survives a redesign), a consent-accept test (a consent banner and live
+//!   frame targets; since removed), `live_cascade_real_site_cli` (an `h1`
 //!   exists and carries rules), and `live_130`'s comparis navigation (asserts
 //!   the committed *URL*, which is the site's contract with its own address
 //!   and does not move when the page does).
 //! - `live_eval_on_hn` is the one this iteration fixed: it now waits for
 //!   `document.readyState == "complete"` and names readiness-versus-site in the
 //!   failure message (`common::await_document_ready`).
-//! - `live_137_consent_accept_via_daemon`'s `live_target_count: 0` signature is
-//!   **not** touched here. Iteration 251 owns that signature; re-diagnosing it
-//!   from this side would produce two half-owners for one failure.
+//! - The consent-accept test's `live_target_count: 0` signature was owned by
+//!   iteration 251; that test went with the proxy it exercised (DEC-056).
 
 use std::path::{Path, PathBuf};
 
@@ -54,7 +53,7 @@ const DECLARED_HOSTS: [(&str, &str); 7] = [
     ),
     (
         "developer.mozilla.org",
-        "live_eval_csp / live_daemon_stop_mdn / live_94_polish_bundle: real CSP page; \
+        "live_eval_csp / live_94_polish_bundle: real CSP page; \
          asserts the title *contains* \"MDN\"",
     ),
     (

@@ -21,9 +21,6 @@
 //! defect Theme A exists to fix. Instrument a counter on the page, run the
 //! command, read the counter back.
 //!
-//! daemon-parity: these use [`daemon_args`] (no `--no-daemon`) — the default
-//! path every real invocation takes.
-//!
 //! # Running
 //!
 //!   FF_RDP_LIVE_TESTS=1 cargo test-live -p ff-rdp-cli \
@@ -36,7 +33,7 @@ use serde_json::Value;
 
 use crate::common::{FixtureRoute, FixtureServer, LiveFirefox, ff_rdp_bin, live_tests_enabled};
 
-fn daemon_args(port: u16) -> Vec<String> {
+fn cli_args(port: u16) -> Vec<String> {
     vec![
         "--host".to_owned(),
         "127.0.0.1".to_owned(),
@@ -47,34 +44,9 @@ fn daemon_args(port: u16) -> Vec<String> {
     ]
 }
 
-fn stop_daemon(port: u16) {
-    let _ = Command::new(ff_rdp_bin())
-        .args(["--host", "127.0.0.1", "--port", &port.to_string()])
-        .args(["daemon", "stop"])
-        .output();
-}
-
-/// Bring up Firefox with a running daemon, panicking on failure (iter-158
-/// Theme D: an `Option` here made every caller `return`, which libtest
-/// reports as `ok`).
-/// iter-172: report *why* the daemon did not start. This test was the sole
-/// failure of iteration-171's live sweep and its message said only "the proxy
-/// daemon did not start", which was not enough evidence to attribute it to
-/// iteration-172's zero-byte-registry defect or to anything else.
-fn firefox_with_daemon(test: &str) -> LiveFirefox {
-    let ff = LiveFirefox::headless_on_random_port();
-    if let Err(reason) = ff.with_daemon_or_reason() {
-        panic!(
-            "{test}: the proxy daemon did not start for Firefox on port {}: {reason}",
-            ff.port()
-        );
-    }
-    ff
-}
-
 fn run(port: u16, args: &[&str]) -> Output {
     Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
+        .args(cli_args(port))
         .args(args)
         .output()
         .unwrap_or_else(|e| panic!("spawn ff-rdp {args:?}: {e}"))
@@ -163,14 +135,13 @@ fn live_160_click_obscured_reports_unreachable() {
         eprintln!("live_160_click_obscured_reports_unreachable: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_160_click_obscured_reports_unreachable");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(_server) = serve_and_navigate(
         port,
         "live_160_click_obscured_reports_unreachable",
         OVERLAY_PAGE,
     ) else {
-        stop_daemon(port);
         return;
     };
 
@@ -202,8 +173,6 @@ fn live_160_click_obscured_reports_unreachable() {
         Value::from(0),
         "no click may have been dispatched through the overlay"
     );
-
-    stop_daemon(port);
 }
 
 /// AC: `live_160_click_reachable_fires_handler` — with the overlay removed the
@@ -215,12 +184,11 @@ fn live_160_click_reachable_fires_handler() {
         eprintln!("live_160_click_reachable_fires_handler: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_160_click_reachable_fires_handler");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(_server) =
         serve_and_navigate(port, "live_160_click_reachable_fires_handler", OVERLAY_PAGE)
     else {
-        stop_daemon(port);
         return;
     };
 
@@ -244,8 +212,6 @@ fn live_160_click_reachable_fires_handler() {
         Value::from(1),
         "the click must have reached the button's own handler"
     );
-
-    stop_daemon(port);
 }
 
 /// AC: `live_160_click_descendant_hit_counts_as_reachable` — a `<span>` inside
@@ -257,7 +223,7 @@ fn live_160_click_descendant_hit_counts_as_reachable() {
         eprintln!("live_160_click_descendant_hit_counts_as_reachable: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_160_click_descendant_hit_counts_as_reachable");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let html = r#"<!doctype html><title>t160 descendant</title><body>
 <button id="b" style="position:fixed;left:40px;top:40px;width:160px;height:48px">
@@ -273,7 +239,6 @@ document.getElementById('b').addEventListener('click', function () { window.__hi
         "live_160_click_descendant_hit_counts_as_reachable",
         html,
     ) else {
-        stop_daemon(port);
         return;
     };
 
@@ -296,8 +261,6 @@ document.getElementById('b').addEventListener('click', function () { window.__hi
         Value::from(1),
         "a descendant hit is a reachable click"
     );
-
-    stop_daemon(port);
 }
 
 /// AC: `live_160_ref_click_asserts_handler_effect` — `live_140_ref_click_resolves`
@@ -310,7 +273,7 @@ fn live_160_ref_click_asserts_handler_effect() {
         eprintln!("live_160_ref_click_asserts_handler_effect: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_160_ref_click_asserts_handler_effect");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let html = r#"<!doctype html><title>t160 refs</title><body>
 <button>One</button><button id="two">Two</button>
@@ -321,7 +284,6 @@ document.getElementById('two').addEventListener('click', function () { window.__
 </body>"#;
     let Some(_server) = serve_and_navigate(port, "live_160_ref_click_asserts_handler_effect", html)
     else {
-        stop_daemon(port);
         return;
     };
 
@@ -345,8 +307,6 @@ document.getElementById('two').addEventListener('click', function () { window.__
         "the ref click must have reached the SECOND button's own handler — \
          the envelope's own `clicked: true` proves nothing"
     );
-
-    stop_daemon(port);
 }
 
 // ---------------------------------------------------------------------------
@@ -365,7 +325,7 @@ fn live_160_type_emits_key_events() {
         eprintln!("live_160_type_emits_key_events: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_160_type_emits_key_events");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let html = r#"<!doctype html><title>t160 keys</title><body>
 <input id="q">
@@ -377,7 +337,6 @@ q.addEventListener('keyup', function (e) { window.__keys.push('keyup:' + e.key);
 </script>
 </body>"#;
     let Some(_server) = serve_and_navigate(port, "live_160_type_emits_key_events", html) else {
-        stop_daemon(port);
         return;
     };
 
@@ -398,8 +357,6 @@ q.addEventListener('keyup', function (e) { window.__keys.push('keyup:' + e.key);
         Value::String("hi".to_owned()),
         "the value must still land"
     );
-
-    stop_daemon(port);
 }
 
 // ---------------------------------------------------------------------------
@@ -423,14 +380,13 @@ fn live_160_consent_no_cmp_exits_nonzero() {
         eprintln!("live_160_consent_no_cmp_exits_nonzero: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_160_consent_no_cmp_exits_nonzero");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(_server) = serve_and_navigate(
         port,
         "live_160_consent_no_cmp_exits_nonzero",
         UNKNOWN_BANNER_PAGE,
     ) else {
-        stop_daemon(port);
         return;
     };
 
@@ -459,8 +415,6 @@ fn live_160_consent_no_cmp_exits_nonzero() {
         Value::Bool(true),
         "nothing was dismissed, which is exactly why the exit code changed"
     );
-
-    stop_daemon(port);
 }
 
 /// AC: `live_160_consent_allow_no_cmp_exits_zero` — the speculative-caller
@@ -472,14 +426,13 @@ fn live_160_consent_allow_no_cmp_exits_zero() {
         eprintln!("live_160_consent_allow_no_cmp_exits_zero: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_160_consent_allow_no_cmp_exits_zero");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(_server) = serve_and_navigate(
         port,
         "live_160_consent_allow_no_cmp_exits_zero",
         UNKNOWN_BANNER_PAGE,
     ) else {
-        stop_daemon(port);
         return;
     };
 
@@ -501,16 +454,14 @@ fn live_160_consent_allow_no_cmp_exits_zero() {
         stdout.contains("no_cmp_detected"),
         "results.status must name the outcome: {stdout}"
     );
-
-    stop_daemon(port);
 }
 
 /// AC: `live_160_with_network_auto_consent_reports_status` — Theme D's
-/// `status` field must reach all three producers, including the two
-/// `run_with_network` call sites iter-159 added, in both connection modes.
+/// `status` field must reach both producers: plain `navigate --auto-consent`
+/// and the `run_with_network` call site iter-159 added.
 ///
-/// Exit code stays 0 on all three: a page with no cookie banner is not a
-/// failed navigation.
+/// Exit code stays 0 on both: a page with no cookie banner is not a failed
+/// navigation.
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
 fn live_160_with_network_auto_consent_reports_status() {
@@ -518,7 +469,7 @@ fn live_160_with_network_auto_consent_reports_status() {
         eprintln!("live_160_with_network_auto_consent_reports_status: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_160_with_network_auto_consent_reports_status");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let mut routes = HashMap::new();
@@ -528,7 +479,6 @@ fn live_160_with_network_auto_consent_reports_status() {
     );
     let Some(server) = FixtureServer::start(routes) else {
         eprintln!("live_160_with_network_auto_consent_reports_status: no fixture HTTP — skipping");
-        stop_daemon(port);
         return;
     };
     let url = server.base_url();
@@ -543,41 +493,22 @@ fn live_160_with_network_auto_consent_reports_status() {
         .to_owned();
     assert!(allowed.contains(&plain_status.as_str()), "{plain}");
 
-    // Daemon branch of `run_with_network` (navigate.rs:2145).
-    let daemon = run_json(
+    // `run_with_network`'s consent step, on its own connection.
+    let with_network = run_json(
         port,
         &["navigate", &url, "--with-network", "--auto-consent"],
     );
-    let daemon_status = daemon["results"]["consent"]["status"]
+    let network_status = with_network["results"]["consent"]["status"]
         .as_str()
-        .unwrap_or_else(|| panic!("no consent.status on daemon --with-network: {daemon}"))
+        .unwrap_or_else(|| panic!("no consent.status on --with-network: {with_network}"))
         .to_owned();
-    assert!(allowed.contains(&daemon_status.as_str()), "{daemon}");
+    assert!(allowed.contains(&network_status.as_str()), "{with_network}");
 
-    // Direct branch of `run_with_network` (navigate.rs:2325).
-    let direct_out = Command::new(ff_rdp_bin())
-        .args(daemon_args(port))
-        .args(["--no-daemon", "navigate", &url])
-        .args(["--with-network", "--auto-consent"])
-        .output()
-        .expect("spawn ff-rdp --no-daemon navigate");
-    assert!(
-        direct_out.status.success(),
-        "--no-daemon --with-network --auto-consent must still exit 0: {}",
-        combined(&direct_out)
+    // One vocabulary across both producers.
+    assert_eq!(
+        plain_status, network_status,
+        "--with-network branch drifted"
     );
-    let direct = parse_json(&direct_out, &["navigate", "--no-daemon"]);
-    let direct_status = direct["results"]["consent"]["status"]
-        .as_str()
-        .unwrap_or_else(|| panic!("no consent.status on direct --with-network: {direct}"))
-        .to_owned();
-    assert!(allowed.contains(&direct_status.as_str()), "{direct}");
-
-    // One vocabulary across all three producers.
-    assert_eq!(plain_status, daemon_status, "daemon branch drifted");
-    assert_eq!(plain_status, direct_status, "direct branch drifted");
-
-    stop_daemon(port);
 }
 
 // ---------------------------------------------------------------------------
@@ -592,7 +523,7 @@ fn live_160_contrast_cap_and_source_at_top_level() {
         eprintln!("live_160_contrast_cap_and_source_at_top_level: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_160_contrast_cap_and_source_at_top_level");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     // >1000 text-bearing elements, which is the in-page cap
@@ -607,7 +538,6 @@ fn live_160_contrast_cap_and_source_at_top_level() {
     let Some(_server) =
         serve_and_navigate(port, "live_160_contrast_cap_and_source_at_top_level", &body)
     else {
-        stop_daemon(port);
         return;
     };
 
@@ -656,8 +586,6 @@ fn live_160_contrast_cap_and_source_at_top_level() {
         hints.contains(&sampled.to_string()),
         "the hint must name the sampled element count ({sampled}): {hinted}"
     );
-
-    stop_daemon(port);
 }
 
 // ---------------------------------------------------------------------------
@@ -672,7 +600,7 @@ fn live_160_network_results_shape_ignores_jq() {
         eprintln!("live_160_network_results_shape_ignores_jq: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_160_network_results_shape_ignores_jq");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
 
     let mut routes = HashMap::new();
@@ -682,7 +610,6 @@ fn live_160_network_results_shape_ignores_jq() {
     );
     let Some(server) = FixtureServer::start(routes) else {
         eprintln!("live_160_network_results_shape_ignores_jq: no fixture HTTP — skipping");
-        stop_daemon(port);
         return;
     };
     navigate(port, &server.base_url());
@@ -709,8 +636,6 @@ fn live_160_network_results_shape_ignores_jq() {
         detail_shape.contains("array"),
         "--detail is the documented way to the entry list: got {detail_shape}"
     );
-
-    stop_daemon(port);
 }
 
 // ---------------------------------------------------------------------------
@@ -730,14 +655,13 @@ fn live_160_type_non_input_reports_thrown_reason() {
         eprintln!("live_160_type_non_input_reports_thrown_reason: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_160_type_non_input_reports_thrown_reason");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(_server) = serve_and_navigate(
         port,
         "live_160_type_non_input_reports_thrown_reason",
         SELECTOR_DIAG_PAGE,
     ) else {
-        stop_daemon(port);
         return;
     };
 
@@ -757,8 +681,6 @@ fn live_160_type_non_input_reports_thrown_reason() {
         !text.contains("rect did not stabilise"),
         "wrong failure mode reported: {text}"
     );
-
-    stop_daemon(port);
 }
 
 /// AC: `live_160_selector_diagnostics_survive` — the sibling messages on this
@@ -771,14 +693,13 @@ fn live_160_selector_diagnostics_survive() {
         eprintln!("live_160_selector_diagnostics_survive: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_160_selector_diagnostics_survive");
+    let ff = LiveFirefox::headless_on_random_port();
     let port = ff.port();
     let Some(_server) = serve_and_navigate(
         port,
         "live_160_selector_diagnostics_survive",
         SELECTOR_DIAG_PAGE,
     ) else {
-        stop_daemon(port);
         return;
     };
 
@@ -798,6 +719,4 @@ fn live_160_selector_diagnostics_survive() {
          hidden-aware text is the better message and must still win: {}",
         combined(&hidden)
     );
-
-    stop_daemon(port);
 }

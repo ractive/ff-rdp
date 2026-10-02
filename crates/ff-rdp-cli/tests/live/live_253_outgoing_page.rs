@@ -1,8 +1,6 @@
 //! Full-payload collection while a destination has not committed yet.
-//! Both routes must either return the destination or label the outgoing view
+//! The command must either return the destination or label the outgoing view
 //! unready. The six-second response delay exceeds the bounded settle wait.
-//!
-//! daemon-parity: live_253_outgoing_page_daemon covers the same fixture matrix.
 
 use std::collections::HashMap;
 use std::process::Command;
@@ -12,12 +10,9 @@ use serde_json::Value;
 
 use crate::common::{FixtureRoute, FixtureServer, LiveFirefox, ff_rdp_bin, live_tests_enabled};
 
-fn exercise(direct: bool) {
+fn exercise() {
     assert!(live_tests_enabled());
     let ff = LiveFirefox::headless_on_random_port();
-    if !direct {
-        assert!(ff.with_daemon().is_some());
-    }
     let run = |args: &[&str]| {
         let mut cmd = Command::new(ff_rdp_bin());
         cmd.args([
@@ -28,18 +23,9 @@ fn exercise(direct: bool) {
             "--timeout",
             "20000",
         ]);
-        if direct {
-            cmd.arg("--no-daemon");
-        }
         let out = cmd.args(args).output().expect("run this checkout's ff-rdp");
         assert!(out.status.success(), "{args:?}: {out:?}");
-        let value = serde_json::from_slice::<Value>(&out.stdout).expect("JSON envelope");
-        assert_eq!(
-            value["meta"]["route"],
-            if direct { "direct" } else { "daemon" },
-            "{value}"
-        );
-        value
+        serde_json::from_slice::<Value>(&out.stdout).expect("JSON envelope")
     };
     let mut unexpected = Vec::new();
     for delay_ms in [50, 700, 3_200, 6_000] {
@@ -71,7 +57,7 @@ fn exercise(direct: bool) {
         let heading = &view["results"]["page"]["headings"][0]["text"];
         let ready = &view["meta"]["page_ready"];
         eprintln!(
-            "ITER253 direct={direct} delay_ms={delay_ms} elapsed_ms={} heading={heading} ready={ready} injected={} parse_ms={} attempts={}",
+            "ITER253 delay_ms={delay_ms} elapsed_ms={} heading={heading} ready={ready} injected={} parse_ms={} attempts={}",
             elapsed.as_millis(),
             view["meta"]["page_readability_injected"],
             view["meta"]["page_parse_ms"],
@@ -97,14 +83,8 @@ fn exercise(direct: bool) {
 
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
-fn live_253_outgoing_page_direct() {
-    exercise(true);
-}
-
-#[test]
-#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
-fn live_253_outgoing_page_daemon() {
-    exercise(false);
+fn live_253_outgoing_page() {
+    exercise();
 }
 
 struct SameUrlFixture {
@@ -181,12 +161,9 @@ impl Drop for SameUrlFixture {
     }
 }
 
-fn exercise_same_url(direct: bool) {
+fn exercise_same_url() {
     assert!(live_tests_enabled());
     let ff = LiveFirefox::headless_on_random_port();
-    if !direct {
-        assert!(ff.with_daemon().is_some());
-    }
     let server = SameUrlFixture::start();
     let run = |args: &[&str]| {
         let mut cmd = Command::new(ff_rdp_bin());
@@ -198,32 +175,23 @@ fn exercise_same_url(direct: bool) {
             "--timeout",
             "20000",
         ]);
-        if direct {
-            cmd.arg("--no-daemon");
-        }
         let out = cmd.args(args).output().unwrap();
         assert!(out.status.success(), "{args:?}: {out:?}");
-        let value = serde_json::from_slice::<Value>(&out.stdout).unwrap();
-        assert_eq!(
-            value["meta"]["route"],
-            if direct { "direct" } else { "daemon" },
-            "{value}"
-        );
-        value
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()
     };
     run(&["navigate", &server.url]);
     let before = run(&[
         "eval",
         "JSON.stringify({url:location.href,heading:document.querySelector('h1').textContent})",
     ]);
-    eprintln!("ITER253 SAME_URL direct={direct} before={before}");
+    eprintln!("ITER253 SAME_URL before={before}");
     let before: Value = serde_json::from_str(before["results"].as_str().unwrap()).unwrap();
     assert_eq!(before["url"], server.url);
     assert_eq!(before["heading"], "Generation 1");
     let started = Instant::now();
     let view = run(&["click", "a", "--no-wait", "--with-page"]);
     eprintln!(
-        "ITER253 SAME_URL direct={direct} elapsed_ms={} view={view}",
+        "ITER253 SAME_URL elapsed_ms={} view={view}",
         started.elapsed().as_millis()
     );
     // Verify this really was a cross-document replacement at the identical URL.
@@ -232,7 +200,7 @@ fn exercise_same_url(direct: bool) {
         "eval",
         "JSON.stringify({url:location.href,heading:document.querySelector('h1').textContent})",
     ]);
-    eprintln!("ITER253 SAME_URL direct={direct} after={after}");
+    eprintln!("ITER253 SAME_URL after={after}");
     let after: Value = serde_json::from_str(after["results"].as_str().unwrap()).unwrap();
     assert_eq!(after["url"], server.url);
     assert_eq!(after["heading"], "Generation 2");
@@ -255,13 +223,13 @@ fn exercise_same_url(direct: bool) {
         "eval",
         "document.querySelector('a').setAttribute('href', '#here')",
     ]);
-    eprintln!("ITER253 FRAGMENT direct={direct} before={after}");
+    eprintln!("ITER253 FRAGMENT before={after}");
     let started = Instant::now();
     let fragment = run(&["click", "a", "--no-wait", "--with-page"]);
     let elapsed = started.elapsed();
     let fragment_url = run(&["eval", "location.href"]);
     eprintln!(
-        "ITER253 FRAGMENT direct={direct} elapsed_ms={} after={fragment_url} view={fragment}",
+        "ITER253 FRAGMENT elapsed_ms={} after={fragment_url} view={fragment}",
         elapsed.as_millis()
     );
     assert_eq!(fragment_url["results"], format!("{}#here", server.url));
@@ -278,22 +246,13 @@ fn exercise_same_url(direct: bool) {
 
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
-fn live_253_same_url_replacement_direct() {
-    exercise_same_url(true);
+fn live_253_same_url_replacement() {
+    exercise_same_url();
 }
 
-#[test]
-#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
-fn live_253_same_url_replacement_daemon() {
-    exercise_same_url(false);
-}
-
-fn exercise_committed_submission(direct: bool) {
+fn exercise_committed_submission() {
     assert!(live_tests_enabled());
     let ff = LiveFirefox::headless_on_random_port();
-    if !direct {
-        assert!(ff.with_daemon().is_some());
-    }
     let server = FixtureServer::start(HashMap::from([
         (
             "/".into(),
@@ -321,16 +280,9 @@ fn exercise_committed_submission(direct: bool) {
             "--timeout",
             "10000",
         ]);
-        if direct {
-            cmd.arg("--no-daemon");
-        }
         let out = cmd.args(args).output().unwrap();
         assert!(out.status.success(), "{args:?}: {out:?}");
         let value: Value = serde_json::from_slice(&out.stdout).unwrap();
-        assert_eq!(
-            value["meta"]["route"],
-            if direct { "direct" } else { "daemon" }
-        );
         value
     };
     run(&["navigate", &server.base_url()]);
@@ -340,7 +292,7 @@ fn exercise_committed_submission(direct: bool) {
     let elapsed = started.elapsed();
     let after = run(&["eval", "location.href"]);
     eprintln!(
-        "ITER253 SUBMIT direct={direct} before={before} after={after} elapsed_ms={} view={view}",
+        "ITER253 SUBMIT before={before} after={after} elapsed_ms={} view={view}",
         elapsed.as_millis()
     );
     assert_eq!(view["results"]["submitted"], true);
@@ -362,22 +314,13 @@ fn exercise_committed_submission(direct: bool) {
 
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
-fn live_253_committed_submission_direct() {
-    exercise_committed_submission(true);
+fn live_253_committed_submission() {
+    exercise_committed_submission();
 }
 
-#[test]
-#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
-fn live_253_committed_submission_daemon() {
-    exercise_committed_submission(false);
-}
-
-fn exercise_chained_submission(direct: bool) {
+fn exercise_chained_submission() {
     assert!(live_tests_enabled());
     let ff = LiveFirefox::headless_on_random_port();
-    if !direct {
-        assert!(ff.with_daemon().is_some());
-    }
     let run = |args: &[&str]| {
         let mut cmd = Command::new(ff_rdp_bin());
         cmd.args([
@@ -388,16 +331,9 @@ fn exercise_chained_submission(direct: bool) {
             "--timeout",
             "10000",
         ]);
-        if direct {
-            cmd.arg("--no-daemon");
-        }
         let out = cmd.args(args).output().unwrap();
         assert!(out.status.success(), "{args:?}: {out:?}");
         let value: Value = serde_json::from_slice(&out.stdout).unwrap();
-        assert_eq!(
-            value["meta"]["route"],
-            if direct { "direct" } else { "daemon" }
-        );
         value
     };
     let mut wrong = Vec::new();
@@ -418,7 +354,7 @@ fn exercise_chained_submission(direct: bool) {
         let started = Instant::now();
         let view = run(&args);
         eprintln!(
-            "ITER253 CHAIN direct={direct} settle={settle} before={before} elapsed_ms={} view={view}",
+            "ITER253 CHAIN settle={settle} before={before} elapsed_ms={} view={view}",
             started.elapsed().as_millis()
         );
         assert_eq!(view["results"]["submitted"], true);
@@ -440,12 +376,6 @@ fn exercise_chained_submission(direct: bool) {
 
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
-fn live_253_chained_submission_direct() {
-    exercise_chained_submission(true);
-}
-
-#[test]
-#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
-fn live_253_chained_submission_daemon() {
-    exercise_chained_submission(false);
+fn live_253_chained_submission() {
+    exercise_chained_submission();
 }
