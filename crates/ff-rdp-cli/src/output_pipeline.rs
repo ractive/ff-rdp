@@ -141,6 +141,27 @@ impl OutputPipeline {
         envelope: &Value,
         hint_ctx: Option<&HintContext>,
     ) -> Result<(), AppError> {
+        self.finalize_impl(envelope, hint_ctx, None)
+    }
+
+    /// Bound text table rows where the column headers fit the requested width.
+    /// Sources opts into this after restoring native actor IDs; JSON values,
+    /// jq inputs and other commands' table layouts remain unchanged.
+    pub fn finalize_with_hints_and_text_width(
+        &self,
+        envelope: &Value,
+        hint_ctx: Option<&HintContext>,
+        width: usize,
+    ) -> Result<(), AppError> {
+        self.finalize_impl(envelope, hint_ctx, Some(width))
+    }
+
+    fn finalize_impl(
+        &self,
+        envelope: &Value,
+        hint_ctx: Option<&HintContext>,
+        text_width: Option<usize>,
+    ) -> Result<(), AppError> {
         let mut envelope = envelope.clone();
 
         // iter-100 Theme E: surface any daemon-lifecycle warnings recorded
@@ -211,7 +232,7 @@ impl OutputPipeline {
                                 "results": value,
                                 "total": 1,
                             });
-                            render_text(&synthetic);
+                            render_text(&synthetic, text_width);
                         }
                         render_hints(&hints);
                         render_warnings(warnings_for_text.as_ref());
@@ -235,7 +256,7 @@ impl OutputPipeline {
                     println!("{pretty}");
                 }
                 OutputFormat::Text => {
-                    render_text(&envelope);
+                    render_text(&envelope, text_width);
                     render_hints(&hints);
                     render_warnings(warnings_for_text.as_ref());
                 }
@@ -261,7 +282,7 @@ impl OutputPipeline {
 /// - anything else (complex/nested)    → pretty-printed JSON fallback
 ///
 /// A truncation hint line is printed when the envelope contains `"hint"`.
-fn render_text(envelope: &Value) {
+fn render_text(envelope: &Value, text_width: Option<usize>) {
     let results = envelope.get("results").unwrap_or(&Value::Null);
 
     match results {
@@ -279,7 +300,7 @@ fn render_text(envelope: &Value) {
             render_empty_results(envelope);
         }
         Value::Array(arr) if arr.iter().all(Value::is_object) => {
-            render_table(arr);
+            render_table(arr, text_width);
         }
         Value::Object(map) if map.values().all(|v| !v.is_object() && !v.is_array()) => {
             render_kv(map);
@@ -423,8 +444,12 @@ const TEXT_CELL_MAX_WIDTH: usize = 80;
 /// URL, a console message, a JSON-stringified `attrs` blob — can blow out a
 /// column, and the whole table, to thousands of characters wide.
 fn render_cell(row: &Value, col: &str) -> String {
+    render_cell_with_width(row, col, TEXT_CELL_MAX_WIDTH)
+}
+
+fn render_cell_with_width(row: &Value, col: &str, width: usize) -> String {
     let cell = value_to_cell(row.get(col).unwrap_or(&Value::Null));
-    crate::output::middle_ellipsis(&cell, TEXT_CELL_MAX_WIDTH)
+    crate::output::middle_ellipsis(&cell, width)
 }
 
 /// Render an array of JSON objects as an ASCII table.
@@ -434,7 +459,7 @@ fn render_cell(row: &Value, col: &str) -> String {
 /// so a handful of very long values — URLs, console messages, stringified
 /// attribute blobs — can't blow a column, and the whole line, out to
 /// thousands of characters wide (iter-141 Theme A).
-fn render_table(rows: &[Value]) {
+fn render_table(rows: &[Value], text_width: Option<usize>) {
     let columns = collect_table_columns(rows);
 
     if columns.is_empty() {
@@ -443,11 +468,46 @@ fn render_table(rows: &[Value]) {
 
     // Compute column widths: max of header width and all (post-ellipsis)
     // cell widths.
-    let mut widths: Vec<usize> = columns.iter().map(String::len).collect();
+    // The opt-in budget counts characters, matching string padding and the
+    // sources text contract. Keep legacy byte-based layout for other callers.
+    let measure = |s: &str| {
+        if text_width.is_some() {
+            s.chars().count()
+        } else {
+            s.len()
+        }
+    };
+    let minimums: Vec<usize> = columns
+        .iter()
+        .map(|col| measure(&ff_rdp_core::sanitize_for_terminal(col)))
+        .collect();
+    let mut widths: Vec<usize> = if text_width.is_some() {
+        minimums.clone()
+    } else {
+        columns.iter().map(String::len).collect()
+    };
     for row in rows {
         for (i, col) in columns.iter().enumerate() {
             let cell = render_cell(row, col);
-            widths[i] = widths[i].max(cell.len());
+            widths[i] = widths[i].max(measure(&cell));
+        }
+    }
+
+    if let Some(budget) = text_width {
+        let separators = columns.len().saturating_sub(1) * 2;
+        while widths.iter().sum::<usize>() + separators > budget {
+            let widest = widths
+                .iter()
+                .enumerate()
+                .filter(|(i, width)| **width > minimums[*i])
+                .max_by_key(|(_, width)| **width)
+                .map(|(i, _)| i);
+            let Some(i) = widest else {
+                // Arbitrary jq-generated headers may themselves exceed the
+                // budget; preserve their names rather than silently drop fields.
+                break;
+            };
+            widths[i] -= 1;
         }
     }
 
@@ -473,7 +533,10 @@ fn render_table(rows: &[Value]) {
             .iter()
             .enumerate()
             .map(|(i, col)| {
-                let cell = render_cell(row, col);
+                let cell = match text_width {
+                    Some(_) => render_cell_with_width(row, col, widths[i]),
+                    None => render_cell(row, col),
+                };
                 format!("{cell:<width$}", width = widths[i])
             })
             .collect();
@@ -580,7 +643,7 @@ mod tests {
             {"url": "https://a.com/app.js", "duration_ms": 42.5},
             {"url": "https://b.com/style.css", "duration_ms": 15.3}
         ]) {
-            render_table(&arr);
+            render_table(&arr, None);
         }
         // Verify finalize does not error
         let envelope = json!({

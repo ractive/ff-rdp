@@ -109,3 +109,15 @@ Inventory of every Firefox RDP actor surfaced by `ff-rdp-core` as of 2026-05-23.
 - `Worker` target actors — listed but never attached.
 - `WebExtensionDescriptor`, `ParentProcessDescriptor` (except via `listProcesses` enumeration).
 - `PerfActor` (root-level performance profiling) — vitals are computed via `Performance` API eval, not RDP perf.
+
+## Thread attach correction — 2026-09-28 (iteration 286)
+
+The historical description above of `paused` as attach's reply does not describe
+the qualified Firefox156.0.1 contract. Attach requires an options object and has
+an ordinary reply; paused is a separate event. The server leaves an already
+attached thread's state unchanged and sources remains supported. The native
+sources flow now requests attach with `{options:{}}`, consumes its completion,
+and enumerates without resume/detach cleanup. See [[rdp/actors/thread]] for exact
+package/source qualification and the consumed H1 observation. This dated
+correction preserves the original historical claims; candidate native and
+independently paused validation remain pending.
