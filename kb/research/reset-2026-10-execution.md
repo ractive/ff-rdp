@@ -19,7 +19,7 @@ investigate a historical flake.
 |---|---|---|---|---|
 | 0 | Land step-back note and Codex handoff docs on `main` | session | done | docs merge |
 | 1 | 286 `sources` native-path fix from archived patch; `dom --frames` hint fix | agent (Rust) | planned | |
-| 2 | Process cut: CLAUDE.md, skills, plan template, `live.yml` nightly, quarantine rule, timing assertions removed, AGENTS.md reset, close 259/266/268/293/294 + PR #281, roadmap done | agent (process) | planned | |
+| 2 | Process cut: CLAUDE.md, skills, plan template, `live.yml` nightly, quarantine rule, timing assertions removed, AGENTS.md reset, close 259/266/268/293/294 + PR #281, roadmap done | agent (process) | in-review | #286 |
 | 3 | Daemon deletion; refs in-page; throttle/emulate per-call or removed; capture-mode docs | agent (Rust) | planned | |
 | 4a | Env-var and iteration-hook purge; help drift; deprecated aliases; `allow(dead_code)` | agent (Rust) | planned | |
 | 4b | `actors`/`fronts` collapse; launch/profile simplification | agent (Rust) | planned | |
@@ -28,6 +28,7 @@ investigate a historical flake.
 ## Log
 
 - 2026-10-02: phase 0 started.
+- 2026-10-02: phase 2 PR #286 opened; PR #281 closed unmerged.
 
 ## Global skill follow-ups
 
