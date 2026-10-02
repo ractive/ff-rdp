@@ -611,8 +611,8 @@ pub(crate) enum PortWaitOutcome {
     TimedOut,
     /// The port opened but `listTabs` returned no tab before the bound
     /// elapsed, so a command run right after `launch` would find nothing to
-    /// attach to.
-    NoTab,
+    /// attach to. Carries the last `listTabs` error, if any attempt failed.
+    NoTab(Option<String>),
     /// `host:port` could not be resolved at all — a configuration error, not a
     /// timing one.
     Unresolvable(String),
@@ -636,10 +636,11 @@ impl PortWaitOutcome {
                  raise --launch-timeout or set {LAUNCH_TIMEOUT_ENV}",
                 bound.as_secs()
             ))),
-            Self::NoTab => Some(AppError::User(format!(
-                "Firefox (pid {pid}) opened debug port {port} but listed no tab within {}s — \
+            Self::NoTab(last_error) => Some(AppError::User(format!(
+                "Firefox (pid {pid}) opened debug port {port} but listed no tab within {}s{} — \
                  raise --launch-timeout or set {LAUNCH_TIMEOUT_ENV}",
-                bound.as_secs()
+                bound.as_secs(),
+                last_error.map_or_else(String::new, |e| format!(" (last listTabs error: {e})"))
             ))),
             Self::Unresolvable(msg) => Some(AppError::User(msg)),
             Self::Exited(status) => Some(AppError::User(format!(
@@ -932,25 +933,36 @@ fn wait_for_listable_tab(
             }
             Ok(None) => {}
         }
+        // At least one attempt even when the port opened right at the
+        // deadline: a browser whose tab already exists must not be killed
+        // for lack of budget.
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let attempt_timeout = remaining.clamp(Duration::from_secs(1), Duration::from_secs(2));
+        // 127.0.0.1, like the language-pack initializer: Firefox binds IPv4
+        // loopback, and `localhost` may try ::1 first and burn the timeout.
+        let last_error = match count_tabs("127.0.0.1", port, attempt_timeout) {
+            Ok(n) if n > 0 => {
+                observation.terminal("tab_wait", "tab_listed");
+                return PortWaitOutcome::Opened;
+            }
+            Ok(_) => None,
+            Err(error) => Some(error),
+        };
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         if remaining.is_zero() {
             observation.terminal("tab_wait", "no_tab_at_deadline");
-            return PortWaitOutcome::NoTab;
+            return PortWaitOutcome::NoTab(last_error);
         }
-        if count_tabs("localhost", port, remaining.min(Duration::from_secs(2))) > 0 {
-            observation.terminal("tab_wait", "tab_listed");
-            return PortWaitOutcome::Opened;
-        }
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         std::thread::sleep(poll_interval.min(remaining));
     }
 }
 
-/// Number of tabs one `listTabs` round trip reports; 0 on any failure.
-fn count_tabs(host: &str, port: u16, timeout: Duration) -> usize {
+/// Number of tabs one `listTabs` round trip reports.
+fn count_tabs(host: &str, port: u16, timeout: Duration) -> Result<usize, String> {
     ff_rdp_core::RdpConnection::connect(host, port, timeout)
         .and_then(|mut connection| ff_rdp_core::RootActor::list_tabs(connection.transport_mut()))
-        .map_or(0, |tabs| tabs.len())
+        .map(|tabs| tabs.len())
+        .map_err(|e| e.to_string())
 }
 
 /// Whether `launch` should drop an [`OWNER_PID_MARKER`](crate::util::profile_dir::OWNER_PID_MARKER)
@@ -2557,7 +2569,7 @@ mod iter_175_tests {
             is_port_in_use: |_port| false,
             find_listener: |_port| None,
             probe_port: |_host, _port, _timeout, _observation| PortWaitOutcome::Opened,
-            wait_for_tab: |_port, _deadline, _observation| PortWaitOutcome::NoTab,
+            wait_for_tab: |_port, _deadline, _observation| PortWaitOutcome::NoTab(None),
             spawn: |cmd| {
                 *PROFILE.lock().expect("profile slot") = profile_arg_of(cmd);
                 spawn_lingering_child()
@@ -2602,15 +2614,15 @@ mod iter_175_tests {
             (port, handle)
         }
         let (port, handle) = serve(json!([]));
-        assert_eq!(count_tabs("127.0.0.1", port, Duration::from_secs(5)), 0);
+        assert_eq!(count_tabs("127.0.0.1", port, Duration::from_secs(5)), Ok(0));
         handle.join().unwrap();
         let (port, handle) = serve(json!([{"actor":"tab1","url":"about:blank","title":""}]));
-        assert_eq!(count_tabs("127.0.0.1", port, Duration::from_secs(5)), 1);
+        assert_eq!(count_tabs("127.0.0.1", port, Duration::from_secs(5)), Ok(1));
         handle.join().unwrap();
         let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = closed.local_addr().unwrap().port();
         drop(closed);
-        assert_eq!(count_tabs("127.0.0.1", port, Duration::from_secs(1)), 0);
+        assert!(count_tabs("127.0.0.1", port, Duration::from_secs(1)).is_err());
     }
 
     /// A user-supplied `--profile` directory is never ours to delete, however

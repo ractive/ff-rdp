@@ -373,3 +373,86 @@ pub(crate) fn extract_document_status(
     }
     tracker
 }
+
+#[cfg(test)]
+mod fallback_evidence_tests {
+    use serde_json::json;
+
+    use super::{FallbackStatusEvidence, StatusUnknown};
+
+    const URL: &str = "https://fixture.test/clicked";
+
+    fn evidence() -> FallbackStatusEvidence {
+        FallbackStatusEvidence {
+            context: Some(16),
+            outgoing_window: Some(1),
+            ..FallbackStatusEvidence::default()
+        }
+    }
+
+    fn request(id: u64, url: &str, context: u64, window: u64) -> serde_json::Value {
+        json!({"type":"resources-available-array","array":[["network-event",[{
+            "resourceId":id,"url":url,"cause":{"type":"document"},"isNavigationRequest":true,
+            "browsingContextID":context,"innerWindowId":window}]]]})
+    }
+
+    fn status(id: u64, status: &str) -> serde_json::Value {
+        json!({"type":"resources-updated-array","array":[["network-event",[{
+            "resourceId":id,"resourceUpdates":{"status":status}}]]]})
+    }
+
+    /// The navigation request of this tab's outgoing window, with its status,
+    /// resolves to that status (the path the Both fallback relies on).
+    #[test]
+    fn resolves_status_of_the_owned_navigation_request() {
+        let mut evidence = evidence();
+        evidence.observe(&request(7, URL, 16, 1));
+        evidence.observe(&status(7, "200"));
+        assert_eq!(evidence.resolve(URL), (Some(200), None));
+    }
+
+    /// Requests from another browsing context or another outgoing window (an
+    /// iframe, a second tab) are never borrowed.
+    #[test]
+    fn ignores_requests_owned_by_another_context_or_window() {
+        let mut evidence = evidence();
+        evidence.observe(&request(7, URL, 99, 1));
+        evidence.observe(&request(8, URL, 16, 2));
+        evidence.observe(&status(7, "200"));
+        evidence.observe(&status(8, "200"));
+        assert_eq!(
+            evidence.resolve(URL),
+            (None, Some(StatusUnknown::NoDocumentRequest))
+        );
+    }
+
+    /// The request was seen but no status arrived; two distinct requests for
+    /// the same URL are ambiguous.
+    #[test]
+    fn missing_status_and_ambiguous_requests_are_reported() {
+        let mut evidence = evidence();
+        evidence.observe(&request(7, URL, 16, 1));
+        assert_eq!(
+            evidence.resolve(URL),
+            (None, Some(StatusUnknown::NoStatusReported))
+        );
+        evidence.observe(&request(9, URL, 16, 1));
+        evidence.observe(&status(7, "200"));
+        assert_eq!(
+            evidence.resolve(URL),
+            (None, Some(StatusUnknown::NoDocumentRequest))
+        );
+    }
+
+    /// Without a known context and window nothing is correlated.
+    #[test]
+    fn unknown_ownership_correlates_nothing() {
+        let mut evidence = FallbackStatusEvidence::default();
+        evidence.observe(&request(7, URL, 16, 1));
+        evidence.observe(&status(7, "200"));
+        assert_eq!(
+            evidence.resolve(URL),
+            (None, Some(StatusUnknown::NoDocumentRequest))
+        );
+    }
+}

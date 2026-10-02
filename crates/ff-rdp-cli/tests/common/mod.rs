@@ -89,12 +89,11 @@ thread_local! {
     /// [`current_test_name`]'s doc comment) — sharing one root across tests
     /// would reintroduce exactly the cross-test leak attribution problem this
     /// removes, just under a different path. A single test's own worker
-    /// threads (e.g. the four concurrent launches in
-    /// `live_158_launch_survives_contended_bind`) each get their own isolated
-    /// root too; that is fine because none of those launches needs to find a
-    /// sibling thread's marker — the one pattern that does (a `launch` and a
-    /// later `launch --replace` against the same port) always happens on one
-    /// thread within a single test body.
+    /// threads would each get their own root too, and lose it when the worker
+    /// exits — deleting the profile of a Firefox still running. A test that
+    /// launches from worker threads (e.g. the four concurrent launches in
+    /// `live_158_launch_survives_contended_bind`) must pass the test thread's
+    /// [`current_live_home`] to its workers via `.env("FF_RDP_HOME", ..)`.
     ///
     /// Dropped — and so removed from disk — when the owning thread exits,
     /// i.e. when the test using it finishes.
