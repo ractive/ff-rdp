@@ -27,6 +27,8 @@ investigate a historical flake.
 
 ## Log
 
+- 2026-10-02: 4a follow-ups for 4b: delete hooks `FF_RDP_147_CONTROL_HOME` (`launch.rs`), `FF_RDP_147_PIPE_PEER` (`launch/language_initialization/tests.rs`), `FF_RDP_284_*` (`launch/startup_controls.rs`), `FF_RDP_277_CAPTURE` (`live_166_navigate_document_status.rs`), `FF_RDP_ENGLISH_PACK_TEST_XPI` (`english_language_pack.rs`); resolve `allow(dead_code)` at `navigate.rs:1772` and `actors/watcher.rs:1110`; rename `navigate --wait-timeout` to `--timeout-ms` (with the "increase with --wait-timeout" error text); `EvaluateScope::{frame_actor, selected_node_actor}` has no CLI consumer after #290; `launch` returns before the first tab is listable (`tabs` right after saw 0 tabs).
+
 - 2026-10-02: phase 3 merged (#287): 243 files, +3,020/−40,069. Refs stamped in-page (`data-ffrdp-ref`), `throttle`/`emulate` commands gone (`navigate --throttle/--block` instead), `inspect <expr>` single-connection, `network --headers` bug fixed. Phases 4a/4b launched in parallel.
 
 - 2026-10-02: phase 3 PR #287 opened (DEC-056, DEC-057). `shortstat` against origin/main: 238 files changed, 2884 insertions(+), 40028 deletions(-). Deleted: `src/daemon/` (about 17.8k lines: server 8.1k, client 3.0k, registry 1.2k), `daemon_record.rs` (842), `daemon_status.rs` (168), the `emulate`/`throttle` commands, 21 daemon live-test files plus the `daemon`/`daemon_parity`/`emulate`/`throttle` e2e suites, `eval_object_leak_soak`, the `--no-daemon` live guard, the xtask `daemon-locks` invariant and the core proxy hooks. Refs moved in-page (`data-ffrdp-ref`); `--throttle`/`--block` on navigate/reload; emulate deleted (settings reset on disconnect, verified live); `inspect <js-expression>`. Targeted live run: 159 passed.
