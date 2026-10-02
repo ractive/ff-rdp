@@ -30,20 +30,25 @@ pub fn run(cli: &Cli, expression: &str, depth: u32) -> Result<(), AppError> {
 
     let result = match &evaluated.result {
         Grip::Object { actor, .. } => {
-            inspect_object(ctx.transport_mut(), actor.as_ref(), depth, &mut HashSet::new())
-                .map_err(|e| match e {
-                    // The grip was released (or its document replaced) between
-                    // the evaluation and the walk.
-                    ProtocolError::ActorError { ref error, .. }
-                        if error == "noSuchActor" || error == "unknownActor" =>
-                    {
-                        AppError::User(format!(
-                            "the object {expression:?} evaluated to went away before it could be \
+            inspect_object(
+                ctx.transport_mut(),
+                actor.as_ref(),
+                depth,
+                &mut HashSet::new(),
+            )
+            .map_err(|e| match e {
+                // The grip was released (or its document replaced) between
+                // the evaluation and the walk.
+                ProtocolError::ActorError { ref error, .. }
+                    if error == "noSuchActor" || error == "unknownActor" =>
+                {
+                    AppError::User(format!(
+                        "the object {expression:?} evaluated to went away before it could be \
                              inspected — re-run the command"
-                        ))
-                    }
-                    other => AppError::from(other),
-                })?
+                    ))
+                }
+                other => AppError::from(other),
+            })?
         }
         // A primitive has nothing to walk: report the value itself.
         other => other.to_json(),

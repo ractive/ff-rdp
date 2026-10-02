@@ -42,10 +42,7 @@ fn warn_if_timeout_alias_used() {
 /// Wait for a condition and return the result value without printing.
 ///
 /// Called by the script runner, which handles its own NDJSON output.
-pub fn run_core(
-    cli: &Cli,
-    opts: &WaitOptions<'_>,
-) -> Result<serde_json::Value, AppError> {
+pub fn run_core(cli: &Cli, opts: &WaitOptions<'_>) -> Result<serde_json::Value, AppError> {
     // iter-142 Theme F: --sleep-ms is a plain delay — no condition to poll,
     // no Firefox connection needed at all. Takes priority over the other
     // fields so a caller that somehow sets both never falls through to the

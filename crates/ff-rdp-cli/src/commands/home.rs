@@ -566,13 +566,7 @@ pub fn run(cli: &Cli, args: &HomeArgs) -> Result<(), AppError> {
         (_, other) => other,
     };
 
-    let mut results = build_results(
-        &bin,
-        env!("CARGO_PKG_VERSION"),
-        &browser,
-        &tabs,
-        page,
-    );
+    let mut results = build_results(&bin, env!("CARGO_PKG_VERSION"), &browser, &tabs, page);
 
     if args.hook {
         let page = results.get("page").filter(|page| !page.is_null());
@@ -636,13 +630,7 @@ mod tests {
     /// the e2e sibling in `tests/e2e/home.rs` pins the exit code).
     #[test]
     fn unit_212_home_without_browser_reports_state_and_names_launch() {
-        let results = build_results(
-            "~/.cargo/bin/ff-rdp",
-            "0.3.0",
-            &no_browser(),
-            &[],
-            None,
-        );
+        let results = build_results("~/.cargo/bin/ff-rdp", "0.3.0", &no_browser(), &[], None);
         assert_eq!(results["browser"]["reachable"], json!(false));
         let hints = results["hints"].as_array().expect("hints array");
         assert!(
@@ -848,13 +836,7 @@ mod tests {
     /// end in runnable commands.
     #[test]
     fn unit_212_text_view_without_a_browser_is_self_explanatory() {
-        let results = build_results(
-            "~/.cargo/bin/ff-rdp",
-            "0.3.0",
-            &no_browser(),
-            &[],
-            None,
-        );
+        let results = build_results("~/.cargo/bin/ff-rdp", "0.3.0", &no_browser(), &[], None);
         let text = render_text(&results);
         assert!(text.contains("bin: ~/.cargo/bin/ff-rdp"), "{text}");
         assert!(

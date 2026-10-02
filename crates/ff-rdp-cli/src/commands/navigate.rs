@@ -2219,6 +2219,13 @@ pub fn run_core(
             .then(Instant::now);
     trace_navigation_timing("core", "entry", timing_origin, Instant::now());
     validate_content_navigation_url(url, cli.allow_file_urls, cli.allow_unsafe_urls)?;
+    if wait_opts.no_wait && super::network_conditions::is_requested(conditions) {
+        return Err(AppError::User(
+            "--throttle/--block only last as long as the command's connection — they \
+             cannot be combined with --no-wait"
+                .to_owned(),
+        ));
+    }
     let mut ctx = connect_and_get_target(cli)?;
     trace_navigation_timing("core", "connected", timing_origin, Instant::now());
     trace_navigation_timing("setup", "connected", timing_origin, Instant::now());
@@ -2386,7 +2393,7 @@ pub fn run_core(
         // (the iter-124 fix for the iter-122 Theme A regression).
         let mut readystate_probe = if wait_opts.wait_strategy == WaitStrategy::Both {
             Some(ReadyStateProbe {
-                        console_actor: Some(ctx.target().console_actor.clone()),
+                console_actor: Some(ctx.target().console_actor.clone()),
                 tab_actor: &tab_actor,
                 pre_epoch: pre_nav_epoch,
                 // Give dom-complete a 300 ms head start on pages that fire it
@@ -5521,4 +5528,3 @@ mod atomic_readiness_tests {
         }
     }
 }
-

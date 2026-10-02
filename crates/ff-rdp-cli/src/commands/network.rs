@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::io::Write;
 
-
 use ff_rdp_core::{
     NetworkEventActor, NetworkResource, ProtocolError, RdpTransport, TabActor, WatcherActor,
     parse_network_resource_updates, parse_network_resources,

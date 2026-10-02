@@ -10,8 +10,7 @@ use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::connect_and_get_target;
 use super::js_helpers::{
-    JSON_SENTINEL, STAMP_REF_JS_FN, acc_name_js_fn, escape_selector, eval_or_bail,
-    resolve_result,
+    JSON_SENTINEL, STAMP_REF_JS_FN, acc_name_js_fn, escape_selector, eval_or_bail, resolve_result,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -369,12 +368,10 @@ fn build_js(selector: &str, mode: OutputMode) -> String {
     // prefix so resolve_result can distinguish them from plain text that
     // happens to look like JSON.
     match mode {
-        OutputMode::AriaTree => {
-            ARIA_TREE_JS_TEMPLATE
-                .replace("__SELECTOR__", &escaped)
-                .replace("__STAMP_REF_FN__", STAMP_REF_JS_FN)
-                .replace("__ACC_NAME_FN__", &acc_name_js_fn())
-        }
+        OutputMode::AriaTree => ARIA_TREE_JS_TEMPLATE
+            .replace("__SELECTOR__", &escaped)
+            .replace("__STAMP_REF_FN__", STAMP_REF_JS_FN)
+            .replace("__ACC_NAME_FN__", &acc_name_js_fn()),
         OutputMode::OuterHtml => format!(
             r"(function() {{
   var els = document.querySelectorAll('{escaped}');

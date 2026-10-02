@@ -3,9 +3,7 @@
 //! The dogfooding session [[dogfooding-session-nova-template-jsonforms-index]]
 //! reached for `getComputedStyle(sel)[prop]` four times in one sitting, which
 //! motivates a dedicated subcommand. This module implements it as a one-shot
-//! eval wrapper that connects directly to Firefox (daemon-bypass per iter-40):
-//! the output is a synchronous JSON payload, not a stream, so the daemon's
-//! watcher subscription would only add latency.
+//! eval wrapper.
 
 use ff_rdp_core::{Grip, LongStringActor};
 use serde_json::{Value, json};
@@ -139,7 +137,6 @@ fn resolve_json_array(
 }
 
 pub fn run(cli: &Cli, selector: &str, props: &[String], include_all: bool) -> Result<(), AppError> {
-    // One-shot eval wrapper: bypass the daemon per the iter-40 pattern.
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target().console_actor.clone();
 

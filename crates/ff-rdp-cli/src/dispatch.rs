@@ -1,7 +1,8 @@
 use crate::cli::args::{
     A11yArgs, A11yCommand, BackForwardArgs, CascadeArgs, Cli, ClickArgs, Command, ComputedArgs,
-    ConsentCommand, ConsoleArgs, CookiesArgs, DomArgs, DomCommand, EvalArgs, GeometryArgs, HomeArgs, IndexArgs, InspectArgs, InstallHookArgs, LaunchArgs,
-    NavigateArgs, NetworkArgs, NetworkConditionsArgs, PerfArgs, PerfCommand, ProfilesCommand, RecordCommand, ReloadArgs,
+    ConsentCommand, ConsoleArgs, CookiesArgs, DomArgs, DomCommand, EvalArgs, GeometryArgs,
+    HomeArgs, IndexArgs, InspectArgs, InstallHookArgs, LaunchArgs, NavigateArgs, NetworkArgs,
+    NetworkConditionsArgs, PerfArgs, PerfCommand, ProfilesCommand, RecordCommand, ReloadArgs,
     ResponsiveArgs, RunArgs, ScreenshotArgs, ScrollCommand, SnapshotArgs, SourcesArgs, StorageArgs,
     StylesArgs, TypeArgs, WaitArgs,
 };
@@ -75,12 +76,20 @@ pub(crate) fn ref_selector(id: &str) -> Result<String, AppError> {
         .strip_prefix('e')
         .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
     if valid {
-        Ok(format!("[{}=\"{id}\"]", crate::commands::js_helpers::REF_ATTR))
+        Ok(format!(
+            "[{}=\"{id}\"]",
+            crate::commands::js_helpers::REF_ATTR
+        ))
     } else {
         Err(AppError::User(format!(
             "--ref {id:?}: expected a ref like 'e3' from `snapshot`, `dom` or `--with-page`"
         )))
     }
+}
+
+/// Whether `selector` is the attribute selector [`ref_selector`] produces.
+fn is_ref_selector(selector: &str) -> bool {
+    selector.starts_with(&format!("[{}=", crate::commands::js_helpers::REF_ATTR))
 }
 
 /// Resolve a ref ID to its CSS selector for use in script runner verbs.
@@ -269,8 +278,8 @@ fn command_to_step(cmd: &Command, resolved_selector: Option<&str>) -> Option<Ste
 /// cache), and event capture across commands is a `--follow` stream started
 /// before them.
 pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
-    // For recording: track the resolved selector (refs resolved to CSS) so the
-    // recorded step uses the concrete selector, not the ephemeral ref ID.
+    // For recording: track the selector the command actually used (a `--ref`
+    // resolves to its `[data-ffrdp-ref=…]` attribute selector).
     let mut recording_resolved_selector: Option<String> = None;
 
     let result = dispatch_inner(cli, &mut recording_resolved_selector);
@@ -279,6 +288,17 @@ pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
     if result.is_ok()
         && let Some(step) = command_to_step(&cli.command, recording_resolved_selector.as_deref())
     {
+        if recording_resolved_selector
+            .as_deref()
+            .is_some_and(is_ref_selector)
+            && matches!(crate::script::recorder::read_state(), Ok(Some(_)))
+        {
+            // stderr-ok: (b) warn-and-continue — the step is still recorded.
+            eprintln!(
+                "warning: recorded a --ref target as its in-page ref selector; refs do not \
+                 survive navigation, so replace it with a CSS selector before replaying"
+            );
+        }
         // Best-effort: log to stderr but don't fail the command.
         crate::script::recorder::record_step_if_active(&step);
     }
@@ -1116,5 +1136,25 @@ fn dispatch_inner(
             ConsentCommand::Accept { allow_no_cmp } => commands::consent::run(cli, *allow_no_cmp),
         },
         Command::Completions { shell } => commands::completions::run(*shell),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ref_selector_is_the_in_page_attribute_selector() {
+        let sel = ref_selector("e12").expect("e12 is a valid ref");
+        assert_eq!(sel, "[data-ffrdp-ref=\"e12\"]");
+        assert!(is_ref_selector(&sel));
+        assert!(!is_ref_selector("button.primary"));
+    }
+
+    #[test]
+    fn ref_selector_rejects_anything_that_is_not_e_digits() {
+        for bad in ["", "e", "3", "E3", "e3a", "e-1", "button", "e3\"]"] {
+            assert!(ref_selector(bad).is_err(), "{bad:?} must be rejected");
+        }
     }
 }

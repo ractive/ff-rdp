@@ -8,8 +8,6 @@ use ff_rdp_core::{
 };
 use serde_json::{Value, json};
 
-
-
 /// Drain `resources-available-array` and `resources-updated-array` events from
 /// the transport until a [`ProtocolError::Timeout`] occurs, then return the
 /// collected resources and update entries.

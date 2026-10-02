@@ -534,5 +534,4 @@ mod tests {
              otherwise the token cannot distinguish a recycled PID"
         );
     }
-
 }

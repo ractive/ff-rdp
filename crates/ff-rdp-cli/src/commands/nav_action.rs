@@ -198,8 +198,7 @@ pub fn run_reload_wait_idle(
     // Subscribe to network events before reloading so we don't miss early requests.
     WatcherActor::watch_resources(ctx.transport_mut(), &watcher_actor, &["network-event"])
         .map_err(AppError::from)?;
-    let conditions_echo =
-        super::network_conditions::apply(&mut ctx, &watcher_actor, conditions)?;
+    let conditions_echo = super::network_conditions::apply(&mut ctx, &watcher_actor, conditions)?;
 
     // Send reload without reading the ack.
     let reload_packet = build_reload_packet(&target_actor, force);

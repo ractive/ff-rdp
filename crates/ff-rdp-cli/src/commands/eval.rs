@@ -1517,13 +1517,8 @@ pub fn run(
 
     // Wrap object/long-string grips in ScopedGrip so we can release them
     // before the process exits.  Firefox allocates a server-side actor for
-    // each such grip returned by evaluateJSAsync; on long-lived daemon
-    // connections these accumulate without bound.  We send `release` after
+    // each such grip returned by evaluateJSAsync.  We send `release` after
     // printing output so Firefox can free the actor immediately.
-    //
-    // Release applies equally in direct-connect and daemon-proxy modes: the
-    // daemon transparently forwards all RDP frames, so the `release` packet
-    // reaches Firefox through the same channel.
     let scoped_grip: Option<ScopedGrip> = match eval_result.result {
         g @ (Grip::Object { .. } | Grip::LongString { .. }) => Some(ScopedGrip::new(g)),
         _ => None,

@@ -51,7 +51,7 @@ pub(crate) const COMMAND_GROUPS: &[(&str, &str, &[&str])] = &[
     (
         "Get a browser",
         "start Firefox with the debug port open, then check the stack end to end",
-        &["launch", "doctor", "tabs", "daemon"],
+        &["launch", "doctor", "tabs"],
     ),
     (
         "Go somewhere",
@@ -82,12 +82,12 @@ pub(crate) const COMMAND_GROUPS: &[(&str, &str, &[&str])] = &[
     ),
     (
         "Watch the page",
-        "console and network traffic, buffered by the daemon",
+        "console and network traffic: `--follow` streams it, `navigate --with-network` captures a load",
         &["console", "network"],
     ),
     (
         "Measure the page",
-        "Web Vitals, contrast, layout, and emulated conditions",
+        "Web Vitals, contrast, layout, and responsive breakpoints",
         &[
             "perf",
             "geometry",
@@ -95,8 +95,6 @@ pub(crate) const COMMAND_GROUPS: &[(&str, &str, &[&str])] = &[
             "computed",
             "cascade",
             "responsive",
-            "emulate",
-            "throttle",
         ],
     ),
     (
@@ -177,10 +175,7 @@ pub(crate) const NAVIGATE_IDIOM: (&str, &str) = (
 /// several of them `| head -50`, and `--query` appeared nowhere in it. A flag
 /// an agent cannot see is a flag that does not exist.
 pub(crate) const QUICK_START_LINES: &[(&str, &str)] = &[
-    (
-        "ff-rdp",
-        "live state: daemon, browser, tabs, page, next steps",
-    ),
+    ("ff-rdp", "live state: browser, tabs, page, next steps"),
     (
         "ff-rdp launch --headless",
         "no browser yet? start one with the debug port open",

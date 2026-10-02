@@ -1,5 +1,5 @@
 //! Frame-target enumeration for one command's connection (iteration 137
-//! Theme A, direct-only since the daemon was removed).
+//! Theme A).
 //!
 //! `ff_rdp_core::enumerate_frame_targets` works by issuing
 //! `watchTargets("frame")` and draining the `target-available-form` events

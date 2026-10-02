@@ -31,7 +31,11 @@ fn to_core_profile(arg: ThrottleProfileArg) -> ThrottleProfile {
 /// Patterns to send for `--block`. A single empty pattern means "no list" —
 /// sending `[""]` would block every URL.
 fn block_patterns(args: &NetworkConditionsArgs) -> Vec<String> {
-    args.block.iter().filter(|p| !p.is_empty()).cloned().collect()
+    args.block
+        .iter()
+        .filter(|p| !p.is_empty())
+        .cloned()
+        .collect()
 }
 
 /// Whether the caller asked for any network condition at all.
@@ -123,7 +127,10 @@ mod tests {
     #[test]
     fn nothing_requested_without_flags() {
         assert!(!is_requested(&args(None, &[])));
-        assert!(!is_requested(&args(None, &[""])), "an empty pattern blocks nothing");
+        assert!(
+            !is_requested(&args(None, &[""])),
+            "an empty pattern blocks nothing"
+        );
     }
 
     #[test]

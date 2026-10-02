@@ -6,7 +6,6 @@ use ff_rdp_core::{
     ResourceCommand, RootActor, Session, TabActor, TabInfo, TargetInfo,
 };
 
-
 use crate::cli::args::Cli;
 use crate::error::AppError;
 
@@ -300,7 +299,10 @@ fn handshake_and_list_tabs(mut connection: RdpConnection) -> Result<TabListing, 
 
 /// Run the RDP handshake: list tabs, resolve the target tab, call `getTarget`,
 /// and register the discovered actor fronts in the session registry.
-fn handshake_and_resolve_tab(connection: RdpConnection, cli: &Cli) -> Result<ConnectedTab, AppError> {
+fn handshake_and_resolve_tab(
+    connection: RdpConnection,
+    cli: &Cli,
+) -> Result<ConnectedTab, AppError> {
     handshake_and_list_tabs(connection)
         .map_err(TabListError::into_app_error)?
         .attach(cli)
@@ -483,15 +485,15 @@ impl ConnectedTab {
             }
             let pending_before = self.take_navigation_started();
             let snapshot = resolve_target(self.session.transport_mut(), &self.tab_actor, deadline)
-            .map_err(|error| {
-                let timed_out =
-                    Instant::now() >= deadline || matches!(error, AppError::RdpTimeout { .. });
-                if timed_out {
-                    AppError::Timeout("waiting for submission target handover".into())
-                } else {
-                    error
-                }
-            })?;
+                .map_err(|error| {
+                    let timed_out =
+                        Instant::now() >= deadline || matches!(error, AppError::RdpTimeout { .. });
+                    if timed_out {
+                        AppError::Timeout("waiting for submission target handover".into())
+                    } else {
+                        error
+                    }
+                })?;
             {
                 let fresh = snapshot;
                 let replaced = matches!((inner_window_id, fresh.inner_window_id),

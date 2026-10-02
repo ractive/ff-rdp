@@ -33,7 +33,7 @@ pub(crate) struct ScreenshotOpts<'a> {
     /// standard base64 path transparently.
     ///
     /// Note: as of Firefox 130, `screenshot.capture` returns JSON (base64-encoded
-    /// PNG).  The bulk path is a daemon-side fast path reserved for future use
+    /// PNG).  The bulk path is a fast path reserved for future use
     /// when Firefox's screenshot actor gains native bulk-frame support.
     pub(crate) bulk: bool,
     /// `--viewport-height` is accepted for CLI compatibility but is not
@@ -50,11 +50,8 @@ pub(crate) struct ScreenshotOpts<'a> {
     /// testing during iter-133 implementation) `layout.css.devPixelsPerPx`
     /// has NO effect on the `--screenshot` batch-capture raster — the PNG
     /// stays exactly the requested `--window-size` regardless of the pref,
-    /// with or without e10s. The plan's dppx-composition assumption (based
-    /// only on the unrelated RDP `emulate --dppx` mechanism) does not hold
-    /// for this capture path; see `kb/research/viewport-emulation.md`
-    /// addendum. `emulate --dppx` still works for the LIVE RDP session's
-    /// `devicePixelRatio` — it is simply orthogonal to this batch path.
+    /// with or without e10s; see `kb/research/viewport-emulation.md`
+    /// addendum.
     pub(crate) window_size: Option<&'a str>,
 }
 
@@ -159,9 +156,6 @@ pub fn run_core(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<serde_json::Valu
         ));
     }
 
-    // Screenshot always connects directly to Firefox, bypassing the daemon.
-    // The daemon's watcher subscription interferes with the two-step screenshot
-    // protocol, causing Firefox-side timeouts.
     let mut ctx = connect_and_get_target(cli)?;
 
     let sc_actor = ctx.target().screenshot_content_actor.clone();
@@ -264,7 +258,7 @@ fn build_capture_result(
 /// proven (`kb/research/viewport-emulation.md`) to honor the requested pixel
 /// size EXACTLY, with no floor, unlike a live `--start-debugger-server`
 /// instance's viewport (`launch --window-size` clamps below ~500px). This is
-/// a wholly separate Firefox process from the live RDP session/daemon: it
+/// a wholly separate Firefox process from the live RDP session: it
 /// re-navigates the current tab's URL from scratch, so cookies/localStorage/
 /// session state from the live tab are NOT carried over.
 ///

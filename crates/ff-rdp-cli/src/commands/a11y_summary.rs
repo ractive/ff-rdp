@@ -28,9 +28,9 @@ pub fn run(cli: &Cli, query: &QueryFilter) -> Result<(), AppError> {
     // filter, not before — the whole point is to find a control that may sit
     // past the 50th interactive element, and capping first would hide exactly
     // the entry the caller asked for. Collect uncapped, filter, then cap.
-    // Refs are registered for the uncapped set in that case; the extras are
-    // registered-but-unreferenced entries in the daemon, which cost nothing
-    // and expire with the next navigation (the same trade `snapshot` makes).
+    // Refs are stamped on the uncapped set in that case; the extras are
+    // attributes nobody references, which cost nothing and vanish with the
+    // next navigation (the same trade `snapshot` makes).
     let collect_limit = if query.is_active() {
         None
     } else {
