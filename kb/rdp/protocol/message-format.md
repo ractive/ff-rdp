@@ -220,10 +220,9 @@ for *every* blocking call made from inside a drain loop. See DEC-041.
 
 ## Current thread attach is an ordinary reply — 2026-09-28
 
-The qualified Firefox156.0.1 thread spec requires `options` and declares an empty
+The qualified Firefox 156.0.1 thread spec requires `options` and declares an empty
 ordinary attach response. Its `paused` notification is not attach completion.
 `ThreadActor::attach` uses `actor_request` / `recv_reply_from`; existing sinks
 receive interleaved events. A caller needing those events must install its sink
-before the request, as described above. See [[rdp/actors/thread]] and
-[[iteration-286-native-sources-thread-lifecycle]] for evidence and remaining
-native validation; historical attach-event claims are not current contract.
+before the request, as described above. See [[rdp/actors/thread]] for evidence; historical attach-event claims are
+not the current contract.

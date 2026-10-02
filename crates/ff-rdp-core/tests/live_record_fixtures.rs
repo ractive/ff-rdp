@@ -223,6 +223,50 @@ fn live_get_target() {
     save_cli_fixture("get_target_response.json", &resp);
 }
 
+/// Record the thread actor's reply to `attach` with the required `options`
+/// object (iteration 286). Current Firefox answers with a plain method reply,
+/// not a `paused` event; `ff-rdp sources` mocks replay this fixture.
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_thread_attach() {
+    if !should_run_live() {
+        return;
+    }
+    let mut conn = connect();
+    let transport = conn.transport_mut();
+
+    transport
+        .send(&json!({"to": "root", "type": "listTabs"}))
+        .expect("send listTabs");
+    let list_tabs = recv_from_actor(transport, "root");
+    let tab_actor = list_tabs["tabs"][0]["actor"]
+        .as_str()
+        .expect("tab actor")
+        .to_owned();
+
+    transport
+        .send(&json!({"to": &tab_actor, "type": "getTarget"}))
+        .expect("send getTarget");
+    let target = recv_from_actor(transport, &tab_actor);
+    let thread_actor = target["frame"]["threadActor"]
+        .as_str()
+        .expect("thread actor")
+        .to_owned();
+
+    transport
+        .send(&json!({"to": &thread_actor, "type": "attach", "options": {}}))
+        .expect("send attach");
+    let resp = recv_from_actor(transport, &thread_actor);
+
+    assert!(resp.get("error").is_none(), "attach failed: {resp}");
+    assert!(
+        resp.get("type").is_none(),
+        "attach must answer with a plain method reply, got: {resp}"
+    );
+
+    save_cli_fixture("thread_attach_response.json", &resp);
+}
+
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
 fn live_get_watcher() {

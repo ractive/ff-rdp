@@ -4,6 +4,15 @@ fn ff_rdp_bin() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_ff-rdp"))
 }
 
+/// Recorded `attach` reply (`live_thread_attach`), addressed from the thread
+/// actor of the recorded target. Actor indices differ between recording
+/// sessions, so `from` is bound to `get_target_response.json` explicitly.
+fn attach_reply() -> serde_json::Value {
+    let mut reply = load_fixture("thread_attach_response.json");
+    reply["from"] = load_fixture("get_target_response.json")["frame"]["threadActor"].clone();
+    reply
+}
+
 fn base_args(port: u16) -> Vec<String> {
     vec![
         "--host".to_owned(),
@@ -18,10 +27,7 @@ fn sources_server() -> MockRdpServer {
     MockRdpServer::new()
         .on("listTabs", load_fixture("list_tabs_response.json"))
         .on("getTarget", load_fixture("get_target_response.json"))
-        .on(
-            "attach",
-            serde_json::json!({"from": "server1.conn0.child2/thread1"}),
-        )
+        .on("attach", attach_reply())
         .on("sources", load_fixture("sources_response.json"))
 }
 
@@ -176,10 +182,7 @@ fn sources_handles_null_entries_in_response() {
     let server = MockRdpServer::new()
         .on("listTabs", load_fixture("list_tabs_response.json"))
         .on("getTarget", load_fixture("get_target_response.json"))
-        .on(
-            "attach",
-            serde_json::json!({"from": "server1.conn0.child2/thread1"}),
-        )
+        .on("attach", attach_reply())
         .on("sources", response_with_nulls);
 
     let port = server.port();
@@ -246,10 +249,7 @@ fn fallback_server() -> MockRdpServer {
     MockRdpServer::new()
         .on("listTabs", load_fixture("list_tabs_response.json"))
         .on("getTarget", load_fixture("get_target_response.json"))
-        .on(
-            "attach",
-            serde_json::json!({"from": "server1.conn0.child2/thread1"}),
-        )
+        .on("attach", attach_reply())
         .on("sources", sources_error)
         .on_with_followup("evaluateJSAsync", eval_ack, eval_result)
 }
@@ -363,10 +363,7 @@ fn native_sources_output(sources: &serde_json::Value, flags: &[&str]) -> std::pr
     let server = MockRdpServer::new()
         .on("listTabs", load_fixture("list_tabs_response.json"))
         .on("getTarget", load_fixture("get_target_response.json"))
-        .on(
-            "attach",
-            serde_json::json!({"from": "server1.conn0.child2/thread1"}),
-        )
+        .on("attach", attach_reply())
         .on(
             "sources",
             serde_json::json!({"from": "server1.conn0.child2/thread1", "sources": sources}),

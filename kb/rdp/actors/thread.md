@@ -43,13 +43,13 @@ wording about paused attach and oneway interrupt was incorrect for this package.
 
 ## Qualified contract — 2026-09-28 (iteration 286)
 
-Firefox156.0.1, BuildID20260921121718, SourceStamp
+Firefox 156.0.1, BuildID 20260921121718, SourceStamp
 `6f2c158dfc7e9693f880fad2510ceb51a158c069`; installed browser omni.ja SHA256
 `85f891cec3e54150027582ac74eb96fc3774cc0ab4bfd96f7192905149d05fff`.
 The archive member `shared/specs/thread.js:72–107` declares attach
 `options: Arg(0, "json")`, `response: {}`, sources returning an array, and
 interrupt without oneway. Server `thread.js:390–431` returns immediately when
-already attached, otherwise transitions DETACHED→RUNNING. Its sources1583–1595
+already attached, otherwise transitions DETACHED→RUNNING. Its sources (lines 1583–1595)
 enumerates source forms without a paused-state requirement. Thread detach is
 absent from the current spec/server.
 
@@ -65,20 +65,19 @@ deprecated for API compatibility; no repository caller uses it.
 The single H1 native occurrence did not reach the predicted paused-event wait:
 attach omitted options and Firefox returned `undefined passed where a value is
 required`. The CLI then reported JS fallback with an empty source actor. No
-sources request occurred. All19 packets and failed harness cleanup evidence
-remain preserved; H1 is consumed and must not be repeated. Native candidate and
-independently paused safety proofs remain pending, so source qualification and
-unexecuted regression tests are not presented as native success.
+sources request occurred. With `options: {}` the native path succeeds: on
+2026-10-02 `ff-rdp sources` against https://www.iana.org/help/example-domains
+listed real `…/sourceN` actors with no `fallback_method`, and
+`live_286_native_sources` (which the JS fallback cannot satisfy) passes.
 
 ## Native source text presentation — 2026-09-28
 
-The repaired native path exposes real source actor IDs. Iteration286's first
-closing sweep found a127-character `sources --format text` table header: the
-URL, actor and `isBlackBoxed` columns exceeded the existing120-character text
+The repaired native path exposes real source actor IDs. Iteration 286's first
+closing sweep found a 127-character `sources --format text` table header: the
+URL, actor and `isBlackBoxed` columns exceeded the existing 120-character text
 contract when their widths were added. The candidate correction opts only the
-sources caller into a120-character table budget, counting characters when
+sources caller into a 120-character table budget, counting characters when
 padding and shortening cells. Full source URLs/actor IDs remain intact in JSON
 and jq input; field projection and sorting precede presentation as before.
-This formatting repair is prepared for independent review and validation.
-The independently accepted H2/H3 protocol proofs remain historical evidence;
-they do not establish that the new text formatter or closing sweep passes.
+The budget counts characters, not terminal columns, so wide (e.g. CJK)
+characters in un-encoded URLs can still exceed 120 display columns.
