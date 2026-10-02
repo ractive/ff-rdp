@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use ff_rdp_core::{
     Grip, NavCause, RdpTransport, Resource, ResourceCommand, ResourceType, RootActor, TabActor,
-    WatcherActor, WindowGlobalTarget, parse_network_resource_updates, parse_network_resources,
+    WatcherActor, WindowGlobalTarget, parse_network_resource_updates,
 };
 use serde_json::{Value, json};
 
@@ -443,7 +443,6 @@ struct CommitInfo {
 /// predicate as the pure readystate path) into its drain loop, returning when
 /// the page reports `complete` without waiting out the events budget.
 struct ReadyStateProbe<'a> {
-    target_endpoint: Option<crate::daemon::client::TargetEndpoint>,
     /// Console actor bound to the navigating docshell, used to evaluate JS.
     ///
     /// Captured *before* `navigateTo` is dispatched, so it is bound to the
@@ -811,9 +810,8 @@ fn must_reresolve_href(
 /// instead of failing silently for the rest of the wait (iter-124 fix for
 /// the iter-122 Theme A regression).
 ///
-/// Watched Pending or a failed watched lookup retires the cached console; only
-/// a current live snapshot admits another probe. Direct lookup failures retain
-/// their existing best-effort actor. A failed refresh returns `false` so the
+/// A lookup failure retains the existing best-effort actor. A failed refresh
+/// returns `false` so the
 /// caller does NOT latch `probe_refreshed` — the new docshell
 /// may not have finished registering server-side yet (a transient
 /// `getTarget` failure), so the next probe-timer tick should retry rather
@@ -825,24 +823,16 @@ fn refresh_probe_console_actor(
     probe: &mut ReadyStateProbe<'_>,
     deadline: Instant,
 ) -> bool {
-    match super::connect_tab::resolve_target_snapshot(
+    match super::connect_tab::resolve_target(
         transport,
-        probe.target_endpoint.as_ref(),
         probe.tab_actor,
         deadline.min(Instant::now() + Duration::from_millis(100)),
     ) {
-        Ok(Some(fresh)) => {
+        Ok(fresh) => {
             probe.console_actor = Some(fresh.console_actor);
             true
         }
-        Ok(None) => {
-            probe.console_actor = None;
-            false
-        }
         Err(e) => {
-            if probe.target_endpoint.is_some() {
-                probe.console_actor = None;
-            }
             tracing::debug!(
                 error = %e,
                 "navigate: readystate probe console actor refresh failed; \
@@ -1090,10 +1080,6 @@ fn wait_for_doc_complete_retaining_status(
     // Tracks whether the probe's console actor has been refreshed against the
     // post-navigation docshell yet (see the noSuchActor fix, iter-124).
     let mut probe_refreshed = false;
-    // A watched history verb can receive its terminal event while the fresh
-    // target is Pending. Keep that evidence for a later readiness sample;
-    // reload's unchanged URL cannot satisfy the same-document URL check.
-    let mut unresolved_watched_complete = false;
     // The main document's network resources and their observed HTTP statuses
     // (iter-138 Theme A). Only populated when the caller subscribed to
     // `ResourceType::NetworkEvent` alongside `DocumentEvent` (currently only
@@ -1138,8 +1124,7 @@ fn wait_for_doc_complete_retaining_status(
                 // `DocumentStatusTracker`. Between the two, `RUST_LOG=debug`
                 // shows exactly which half of the wait is starved when a
                 // navigation verb burns its whole events budget — which is
-                // how iteration 174's `reload --no-daemon` defect was
-                // localised.
+                // how iteration 174's `reload` defect was localised.
                 tracing::debug!(event = name, %url, "navigate: document-event observed");
 
                 match name {
@@ -1375,13 +1360,9 @@ fn wait_for_doc_complete_retaining_status(
                                 );
                             }
                             if needs_href_fallback(&href, requested_url) {
-                                unresolved_watched_complete |= probe.as_deref().is_some_and(|p| {
-                                    p.target_endpoint.is_some() && !p.poll_enabled
-                                });
                                 // Still ambiguous after a fresh lookup — most
                                 // likely still the intermediate docshell's own
-                                // dom-complete. Discard its untrusted URL but
-                                // retain watched history's terminal evidence.
+                                // dom-complete. Discard its untrusted URL.
                                 // Keep waiting for the real
                                 // navigation's dom-loading/dom-complete (or a
                                 // later probe tick, which retries the same fresh
@@ -1432,20 +1413,9 @@ fn wait_for_doc_complete_retaining_status(
         if wait_level == WaitLevel::Complete
             && let (Some(p), Some(when)) = (probe.as_deref_mut(), same_doc_next_check_at)
             && Instant::now() >= when
-            && (!p.pre_href.is_empty() || unresolved_watched_complete)
+            && !p.pre_href.is_empty()
         {
-            // A same-document check is still speculative: a cross-document
-            // navigation may have invalidated the outgoing console. Reacquire
-            // watched identity on every attempt, including plain navigate.
-            let watched_refreshed = if p.target_endpoint.is_some() {
-                with_event_replay(transport, bus_arc, retained.as_deref_mut(), |t| {
-                    refresh_probe_console_actor(t, p, deadline)
-                })
-            } else {
-                true
-            };
-            if watched_refreshed
-                && let Some(actor) = p.console_actor.as_ref()
+            if let Some(actor) = p.console_actor.as_ref()
                 && let Some(href) =
                 probe_same_document_commit_safe(transport, bus_arc, actor, &p.pre_href, retained.as_deref_mut())
                 // A changed URL is not necessarily a same-document commit:
@@ -1466,42 +1436,6 @@ fn wait_for_doc_complete_retaining_status(
                     http_status: None,
                     status_reason: None,
                 };
-            }
-            // Revalidate the current top-level document rather than replay
-            // an untrusted event URL (which may belong to a subframe).
-            // A fresh navigation epoch is required even for same-URL reload.
-            // This only resumes a previously observed terminal event; it
-            // does not turn history's event wait into an eager poll.
-            if watched_refreshed
-                && unresolved_watched_complete
-                && let Some(actor) = p.console_actor.clone()
-            {
-                let sample_deadline = deadline.min(Instant::now() + poll_interval);
-                let href = with_event_replay(transport, bus_arc, retained.as_deref_mut(), |t| {
-                    t.with_read_deadline(sample_deadline, |t| {
-                        Ok(probe_readystate_complete(
-                            t,
-                            &actor,
-                            ReadinessCheck {
-                                pre_epoch: p.pre_epoch,
-                                pre_href: &p.pre_href,
-                                requested_url,
-                            },
-                        )
-                        .unwrap_or_default())
-                    })
-                    .unwrap_or_default()
-                });
-                if !needs_href_fallback(&href, requested_url) {
-                    break 'wait CommitInfo {
-                        committed_url: href,
-                        ready_state: "complete".to_owned(),
-                        elapsed_ms: u64::try_from(nav_start.elapsed().as_millis())
-                            .unwrap_or(u64::MAX),
-                        http_status: None,
-                        status_reason: None,
-                    };
-                }
             }
             same_doc_next_check_at = Some(Instant::now() + p.probe_interval);
         }
@@ -1529,19 +1463,19 @@ fn wait_for_doc_complete_retaining_status(
             // raw packets off the wire while scanning for its own reply, so
             // each is wrapped so a `resources-updated-array` caught in the
             // middle is replayed into the bus rather than dropped.
-            if p.target_endpoint.is_some() || !probe_refreshed {
-                probe_refreshed =
-                    with_event_replay(transport, bus_arc, retained.as_deref_mut(), |t| {
-                        refresh_probe_console_actor(t, p, deadline)
-                    });
+            if !probe_refreshed {
+                // A failed refresh keeps the existing best-effort actor; the
+                // sample below then simply finds nothing new.
+                let _ = with_event_replay(transport, bus_arc, retained.as_deref_mut(), |t| {
+                    refresh_probe_console_actor(t, p, deadline)
+                });
             }
             let check = ReadinessCheck {
                 pre_epoch: p.pre_epoch,
                 pre_href: &p.pre_href,
                 requested_url,
             };
-            if (p.target_endpoint.is_none() || probe_refreshed)
-                && let Some(probe_actor) = p.console_actor.clone()
+            if let Some(probe_actor) = p.console_actor.clone()
                 && let Some(committed) =
                     with_event_replay(transport, bus_arc, retained.as_deref_mut(), |t| {
                         t.with_read_deadline(deadline, |t| {
@@ -1742,79 +1676,8 @@ fn scripted_readiness(epoch: f64, href: &str, state: &str) -> Value {
     json!(json!({"epoch":epoch,"href":href,"readyState":state}).to_string())
 }
 
-/// Poll a watched document under one deadline. A Pending snapshot is not a
-/// usable console. A console that dies after acquisition is retired until the
-/// watcher supplies a different one; only this read is repeated, never the
-/// navigation action. Other actor/protocol errors remain terminal.
-fn poll_watched_readystate(
-    ctx: &mut super::connect_tab::ConnectedTab,
-    check: ReadinessCheck<'_>,
-    timeout_ms: u64,
-) -> Result<String, AppError> {
-    use ff_rdp_core::{ActorErrorKind, ProtocolError};
-
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    let mut retired_console = None;
-    loop {
-        if Instant::now() >= deadline {
-            return Err(AppError::Timeout(
-                "waiting for watched document readiness".into(),
-            ));
-        }
-        let console = ctx.refresh_target_until(deadline).map_err(|error| {
-            if Instant::now() >= deadline
-                && matches!(error, AppError::Timeout(_) | AppError::RdpTimeout { .. })
-            {
-                AppError::Timeout("waiting for watched document readiness".into())
-            } else {
-                error
-            }
-        })?;
-        if retired_console.as_ref() != Some(&console) {
-            let inner_window_id = ctx.target().inner_window_id;
-            let mut guard = ctx.arm_target_guard(inner_window_id);
-            let result = guard
-                .transport_mut()
-                .with_read_deadline(deadline, |t| evaluate_readiness_sample(t, &console));
-            match result {
-                Ok(result) => {
-                    if let Some(exception) = result.exception {
-                        let message = format!(
-                            "navigate readystate: JS evaluation error{}",
-                            exception
-                                .message
-                                .map_or_else(String::new, |m| format!(": {m}"))
-                        );
-                        return Err(AppError::User(
-                            ff_rdp_core::sanitize_for_terminal(&message).into_owned(),
-                        ));
-                    }
-                    if let Some(href) = check.accepted_href(&result.result) {
-                        return Ok(href);
-                    }
-                }
-                Err(ProtocolError::EvalTargetDestroyed { .. }) => {
-                    retired_console = Some(console);
-                }
-                Err(ProtocolError::ActorError {
-                    ref actor,
-                    kind: ActorErrorKind::UnknownActor,
-                    ..
-                }) if actor == console.as_ref() => {
-                    retired_console = Some(console);
-                }
-                Err(ProtocolError::Timeout) => {}
-                Err(error) => return Err(error.into()),
-            }
-        }
-        std::thread::sleep(
-            Duration::from_millis(100).min(deadline.saturating_duration_since(Instant::now())),
-        );
-    }
-}
-
-/// Direct counterpart of the watched sample poll. Keep the existing absolute
-/// deadline, error classification and zero-budget single-evaluation contract.
+/// Poll `document.readyState` on the current console under one absolute
+/// deadline; a zero budget makes exactly one evaluation.
 fn poll_direct_readystate(
     ctx: &mut super::connect_tab::ConnectedTab,
     check: ReadinessCheck<'_>,
@@ -1875,12 +1738,7 @@ fn wait_for_readystate_complete(
     check: ReadinessCheck<'_>,
     nav_start: Instant,
 ) -> Result<CommitInfo, AppError> {
-    let readiness = if ctx.target_endpoint.is_some() && timeout_ms > 0 {
-        poll_watched_readystate(ctx, check, timeout_ms)
-    } else {
-        poll_direct_readystate(ctx, check, timeout_ms)
-    };
-    let url = match readiness {
+    let url = match poll_direct_readystate(ctx, check, timeout_ms) {
         Ok(href) => href,
         Err(AppError::Timeout(_)) => {
             let total_elapsed_ms =
@@ -1959,10 +1817,10 @@ fn split_wait_budget(timeout_ms: u64) -> (u64, u64) {
 /// Measured on FF154, static localhost page, `main` @ `7d457af`
 /// (iteration-174's plan carries the full trace):
 ///
-/// | route                                     | before   | after   |
+/// | command                                   | before   | after   |
 /// |-------------------------------------------|----------|---------|
-/// | `reload --no-daemon`                      | 21011 ms | 115 ms  |
-/// | `navigate --no-daemon --wait-strategy events` | timeout (30 s) | ~150 ms |
+/// | `reload`                                  | 21011 ms | 115 ms  |
+/// | `navigate --wait-strategy events`         | timeout (30 s) | ~150 ms |
 ///
 /// The 21 s is not a hang: it is `split_wait_budget(30000).1` burnt in full
 /// by a `dom-complete` that can never arrive, after which
@@ -1970,10 +1828,6 @@ fn split_wait_budget(timeout_ms: u64) -> (u64, u64) {
 /// correct-looking envelope — which is why this survived four iterations
 /// unnoticed (`status: null, status_reason: "not_observed"` was the only
 /// visible symptom).
-///
-/// The daemon route was never affected: `daemon/server.rs`'s
-/// `establish_watcher` has always passed `Some(true)` here, which is exactly
-/// why the two routes diverged by ~190x on the same command.
 ///
 /// The flag also moves top-level target delivery onto the watcher, so the
 /// actor obtained earlier from the descriptor's `getTarget` may be swapped
@@ -2032,12 +1886,16 @@ pub(crate) fn wait_for_navigation_commit(
     ctx: &mut super::connect_tab::ConnectedTab,
     cli_timeout: u64,
     requested_url: &str,
+    conditions: &crate::cli::args::NetworkConditionsArgs,
     dispatch: impl FnOnce(&mut RdpTransport) -> Result<(), AppError>,
 ) -> Result<serde_json::Value, AppError> {
     let tab_actor = ctx.target_tab_actor().clone();
     // iter-174: `Some(true)` — without it the three `dom-*` document-events
     // never arrive on a direct connection. See `get_navigation_watcher`.
     let watcher_actor = get_navigation_watcher(ctx, &tab_actor)?;
+    // `--throttle`/`--block` (reload): set on this connection's watcher before
+    // the dispatch, so they govern the load this command waits for.
+    let conditions_echo = super::network_conditions::apply(ctx, &watcher_actor, conditions)?;
 
     let pre_nav_epoch = capture_pre_nav_epoch(ctx, "nav_action: pre-nav epoch eval");
 
@@ -2075,15 +1933,6 @@ pub(crate) fn wait_for_navigation_commit(
         )
         .map_err(|e| AppError::from(anyhow::anyhow!("document-event subscribe: {e:#}")))?;
 
-    // Same daemon-mode correction `run_core` carries: the daemon owns
-    // `network-event` centrally and does not forward it to a client that only
-    // issued `watchResources`, so real-time delivery needs an explicit stream
-    // request (see `DAEMON_OWNED_RESOURCE_NAMES` in `daemon/server.rs`).
-    if ctx.via_daemon {
-        crate::daemon::client::start_daemon_stream(ctx.transport_mut(), "network-event")
-            .map_err(AppError::from)?;
-    }
-
     let (_reserved_ms, events_budget) = split_wait_budget(cli_timeout);
     let nav_start = Instant::now();
 
@@ -2110,7 +1959,6 @@ pub(crate) fn wait_for_navigation_commit(
     // unrelated subframe reloads and fires a normal-looking cycle — see
     // `ReadyStateProbe::trust_event_url`'s doc comment for the full story.
     let mut readystate_probe = Some(ReadyStateProbe {
-        target_endpoint: ctx.target_endpoint.clone(),
         console_actor: Some(ctx.target().console_actor.clone()),
         tab_actor: &tab_actor,
         pre_epoch: pre_nav_epoch,
@@ -2139,13 +1987,6 @@ pub(crate) fn wait_for_navigation_commit(
             true,
         )
     });
-
-    // Revert the daemon to buffering for `network-event` (best-effort: a
-    // failure just leaves it streaming a little longer, it does not
-    // invalidate the navigation result — same policy as `run_core`).
-    if ctx.via_daemon {
-        let _ = crate::daemon::client::stop_daemon_stream(ctx.transport_mut(), "network-event");
-    }
 
     // Flush any pending `unwatchResources` from dead-channel pruning, then
     // unsubscribe/unwatch regardless of outcome so Firefox cleans up
@@ -2189,7 +2030,7 @@ pub(crate) fn wait_for_navigation_commit(
 
     refresh_console_actor(ctx);
 
-    Ok(json!({
+    let mut result = json!({
         "committed_url": commit_info.committed_url,
         "ready_state": commit_info.ready_state,
         "elapsed_ms": commit_info.elapsed_ms,
@@ -2200,7 +2041,9 @@ pub(crate) fn wait_for_navigation_commit(
         // looked".
         "status": commit_info.http_status,
         "status_reason": commit_info.status_reason.map(StatusUnknown::as_str),
-    }))
+    });
+    super::network_conditions::insert_echo(&mut result, conditions_echo);
+    Ok(result)
 }
 
 /// Run the `--wait-for` predicates from `wait_opts`, re-resolving actors first.
@@ -2368,8 +2211,9 @@ pub fn run_core(
     cli: &Cli,
     url: &str,
     wait_opts: &WaitAfterNav<'_>,
+    conditions: &crate::cli::args::NetworkConditionsArgs,
     page_args: &crate::cli::args::PageViewArgs,
-) -> Result<(serde_json::Value, bool), AppError> {
+) -> Result<serde_json::Value, AppError> {
     let timing_origin =
         tracing::enabled!(target: "ff_rdp_cli::navigation_timing", tracing::Level::DEBUG)
             .then(Instant::now);
@@ -2388,10 +2232,13 @@ pub fn run_core(
     // iter-174: this must request server-side target switching, or the
     // `document-event` half of the wait is dead on a direct connection and
     // only the `Both` strategy's `document.readyState` poll ever answers —
-    // `--wait-strategy events --no-daemon` timed out unconditionally. See
+    // `--wait-strategy events` timed out unconditionally. See
     // `get_navigation_watcher`.
     let watcher_actor = get_navigation_watcher(&mut ctx, &tab_actor)?;
     trace_navigation_timing("setup", "watcher_ready", timing_origin, Instant::now());
+    // `--throttle`/`--block`: set on this connection's watcher before
+    // `navigateTo`, so they govern the load this command waits for.
+    let conditions_echo = super::network_conditions::apply(&mut ctx, &watcher_actor, conditions)?;
 
     // Missing baseline evidence stays absent, never a synthetic epoch zero.
     let pre_nav_epoch = if wait_opts.no_wait {
@@ -2429,11 +2276,7 @@ pub fn run_core(
         trace_navigation_timing("core", "dispatch", timing_origin, nav_start);
         WindowGlobalTarget::navigate_to(ctx.transport_mut(), &target_actor, url)
             .map_err(AppError::from)?;
-        // The watched readiness poll acquires under its own existing deadline.
-        // Direct connections retain the legacy best-effort refresh.
-        if ctx.target_endpoint.is_none() {
-            refresh_console_actor(&mut ctx);
-        }
+        refresh_console_actor(&mut ctx);
         let rs_result = wait_for_readystate_complete(
             &mut ctx,
             cli.timeout,
@@ -2484,22 +2327,6 @@ pub fn run_core(
             )
             .map_err(|e| AppError::from(anyhow::anyhow!("document-event subscribe: {e:#}")))?;
         trace_navigation_timing("setup", "subscribed", timing_origin, Instant::now());
-
-        // iter-138 Theme A, daemon-mode correction: the daemon manages
-        // `network-event` watching centrally and does NOT forward it to a
-        // client that only issued the generic `watchResources` call above
-        // (confirmed live — through the daemon, `status` stayed `null`
-        // forever with no amount of extra wait; `document-event` isn't
-        // affected because the daemon doesn't intercept it). Real-time
-        // delivery requires explicitly asking the daemon to stream, exactly
-        // like `navigate --with-network`'s daemon path already does. The
-        // `subscribe` call above still matters — it's what makes
-        // `dispatch_event` route incoming `network-event` frames (however
-        // they arrive) to `rx` at all.
-        if ctx.via_daemon {
-            crate::daemon::client::start_daemon_stream(ctx.transport_mut(), "network-event")
-                .map_err(AppError::from)?;
-        }
 
         trace_navigation_timing("setup", "ready_to_dispatch", timing_origin, Instant::now());
         // Record the wall-clock instant before sending navigateTo so we can
@@ -2559,8 +2386,7 @@ pub fn run_core(
         // (the iter-124 fix for the iter-122 Theme A regression).
         let mut readystate_probe = if wait_opts.wait_strategy == WaitStrategy::Both {
             Some(ReadyStateProbe {
-                target_endpoint: ctx.target_endpoint.clone(),
-                console_actor: Some(ctx.target().console_actor.clone()),
+                        console_actor: Some(ctx.target().console_actor.clone()),
                 tab_actor: &tab_actor,
                 pre_epoch: pre_nav_epoch,
                 // Give dom-complete a 300 ms head start on pages that fire it
@@ -2606,14 +2432,6 @@ pub fn run_core(
             "166 event wait outcome"
         );
         fallback_status.trace_diagnostic("events_end_before_teardown");
-
-        // iter-138 Theme A: stop the daemon stream so it reverts to buffering
-        // (best-effort — a failure here doesn't invalidate the navigation
-        // result, it just means the daemon stays in streaming mode for
-        // `network-event` a little longer than ideal).
-        if ctx.via_daemon {
-            let _ = crate::daemon::client::stop_daemon_stream(ctx.transport_mut(), "network-event");
-        }
 
         fallback_status.trace_diagnostic("after_stream_stop_before_gc");
 
@@ -2661,9 +2479,7 @@ pub fn run_core(
                 // capped to whatever is actually left of cli.timeout so the
                 // total wall time stays inside the user's budget.
                 fallback_status.trace_diagnostic("fallback_before_direct_refresh");
-                if ctx.target_endpoint.is_none() {
-                    refresh_console_actor(&mut ctx);
-                }
+                refresh_console_actor(&mut ctx);
                 fallback_status.trace_diagnostic("fallback_after_direct_refresh");
                 let elapsed_ms =
                     u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(cli.timeout);
@@ -2712,11 +2528,6 @@ pub fn run_core(
         // url = `https://…invalid/`, never `about:neterror`; see
         // `check_real_tab_url_for_neterror`'s doc comment for why only
         // `listTabs` sees the truth).
-        //
-        // This is not a direct-route quirk: the **daemon** route has always
-        // returned `exit 0` with a success envelope for a DNS failure here,
-        // and `live_61l::live_navigate_dnsfail` never caught it because that
-        // suite is direct-only. One check fixes both routes.
         //
         // Gated on `http_status.is_none()` rather than run unconditionally: a
         // navigation whose response line was observed reached a server and
@@ -2823,8 +2634,9 @@ pub fn run_core(
         super::page_view::attach(cli, &mut ctx, &mut result, Some(cli.timeout), page_args)?;
     }
 
+    super::network_conditions::insert_echo(&mut result, conditions_echo);
     trace_navigation_timing("core", "return_before_drop", timing_origin, Instant::now());
-    Ok((result, ctx.via_daemon))
+    Ok(result)
 }
 
 /// Run the iter-129 CMP-detection-and-accept flow and merge its result into
@@ -2887,12 +2699,8 @@ fn consent_failure_value() -> Value {
 
 /// [`detect_and_accept_best_effort`] on an **existing** connection.
 ///
-/// iter-159: `--with-network` cannot open a second connection for the consent
-/// step. In daemon mode the daemon serialises proxied RPC and this invocation
-/// is still holding the slot, so the second connection sat there until the read
-/// timeout fired — measured, the flag degraded to `consent detection failed:
-/// operation timed out after 10000ms (phase: recv)` on every run. Reusing `ctx`
-/// also keeps the resource subscription live across the interaction, so the
+/// iter-159: `--with-network` runs the consent step on its own connection so
+/// the resource subscription stays live across the interaction, and the
 /// requests the banner dismissal unblocks are still captured.
 fn detect_and_accept_on(ctx: &mut crate::commands::connect_tab::ConnectedTab) -> Value {
     match super::consent::detect_and_accept(ctx) {
@@ -2909,6 +2717,7 @@ pub fn run(
     url: &str,
     wait_opts: &WaitAfterNav<'_>,
     auto_consent: bool,
+    conditions: &crate::cli::args::NetworkConditionsArgs,
     page_args: &crate::cli::args::PageViewArgs,
 ) -> Result<(), AppError> {
     let timing_origin =
@@ -2935,7 +2744,7 @@ pub fn run(
         std::borrow::Cow::Borrowed(page_args)
     };
     trace_navigation_timing("run", "core_call", timing_origin, Instant::now());
-    let (mut result, via_daemon) = run_core(cli, url, wait_opts, core_args.as_ref())?;
+    let mut result = run_core(cli, url, wait_opts, conditions, core_args.as_ref())?;
     trace_navigation_timing(
         "run",
         "core_return_after_drop",
@@ -2970,9 +2779,6 @@ pub fn run(
         timing_origin,
         Instant::now(),
     );
-    // iter-134: always present, not gated by --verbose — matches the
-    // `--with-network` variant below, which already got this in iter-128.
-    crate::connection_meta::merge_route(&mut meta, via_daemon);
     let envelope = output::envelope(&result, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Navigate);
@@ -3036,237 +2842,22 @@ fn extract_document_status(
 /// `--auto-consent` used to be mutually exclusive at the clap level, so on any
 /// consent-walled site — the exact case where you want both — you had to choose
 /// between dismissing the banner and capturing the network. The consent step now
-/// runs while capture is still in effect, on the **same** connection (a second
-/// one deadlocks against the daemon's RPC serialisation — see
-/// [`detect_and_accept_on`]).
-///
-/// The two paths differ in what reaches *this* envelope. Direct mode owns its
-/// watcher subscription, so a short follow-up drain after the click collects the
-/// requests the dismissal unblocks. Daemon mode has already stopped its stream
-/// by then; the post-consent requests go to the daemon buffer, where
-/// `ff-rdp network` reads them, rather than into this result.
+/// runs while capture is still in effect, on the **same** connection (see
+/// [`detect_and_accept_on`]), and a short follow-up drain after the click
+/// collects the requests the dismissal unblocks.
+#[allow(clippy::too_many_arguments)]
 pub fn run_with_network(
     cli: &Cli,
     url: &str,
     wait_opts: &WaitAfterNav<'_>,
     network_timeout_ms: u64,
     auto_consent: bool,
+    conditions: &crate::cli::args::NetworkConditionsArgs,
     page_args: &crate::cli::args::PageViewArgs,
 ) -> Result<(), AppError> {
     validate_content_navigation_url(url, cli.allow_file_urls, cli.allow_unsafe_urls)?;
     let mut ctx = connect_and_get_target(cli)?;
     let target_actor = ctx.target().actor.clone();
-
-    if ctx.via_daemon {
-        // Tell the daemon to stream network events in real-time instead of
-        // buffering.  This clears the existing buffer so we only capture
-        // events from *this* navigation.
-        crate::daemon::client::start_daemon_stream(ctx.transport_mut(), "network-event")
-            .map_err(AppError::from)?;
-
-        // iter-138 Theme G: wall-clock start, so the envelope's `elapsed_ms`
-        // matches what plain `navigate` reports rather than being absent.
-        let nav_start = Instant::now();
-
-        // Send the navigateTo request without reading its response — same as
-        // the non-daemon path.  The daemon will forward the ack and also
-        // stream watcher events directly to us.
-        ctx.transport_mut()
-            .send(&json!({
-                "to": target_actor.as_ref(),
-                "type": "navigateTo",
-                "url": url,
-            }))
-            .map_err(AppError::from)?;
-
-        // Drain streamed watcher events for the total_timeout wall-clock
-        // duration, using short 500ms poll intervals internally.  This
-        // captures events that arrive in bursts with gaps (e.g. the page
-        // navigation itself may take 1-2 seconds before any network events
-        // start, which would incorrectly fire an idle-based timeout early).
-        // Always stop streaming before propagating errors from drain so the
-        // daemon does not get stuck in streaming mode on failure.
-        let drain_result = drain_network_events_timed(
-            ctx.transport_mut(),
-            Duration::from_millis(network_timeout_ms),
-        );
-
-        // Restore the original connection timeout before stopping the stream
-        // so any RDP round-trip uses the right timeout.
-        restore_timeout(ctx.transport_mut(), cli.timeout);
-
-        // Stop streaming and collect any in-flight watcher frames that arrived
-        // between the idle-timeout cutoff and the stop-stream acknowledgement.
-        // These are events the daemon forwarded after drain_network_events
-        // returned but before it processed our stop-stream request.
-        let inflight = match crate::daemon::client::stop_daemon_stream_draining(
-            ctx.transport_mut(),
-            "network-event",
-        ) {
-            Ok(frames) => frames,
-            Err(e) => {
-                eprintln!("warning: failed to stop daemon stream: {e:#}");
-                vec![]
-            }
-        };
-
-        let (mut all_resources, mut all_updates, timeout_reached) =
-            drain_result.map_err(AppError::from)?;
-
-        // Parse and merge any in-flight frames collected from stop_daemon_stream.
-        for frame in &inflight {
-            let msg_type = frame
-                .get("type")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default();
-            match msg_type {
-                "resources-available-array" => {
-                    all_resources.extend(parse_network_resources(frame));
-                }
-                "resources-updated-array" => {
-                    all_updates.extend(parse_network_resource_updates(frame));
-                }
-                _ => {}
-            }
-        }
-
-        // iter-159: dismiss the consent overlay on this same connection. The
-        // requests it unblocks land in the daemon buffer (which never stops
-        // buffering) rather than in this envelope — see `run_with_network`'s
-        // doc comment for why the two paths differ here.
-        let consent = if auto_consent {
-            Some(detect_and_accept_on(&mut ctx))
-        } else {
-            None
-        };
-
-        // iter-159: the daemon's residual buffer is deliberately **not** drained
-        // here, and the `store-events` push-back that used to follow it is gone.
-        //
-        // Both existed to paper over a daemon that never buffered its own
-        // watcher's events: the drain scooped up whatever landed between the
-        // idle cutoff and `stop-stream`, and `store-events` (iter-61j G) pushed
-        // this invocation's whole capture back so a later `ff-rdp network`
-        // would find something instead of falling through to the Performance
-        // API. The daemon now buffers every watcher resource unconditionally,
-        // so those events are already there — draining them would consume the
-        // buffer this navigation just filled and leave a following `network`
-        // with zero rows (measured: `navigate --with-network` then `network
-        // --security` returned `results: []`), while re-inserting them on top
-        // would duplicate every request.
-        //
-        // The cost is that a request arriving after the idle cutoff is not in
-        // *this* envelope. It is not lost: it is in the daemon buffer, which is
-        // what `ff-rdp network` reads.
-        //
-        // Collapse by `resource_id` anyway — cheap, and the in-flight frames
-        // collected by `stop_daemon_stream_draining` can overlap the tail of
-        // the stream. Updates need no dedupe: `merge_updates` folds them by
-        // `resource_id` with last-write-wins.
-        {
-            let mut seen = std::collections::HashSet::new();
-            all_resources.retain(|r| seen.insert(r.resource_id));
-        }
-
-        // The network drain already waited for events to settle; no separate
-        // commit-wait is needed. Neterror detection runs via listTabs below.
-        //
-        // iter-138 Theme G: `committed_url`/`ready_state` are no longer
-        // dropped here. Previously `commit_info` was hardcoded `None`
-        // because "no separate commit-wait is needed" — true for the wait
-        // itself, but it also meant the envelope silently omitted the two
-        // fields plain `navigate` always reports, forcing a caller to choose
-        // between truthful navigation info and network data. The drain has
-        // already settled by this point, so a direct eval is exactly as
-        // truthful as the plain path's post-commit reads.
-        let doc_tracker = extract_document_status(&all_resources, &all_updates);
-
-        // Theme K: refresh consoleActor after navigate — MUST happen before
-        // the eval below: `ctx.target().console_actor` is still bound to the
-        // pre-navigation docshell at this point, and evaluating against it
-        // would fail with `noSuchActor` on any real cross-document
-        // navigation.
-        refresh_console_actor(&mut ctx);
-
-        let commit_info: Option<CommitInfo> = {
-            let console_actor = ctx.target().console_actor.clone();
-            let committed_url = eval_location_href(ctx.transport_mut(), &console_actor);
-            let ready_state = eval_document_ready_state(ctx.transport_mut(), &console_actor);
-            let elapsed_ms = u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(u64::MAX);
-            let (http_status, status_reason) = doc_tracker.resolve(url, &committed_url);
-            Some(CommitInfo {
-                committed_url,
-                ready_state,
-                elapsed_ms,
-                http_status,
-                status_reason,
-            })
-        };
-
-        // Detect about:neterror in the daemon --with-network path.
-        if let Some(err) = check_real_tab_url_for_neterror(&mut ctx, url) {
-            return Err(err);
-        }
-
-        let wait_result = wait_after_navigate(&mut ctx, wait_opts)?;
-        let wait_for_result = run_wait_for_predicates(&mut ctx, wait_opts)?;
-
-        let update_map = merge_updates(all_updates);
-        let network_entries = build_network_entries(&all_resources, &update_map);
-
-        let network_entries = apply_network_controls(cli, &network_entries, timeout_reached)?;
-
-        let mut result = json!({
-            "navigated": url,
-            "network": network_entries,
-        });
-        if let Some(ref ci) = commit_info
-            && let Some(obj) = result.as_object_mut()
-        {
-            obj.insert("committed_url".to_string(), json!(ci.committed_url));
-            obj.insert("ready_state".to_string(), json!(ci.ready_state));
-            obj.insert("elapsed_ms".to_string(), json!(ci.elapsed_ms));
-            obj.insert("status".to_string(), json!(ci.http_status));
-            obj.insert(
-                "status_reason".to_string(),
-                json!(ci.status_reason.map(StatusUnknown::as_str)),
-            );
-        }
-        if let Some(w) = wait_result
-            && let Some(obj) = result.as_object_mut()
-        {
-            obj.insert("wait".to_string(), w);
-        }
-        if let Some(wf) = wait_for_result
-            && let Some(obj) = result.as_object_mut()
-        {
-            obj.insert("wait_for".to_string(), wf);
-        }
-        if let Some(c) = consent
-            && let Some(obj) = result.as_object_mut()
-        {
-            obj.insert("consent".to_string(), c);
-        }
-        if page_args.with_page {
-            super::page_view::attach(cli, &mut ctx, &mut result, Some(cli.timeout), page_args)?;
-        }
-        let mut meta = json!({});
-        let page_text = super::page_view::lift_meta(cli, &mut result, &mut meta);
-        crate::connection_meta::merge_into_if_verbose(
-            &mut meta,
-            &cli.host,
-            cli.port,
-            None,
-            cli.is_verbose(),
-        );
-        // iter-128 Theme D: always present, not gated by --verbose.
-        crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
-        let envelope = output::envelope(&result, 1, &meta);
-        let hint_ctx = HintContext::new(HintSource::Navigate);
-        OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))?;
-        super::page_view::render_text_section(page_text.as_ref());
-        return Ok(());
-    }
 
     let tab_actor = ctx.target_tab_actor().clone();
 
@@ -3285,6 +2876,9 @@ pub fn run_with_network(
     // Subscribe to network events before navigating so we capture everything.
     WatcherActor::watch_resources(ctx.transport_mut(), &watcher_actor, &["network-event"])
         .map_err(AppError::from)?;
+
+    // `--throttle`/`--block`: set on this watcher before `navigateTo`.
+    let conditions_echo = super::network_conditions::apply(&mut ctx, &watcher_actor, conditions)?;
 
     // iter-138 Theme G: wall-clock start, so the envelope's `elapsed_ms`
     // matches what plain `navigate` reports rather than being absent.
@@ -3365,18 +2959,16 @@ pub fn run_with_network(
     // server-side frame-target subscription is cleared (oneway, best-effort).
     let _ = WatcherActor::unwatch_targets(ctx.transport_mut(), &watcher_actor, Some("frame"), None);
 
-    // NOTE: In the non-daemon path, wait_after_navigate is called *after*
-    // draining network events and unwatching resources, so network data is
-    // already fully collected before we begin waiting.  The daemon path
-    // (above) starts the wait before building entries because there is no
-    // subscription lifecycle to tear down.
+    // NOTE: wait_after_navigate is called *after* draining network events
+    // and unwatching resources, so network data is already fully collected
+    // before we begin waiting.
 
     // iter-138 Theme G: the network drain already waited for events to
     // settle, so a direct eval here is exactly as truthful as plain
     // `navigate`'s post-commit reads — no separate commit-wait is needed,
-    // but `committed_url`/`ready_state`/`status` are no longer dropped (see
-    // the daemon branch above for the full rationale). Neterror detection
-    // still runs via listTabs below.
+    // but `committed_url`/`ready_state`/`status` are no longer dropped: the
+    // envelope reports the same navigation fields plain `navigate` does.
+    // Neterror detection still runs via listTabs below.
     //
     // Theme K: refresh consoleActor before evaluating —
     // `ctx.target().console_actor` is still bound to the pre-navigation docshell here,
@@ -3399,7 +2991,7 @@ pub fn run_with_network(
         })
     };
 
-    // Detect about:neterror in the non-daemon --with-network path.
+    // Detect about:neterror in the --with-network path.
     if let Some(err) = check_real_tab_url_for_neterror(&mut ctx, url) {
         return Err(err);
     }
@@ -3440,6 +3032,7 @@ pub fn run_with_network(
     {
         obj.insert("consent".to_string(), c);
     }
+    super::network_conditions::insert_echo(&mut result, conditions_echo);
     if page_args.with_page {
         super::page_view::attach(cli, &mut ctx, &mut result, Some(cli.timeout), page_args)?;
     }
@@ -3452,8 +3045,6 @@ pub fn run_with_network(
         None,
         cli.is_verbose(),
     );
-    // iter-128 Theme D: always present, not gated by --verbose.
-    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
     let envelope = output::envelope(&result, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Navigate);
@@ -4443,7 +4034,6 @@ mod tests {
 
         let nav_start = Instant::now();
         let mut probe = ReadyStateProbe {
-            target_endpoint: None,
             // Deliberately stale — the pre-navigation actor — to prove the
             // refresh (via `tab_actor`) is what makes the probe usable.
             console_actor: Some(ff_rdp_core::ActorId::from("conn0/stale-console")),
@@ -4567,7 +4157,6 @@ mod tests {
 
         let nav_start = Instant::now();
         let mut probe = ReadyStateProbe {
-            target_endpoint: None,
             console_actor: Some(ff_rdp_core::ActorId::from("conn0/stale-console")),
             tab_actor: &tab,
             pre_epoch: Some(1.0),
@@ -4697,7 +4286,6 @@ mod tests {
 
         let nav_start = Instant::now();
         let mut probe = ReadyStateProbe {
-            target_endpoint: None,
             console_actor: Some(ff_rdp_core::ActorId::from("conn0/stale-console")),
             tab_actor: &tab,
             pre_epoch: Some(1.0),
@@ -4821,7 +4409,6 @@ mod tests {
         // gets refreshed to `console_actor` on the dom-loading event above).
         let nav_start = Instant::now();
         let mut probe = ReadyStateProbe {
-            target_endpoint: None,
             console_actor: Some(ff_rdp_core::ActorId::from("conn0/stale-console")),
             tab_actor: &tab,
             pre_epoch: Some(1.0),
@@ -4927,7 +4514,6 @@ mod tests {
         // for `document.readyState` if it were ever evaluated — but it must
         // stay silent because wait_level is `Loading`, not `Complete`.
         let mut probe = ReadyStateProbe {
-            target_endpoint: None,
             console_actor: Some(ff_rdp_core::ActorId::from("conn0/stale-console")),
             tab_actor: &tab,
             pre_epoch: Some(1.0),
@@ -5004,7 +4590,6 @@ mod tests {
         let tab: &'static ff_rdp_core::ActorId =
             Box::leak(Box::new(ff_rdp_core::ActorId::from("conn0/tabDescriptor1")));
         let probe = ReadyStateProbe {
-            target_endpoint: None,
             console_actor: Some(ff_rdp_core::ActorId::from("conn0/console1")),
             tab_actor: tab,
             pre_epoch: Some(1.0),
@@ -5539,7 +5124,6 @@ mod tests {
 
         let nav_start = Instant::now();
         let mut probe = ReadyStateProbe {
-            target_endpoint: None,
             console_actor: Some(ff_rdp_core::ActorId::from("conn0/stale-console")),
             tab_actor: &tab,
             pre_epoch: Some(1.0),
@@ -5575,1373 +5159,6 @@ mod tests {
             "a literal about:blank dom-complete URL must fall back to location.href \
              when it does not match the requested URL"
         );
-    }
-}
-
-#[cfg(test)]
-#[path = "navigate_pending_probe_tests.rs"]
-mod pending_probe_tests;
-
-#[cfg(test)]
-mod snapshot_probe_tests {
-    use super::*;
-    use ff_rdp_core::transport::{encode_frame, recv_from};
-    use serde_json::Value;
-    use std::io::{BufReader, Write};
-    use std::net::{TcpListener, TcpStream};
-
-    fn send(stream: &mut TcpStream, value: &Value) {
-        stream
-            .write_all(encode_frame(&value.to_string()).as_bytes())
-            .unwrap();
-    }
-
-    #[test]
-    fn watched_probe_requeries_live_a_then_b_and_pending_then_b_without_events() {
-        for initially_pending in [false, true] {
-            let side = TcpListener::bind("127.0.0.1:0").unwrap();
-            let endpoint = crate::daemon::client::TargetEndpoint::new(
-                side.local_addr().unwrap().port(),
-                "token",
-            );
-            let snapshots = std::thread::spawn(move || {
-                for actor in ["a", "b"] {
-                    let (mut stream, _) = side.accept().unwrap();
-                    let mut reader = BufReader::new(stream.try_clone().unwrap());
-                    assert_eq!(recv_from(&mut reader).unwrap()["auth"], "token");
-                    send(
-                        &mut stream,
-                        &json!({"protocol_version":crate::daemon::server::DAEMON_PROTOCOL_VERSION}),
-                    );
-                    let request = recv_from(&mut reader).unwrap();
-                    assert_eq!(request["type"], "resolve-tab-target");
-                    assert_eq!(request["descriptor"], "tab");
-                    let response = if initially_pending && actor == "a" {
-                        json!({"from":"daemon","type":"resolve-tab-target","state":"pending"})
-                    } else {
-                        json!({"from":"daemon","type":"resolve-tab-target","state":"live","target":{
-                            "actor":actor,"consoleActor":format!("{actor}/console"),"innerWindowId":if actor == "a" {1} else {2}
-                        }})
-                    };
-                    send(&mut stream, &response);
-                }
-            });
-            let main = TcpListener::bind("127.0.0.1:0").unwrap();
-            let port = main.local_addr().unwrap().port();
-            let evaluations = std::thread::spawn(move || {
-                let (mut stream, _) = main.accept().unwrap();
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(3)))
-                    .unwrap();
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                send(
-                    &mut stream,
-                    &json!({"from":"root","applicationType":"browser"}),
-                );
-                for (actor, result) in [
-                    (
-                        "a/console",
-                        scripted_readiness(42.0, "https://old.test/", "complete"),
-                    ),
-                    (
-                        "b/console",
-                        scripted_readiness(43.0, "https://new.test/", "complete"),
-                    ),
-                ] {
-                    if initially_pending && actor == "a/console" {
-                        // Pending invalidates a; the next wire request must
-                        // come from the subsequent live b snapshot.
-                        continue;
-                    }
-                    let mut request = recv_from(&mut reader).unwrap();
-                    if request["type"] == "listFrames" {
-                        send(
-                            &mut stream,
-                            &json!({"from":request["to"],
-                            "frames":[{"isTopLevel":true,"url":"https://new.test/"}]}),
-                        );
-                        request = recv_from(&mut reader).unwrap();
-                    }
-                    assert_eq!(
-                        request["type"], "evaluateJSAsync",
-                        "no shared getTarget is permitted"
-                    );
-                    assert_eq!(request["to"], actor);
-                    assert_eq!(request["text"], READINESS_SAMPLE);
-                    send(&mut stream, &json!({"from":actor,"resultID":"r"}));
-                    send(
-                        &mut stream,
-                        &json!({"from":actor,"type":"evaluationResult","resultID":"r","result":result}),
-                    );
-                }
-            });
-            let mut transport =
-                RdpTransport::connect("127.0.0.1", port, Duration::from_secs(3)).unwrap();
-            let tab = "tab".into();
-            let start = Instant::now();
-            let mut probe = ReadyStateProbe {
-                target_endpoint: Some(endpoint),
-                console_actor: Some("a/console".into()),
-                tab_actor: &tab,
-                pre_epoch: Some(42.0),
-                first_probe_at: start,
-                probe_interval: Duration::from_millis(10),
-                poll_enabled: true,
-                pre_href: String::new(),
-                trust_event_url: true,
-            };
-            let (_tx, rx) = std::sync::mpsc::channel();
-            let bus = Arc::new(Mutex::new(ResourceCommand::new("watcher".into())));
-            let result = wait_for_doc_complete(
-                &mut transport,
-                &bus,
-                &rx,
-                2500,
-                WaitLevel::Complete,
-                start,
-                Some(&mut probe),
-                "https://new.test/",
-                false,
-            )
-            .unwrap();
-            assert_eq!(result.committed_url, "https://new.test/");
-            assert_eq!(
-                probe
-                    .console_actor
-                    .as_ref()
-                    .map(std::convert::AsRef::as_ref),
-                Some("b/console")
-            );
-            snapshots.join().unwrap();
-            evaluations.join().unwrap();
-        }
-    }
-    // An authenticated query socket can end at its absolute deadline before
-    // sending any query bytes. Only the expected timeout cases admit that
-    // terminal boundary; partial frames and other protocol errors still fail.
-    fn snapshot_fixture_query(
-        reader: &mut impl std::io::BufRead,
-        terminal_deadline: Option<Instant>,
-        case: &str,
-    ) -> Option<Value> {
-        if reader.fill_buf().unwrap().is_empty() {
-            assert!(
-                terminal_deadline.is_some_and(|deadline| Instant::now() >= deadline),
-                "{case}: pre-query EOF without an expired expected-timeout budget"
-            );
-            return None;
-        }
-        let request = recv_from(reader)
-            .unwrap_or_else(|error| panic!("{case}: incomplete/invalid snapshot query: {error}"));
-        assert_eq!(request["type"], "resolve-tab-target", "{case}");
-        assert_eq!(request["to"], "daemon", "{case}");
-        assert_eq!(request["descriptor"], "tab", "{case}");
-        Some(request)
-    }
-
-    fn terminal_snapshot_fixture(
-        side: &TcpListener,
-        deadline: Instant,
-        terminal_rx: &std::sync::mpsc::Receiver<()>,
-    ) -> Option<(Instant, Option<Value>)> {
-        side.set_nonblocking(true).unwrap();
-        let stream = loop {
-            if Instant::now() >= deadline {
-                return None;
-            }
-            match side.accept() {
-                Ok((stream, _)) => break stream,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                Err(error) => panic!("snapshot fixture accept: {error}"),
-            }
-        };
-        stream.set_nonblocking(false).unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .unwrap();
-        let mut reader = BufReader::new(stream);
-        assert_eq!(recv_from(&mut reader).unwrap()["auth"], "token");
-        let authenticated_at = Instant::now();
-        // Withhold the greeting until the real client's deadline returns.
-        // This controls auth→deadline→EOF order, not Windows scheduling.
-        terminal_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-        let query = snapshot_fixture_query(&mut reader, Some(deadline), "terminal auth");
-        Some((authenticated_at, query))
-    }
-
-    #[test]
-    fn snapshot_fixture_observes_terminal_auth_deadline_before_query() {
-        let side = TcpListener::bind("127.0.0.1:0").unwrap();
-        let endpoint =
-            crate::daemon::client::TargetEndpoint::new(side.local_addr().unwrap().port(), "token");
-        let deadline = Instant::now() + Duration::from_millis(600);
-        let (terminal_tx, terminal_rx) = std::sync::mpsc::channel();
-        let server =
-            std::thread::spawn(move || terminal_snapshot_fixture(&side, deadline, &terminal_rx));
-        let result = endpoint.snapshot(&"tab".into(), deadline);
-        let returned_at = Instant::now();
-        let release = terminal_tx.send(());
-        // Join even if admission/authentication failed and release disconnected.
-        let joined = server.join();
-        release.unwrap();
-        let (authenticated_at, query) = joined.unwrap().expect("client must authenticate");
-        assert!(authenticated_at < deadline);
-        assert!(returned_at >= deadline);
-        assert!(matches!(result, Err(AppError::RdpTimeout { .. })));
-        assert!(query.is_none(), "a deadline-closed handshake has no query");
-    }
-
-    #[test]
-    fn snapshot_fixture_joins_when_client_deadline_precedes_connect() {
-        let side = TcpListener::bind("127.0.0.1:0").unwrap();
-        let endpoint =
-            crate::daemon::client::TargetEndpoint::new(side.local_addr().unwrap().port(), "token");
-        let start = Instant::now();
-        let admission_deadline = start + Duration::from_millis(600);
-        let (terminal_tx, terminal_rx) = std::sync::mpsc::channel();
-        let server = std::thread::spawn(move || {
-            terminal_snapshot_fixture(&side, admission_deadline, &terminal_rx)
-        });
-        // A real pre-connect timeout leaves the same server without a client.
-        let result = endpoint.snapshot(&"tab".into(), start);
-        let release = terminal_tx.send(());
-        let joined = server.join();
-        assert!(matches!(result, Err(AppError::Timeout(_))));
-        assert!(joined.unwrap().is_none(), "no client may be admitted");
-        assert!(start.elapsed() < Duration::from_secs(2));
-        // If admission already ended before this thread ran, send can fail;
-        // either outcome is observed only after the real server join above.
-        let _ = release;
-    }
-
-    #[test]
-    fn snapshot_fixture_rejects_early_partial_and_wrong_queries() {
-        use std::io::Cursor;
-        let expired = Some(Instant::now());
-        let valid = json!({"to":"daemon", "type":"resolve-tab-target", "descriptor":"tab"});
-        let mut reader = Cursor::new(encode_frame(&valid.to_string()).into_bytes());
-        assert_eq!(
-            snapshot_fixture_query(&mut reader, expired, "valid"),
-            Some(valid)
-        );
-        for (case, bytes, deadline) in [
-            (
-                "early EOF",
-                vec![],
-                Some(Instant::now() + Duration::from_millis(600)),
-            ),
-            ("non-timeout EOF", vec![], None),
-            ("partial frame", b"10:{".to_vec(), expired),
-            (
-                "wrong type",
-                encode_frame(r#"{"to":"daemon","type":"getTarget","descriptor":"tab"}"#)
-                    .into_bytes(),
-                expired,
-            ),
-            (
-                "wrong descriptor",
-                encode_frame(r#"{"to":"daemon","type":"resolve-tab-target","descriptor":"other"}"#)
-                    .into_bytes(),
-                expired,
-            ),
-        ] {
-            assert!(
-                std::panic::catch_unwind(move || {
-                    snapshot_fixture_query(&mut Cursor::new(bytes), deadline, case)
-                })
-                .is_err(),
-                "{case} must remain a fixture failure"
-            );
-        }
-    }
-
-    // A query write that crosses the existing absolute deadline must retain
-    // the caller's Timeout contract, without accepting other connection errors.
-    #[test]
-    fn snapshot_query_deadline_expiry_is_timeout() {
-        assert_snapshot_query_deadline(true);
-    }
-
-    // This boundary fixture has already decoded auth and written its greeting.
-    // Record a close before any query bytes; do not qualify it as an expected
-    // deadline close until the real caller result and absolute deadline exist.
-    fn snapshot_boundary_query(
-        reader: &mut impl std::io::BufRead,
-    ) -> std::result::Result<Value, (std::io::ErrorKind, Instant)> {
-        snapshot_boundary_query_for_descriptor(reader, "conn0/tab1")
-    }
-
-    fn snapshot_boundary_query_for_descriptor(
-        reader: &mut impl std::io::BufRead,
-        descriptor: &str,
-    ) -> std::result::Result<Value, (std::io::ErrorKind, Instant)> {
-        use std::io::ErrorKind;
-        match reader.fill_buf() {
-            Ok([]) => {
-                return Err((ErrorKind::UnexpectedEof, Instant::now()));
-            }
-            Err(error) if error.kind() == ErrorKind::ConnectionReset => {
-                return Err((ErrorKind::ConnectionReset, Instant::now()));
-            }
-            Err(error) => panic!("snapshot boundary pre-query read: {error}"),
-            Ok(_) => {}
-        }
-        // Once even one query byte is visible, EOF/reset is an incomplete
-        // frame, not a terminal no-query boundary.
-        let query = recv_from(reader)
-            .unwrap_or_else(|error| panic!("incomplete/invalid boundary query: {error}"));
-        assert_eq!(query["to"], "daemon");
-        assert_eq!(query["type"], "resolve-tab-target");
-        assert_eq!(query["descriptor"], descriptor);
-        Ok(query)
-    }
-
-    fn assert_snapshot_terminal_boundary<T>(
-        close: (std::io::ErrorKind, Instant),
-        deadline: Instant,
-        caller: &Result<T, AppError>,
-    ) {
-        assert!(
-            close.1 >= deadline,
-            "pre-query close before deadline: {close:?}"
-        );
-        assert!(
-            matches!(caller, Err(AppError::Timeout(_))),
-            "terminal snapshot closure requires actual caller Timeout: {close:?}"
-        );
-    }
-
-    #[test]
-    fn snapshot_boundary_rejects_early_non_timeout_and_partial_closes() {
-        use std::io::{BufRead, Cursor, ErrorKind, Read};
-        use std::panic::{AssertUnwindSafe, catch_unwind};
-
-        struct FaultAfterBytes {
-            bytes: Cursor<Vec<u8>>,
-            error: ErrorKind,
-        }
-        impl Read for FaultAfterBytes {
-            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-                let count = self.bytes.read(buf)?;
-                if count == 0 && !buf.is_empty() {
-                    Err(self.error.into())
-                } else {
-                    Ok(count)
-                }
-            }
-        }
-        impl BufRead for FaultAfterBytes {
-            fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
-                let bytes = self.bytes.fill_buf()?;
-                if bytes.is_empty() {
-                    Err(self.error.into())
-                } else {
-                    Ok(bytes)
-                }
-            }
-            fn consume(&mut self, count: usize) {
-                self.bytes.consume(count);
-            }
-        }
-
-        let eof = snapshot_boundary_query(&mut Cursor::new(Vec::<u8>::new())).unwrap_err();
-        let reset = snapshot_boundary_query(&mut FaultAfterBytes {
-            bytes: Cursor::new(Vec::new()),
-            error: ErrorKind::ConnectionReset,
-        })
-        .unwrap_err();
-        assert_eq!(eof.0, ErrorKind::UnexpectedEof);
-        assert_eq!(reset.0, ErrorKind::ConnectionReset);
-        for close in [eof, reset] {
-            let timeout = Err::<(), _>(AppError::Timeout("deadline".into()));
-            assert_snapshot_terminal_boundary(close, close.1, &timeout);
-            for (deadline, caller) in [
-                (close.1 + Duration::from_millis(600), timeout),
-                (close.1, Err(AppError::Connection("reset".into()))),
-                (close.1, Ok(())),
-            ] {
-                assert!(
-                    catch_unwind(AssertUnwindSafe(|| {
-                        assert_snapshot_terminal_boundary(close, deadline, &caller);
-                    }))
-                    .is_err()
-                );
-            }
-        }
-        let valid = json!({
-            "to": "daemon",
-            "type": "resolve-tab-target",
-            "descriptor": "conn0/tab1"
-        });
-        assert_eq!(
-            snapshot_boundary_query(&mut Cursor::new(
-                encode_frame(&valid.to_string()).into_bytes()
-            ))
-            .unwrap(),
-            valid
-        );
-        let mut invalid_frames = vec![b"10:{".to_vec(), b"1:x".to_vec()];
-        for field in ["to", "type", "descriptor"] {
-            let mut wrong = valid.clone();
-            wrong[field] = json!("wrong");
-            invalid_frames.push(encode_frame(&wrong.to_string()).into_bytes());
-        }
-        for bytes in invalid_frames {
-            assert!(
-                catch_unwind(AssertUnwindSafe(|| {
-                    snapshot_boundary_query(&mut Cursor::new(bytes.clone()))
-                }))
-                .is_err(),
-                "partial/invalid queries ending in EOF must remain failures"
-            );
-            assert!(
-                catch_unwind(AssertUnwindSafe(|| {
-                    snapshot_boundary_query(&mut FaultAfterBytes {
-                        bytes: Cursor::new(bytes),
-                        error: ErrorKind::ConnectionReset,
-                    })
-                }))
-                .is_err(),
-                "partial/invalid queries must not become terminal closes"
-            );
-        }
-        for error in [
-            ErrorKind::TimedOut,
-            ErrorKind::ConnectionAborted,
-            ErrorKind::BrokenPipe,
-        ] {
-            assert!(
-                catch_unwind(|| {
-                    snapshot_boundary_query(&mut FaultAfterBytes {
-                        bytes: Cursor::new(Vec::new()),
-                        error,
-                    })
-                })
-                .is_err(),
-                "only pre-query EOF/reset may reach terminal qualification"
-            );
-        }
-    }
-
-    #[test]
-    fn snapshot_pending_queries_keep_absolute_deadline() {
-        assert_snapshot_query_deadline(false);
-    }
-
-    fn assert_snapshot_query_deadline(pause_at_boundary: bool) {
-        use std::cell::RefCell;
-        use std::io::Read;
-        use std::panic::{AssertUnwindSafe, catch_unwind};
-        use std::rc::Rc;
-        use std::sync::atomic::{AtomicBool, Ordering};
-
-        // Establish the unused main channel before acquiring any worker.
-        let main = TcpListener::bind("127.0.0.1:0").unwrap();
-        main.set_nonblocking(true).unwrap();
-        let port = main.local_addr().unwrap().port();
-        let transport =
-            RdpTransport::connect_raw("127.0.0.1", port, Duration::from_secs(2)).unwrap();
-        let admission = Instant::now() + Duration::from_secs(2);
-        let mut main_peer = loop {
-            assert!(Instant::now() < admission, "main fixture admission");
-            match main.accept() {
-                Ok((stream, _)) => break stream,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                Err(error) => panic!("main fixture accept: {error}"),
-            }
-        };
-        main_peer.set_nonblocking(false).unwrap();
-        main_peer
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .unwrap();
-        let side = TcpListener::bind("127.0.0.1:0").unwrap();
-        side.set_nonblocking(true).unwrap();
-        let endpoint_port = side.local_addr().unwrap().port();
-        let mut ctx =
-            super::super::connect_tab::ConnectedTab::for_test(transport, "a/console".into());
-        ctx.target_endpoint = Some(crate::daemon::client::TargetEndpoint::new(
-            endpoint_port,
-            "token",
-        ));
-        ctx.via_daemon = true;
-        let stop = Arc::new(AtomicBool::new(false));
-        let done = Arc::clone(&stop);
-        let observations = Rc::new(RefCell::new(Vec::new()));
-        let observed = Rc::clone(&observations);
-        let start = Instant::now();
-        let fixture_end = start + Duration::from_secs(2);
-        let snapshots = std::thread::spawn(move || {
-            let mut queries = 0;
-            let mut terminal_close = None;
-            while !done.load(Ordering::Relaxed) && Instant::now() < fixture_end {
-                let mut stream = match side.accept() {
-                    Ok((stream, _)) => stream,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(1));
-                        continue;
-                    }
-                    Err(error) => panic!("snapshot fixture accept: {error}"),
-                };
-                stream.set_nonblocking(false).unwrap();
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(2)))
-                    .unwrap();
-                stream
-                    .set_write_timeout(Some(Duration::from_secs(2)))
-                    .unwrap();
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                assert_eq!(recv_from(&mut reader).unwrap()["auth"], "token");
-                send(
-                    &mut stream,
-                    &json!({"protocol_version":crate::daemon::server::DAEMON_PROTOCOL_VERSION}),
-                );
-                if let Err(close) = snapshot_boundary_query(&mut reader) {
-                    terminal_close = Some(close);
-                    break;
-                }
-                queries += 1;
-                send(
-                    &mut stream,
-                    &json!({"from":"daemon","type":"resolve-tab-target","state":"pending"}),
-                );
-            }
-            (queries, terminal_close)
-        });
-        let caller = catch_unwind(AssertUnwindSafe(|| {
-            crate::daemon::client::snapshot_query_boundary::with(
-                endpoint_port,
-                move |deadline| {
-                    let entered = Instant::now();
-                    if pause_at_boundary {
-                        assert!(observed.borrow().is_empty(), "one deliberate boundary only");
-                        assert!(entered < deadline, "must decode greeting before expiry");
-                        // Deliberate fault schedule: expire the real remaining
-                        // budget here, without replacing or extending it.
-                        while let Some(remaining) = deadline.checked_duration_since(Instant::now())
-                        {
-                            std::thread::sleep(remaining);
-                        }
-                    }
-                    observed
-                        .borrow_mut()
-                        .push((deadline, entered, Instant::now()));
-                },
-                || {
-                    wait_for_readystate_complete(
-                        &mut ctx,
-                        600,
-                        ReadinessCheck {
-                            pre_epoch: Some(42.0),
-                            pre_href: "",
-                            requested_url: "https://new.test/",
-                        },
-                        start,
-                    )
-                },
-            )
-        }));
-        let returned = Instant::now();
-        // Finish the fixture-owned idle channel after the caller returns.
-        // Consume the peer's explicit FIN before closing the client; an
-        // implicit closesocket alone need not complete gracefully on Windows.
-        // The reverse-direction zero-byte assertion below still rejects RPCs.
-        let main_shutdown = main_peer.shutdown(std::net::Shutdown::Write);
-        let client_eof = ctx.transport_mut().recv();
-        drop(ctx);
-        stop.store(true, Ordering::Relaxed);
-        let joined = snapshots.join();
-        let joined_at = Instant::now();
-        let main_eof = main_peer.read(&mut [0_u8; 1]);
-        eprintln!(
-            "boundary-control pause={pause_at_boundary} start={start:?} returned={returned:?} \
-             elapsed={:?} caller={caller:?} first_boundary={:?} joined_at={joined_at:?} \
-             snapshot_join={joined:?} main_shutdown={main_shutdown:?} \
-             client_eof={client_eof:?} main_eof={main_eof:?}",
-            returned.duration_since(start),
-            observations.borrow().first(),
-        );
-        let (queries, terminal_close) = joined.unwrap();
-        main_shutdown.expect("fixture main-channel send shutdown");
-        assert!(
-            matches!(client_eof, Err(ff_rdp_core::ProtocolError::RecvFailed(ref e)) if e.kind() == std::io::ErrorKind::UnexpectedEof),
-            "fixture client must observe peer FIN: {client_eof:?}"
-        );
-        assert_eq!(main_eof.unwrap(), 0, "no shared RPC/evaluation is allowed");
-        let result = caller.unwrap();
-        let records = observations.borrow();
-        assert!(
-            !records.is_empty(),
-            "at least one decoded greeting required"
-        );
-        assert!(records.iter().all(|record| record.0 == records[0].0));
-        if let Some(close) = terminal_close {
-            assert_snapshot_terminal_boundary(close, records[0].0, &result);
-        }
-        if pause_at_boundary {
-            assert_eq!(records.len(), 1);
-            assert_eq!(queries, 0);
-            assert!(terminal_close.is_some());
-            assert!(records[0].1 < records[0].0 && records[0].2 >= records[0].0);
-        } else {
-            assert!(queries > 0, "ordinary control must send complete queries");
-        }
-        assert!(
-            matches!(result, Err(AppError::Timeout(_))),
-            "strict watched-readiness result must remain Timeout: {result:?}"
-        );
-        assert!(returned.duration_since(start) < Duration::from_secs(1));
-    }
-
-    /// The Both fallback and explicit readystate route share this caller.
-    /// Pending must not strand it on the outgoing console, including when a
-    /// live snapshot becomes invalid between acquisition and evaluation.
-    #[test]
-    fn readystate_fallback_follows_watched_lifecycle() {
-        use super::super::connect_tab::{TabListRouting, connect_and_list_tabs};
-        use clap::Parser;
-        for failure in [
-            "pending",
-            "noSuchActor",
-            "destroyed",
-            "wrongState",
-            "pending_forever",
-            "dead_forever",
-        ] {
-            let side = TcpListener::bind("127.0.0.1:0").unwrap();
-            side.set_nonblocking(true).unwrap();
-            let endpoint = crate::daemon::client::TargetEndpoint::new(
-                side.local_addr().unwrap().port(),
-                "token",
-            );
-            let (deadline_tx, deadline_rx) = std::sync::mpsc::channel();
-            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let done = Arc::clone(&stop);
-            let snapshots = std::thread::spawn(move || {
-                let deadline = deadline_rx.recv().unwrap();
-                let terminal_deadline =
-                    matches!(failure, "pending_forever" | "dead_forever").then_some(deadline);
-                let mut queries = 0;
-                let mut deadline_closed = false;
-                while !done.load(std::sync::atomic::Ordering::Relaxed) {
-                    let Ok((mut stream, _)) = side.accept() else {
-                        std::thread::sleep(Duration::from_millis(1));
-                        continue;
-                    };
-                    stream.set_nonblocking(false).unwrap();
-                    stream
-                        .set_read_timeout(Some(Duration::from_secs(2)))
-                        .unwrap();
-                    let mut reader = BufReader::new(stream.try_clone().unwrap());
-                    assert_eq!(recv_from(&mut reader).unwrap()["auth"], "token");
-                    send(
-                        &mut stream,
-                        &json!({"protocol_version":crate::daemon::server::DAEMON_PROTOCOL_VERSION}),
-                    );
-                    if snapshot_fixture_query(&mut reader, terminal_deadline, failure).is_none() {
-                        deadline_closed = true;
-                        break;
-                    }
-                    queries += 1;
-                    // First acquisition can be Pending. In the race cases A
-                    // is returned twice: never retry an eval on known-dead A.
-                    let response = if failure == "pending_forever"
-                        || failure == "pending" && queries == 1
-                    {
-                        json!({"from":"daemon","type":"resolve-tab-target","state":"pending"})
-                    } else {
-                        let actor =
-                            if failure == "dead_forever" || failure != "pending" && queries <= 2 {
-                                "a"
-                            } else {
-                                "b"
-                            };
-                        json!({"from":"daemon","type":"resolve-tab-target","state":"live","target":{
-                            "actor":actor,"consoleActor":format!("{actor}/console"),"innerWindowId":if actor == "a" {1} else {2}}})
-                    };
-                    send(&mut stream, &response);
-                }
-                (queries, deadline_closed)
-            });
-            let main = TcpListener::bind("127.0.0.1:0").unwrap();
-            let port = main.local_addr().unwrap().port();
-            let evaluations = std::thread::spawn(move || {
-                let (mut stream, _) = main.accept().unwrap();
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(2)))
-                    .unwrap();
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                send(
-                    &mut stream,
-                    &json!({"from":"root","applicationType":"browser","ua":"Firefox/156.0"}),
-                );
-                let mut dead_evals = 0;
-                let mut live_evals = 0;
-                while let Ok(request) = recv_from(&mut reader) {
-                    let actor = request["to"].as_str().unwrap();
-                    match request["type"].as_str().unwrap() {
-                        "listTabs" => send(
-                            &mut stream,
-                            &json!({"from":"root","tabs":[{"actor":"tab","selected":true,"url":"https://old.test/","title":"old"}]}),
-                        ),
-                        "getTarget" => send(
-                            &mut stream,
-                            &json!({"from":"tab","frame":{"actor":"a","consoleActor":"a/console","innerWindowId":1,"url":"https://old.test/"}}),
-                        ),
-                        "listFrames" => send(
-                            &mut stream,
-                            &json!({"from":actor,"frames":[{"isTopLevel":true,"url":"https://new.test/"}]}),
-                        ),
-                        "evaluateJSAsync" if actor == "a/console" => {
-                            dead_evals += 1;
-                            if failure == "destroyed" {
-                                send(&mut stream, &json!({"from":actor,"resultID":"old"}));
-                                send(
-                                    &mut stream,
-                                    &json!({"from":"watcher","type":"target-destroyed-form","target":{"actor":"a","innerWindowId":1,"isTopLevelTarget":true}}),
-                                );
-                                // A real evaluation may still finish after the
-                                // guarded destruction interrupts its caller.
-                                send(
-                                    &mut stream,
-                                    &json!({"from":actor,"type":"evaluationResult","resultID":"old","result":true}),
-                                );
-                            } else {
-                                let error = if failure == "wrongState" {
-                                    "wrongState"
-                                } else {
-                                    "noSuchActor"
-                                };
-                                send(
-                                    &mut stream,
-                                    &json!({"from":actor,"error":error,"message":"outgoing console"}),
-                                );
-                            }
-                        }
-                        "evaluateJSAsync" => {
-                            assert_eq!(actor, "b/console");
-                            live_evals += 1;
-                            let js = request["text"].as_str().unwrap();
-                            assert_eq!(js, READINESS_SAMPLE, "no second href evaluation");
-                            let result = scripted_readiness(43.0, "https://new.test/", "complete");
-                            send(&mut stream, &json!({"from":actor,"resultID":"fresh"}));
-                            send(
-                                &mut stream,
-                                &json!({"from":actor,"type":"evaluationResult","resultID":"fresh","result":result}),
-                            );
-                        }
-                        other => panic!("unexpected request: {other}"),
-                    }
-                }
-                (dead_evals, live_evals)
-            });
-            let cli = Cli::parse_from([
-                "ff-rdp",
-                "--port",
-                &port.to_string(),
-                "--no-daemon",
-                "eval",
-                "1",
-            ]);
-            let listing = connect_and_list_tabs(&cli, TabListRouting::Direct)
-                .unwrap_or_else(|e| panic!("connect failed: {}", e.into_app_error()));
-            let mut ctx = listing.attach(&cli).unwrap();
-            ctx.target_endpoint = Some(endpoint);
-            ctx.via_daemon = true;
-            let start = Instant::now();
-            deadline_tx
-                .send(start + Duration::from_millis(600))
-                .unwrap();
-            let result = wait_for_readystate_complete(
-                &mut ctx,
-                600,
-                ReadinessCheck {
-                    pre_epoch: Some(42.0),
-                    pre_href: "",
-                    requested_url: "https://new.test/",
-                },
-                start,
-            );
-            drop(ctx);
-            stop.store(true, std::sync::atomic::Ordering::Relaxed);
-            let snapshot_join = snapshots.join();
-            let evaluation_join = evaluations.join();
-            let (queries, deadline_closed) = snapshot_join.unwrap();
-            let (dead_evals, live_evals) = evaluation_join.unwrap();
-            if deadline_closed {
-                assert!(
-                    matches!(&result, Err(AppError::Timeout(_))),
-                    "{failure}: terminal snapshot closure requires actual caller Timeout; result={result:?}"
-                );
-            }
-            if failure == "wrongState" {
-                assert!(
-                    matches!(result, Err(AppError::User(ref message)) if message.contains("wrongState"))
-                );
-                assert_eq!(dead_evals, 1);
-                assert_eq!(live_evals, 0, "unrelated protocol errors must remain fatal");
-                assert_eq!(queries, 1, "unrelated errors must not start recovery");
-            } else if matches!(failure, "pending_forever" | "dead_forever") {
-                assert!(
-                    matches!(result, Err(AppError::Timeout(_))),
-                    "{failure}: {result:?}"
-                );
-                assert!(
-                    start.elapsed() < Duration::from_secs(1),
-                    "original sub-budget must bound recovery"
-                );
-                assert_eq!(dead_evals, usize::from(failure == "dead_forever"));
-                assert_eq!(live_evals, 0);
-            } else {
-                let ci = result.unwrap_or_else(|e| panic!("{failure}: {e}"));
-                assert_eq!(ci.committed_url, "https://new.test/");
-                assert_eq!(ci.ready_state, "complete");
-                assert!(ci.elapsed_ms < 600);
-                assert_eq!(dead_evals, usize::from(failure != "pending"));
-                assert_eq!(live_evals, 1);
-            }
-        }
-    }
-
-    fn retained_auth_deadline(
-        auth: Option<(std::net::SocketAddr, Instant)>,
-        peer: std::net::SocketAddr,
-    ) -> Instant {
-        let (auth_peer, deadline) =
-            auth.expect("decoded auth requires its real auth-sent deadline");
-        assert_eq!(auth_peer, peer, "auth deadline belongs to this socket");
-        deadline
-    }
-
-    fn assert_retained_query_cancelled(close: (std::io::ErrorKind, Instant), deadline: Instant) {
-        assert!(matches!(
-            close.0,
-            std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset
-        ));
-        assert!(
-            close.1 >= deadline,
-            "pre-query close before actual query deadline: {close:?}"
-        );
-    }
-
-    #[test]
-    fn retained_snapshot_requires_matching_auth_and_expired_empty_query() {
-        use std::io::{Cursor, ErrorKind};
-        let peer = "127.0.0.1:1234".parse().unwrap();
-        let other = "127.0.0.1:1235".parse().unwrap();
-        let deadline = Instant::now();
-        assert_eq!(
-            retained_auth_deadline(Some((peer, deadline)), peer),
-            deadline
-        );
-        for record in [None, Some((other, deadline))] {
-            assert!(std::panic::catch_unwind(|| retained_auth_deadline(record, peer)).is_err());
-        }
-        let close =
-            snapshot_boundary_query_for_descriptor(&mut Cursor::new(Vec::<u8>::new()), "tab")
-                .unwrap_err();
-        assert_retained_query_cancelled(close, deadline);
-        for (invalid_close, bound) in [
-            (close, close.1 + Duration::from_secs(1)),
-            ((ErrorKind::TimedOut, close.1), deadline),
-        ] {
-            assert!(
-                std::panic::catch_unwind(|| assert_retained_query_cancelled(invalid_close, bound))
-                    .is_err()
-            );
-        }
-        let query = json!({"to":"daemon", "type":"resolve-tab-target", "descriptor":"tab"});
-        assert_eq!(
-            snapshot_boundary_query_for_descriptor(
-                &mut Cursor::new(encode_frame(&query.to_string()).into_bytes()),
-                "tab"
-            )
-            .unwrap(),
-            query
-        );
-        // Partial EOF/reset, malformed/wrong requests and unrelated I/O errors
-        // use the same byte-aware helper's existing negative controls above.
-    }
-
-    #[test]
-    fn reload_retains_terminal_event_until_watched_readiness_is_fresh() {
-        retained_terminal_readiness(false);
-    }
-
-    #[test]
-    fn long_string_watched_terminal_preserves_gate_and_sample() {
-        retained_terminal_readiness(true);
-    }
-
-    #[test]
-    fn long_string_watched_terminal_query_deadline_control() {
-        retained_terminal_readiness_with_boundary(true, true);
-    }
-
-    fn retained_terminal_readiness(long_string: bool) {
-        retained_terminal_readiness_with_boundary(long_string, false);
-    }
-
-    fn retained_terminal_readiness_with_boundary(long_string: bool, force_expiry: bool) {
-        static LONG_HREF: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-        let href = if long_string {
-            LONG_HREF
-                .get_or_init(|| {
-                    format!(
-                        "https://same.test/{}",
-                        "a".repeat(9990 - "https://same.test/".len())
-                    )
-                })
-                .as_str()
-        } else {
-            "https://same.test/"
-        };
-        for (always_stale, terminal_event) in [(false, true), (true, true), (false, false)] {
-            let side = TcpListener::bind("127.0.0.1:0").unwrap();
-            side.set_nonblocking(true).unwrap();
-            let side_port = side.local_addr().unwrap().port();
-            let endpoint = crate::daemon::client::TargetEndpoint::new(side_port, "token");
-            let (auth_tx, auth_rx) = std::sync::mpsc::channel();
-            let released = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            let evaluator_released = Arc::clone(&released);
-            let forced = Arc::new(Mutex::new(Vec::new()));
-            let forced_observer = Arc::clone(&forced);
-            let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-            let done = Arc::clone(&stop);
-            let snapshots = std::thread::spawn(move || {
-                let mut queries = 0;
-                let mut cancellations = Vec::new();
-                while !done.load(std::sync::atomic::Ordering::Relaxed) {
-                    let Ok((mut stream, peer)) = side.accept() else {
-                        std::thread::sleep(Duration::from_millis(1));
-                        continue;
-                    };
-                    stream.set_nonblocking(false).unwrap();
-                    stream
-                        .set_read_timeout(Some(Duration::from_secs(1)))
-                        .unwrap();
-                    let mut reader = BufReader::new(stream.try_clone().unwrap());
-                    assert_eq!(recv_from(&mut reader).unwrap()["auth"], "token");
-                    let auth_deadline = retained_auth_deadline(
-                        auth_rx.recv_timeout(Duration::from_secs(1)).ok(),
-                        peer,
-                    );
-                    send(
-                        &mut stream,
-                        &json!({"protocol_version":crate::daemon::server::DAEMON_PROTOCOL_VERSION}),
-                    );
-                    if let Err(close) = snapshot_boundary_query_for_descriptor(&mut reader, "tab") {
-                        // Auth/greeting does not commit the client to a query:
-                        // its own 100ms sub-deadline can expire before the write.
-                        // This helper only returns a close before ANY query byte.
-                        assert_retained_query_cancelled(close, auth_deadline);
-                        cancellations.push((close, auth_deadline, peer));
-                        continue;
-                    }
-                    queries += 1;
-                    let response = if queries == 1 {
-                        json!({"from":"daemon","type":"resolve-tab-target","state":"pending"})
-                    } else {
-                        json!({"from":"daemon","type":"resolve-tab-target","state":"live","target":{
-                        "actor":"b","consoleActor":"b/console","innerWindowId":2}})
-                    };
-                    send(&mut stream, &response);
-                }
-                (queries, cancellations)
-            });
-            let main = TcpListener::bind("127.0.0.1:0").unwrap();
-            let port = main.local_addr().unwrap().port();
-            let evaluations = std::thread::spawn(move || {
-                let (mut stream, _) = main.accept().unwrap();
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(2)))
-                    .unwrap();
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                send(
-                    &mut stream,
-                    &json!({"from":"root","applicationType":"browser"}),
-                );
-                let mut fresh_evaluations = 0;
-                let mut encoded = String::new();
-                let mut substring_count = 0;
-                let mut release_count = 0;
-                while let Ok(request) = recv_from(&mut reader) {
-                    match request["type"].as_str().unwrap() {
-                        "listFrames" => {
-                            assert_eq!(request["to"], "b");
-                            send(
-                                &mut stream,
-                                &json!({"from":"b","frames":[{"isTopLevel":true,"url":href}]}),
-                            );
-                        }
-                        "evaluateJSAsync" if request["to"] == "a/console" => {
-                            send(
-                                &mut stream,
-                                &json!({"from":"a/console","error":"noSuchActor","message":"outgoing actor destroyed"}),
-                            );
-                        }
-                        "evaluateJSAsync" => {
-                            assert_eq!(request["to"], "b/console");
-                            let text = request["text"].as_str().unwrap();
-                            assert_ne!(
-                                text, "window.location.href",
-                                "accepted watched sample must supply its own href"
-                            );
-                            let value = if text == READINESS_SAMPLE {
-                                assert!(text.contains("document.readyState"));
-                                fresh_evaluations += 1;
-                                // A stale ready document must not satisfy the
-                                // retained terminal event, even at the same URL.
-                                scripted_readiness(
-                                    if !always_stale && fresh_evaluations >= 2 {
-                                        43.0
-                                    } else {
-                                        42.0
-                                    },
-                                    href,
-                                    "complete",
-                                )
-                            } else {
-                                assert!(
-                                    text.contains("document.readyState") && text.contains(href)
-                                );
-                                Value::Null // unchanged URL never satisfies the SPA check
-                            };
-                            let value = if long_string && text == READINESS_SAMPLE {
-                                encoded = value.as_str().unwrap().to_owned();
-                                assert!(encoded.len() >= 10000);
-                                json!({"type":"longString","actor":format!("sample-{fresh_evaluations}"),"length":encoded.len(),"initial":&encoded[..1000]})
-                            } else {
-                                value
-                            };
-                            send(&mut stream, &json!({"from":"b/console","resultID":"r"}));
-                            send(
-                                &mut stream,
-                                &json!({"from":"b/console","type":"evaluationResult","resultID":"r","result":value}),
-                            );
-                        }
-                        "substring" => {
-                            assert!(long_string);
-                            assert_eq!(request["to"], format!("sample-{fresh_evaluations}"));
-                            assert_eq!(request["start"], 0);
-                            assert_eq!(request["end"], encoded.len());
-                            substring_count += 1;
-                            send(
-                                &mut stream,
-                                &json!({"from":request["to"],"substring":encoded}),
-                            );
-                        }
-                        "release" => {
-                            assert!(long_string);
-                            assert_eq!(request["to"], format!("sample-{fresh_evaluations}"));
-                            release_count += 1;
-                            evaluator_released
-                                .store(release_count, std::sync::atomic::Ordering::SeqCst);
-                            send(&mut stream, &json!({"from":request["to"]}));
-                        }
-                        other => {
-                            panic!("unexpected request (no shared getTarget permitted): {other}")
-                        }
-                    }
-                }
-                if long_string {
-                    assert_eq!(substring_count, fresh_evaluations);
-                    assert_eq!(release_count, fresh_evaluations);
-                }
-                fresh_evaluations
-            });
-            let mut transport =
-                RdpTransport::connect("127.0.0.1", port, Duration::from_secs(1)).unwrap();
-            let tab = "tab".into();
-            let start = Instant::now();
-            let mut probe = ReadyStateProbe {
-                target_endpoint: Some(endpoint),
-                console_actor: Some("a/console".into()),
-                tab_actor: &tab,
-                pre_epoch: Some(42.0),
-                first_probe_at: start + Duration::from_millis(30),
-                probe_interval: Duration::from_millis(30),
-                poll_enabled: false,
-                pre_href: href.into(),
-                trust_event_url: false,
-            };
-            let (tx, rx) = std::sync::mpsc::channel();
-            tx.send(Arc::new(Resource::NetworkEvent(
-                ff_rdp_core::NetworkResource {
-                    actor: "net".into(),
-                    method: "GET".into(),
-                    url: href.into(),
-                    is_xhr: false,
-                    cause_type: "document".into(),
-                    started_date_time: String::new(),
-                    timestamp: 0.0,
-                    resource_id: 7,
-                },
-            )))
-            .unwrap();
-            tx.send(Arc::new(Resource::NetworkUpdate(
-                ff_rdp_core::NetworkResourceUpdate {
-                    resource_id: 7,
-                    status: Some("200".into()),
-                    ..Default::default()
-                },
-            )))
-            .unwrap();
-            for name in ["dom-loading", "dom-complete"] {
-                if !terminal_event && name == "dom-complete" {
-                    continue;
-                }
-                tx.send(Arc::new(Resource::DocumentEvent(
-                    json!({"name":name,"url":href}),
-                )))
-                .unwrap();
-            }
-            let bus = Arc::new(Mutex::new(ResourceCommand::new("watcher".into())));
-            let result = crate::daemon::client::snapshot_query_boundary::with_auth(
-                side_port,
-                move |peer, deadline| auth_tx.send((peer, deadline)).unwrap(),
-                move |deadline| {
-                    let completed_samples = released.load(std::sync::atomic::Ordering::SeqCst);
-                    let mut records = forced_observer.lock().unwrap();
-                    if force_expiry
-                        && always_stale
-                        && terminal_event
-                        && completed_samples > 0
-                        && records.is_empty()
-                    {
-                        let entered = Instant::now();
-                        if let Some(remaining) = deadline.checked_duration_since(entered) {
-                            std::thread::sleep(remaining);
-                        }
-                        records.push((entered, deadline, Instant::now(), completed_samples));
-                    }
-                },
-                || {
-                    wait_for_doc_complete(
-                        &mut transport,
-                        &bus,
-                        &rx,
-                        700,
-                        WaitLevel::Complete,
-                        start,
-                        Some(&mut probe),
-                        "",
-                        true,
-                    )
-                },
-            );
-            let returned = Instant::now();
-            // End the fixture's request stream explicitly, retaining a socket
-            // until the evaluator actually returns. The original elapsed bound
-            // below still includes teardown and both real worker joins.
-            let (teardown_reader, teardown_writer) = transport.split();
-            let shutdown = teardown_writer
-                .try_clone_stream()
-                .and_then(|stream| stream.shutdown(std::net::Shutdown::Write));
-            stop.store(true, std::sync::atomic::Ordering::Relaxed);
-            let snapshot_join = snapshots.join();
-            let evaluation_join = evaluations.join();
-            let joined_at = Instant::now();
-            drop((teardown_reader, teardown_writer));
-            eprintln!(
-                "reload-boundary always_stale={always_stale} terminal_event={terminal_event} \
-                 caller_elapsed={:?} joined_elapsed={:?} caller={result:?} \
-                 shutdown={shutdown:?} snapshots={snapshot_join:?} evaluations={evaluation_join:?}",
-                returned.duration_since(start),
-                joined_at.duration_since(start),
-            );
-            let forced_records = forced.lock().unwrap();
-            // stderr-ok: preserve actual forced-boundary timing even when the worker panics.
-            eprintln!("retained-forced-boundaries={forced_records:?}");
-            assert_eq!(
-                forced_records.len(),
-                usize::from(force_expiry && always_stale && terminal_event)
-            );
-            for &(entered, deadline, exited, releases) in forced_records.iter() {
-                assert!(entered < deadline && exited >= deadline);
-                assert!(
-                    releases > 0,
-                    "force only after a complete longString sample"
-                );
-            }
-            let (queries, cancellations) = snapshot_join.unwrap();
-            for &(_, deadline, _, _) in forced_records.iter() {
-                assert!(
-                    cancellations
-                        .iter()
-                        .any(|(_, actual, _)| *actual == deadline),
-                    "forced cancellation must be observed before any query byte"
-                );
-            }
-            let fresh = evaluation_join.unwrap();
-            shutdown.expect("fixture evaluator send shutdown");
-            if always_stale || !terminal_event {
-                if !terminal_event {
-                    assert_eq!(
-                        fresh, 0,
-                        "missing terminal evidence must not enable the fresh-document poll"
-                    );
-                }
-                assert!(
-                    matches!(result, Err(AppError::Timeout(_))),
-                    "stale completion must not succeed: {result:?}"
-                );
-                assert!(start.elapsed() < Duration::from_secs(1));
-            } else {
-                let result = result
-                    .expect("reload must retain terminal evidence across a Pending target refresh");
-                assert_eq!(result.committed_url, href);
-                assert_eq!(result.ready_state, "complete");
-                assert!(result.elapsed_ms < 500);
-                assert!(queries >= 3);
-                assert_eq!(
-                    fresh, 2,
-                    "the initial stale readiness sample must be rejected"
-                );
-                assert_eq!(result.http_status, Some(200));
-                assert_eq!(result.status_reason, None);
-            }
-        }
-    }
-
-    #[test]
-    fn history_probe_reacquires_watched_target_after_terminal_refresh_is_pending() {
-        let side = TcpListener::bind("127.0.0.1:0").unwrap();
-        side.set_nonblocking(true).unwrap();
-        let endpoint =
-            crate::daemon::client::TargetEndpoint::new(side.local_addr().unwrap().port(), "token");
-        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let done = Arc::clone(&stop);
-        let snapshots = std::thread::spawn(move || {
-            let mut queries = 0;
-            while !done.load(std::sync::atomic::Ordering::Relaxed) {
-                let Ok((mut stream, _)) = side.accept() else {
-                    std::thread::sleep(Duration::from_millis(1));
-                    continue;
-                };
-                stream.set_nonblocking(false).unwrap();
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(1)))
-                    .unwrap();
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                assert_eq!(recv_from(&mut reader).unwrap()["auth"], "token");
-                send(
-                    &mut stream,
-                    &json!({"protocol_version":crate::daemon::server::DAEMON_PROTOCOL_VERSION}),
-                );
-                assert_eq!(
-                    recv_from(&mut reader).unwrap()["type"],
-                    "resolve-tab-target"
-                );
-                queries += 1;
-                let response = if queries == 1 {
-                    json!({"from":"daemon","type":"resolve-tab-target","state":"pending"})
-                } else {
-                    json!({"from":"daemon","type":"resolve-tab-target","state":"live","target":{
-                        "actor":"b","consoleActor":"b/console","innerWindowId":2}})
-                };
-                send(&mut stream, &response);
-            }
-            queries
-        });
-        let main = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = main.local_addr().unwrap().port();
-        let evaluations = std::thread::spawn(move || {
-            let (mut stream, _) = main.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(2)))
-                .unwrap();
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            send(
-                &mut stream,
-                &json!({"from":"root","applicationType":"browser"}),
-            );
-            let mut fresh_evaluations = 0;
-            while let Ok(request) = recv_from(&mut reader) {
-                match request["type"].as_str().unwrap() {
-                    "listFrames" => {
-                        assert_eq!(request["to"], "b");
-                        send(
-                            &mut stream,
-                            &json!({"from":"b","frames":[{"isTopLevel":true,"url":"https://new.test/"}]}),
-                        );
-                    }
-                    "evaluateJSAsync" if request["to"] == "a/console" => {
-                        send(
-                            &mut stream,
-                            &json!({"from":"a/console","error":"noSuchActor","message":"outgoing actor destroyed"}),
-                        );
-                    }
-                    "evaluateJSAsync" => {
-                        assert_eq!(request["to"], "b/console");
-                        let text = request["text"].as_str().unwrap();
-                        assert!(
-                            text.contains("document.readyState")
-                                && text.contains("https://old.test/"),
-                            "history readiness remains complete-and-changed gated: {text}"
-                        );
-                        fresh_evaluations += 1;
-                        send(&mut stream, &json!({"from":"b/console","resultID":"r"}));
-                        send(
-                            &mut stream,
-                            &json!({"from":"b/console","type":"evaluationResult","resultID":"r","result":"https://new.test/"}),
-                        );
-                    }
-                    other => panic!("unexpected request (no shared getTarget permitted): {other}"),
-                }
-            }
-            fresh_evaluations
-        });
-        let mut transport =
-            RdpTransport::connect("127.0.0.1", port, Duration::from_secs(1)).unwrap();
-        let tab = "tab".into();
-        let start = Instant::now();
-        let mut probe = ReadyStateProbe {
-            target_endpoint: Some(endpoint),
-            console_actor: Some("a/console".into()),
-            tab_actor: &tab,
-            pre_epoch: Some(42.0),
-            first_probe_at: start + Duration::from_millis(30),
-            probe_interval: Duration::from_millis(30),
-            poll_enabled: false,
-            pre_href: "https://old.test/".into(),
-            trust_event_url: false,
-        };
-        let (tx, rx) = std::sync::mpsc::channel();
-        for name in ["dom-loading", "dom-complete"] {
-            tx.send(Arc::new(Resource::DocumentEvent(
-                json!({"name":name,"url":"https://new.test/"}),
-            )))
-            .unwrap();
-        }
-        let bus = Arc::new(Mutex::new(ResourceCommand::new("watcher".into())));
-        let result = wait_for_doc_complete(
-            &mut transport,
-            &bus,
-            &rx,
-            700,
-            WaitLevel::Complete,
-            start,
-            Some(&mut probe),
-            "",
-            true,
-        );
-        drop(transport);
-        stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        let queries = snapshots.join().unwrap();
-        let fresh = evaluations.join().unwrap();
-        let result = result.expect(
-            "history readiness must reacquire the watched target after terminal refresh is pending",
-        );
-        assert_eq!(result.committed_url, "https://new.test/");
-        assert_eq!(result.ready_state, "complete");
-        assert!(result.elapsed_ms < 500);
-        assert_eq!(queries, 2);
-        assert_eq!(fresh, 1);
-        assert_ne!(result.status_reason, Some(StatusUnknown::NotObserved));
     }
 }
 
@@ -7105,7 +5322,6 @@ mod blank_shortcut_tests {
             let tab = "tab".into();
             let start = Instant::now();
             let mut probe = ReadyStateProbe {
-                target_endpoint: None,
                 console_actor: Some("console".into()),
                 tab_actor: &tab,
                 pre_epoch: Some(42.0),
@@ -7306,333 +5522,3 @@ mod atomic_readiness_tests {
     }
 }
 
-#[cfg(test)]
-mod long_string_readiness_tests {
-    use super::*;
-    use crate::commands::connect_tab::ConnectedTab;
-    use ff_rdp_core::transport::{encode_frame, recv_from};
-    use std::io::{BufReader, Write};
-    use std::net::{TcpListener, TcpStream};
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    fn send(stream: &mut TcpStream, value: &Value) {
-        // Submit one complete frame instead of deliberately splitting its
-        // header/body into small writes on a deadline-sensitive fixture.
-        let frame = encode_frame(&value.to_string());
-        stream.write_all(frame.as_bytes()).unwrap();
-    }
-
-    #[test]
-    fn long_string_direct_and_watched_fetch_boundaries() {
-        for watched in [false, true] {
-            for case in [
-                "ready",
-                "oversize",
-                "exception",
-                "actor-error",
-                "malformed",
-                "timeout",
-                "release-error",
-            ] {
-                fetch_case(watched, case);
-            }
-        }
-    }
-
-    #[test]
-    fn long_string_watched_destroyed_fetch_boundary() {
-        fetch_case(true, "destroyed");
-    }
-
-    fn phase(
-        tx: &std::sync::mpsc::Sender<(Duration, String)>,
-        origin: Instant,
-        message: impl Into<String>,
-    ) {
-        let _ = tx.send((origin.elapsed(), message.into()));
-    }
-
-    fn fetch_case(watched: bool, case: &'static str) {
-        let origin = Instant::now();
-        let (phase_tx, phase_rx) = std::sync::mpsc::channel();
-        let snapshot_phases = phase_tx.clone();
-        let evaluation_phases = phase_tx.clone();
-        let boundary_phases = phase_tx.clone();
-        let side = TcpListener::bind("127.0.0.1:0").unwrap();
-        side.set_nonblocking(true).unwrap();
-        let endpoint_port = side.local_addr().unwrap().port();
-        let endpoint = crate::daemon::client::TargetEndpoint::new(endpoint_port, "token");
-        let stop = Arc::new(AtomicBool::new(false));
-        let done = Arc::clone(&stop);
-        let snapshots = std::thread::spawn(move || {
-            let mut queries = 0;
-            let mut connections = 0;
-            while !done.load(Ordering::Relaxed) {
-                let Ok((mut stream, _)) = side.accept() else {
-                    std::thread::sleep(Duration::from_millis(1));
-                    continue;
-                };
-                connections += 1;
-                phase(
-                    &snapshot_phases,
-                    origin,
-                    format!("snapshot{connections}: accepted; completed_queries={queries}"),
-                );
-                stream.set_nonblocking(false).unwrap();
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(1)))
-                    .unwrap();
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                assert_eq!(recv_from(&mut reader).unwrap()["auth"], "token");
-                phase(
-                    &snapshot_phases,
-                    origin,
-                    format!("snapshot{connections}: auth received; greeting write begin"),
-                );
-                send(
-                    &mut stream,
-                    &json!({"protocol_version":crate::daemon::server::DAEMON_PROTOCOL_VERSION}),
-                );
-                phase(
-                    &snapshot_phases,
-                    origin,
-                    format!("snapshot{connections}: greeting write finished"),
-                );
-                let query = recv_from(&mut reader);
-                phase(
-                    &snapshot_phases,
-                    origin,
-                    format!("snapshot{connections}: query result={query:?}"),
-                );
-                let query = query.unwrap();
-                assert_eq!(query["type"], "resolve-tab-target");
-                queries += 1;
-                let actor = if case == "destroyed" && queries >= 3 {
-                    "b"
-                } else {
-                    "a"
-                };
-                send(
-                    &mut stream,
-                    &json!({"from":"daemon","type":"resolve-tab-target","state":"live","target":{
-                        "actor":actor,"consoleActor":format!("{actor}/console"),"innerWindowId":if actor == "a" {1} else {2}
-                    }}),
-                );
-                phase(
-                    &snapshot_phases,
-                    origin,
-                    format!("snapshot{connections}: target {actor} reply written"),
-                );
-            }
-            queries
-        });
-        let main = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = main.local_addr().unwrap().port();
-        let href = format!(
-            "https://long.test/{}",
-            "a".repeat(9990 - "https://long.test/".len())
-        );
-        let sample = json!({"readyState":"complete","epoch":43,"href":href}).to_string();
-        assert!(sample.len() >= 10000);
-        let evaluations = std::thread::spawn(move || {
-            let (mut stream, _) = main.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(2)))
-                .unwrap();
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            send(
-                &mut stream,
-                &json!({"from":"root","applicationType":"browser"}),
-            );
-            let mut evals = 0;
-            let mut substrings = 0;
-            let mut releases = 0;
-            while let Ok(request) = recv_from(&mut reader) {
-                let actor = request["to"].as_str().unwrap();
-                phase(
-                    &evaluation_phases,
-                    origin,
-                    format!("main: request {} to {actor}", request["type"]),
-                );
-                match request["type"].as_str().unwrap() {
-                    "listFrames" => send(
-                        &mut stream,
-                        &json!({"from":actor,"frames":[{"isTopLevel":true,"url":"https://old.test/"}]}),
-                    ),
-                    "evaluateJSAsync" => {
-                        evals += 1;
-                        assert_eq!(
-                            request["text"], READINESS_SAMPLE,
-                            "no separate href evaluation"
-                        );
-                        assert_eq!(actor, if evals == 1 { "a/console" } else { "b/console" });
-                        send(&mut stream, &json!({"from":actor,"resultID":"r"}));
-                        let mut reply = json!({"from":actor,"type":"evaluationResult","resultID":"r","result":{
-                            "type":"longString","actor":format!("sample-{evals}"),"length":if case == "oversize" {ff_rdp_core::LongStringActor::MAX_FETCH+1} else {sample.len()},"initial":&sample[..1000]
-                        }});
-                        if case == "exception" {
-                            reply["exception"] = json!("\u{1b}[31munsafe\u{1b}[0m");
-                        }
-                        send(&mut stream, &reply);
-                        phase(
-                            &evaluation_phases,
-                            origin,
-                            format!("main: evaluation{evals} result written"),
-                        );
-                    }
-                    "substring" => {
-                        substrings += 1;
-                        assert_eq!(actor, format!("sample-{evals}"));
-                        assert_eq!(request["start"], 0);
-                        assert_eq!(request["end"], sample.len());
-                        if case == "timeout" {
-                            std::thread::sleep(Duration::from_millis(650));
-                            assert!(
-                                recv_from(&mut reader).is_err(),
-                                "no extra request after the fetch deadline"
-                            );
-                            break;
-                        }
-                        if case == "destroyed" && evals == 1 {
-                            send(
-                                &mut stream,
-                                &json!({"from":"watcher","type":"target-destroyed-form","target":{"actor":"a","innerWindowId":1,"isTopLevelTarget":true}}),
-                            );
-                            phase(
-                                &evaluation_phases,
-                                origin,
-                                "main: target a destruction written",
-                            );
-                        }
-                        let response = if case == "actor-error" {
-                            json!({"from":actor,"error":"wrongState","message":"terminal substring error"})
-                        } else if case == "malformed" {
-                            json!({"from":actor,"substring":false})
-                        } else {
-                            json!({"from":actor,"substring":sample})
-                        };
-                        send(&mut stream, &response);
-                        phase(
-                            &evaluation_phases,
-                            origin,
-                            format!("main: substring{evals} reply written"),
-                        );
-                    }
-                    "release" => {
-                        releases += 1;
-                        assert_eq!(actor, format!("sample-{evals}"));
-                        let response = if case == "release-error" {
-                            json!({"from":actor,"error":"wrongState","message":"terminal release error"})
-                        } else {
-                            json!({"from":actor})
-                        };
-                        send(&mut stream, &response);
-                        phase(
-                            &evaluation_phases,
-                            origin,
-                            format!("main: release{evals} reply written"),
-                        );
-                    }
-                    method => panic!("unexpected request: {method}"),
-                }
-            }
-            (evals, substrings, releases)
-        });
-        let transport = RdpTransport::connect("127.0.0.1", port, Duration::from_secs(2)).unwrap();
-        let mut ctx = ConnectedTab::for_test(transport, "a/console".into());
-        if watched {
-            ctx.target_endpoint = Some(endpoint);
-            ctx.via_daemon = true;
-        }
-        let start = Instant::now();
-        phase(&phase_tx, origin, "caller: readiness begin");
-        let result = crate::daemon::client::snapshot_query_boundary::with(
-            endpoint_port,
-            move |deadline| {
-                phase(
-                    &boundary_phases,
-                    origin,
-                    format!(
-                        "caller: snapshot greeting decoded; remaining={:?}",
-                        deadline.saturating_duration_since(Instant::now())
-                    ),
-                );
-            },
-            || {
-                wait_for_readystate_complete(
-                    &mut ctx,
-                    500,
-                    ReadinessCheck {
-                        pre_epoch: Some(42.0),
-                        pre_href: "https://old.test/",
-                        requested_url: &href,
-                    },
-                    start,
-                )
-            },
-        );
-        let elapsed = start.elapsed();
-        phase(
-            &phase_tx,
-            origin,
-            format!(
-                "caller: readiness returned after {elapsed:?}; success={}",
-                result.is_ok()
-            ),
-        );
-        drop(ctx);
-        stop.store(true, Ordering::Relaxed);
-        let snapshot_result = snapshots.join();
-        let evaluation_result = evaluations.join();
-        eprintln!(
-            "long_string watched={watched} case={case} elapsed={elapsed:?} result={result:?} snapshots={snapshot_result:?} evaluations={evaluation_result:?}"
-        );
-        for (elapsed, message) in phase_rx.try_iter() {
-            eprintln!("long_string phase watched={watched} case={case} at={elapsed:?} {message}");
-        }
-        let queries = snapshot_result.unwrap();
-        let (evals, substrings, releases) = evaluation_result.unwrap();
-        assert_eq!(evals, if case == "destroyed" { 2 } else { 1 });
-        assert_eq!(
-            substrings,
-            match case {
-                "oversize" | "exception" => 0,
-                "destroyed" => 2,
-                _ => 1,
-            }
-        );
-        assert_eq!(
-            releases,
-            usize::from(matches!(case, "ready" | "destroyed" | "release-error"))
-        );
-        assert_eq!(
-            queries,
-            if !watched {
-                0
-            } else if case == "destroyed" {
-                3
-            } else {
-                1
-            }
-        );
-        match case {
-            "ready" | "destroyed" => assert_eq!(result.unwrap().committed_url, href),
-            "oversize" | "malformed" => assert!(
-                matches!(result, Err(AppError::RdpShape { .. })),
-                "{result:?}"
-            ),
-            "exception" => assert!(
-                matches!(result, Err(AppError::User(ref s)) if s.contains("unsafe") && !s.contains('\u{1b}'))
-            ),
-            "actor-error" | "release-error" => {
-                assert!(matches!(result, Err(AppError::User(ref s)) if s.contains("wrongState")));
-            }
-            "timeout" => assert!(matches!(result, Err(AppError::Timeout(_))), "{result:?}"),
-            _ => unreachable!(),
-        }
-        assert!(
-            elapsed < Duration::from_secs(1),
-            "one500ms budget, not the2s connection timeout"
-        );
-    }
-}

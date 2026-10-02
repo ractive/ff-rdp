@@ -16,7 +16,7 @@ use crate::hints::{HintContext, HintSource};
 use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
-use super::connect_tab::connect_direct;
+use super::connect_tab::connect_and_get_target;
 use super::js_helpers::{JSON_SENTINEL, escape_selector, eval_or_bail};
 
 /// Build the JavaScript that collects computed styles for every matching element.
@@ -140,7 +140,7 @@ fn resolve_json_array(
 
 pub fn run(cli: &Cli, selector: &str, props: &[String], include_all: bool) -> Result<(), AppError> {
     // One-shot eval wrapper: bypass the daemon per the iter-40 pattern.
-    let mut ctx = connect_direct(cli)?;
+    let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target().console_actor.clone();
 
     // Also support comma-list style for CSS custom properties that start with `--`
@@ -180,10 +180,6 @@ pub fn run(cli: &Cli, selector: &str, props: &[String], include_all: bool) -> Re
         None,
         cli.is_verbose(),
     );
-    // iter-134: always present, not gated by --verbose — an
-    // agent can tell how this command executed without a
-    // separate `daemon status` round-trip.
-    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
     let envelope = output::envelope(&results, total, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Computed).with_selector(selector);

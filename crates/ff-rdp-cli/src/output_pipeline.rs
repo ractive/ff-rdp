@@ -164,25 +164,6 @@ impl OutputPipeline {
     ) -> Result<(), AppError> {
         let mut envelope = envelope.clone();
 
-        // iter-100 Theme E: surface any daemon-lifecycle warnings recorded
-        // during connection resolution (e.g. an auto-start that never
-        // registered and silently fell back to a direct connection).  Injected
-        // as a top-level `"warnings"` array so tests and users can tell
-        // "used the daemon" apart from "quietly went direct".  Omitted
-        // entirely on the happy path to keep default output compact.
-        //
-        // iter-123 Theme A: the same warnings are also rendered to **stderr**
-        // in `--format text` / `--format text --jq …` output (see the
-        // `render_warnings` calls below), so a `daemon_autostart_failed` signal
-        // is visible in text mode too — not only via `--jq '.warnings'` on JSON
-        // output.  Kept out of stdout so it never corrupts the results table.
-        let warnings_for_text = crate::daemon_status::take_warnings_json();
-        if let Some(warnings) = warnings_for_text.clone()
-            && let Some(obj) = envelope.as_object_mut()
-        {
-            obj.insert("warnings".to_string(), warnings);
-        }
-
         // Generate and inject hints only when enabled. Hint serialization can
         // only fail on a `serde`-level bug in `Hint`'s own `Serialize` impl —
         // never on user input — so this stays `Internal`.
@@ -235,7 +216,6 @@ impl OutputPipeline {
                             render_text(&synthetic, text_width);
                         }
                         render_hints(&hints);
-                        render_warnings(warnings_for_text.as_ref());
                     }
                     _ => {
                         // Default: compact JSON line per jq output. Serialization
@@ -258,7 +238,6 @@ impl OutputPipeline {
                 OutputFormat::Text => {
                     render_text(&envelope, text_width);
                     render_hints(&hints);
-                    render_warnings(warnings_for_text.as_ref());
                 }
             },
         }
@@ -372,31 +351,6 @@ fn render_hints(hints: &[Hint]) {
     println!();
     for hint in hints {
         println!("  -> {}  # {}", hint.cmd, hint.description);
-    }
-}
-
-/// Render daemon-lifecycle warnings to **stderr** in text output (iter-123
-/// Theme A).
-///
-/// In JSON output these warnings live in the envelope's top-level `warnings`
-/// array; in `--format text` the results table never showed them, so a
-/// `daemon_autostart_failed` signal was only visible via `--jq '.warnings'`.
-/// This surfaces each warning as a `warning: <type>: <reason>` line on stderr —
-/// visible to the human, but kept off stdout so it never corrupts the parsed
-/// results.  `warnings` is the JSON array injected into the envelope (or `None`
-/// on the happy path, in which case nothing is printed).
-fn render_warnings(warnings: Option<&Value>) {
-    let Some(Value::Array(arr)) = warnings else {
-        return;
-    };
-    for w in arr {
-        let wtype = w.get("type").and_then(Value::as_str).unwrap_or("warning");
-        let reason = w.get("reason").and_then(Value::as_str).unwrap_or_default();
-        if reason.is_empty() {
-            eprintln!("warning: {wtype}");
-        } else {
-            eprintln!("warning: {wtype}: {reason}");
-        }
     }
 }
 
@@ -582,46 +536,6 @@ fn value_to_cell(val: &Value) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
-
-    // ── iter-123 Theme A: daemon-warning text parity ─────────────────────────
-
-    /// AC `live_daemon_warning_text_parity` (unit core): `render_warnings`
-    /// tolerates the injected `warnings` array shape without panicking and is a
-    /// no-op when there are no warnings — i.e. text output has a path to surface
-    /// a `daemon_autostart_failed` signal, not only `--jq '.warnings'` on JSON.
-    #[test]
-    fn render_warnings_handles_array_and_none() {
-        // No warnings (happy path) — must not panic.
-        render_warnings(None);
-        render_warnings(Some(&Value::Null));
-        // A populated warnings array of the exact shape the recorder emits.
-        let warnings = json!([
-            {"type": "daemon_autostart_failed", "reason": "spawn died before the registry write"},
-            {"type": "daemon_autostart_failed"} // reason omitted — still tolerated
-        ]);
-        render_warnings(Some(&warnings));
-    }
-
-    /// `render_warnings` emits one `warning: <type>: <reason>` line per entry
-    /// (iter-123 Theme A) — the text-output surface for the `daemon_autostart_failed`
-    /// signal.  This exercises the exact JSON shape the recorder injects without
-    /// touching the process-global warning slot (which the `daemon::client`
-    /// tests own and assert exact counts against), so the two suites never
-    /// contend.
-    #[test]
-    fn render_warnings_emits_line_for_each_entry() {
-        // Shape matches `daemon_status::take_warnings_json`: an array of
-        // {"type","reason"} objects.
-        let warnings = json!([
-            {"type": "daemon_autostart_failed", "reason": "registry write raced or was slow"},
-        ]);
-        // Renders to stderr without panicking; the assertion is that the
-        // populated-array branch is taken (vs. the early-return None/non-array
-        // branches covered above).
-        render_warnings(Some(&warnings));
-        // A non-array value must be ignored (early return), not panic.
-        render_warnings(Some(&json!({"type": "not-an-array"})));
-    }
 
     // ── OutputFormat::Text: array of objects → table ─────────────────────────
 
@@ -848,10 +762,10 @@ mod tests {
     fn doctor_style_row_orders_glyph_first_and_detail_after_status() {
         let row = json!({
             "glyph": "\u{2713}",
-            "name": "daemon",
+            "name": "port_owner",
             "status": "pass",
-            "hint": "no daemon running; commands will connect directly",
-            "detail": "no daemon running (commands will connect directly)",
+            "hint": "nothing is listening; run `ff-rdp launch`",
+            "detail": "port 6000 is free",
         });
         let columns = collect_table_columns(&[row]);
 
@@ -882,9 +796,9 @@ mod tests {
     fn doctor_style_row_without_hint_still_orders_detail_last() {
         let row = json!({
             "glyph": "\u{2713}",
-            "name": "daemon",
+            "name": "port_owner",
             "status": "pass",
-            "detail": "no daemon running (commands will connect directly)",
+            "detail": "port 6000 is free",
         });
         let columns = collect_table_columns(&[row]);
         assert_eq!(columns, vec!["glyph", "name", "status", "detail"]);

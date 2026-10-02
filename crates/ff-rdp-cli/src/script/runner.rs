@@ -75,9 +75,8 @@ pub struct RunOptions<'a> {
     /// script that needs one and it then lives for the rest of the run, which
     /// is what makes a request fired by step N visible to an `assert_network`
     /// at step N+1. Threaded here because `RunOptions` is already the one
-    /// `&mut` the step loop and nested `run:` steps share. `None` means either
-    /// "no step needs it" or "the daemon route already has a standing
-    /// subscription" — see [`PlaybookNetworkWatch::arm`].
+    /// `&mut` the step loop and nested `run:` steps share. `None` means "no
+    /// step needs it" or arming failed — see [`PlaybookNetworkWatch::arm`].
     pub(crate) network_watch: Option<PlaybookNetworkWatch>,
 }
 
@@ -209,9 +208,7 @@ fn run_script(
     // covering the sub-script's assertions.
     if opts.network_watch.is_none() && script_needs_network_watch(script) {
         match PlaybookNetworkWatch::arm(cli) {
-            Ok(Some(watch)) => opts.network_watch = Some(watch),
-            // Daemon route: it already holds a standing subscription.
-            Ok(None) => {}
+            Ok(watch) => opts.network_watch = Some(watch),
             Err(e) => {
                 // Degrading silently is how iteration 179 lost four days.
                 // Say so: `assert_network` still works via the old per-step
@@ -819,29 +816,28 @@ fn execute_navigate(
         cli,
         &effective_url,
         &wait_opts,
+        &crate::cli::args::NetworkConditionsArgs::default(),
         &crate::cli::args::PageViewArgs::default(),
     )
-    .map(|(v, _)| v)
 }
 
 fn resolve_element_target_selector(
     target: &super::format::ElementTarget,
-    cli: &Cli,
     verb: &str,
 ) -> Result<String, AppError> {
     if let Some(sel) = &target.selector {
         return Ok(sel.clone());
     }
     if let Some(ref_id) = &target.ref_id {
-        // Resolve the ref via the daemon, just like dispatch.rs does for --ref.
-        return crate::dispatch::resolve_ref_for_script(cli, ref_id, verb);
+        // Same in-page ref resolution `--ref` uses on the CLI.
+        return crate::dispatch::resolve_ref_for_script(ref_id, verb);
     }
     Err(AppError::User(format!("{verb}: no selector or ref")))
 }
 
 fn execute_click(step: &super::format::ElementStep, cli: &Cli) -> Result<Value, AppError> {
     use crate::commands::click::{ClickOptions, run_core as click_run_core};
-    let selector = resolve_element_target_selector(&step.target, cli, "click")?;
+    let selector = resolve_element_target_selector(&step.target, "click")?;
     let selector = selector.as_str();
 
     let wait_for: Vec<String> = {
@@ -865,7 +861,6 @@ fn execute_click(step: &super::format::ElementStep, cli: &Cli) -> Result<Value, 
             ..Default::default()
         },
     )
-    .map(|(v, _)| v)
 }
 
 fn execute_type(
@@ -875,7 +870,7 @@ fn execute_type(
     show_secrets: bool,
 ) -> Result<Value, AppError> {
     use crate::commands::type_text::{TypeOptions, run_core as type_run_core};
-    let selector = resolve_element_target_selector(&step.target, cli, "type")?;
+    let selector = resolve_element_target_selector(&step.target, "type")?;
     let selector = selector.as_str();
 
     // Call run_core which does not print — result is used for our NDJSON output.
@@ -932,7 +927,7 @@ fn execute_wait(
         sleep_ms: None,
         wait_timeout: timeout,
     };
-    wait_run_core(cli, &opts).map(|(v, _)| v)
+    wait_run_core(cli, &opts)
 }
 
 fn execute_assert_text(
@@ -1073,9 +1068,7 @@ fn execute_assert_no_console_errors(
     step: &AssertNoConsoleErrorsStep,
     cli: &Cli,
 ) -> Result<Value, AppError> {
-    // Best-effort: use the `console` command to get cached messages.
-    // This depends on the daemon's console buffer; if not available, it
-    // falls back to `getCachedMessages` directly.
+    // Reads Firefox's cached console messages (`getCachedMessages`).
     use crate::commands::console::run_get_errors;
 
     let errors = run_get_errors(cli)?;
@@ -1165,8 +1158,6 @@ const SUBSCRIPTION_PLAYBOOK: NetworkSubscriptionKind = "playbook";
 /// Armed by this step alone — the pre-181 behaviour, now only reached when
 /// arming the playbook subscription failed.
 const SUBSCRIPTION_STEP: NetworkSubscriptionKind = "step";
-/// The daemon's standing subscription, untouched by iteration 181.
-const SUBSCRIPTION_DAEMON: NetworkSubscriptionKind = "daemon";
 
 fn execute_assert_network(
     step: &AssertNetworkStep,
@@ -1174,7 +1165,7 @@ fn execute_assert_network(
     default_timeout_ms: Option<u64>,
     watch: Option<&mut crate::commands::network_watch::PlaybookNetworkWatch>,
 ) -> Result<Value, AppError> {
-    use crate::commands::network::{DEFAULT_DRAIN_MS, run_get_events_with_route};
+    use crate::commands::network::{DEFAULT_DRAIN_MS, run_get_events};
     use crate::commands::network_watch::wait_for_match;
     use std::time::Duration;
 
@@ -1185,7 +1176,7 @@ fn execute_assert_network(
     // Use step timeout, then script default, then CLI default.
     let effective_timeout = step.timeout.or(default_timeout_ms);
 
-    let (events, matched, route, subscription, evicted) = if let Some(watch) = watch {
+    let (events, matched, subscription, evicted) = if let Some(watch) = watch {
         // iter-181: the buffer has been filling since before the first step,
         // so a request that completed during an earlier step is already in it.
         // The wait is only for a request still in flight.
@@ -1193,24 +1184,12 @@ fn execute_assert_network(
             Instant::now() + Duration::from_millis(effective_timeout.unwrap_or(DEFAULT_DRAIN_MS));
         let (events, matched) =
             wait_for_match(watch, deadline, &|e| network_event_matches(step, e))?;
-        (
-            events,
-            matched,
-            "direct",
-            SUBSCRIPTION_PLAYBOOK,
-            watch.evicted(),
-        )
+        (events, matched, SUBSCRIPTION_PLAYBOOK, watch.evicted())
     } else {
-        // Daemon route (standing subscription), or the fallback after arming
-        // failed — the runner warned on stderr in that case.
-        let (events, route) = run_get_events_with_route(cli, effective_timeout)?;
+        // The fallback after arming failed — the runner warned on stderr.
+        let events = run_get_events(cli, effective_timeout)?;
         let matched = events.iter().any(|e| network_event_matches(step, e));
-        let subscription = if route == "daemon" {
-            SUBSCRIPTION_DAEMON
-        } else {
-            SUBSCRIPTION_STEP
-        };
-        (events, matched, route, subscription, 0)
+        (events, matched, SUBSCRIPTION_STEP, 0)
     };
 
     if matched {
@@ -1227,7 +1206,6 @@ fn execute_assert_network(
             message: format!("assert_network: no matching network request found ({desc})"),
             payload: network_assert_diagnostics(
                 events.len(),
-                route,
                 subscription,
                 effective_timeout,
                 evicted,
@@ -1248,8 +1226,8 @@ const EMPTY_STEP_BUFFER_HINT: &str = concat!(
     "this step starts, so a request that completed before then is never delivered. With a ",
     "single request in flight, losing that race shows up as zero events, not a partial count. ",
     "Fixes, best first: rerun so the playbook-scoped subscription arms (it makes step N's ",
-    "request visible at step N+1); run against the daemon, which holds a standing ",
-    "subscription; raise this step's `timeout`; or assert on a page effect instead.",
+    "request visible at step N+1); raise this step's `timeout`; or assert on a page effect ",
+    "instead.",
 );
 
 /// Why a **playbook-scoped** drain can come back with zero events (iter-181).
@@ -1268,18 +1246,16 @@ const EMPTY_PLAYBOOK_BUFFER_HINT: &str = concat!(
 /// The `diagnostics` payload for a failed `assert_network` (iter-179, iter-181).
 ///
 /// Split out from [`execute_assert_network`] so the branch that matters — which
-/// empty-buffer hint applies — is unit-testable without Firefox, a daemon, or a
+/// empty-buffer hint applies — is unit-testable without Firefox or a
 /// network stack.
 fn network_assert_diagnostics(
     events_in_buffer: usize,
-    route: crate::commands::network::NetworkDrainRoute,
     subscription: NetworkSubscriptionKind,
     effective_timeout: Option<u64>,
     evicted: usize,
 ) -> Value {
     let mut payload = json!({
         "events_in_buffer": events_in_buffer,
-        "route": route,
         "subscription": subscription,
         "drain_window_ms": effective_timeout
             .unwrap_or(crate::commands::network::DEFAULT_DRAIN_MS),
@@ -1289,18 +1265,14 @@ fn network_assert_diagnostics(
     if evicted > 0 {
         payload["evicted_requests"] = json!(evicted);
     }
-    // The daemon holds a standing subscription, so an empty buffer there is
-    // neither the arming race nor a playbook-scoped guarantee; blaming either
-    // would be a lie.
     if events_in_buffer == 0 {
         match subscription {
             SUBSCRIPTION_PLAYBOOK => {
                 payload["empty_buffer_hint"] = json!(EMPTY_PLAYBOOK_BUFFER_HINT);
             }
-            SUBSCRIPTION_STEP => {
+            _ => {
                 payload["empty_buffer_hint"] = json!(EMPTY_STEP_BUFFER_HINT);
             }
-            _ => {}
         }
     }
     payload
@@ -1524,9 +1496,8 @@ mod tests {
     /// race is no longer the default.
     #[test]
     fn unit_179_empty_direct_buffer_carries_the_race_hint() {
-        let d = network_assert_diagnostics(0, "direct", SUBSCRIPTION_STEP, Some(2000), 0);
+        let d = network_assert_diagnostics(0, SUBSCRIPTION_STEP, Some(2000), 0);
         assert_eq!(d["events_in_buffer"], 0);
-        assert_eq!(d["route"], "direct");
         assert_eq!(d["subscription"], "step");
         assert_eq!(d["drain_window_ms"], 2000);
         let hint = d["empty_buffer_hint"].as_str().expect("hint present");
@@ -1541,24 +1512,11 @@ mod tests {
         );
     }
 
-    /// The daemon holds a standing subscription, so an empty buffer there is
-    /// not the arming race and must not be blamed on it.
-    #[test]
-    fn unit_179_empty_daemon_buffer_is_not_blamed_on_the_race() {
-        let d = network_assert_diagnostics(0, "daemon", SUBSCRIPTION_DAEMON, Some(2000), 0);
-        assert_eq!(d["route"], "daemon");
-        assert_eq!(d["subscription"], "daemon");
-        assert!(
-            d.get("empty_buffer_hint").is_none(),
-            "the direct-mode race hint must not appear on the daemon route: {d}"
-        );
-    }
-
     /// A non-empty buffer is an ordinary no-match: the events arrived, none
     /// matched the predicate. The hint would be misleading.
     #[test]
     fn unit_179_non_empty_buffer_reports_the_count_without_the_hint() {
-        let d = network_assert_diagnostics(7, "direct", SUBSCRIPTION_PLAYBOOK, Some(2000), 0);
+        let d = network_assert_diagnostics(7, SUBSCRIPTION_PLAYBOOK, Some(2000), 0);
         assert_eq!(d["events_in_buffer"], 7);
         assert!(d.get("empty_buffer_hint").is_none(), "{d}");
     }
@@ -1567,7 +1525,7 @@ mod tests {
     /// really used, rather than omitting the field or printing 0.
     #[test]
     fn unit_179_default_drain_window_is_reported_not_omitted() {
-        let d = network_assert_diagnostics(0, "direct", SUBSCRIPTION_PLAYBOOK, None, 0);
+        let d = network_assert_diagnostics(0, SUBSCRIPTION_PLAYBOOK, None, 0);
         assert_eq!(
             d["drain_window_ms"],
             crate::commands::network::DEFAULT_DRAIN_MS,
@@ -1581,7 +1539,7 @@ mod tests {
     /// send them down exactly the wrong path iteration 179 spent four days on.
     #[test]
     fn unit_181_empty_playbook_buffer_does_not_blame_the_arming_race() {
-        let d = network_assert_diagnostics(0, "direct", SUBSCRIPTION_PLAYBOOK, Some(2000), 0);
+        let d = network_assert_diagnostics(0, SUBSCRIPTION_PLAYBOOK, Some(2000), 0);
         assert_eq!(d["subscription"], "playbook");
         let hint = d["empty_buffer_hint"].as_str().expect("hint present");
         assert!(hint.contains("armed before this script's first"), "{hint}");
@@ -1596,9 +1554,9 @@ mod tests {
     /// request.
     #[test]
     fn unit_181_evicted_requests_reported_only_when_non_zero() {
-        let none = network_assert_diagnostics(10, "direct", SUBSCRIPTION_PLAYBOOK, Some(500), 0);
+        let none = network_assert_diagnostics(10, SUBSCRIPTION_PLAYBOOK, Some(500), 0);
         assert!(none.get("evicted_requests").is_none(), "{none}");
-        let some = network_assert_diagnostics(10, "direct", SUBSCRIPTION_PLAYBOOK, Some(500), 3);
+        let some = network_assert_diagnostics(10, SUBSCRIPTION_PLAYBOOK, Some(500), 3);
         assert_eq!(some["evicted_requests"], 3);
     }
 
@@ -1778,8 +1736,8 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// Private IPv4 endpoint for filesystem-only runner tests. The real watcher
-    /// setup still runs, but gets EOF immediately instead of discovering a
-    /// daemon or connecting to somebody's browser on the default port.
+    /// setup still runs, but gets EOF immediately instead of connecting to
+    /// somebody's browser on the default port.
     struct RejectingEndpoint {
         port: u16,
         stop: std::sync::mpsc::Sender<()>,
@@ -1817,7 +1775,6 @@ mod tests {
         fn cli(&self) -> Cli {
             <Cli as clap::Parser>::parse_from([
                 "ff-rdp",
-                "--no-daemon",
                 "--host",
                 "127.0.0.1",
                 "--port",

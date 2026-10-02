@@ -41,10 +41,6 @@ pub fn run(cli: &Cli, allow_no_cmp: bool) -> Result<(), AppError> {
         None,
         cli.is_verbose(),
     );
-    // iter-134: always present, not gated by --verbose — an
-    // agent can tell how this command executed without a
-    // separate `daemon status` round-trip.
-    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
 
     // iter-160 Theme D: a non-accepting pass is a failed action and must not be
     // reported as exit 0. Before this, `consent accept` returned `Ok(())`

@@ -13,7 +13,7 @@ use crate::output;
 use crate::output_controls::{OutputControls, SortDir};
 use crate::output_pipeline::OutputPipeline;
 
-use super::connect_tab::{ConnectedTab, connect_direct};
+use super::connect_tab::{ConnectedTab, connect_and_get_target};
 use super::js_helpers::{escape_selector, eval_or_bail, resolve_result};
 
 /// Which tree an `a11y` response came from (iter-143 Theme A).
@@ -137,7 +137,7 @@ pub fn run(
     interactive: bool,
     native: bool,
 ) -> Result<(), AppError> {
-    let mut ctx = connect_direct(cli)?;
+    let mut ctx = connect_and_get_target(cli)?;
 
     let accessibility_actor = ctx.target().accessibility_actor.clone().ok_or_else(|| {
         AppError::User(
@@ -210,10 +210,6 @@ pub fn run(
         None,
         cli.is_verbose(),
     );
-    // iter-134: always present, not gated by --verbose — an
-    // agent can tell how this command executed without a
-    // separate `daemon status` round-trip.
-    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
     // iter-143 Theme A: always present — the only way a caller can tell
     // which tree it is scoring without a separate --verbose round-trip.
     source.merge_into(&mut meta);
@@ -334,7 +330,7 @@ fn run_native_or_js_fallback(
         // Older Firefox without `bootstrap` on the accessibility actor: try the
         // native path anyway.
         Err(e) if e.is_unrecognized_packet_type() => {}
-        Err(e) => return Err(map_a11y_error(e, cli)),
+        Err(e) => return Err(map_a11y_error(e)),
     }
 
     // Step 1: try to get the walker. Bounded to A11Y_WALKER_TIMEOUT (Theme C)
@@ -367,7 +363,7 @@ fn run_native_or_js_fallback(
             return run_selector_mode(ctx, "body", depth, max_chars)
                 .map(|t| (t, A11ySource::JsFallback("walker-timeout")));
         }
-        Err(e) => return Err(map_a11y_error(e, cli)),
+        Err(e) => return Err(map_a11y_error(e)),
     };
 
     // Step 2: try to get the root node via the walker.
@@ -397,7 +393,7 @@ fn run_native_or_js_fallback(
             return run_selector_mode(ctx, "body", depth, max_chars)
                 .map(|t| (t, A11ySource::JsFallback("root-timeout")));
         }
-        Err(e) => return Err(map_a11y_error(e, cli)),
+        Err(e) => return Err(map_a11y_error(e)),
     };
 
     // Step 3: walk the tree with the native protocol.
@@ -405,7 +401,7 @@ fn run_native_or_js_fallback(
         AccessibilityActor::walk_tree(t, &walker, &root, depth, max_chars)
     })
     .map(|t| (t, A11ySource::Native))
-    .map_err(|e| map_a11y_error(e, cli))
+    .map_err(map_a11y_error)
 }
 
 /// Opt-in native tree walk (iter-143 Theme B): enables the platform
@@ -433,7 +429,7 @@ fn run_native_opt_in(
     max_chars: u32,
     cli: &Cli,
 ) -> Result<(AccessibleNode, RestoreOutcome), AppError> {
-    let root_form = RootActor::get_root(ctx.transport_mut()).map_err(|e| map_a11y_error(e, cli))?;
+    let root_form = RootActor::get_root(ctx.transport_mut()).map_err(map_a11y_error)?;
     let parent_actor: ActorId = root_form
         .get("parentAccessibilityActor")
         .and_then(Value::as_str)
@@ -449,7 +445,7 @@ fn run_native_opt_in(
 
     let was_enabled =
         AccessibilityActor::is_service_enabled(ctx.transport_mut(), accessibility_actor)
-            .map_err(|e| map_a11y_error(e, cli))?;
+            .map_err(map_a11y_error)?;
 
     let we_enabled = if was_enabled {
         false
@@ -462,7 +458,7 @@ fn run_native_opt_in(
         })?;
         let now_enabled =
             AccessibilityActor::is_service_enabled(ctx.transport_mut(), accessibility_actor)
-                .map_err(|e| map_a11y_error(e, cli))?;
+                .map_err(map_a11y_error)?;
         if !now_enabled {
             return Err(AppError::User(
                 "--native: called parentAccessibilityActor.enable() but bootstrap() still \
@@ -482,7 +478,7 @@ fn run_native_opt_in(
         true
     };
 
-    let walk_result = walk_native_tree_bounded(ctx, accessibility_actor, depth, max_chars, cli);
+    let walk_result = walk_native_tree_bounded(ctx, accessibility_actor, depth, max_chars);
 
     // Best-effort restore: report a failure (iter-149: in both the envelope
     // and unconditionally on stderr) but don't let it mask the primary
@@ -551,18 +547,17 @@ fn walk_native_tree_bounded(
     accessibility_actor: &ActorId,
     depth: u32,
     max_chars: u32,
-    cli: &Cli,
 ) -> Result<AccessibleNode, AppError> {
     let walker = with_walker_timeout(ctx, |t| {
         AccessibilityActor::get_walker(t, accessibility_actor)
     })
-    .map_err(|e| map_a11y_error(e, cli))?;
+    .map_err(map_a11y_error)?;
     let root = with_walker_timeout(ctx, |t| AccessibilityActor::get_root(t, &walker))
-        .map_err(|e| map_a11y_error(e, cli))?;
+        .map_err(map_a11y_error)?;
     with_walker_timeout(ctx, |t| {
         AccessibilityActor::walk_tree(t, &walker, &root, depth, max_chars)
     })
-    .map_err(|e| map_a11y_error(e, cli))
+    .map_err(map_a11y_error)
 }
 
 /// Selector-based subtree extraction via JS eval.
@@ -653,7 +648,7 @@ fn parse_js_a11y_tree(value: &Value) -> Option<AccessibleNode> {
 }
 
 /// Map protocol errors to user-friendly messages.
-fn map_a11y_error(err: ff_rdp_core::ProtocolError, cli: &Cli) -> AppError {
+fn map_a11y_error(err: ff_rdp_core::ProtocolError) -> AppError {
     match &err {
         ProtocolError::Timeout => AppError::User(
             "accessibility request timed out waiting for a reply from Firefox. If this \
@@ -665,12 +660,11 @@ fn map_a11y_error(err: ff_rdp_core::ProtocolError, cli: &Cli) -> AppError {
         ff_rdp_core::ProtocolError::ActorError { error, .. }
             if error == "noSuchActor" || error == "unknownActor" =>
         {
-            let hint = if cli.no_daemon {
-                " — the accessibility actor may have expired after navigation. Re-run the command"
-            } else {
-                " — the accessibility actor may have expired after navigation. Re-run the command to get a fresh actor"
-            };
-            AppError::User(format!("accessibility actor is no longer valid{hint}"))
+            AppError::User(
+                "accessibility actor is no longer valid — the accessibility actor may have \
+                 expired after navigation. Re-run the command to get a fresh actor"
+                    .to_owned(),
+            )
         }
         ff_rdp_core::ProtocolError::ActorError { error, message, .. }
             if error == "unrecognizedPacketType" =>
@@ -751,7 +745,7 @@ fn strip_actor_ids(value: &mut Value) {
 /// `root_selector` scopes the audit to a subtree when set; defaults to the
 /// whole document.
 pub fn run_critical(cli: &Cli, root_selector: Option<&str>) -> Result<(), AppError> {
-    let mut ctx = connect_direct(cli)?;
+    let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target().console_actor.clone();
 
     let root = root_selector.unwrap_or(":root");
@@ -784,10 +778,6 @@ pub fn run_critical(cli: &Cli, root_selector: Option<&str>) -> Result<(), AppErr
         None,
         cli.is_verbose(),
     );
-    // iter-134: always present, not gated by --verbose — an
-    // agent can tell how this command executed without a
-    // separate `daemon status` round-trip.
-    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
     // iter-143 Theme A: `--critical` has no native-tree equivalent — the
     // platform accessibility service doesn't expose a WCAG-critical severity
     // — so this is always JS-derived. Reported for consistency with the

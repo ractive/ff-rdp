@@ -238,10 +238,6 @@ fn run_case(case: &'static str) {
     let observed = unsafe { libc::waitpid(pid, &raw mut status, libc::WNOHANG) };
     let error = std::io::Error::last_os_error().raw_os_error();
     let transferred_alive = observed == 0;
-    // The successful controlled child is still waiting on our release channel.
-    // read() filters dead PIDs, so retain its actual record before release/wait.
-    // Defer a read-error assertion until after the owned child is collected.
-    let launch_record_before_release = crate::daemon_record::read(port);
     let mut cleanup_wait = observed;
     if observed == 0 {
         if result.as_ref().is_ok_and(Result::is_ok) {
@@ -258,15 +254,6 @@ fn run_case(case: &'static str) {
     }
     let mut remaining = String::new();
     let tail_read = owned.channel.read_to_string(&mut remaining);
-    let launch_record =
-        launch_record_before_release.expect("read isolated launch record before release");
-    let launch_record_matches_child = launch_record
-        .as_ref()
-        .is_none_or(|record| record.pid == owned.pid && record.profile_dir == owned.profile);
-    // The exact controlled child has already been collected above. This state
-    // root belongs only to this executor, including the success-path record.
-    crate::daemon_record::remove(port).expect("remove isolated launch record after wait");
-    let launch_record_removed = crate::daemon_record::read(port).unwrap().is_none();
     let profile_removed_by_product = !owned.profile.exists();
     if owned.profile.exists() {
         std::fs::remove_dir_all(&owned.profile).unwrap();
@@ -282,21 +269,13 @@ fn run_case(case: &'static str) {
         "transferred_alive":transferred_alive,"saturation_bytes":owned.saturation,"late_released":owned.late_released,
         "profile_removed_by_product":profile_removed_by_product,"profile_removed_after_actual_wait":!owned.profile.exists(),
         "channel_eof":tail_read.is_ok(),"remaining_child_output":remaining,"result":result_text,"trace":trace,
-        "private_home":private_home,"launch_record_observed":launch_record.is_some(),
-        "launch_record_read_while_child_waited_for_release":transferred_alive,
-        "launch_record_before_release":launch_record.as_ref().map(|record|
-            json!({"pid":record.pid,"profile_dir":record.profile_dir,"port":record.port})),
-        "launch_record_matches_child":launch_record_matches_child,"launch_record_removed_after_wait":launch_record_removed,
+        "private_home":private_home,
         "reader_thread":"none; synchronous product drain returned","worker_return_inferred":false});
     std::fs::write(
         private_home.join(format!("284-launch-{case}.json")),
         serde_json::to_vec_pretty(&receipt).unwrap(),
     )
     .unwrap();
-    assert!(
-        launch_record_matches_child && launch_record_removed,
-        "only this controlled child's private launch record may be cleaned: {receipt}"
-    );
     assert!(
         observed == -1 && error == Some(libc::ECHILD) || cleanup_wait == pid,
         "actual child wait required: {receipt}"
@@ -323,14 +302,6 @@ fn run_case(case: &'static str) {
         assert!(
             result.is_ok(),
             "pipe output must drain so listener can open: {result:?}"
-        );
-        assert!(
-            launch_record
-                .as_ref()
-                .is_some_and(|record| record.pid == owned.pid
-                    && record.profile_dir == owned.profile
-                    && record.port == port),
-            "successful product launch must write its owned PID/profile/port record before release"
         );
         assert!(owned.saturation.is_some_and(|n| n > 0) && remaining.contains("284-BOUND:"));
         assert!(
@@ -441,10 +412,6 @@ fn run_isolated(case: &'static str) {
         "private state cleanup needs actual waits: {receipt}"
     );
     let control = receipt["control"].as_object().unwrap();
-    assert_eq!(
-        control.get("launch_record_removed_after_wait"),
-        Some(&serde_json::Value::Bool(true))
-    );
     assert_eq!(
         control.get("profile_removed_after_actual_wait"),
         Some(&serde_json::Value::Bool(true))

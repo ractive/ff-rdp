@@ -38,13 +38,6 @@
 //! and [`ff_rdp_core::transport::recv_from`] reads a frame with `read_exact`,
 //! so a timeout landing mid-frame desyncs the stream. A queue is better than a
 //! desync.
-//!
-//! # What it deliberately does not do
-//!
-//! It does not touch the **daemon** route. The daemon already holds a standing
-//! subscription that buffers across steps, so [`PlaybookNetworkWatch::arm`]
-//! detects that route and returns `Ok(None)`, leaving `assert_network` on its
-//! existing daemon drain.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -99,19 +92,8 @@ pub(crate) struct PlaybookNetworkWatch {
 
 impl PlaybookNetworkWatch {
     /// Connect, arm a `network-event` watcher, and keep both.
-    ///
-    /// Returns `Ok(None)` when the connection resolved to the **daemon**,
-    /// which already holds a standing subscription — arming a second one there
-    /// would duplicate events and change what `route: "daemon"` reports.
-    ///
-    /// The route is discovered by connecting rather than by re-deciding the
-    /// daemon policy here, so this subscription can never disagree with the
-    /// route the steps themselves take.
-    pub(crate) fn arm(cli: &Cli) -> Result<Option<Self>, AppError> {
+    pub(crate) fn arm(cli: &Cli) -> Result<Self, AppError> {
         let mut ctx = connect_and_get_target(cli)?;
-        if ctx.via_daemon {
-            return Ok(None);
-        }
 
         let tab_actor = ctx.target_tab_actor().clone();
         let watcher_actor =
@@ -119,13 +101,13 @@ impl PlaybookNetworkWatch {
         WatcherActor::watch_resources(ctx.transport_mut(), &watcher_actor, &["network-event"])
             .map_err(AppError::from)?;
 
-        Ok(Some(Self {
+        Ok(Self {
             ctx,
             watcher_actor,
             resources: Vec::new(),
             update_map: HashMap::new(),
             evicted: 0,
-        }))
+        })
     }
 
     /// Read whatever has arrived, for at most `budget`, into the buffer.

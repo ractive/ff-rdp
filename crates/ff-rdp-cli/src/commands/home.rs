@@ -12,23 +12,16 @@
 //!
 //! ## What it will not do
 //!
-//! It never starts anything. `launch` starts Firefox and `daemon start` starts
-//! the daemon; the home view only reports. In particular it attaches to an
-//! already-running daemon when there is one — so `page` carries `--ref`
-//! handles — but never auto-starts one, because it runs on every agent session
-//! start and a multi-second daemon spawn hidden behind a bare command would be
-//! a nasty surprise.
+//! It never starts anything. `launch` starts Firefox; the home view only
+//! reports.
 //!
 //! ## One connection (iter-239)
 //!
-//! For the same reason it does not spawn a daemon, it does not connect twice.
-//! Until iter-239 it did: one connect listed the tabs and a second, independent
-//! one attached to the focused tab for the `page` block — two TCP round trips
-//! and two RDP handshakes on the command the `SessionStart` hook runs every
-//! session. [`connect_once`] now does both over
-//! [`super::connect_tab::connect_and_list_tabs`], and the registry entry the
-//! `daemon` block already read is what picks the route, so the daemon registry
-//! is read once too. This changed no output: `unit_239_home_view_output_unchanged_by_single_connect`
+//! It does not connect twice. Until iter-239 it did: one connect listed the
+//! tabs and a second, independent one attached to the focused tab for the
+//! `page` block — two TCP round trips and two RDP handshakes on the command the
+//! `SessionStart` hook runs every session. [`connect_once`] now does both over
+//! [`super::connect_tab::connect_and_list_tabs`]. This changed no output: `unit_239_home_view_output_unchanged_by_single_connect`
 //! pins the payload and `e2e_239_home_with_a_page_opens_one_connection` pins
 //! the count.
 
@@ -38,13 +31,11 @@ use ff_rdp_core::TabInfo;
 use serde_json::{Value, json};
 
 use crate::cli::args::{Cli, HomeArgs};
-use crate::daemon::client::find_running_daemon;
-use crate::daemon::registry::DaemonInfo;
 use crate::error::AppError;
 use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
-use super::connect_tab::{TabListError, TabListRouting, TabListing, connect_and_list_tabs};
+use super::connect_tab::{TabListError, TabListing, connect_and_list_tabs};
 use super::page_view::{self, CollectOptions, DEFAULT_INTERACTIVE_LIMIT};
 use super::skill_doc::{DESCRIPTION, IDIOMS, NAVIGATE_IDIOM};
 
@@ -132,7 +123,7 @@ struct HintState<'a> {
     browser_reachable: bool,
     /// A tab exists whose URL is not `about:blank`-shaped.
     has_loaded_page: bool,
-    /// The first `ref` in the page block, when refs were registered.
+    /// The first `ref` in the page block, if the page had anything to ref.
     first_ref: Option<&'a str>,
 }
 
@@ -145,9 +136,10 @@ struct HintState<'a> {
 /// Placeholders stay in `<>` (`<URL>`, `<text>`) so an agent can see at a
 /// glance which part it must supply; `{ref}` is substituted with a ref the
 /// page view actually minted, because `click --ref e3` is a command it can run
-/// verbatim and `click --ref <ref>` is not. When no ref was minted (no daemon,
-/// so no ref store) the `{ref}` idioms are replaced by the one command that
-/// produces refs, rather than offered as handles that would not resolve.
+/// verbatim and `click --ref <ref>` is not. When no ref was minted (a page with
+/// nothing interactive, or a collection that failed) the `{ref}` idioms are
+/// replaced by the one command that produces refs, rather than offered as
+/// handles that would not resolve.
 fn hints_for(state: HintState<'_>) -> Vec<String> {
     let mut hints: Vec<String> = Vec::new();
 
@@ -239,74 +231,18 @@ fn hook_hints_for(state: HintState<'_>) -> Vec<String> {
     hints
 }
 
-/// Probe the daemon registry. Never an error: "no daemon" is an answer.
-///
-/// A registry read that fails (permissions, corrupt JSON) is reported as "no
-/// daemon" rather than propagated: the home view's contract is that it always
-/// renders, and `doctor` is the command that explains why a layer is unhappy.
-fn find_daemon(host: &str, port: u16) -> Option<DaemonInfo> {
-    find_running_daemon(host, port).ok().flatten()
-}
-
-/// Render the registry entry [`find_daemon`] returned as the `daemon` block.
-fn daemon_block(info: Option<&DaemonInfo>, port: u16) -> Value {
-    match info {
-        Some(info) => json!({
-            "running": true,
-            "pid": info.pid,
-            "proxy_port": info.proxy_port,
-            "firefox_port": info.firefox_port,
-        }),
-        None => json!({
-            "running": false,
-            "pid": Value::Null,
-            "proxy_port": Value::Null,
-            "firefox_port": port,
-        }),
-    }
-}
-
 /// Reachability, version, tab list — and the still-open connection they came
 /// from, so the `page` block can be collected without a second connect
 /// (iter-239).
 ///
 /// Failure to connect is the expected case on a cold machine, so it produces
 /// `reachable: false` and an empty tab list rather than an error.
-///
-/// Routed through the daemon **only when one is already running**, so the refs
-/// a later `attach` hands out are live handles without the home view ever
-/// spawning a daemon. See the module docs for why that asymmetry is deliberate.
-fn connect_once(cli: &Cli, daemon: Option<&DaemonInfo>) -> (Value, Vec<Value>, Option<TabListing>) {
+fn connect_once(cli: &Cli) -> (Value, Vec<Value>, Option<TabListing>) {
     let browser = |reachable: bool, version: Option<u32>, detail: Option<&str>| {
         browser_block(&cli.host, cli.port, reachable, version, detail)
     };
 
-    let route = match (daemon, cli.no_daemon) {
-        (Some(info), false) => Some((info.proxy_port, info.auth_token.as_str())),
-        _ => None,
-    };
-
-    let mut listing = match route {
-        Some((proxy_port, auth_token)) => connect_and_list_tabs(
-            cli,
-            TabListRouting::RunningDaemon {
-                proxy_port,
-                auth_token,
-            },
-        ),
-        None => connect_and_list_tabs(cli, TabListRouting::Direct),
-    };
-
-    // A registry entry can outlive the daemon that wrote it. Until iter-239
-    // the `browser` block came from its own *direct* connect, so a dead proxy
-    // cost the `page` block and nothing else; now that both share a connection,
-    // retry direct rather than reporting a Firefox that is up as unreachable
-    // and sending the agent to `launch`.
-    if listing.is_err() && route.is_some() {
-        listing = connect_and_list_tabs(cli, TabListRouting::Direct);
-    }
-
-    match listing {
+    match connect_and_list_tabs(cli) {
         Ok(listing) => {
             let tabs = normalize_tabs(listing.tabs());
             (
@@ -406,11 +342,7 @@ fn page_block(cli: &Cli, listing: TabListing, interactive_limit: usize) -> Optio
     )
     .ok()?;
 
-    let mut view = page.view;
-    if let Some(obj) = view.as_object_mut() {
-        obj.insert("refs_registered".to_owned(), json!(page.refs_registered));
-    }
-    Some(view)
+    Some(page.view)
 }
 
 /// The first usable `ref` in a page block.
@@ -442,19 +374,6 @@ fn render_text(results: &Value) -> String {
     let version = get_str(&["version"]);
     let _ = writeln!(out, "ff-rdp {version} — {}", get_str(&["description"]));
     let _ = writeln!(out, "bin: {}", get_str(&["bin"]));
-
-    // Daemon line.
-    let daemon = &results["daemon"];
-    if daemon.get("running").and_then(Value::as_bool) == Some(true) {
-        let pid = daemon.get("pid").and_then(Value::as_u64).unwrap_or(0);
-        let port = daemon
-            .get("firefox_port")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        let _ = writeln!(out, "daemon: running (pid {pid}, firefox port {port})");
-    } else {
-        out.push_str("daemon: not running\n");
-    }
 
     // Browser line.
     let browser = &results["browser"];
@@ -582,7 +501,6 @@ fn render_section(
 fn build_results(
     bin: &str,
     version: &str,
-    daemon: &Value,
     browser: &Value,
     tabs: &[Value],
     page: Option<Value>,
@@ -601,7 +519,6 @@ fn build_results(
         "bin": bin,
         "description": DESCRIPTION,
         "version": version,
-        "daemon": daemon,
         "browser": browser,
         "tabs": tabs,
         "page": page.unwrap_or(Value::Null),
@@ -620,9 +537,7 @@ pub fn run(cli: &Cli, args: &HomeArgs) -> Result<(), AppError> {
         |p| collapse_home(&p.to_string_lossy()),
     );
 
-    let daemon_info = find_daemon(&cli.host, cli.port);
-    let daemon = daemon_block(daemon_info.as_ref(), cli.port);
-    let (browser, tabs, listing) = connect_once(cli, daemon_info.as_ref());
+    let (browser, tabs, listing) = connect_once(cli);
 
     let interactive_limit = if args.hook {
         HOOK_INTERACTIVE_LIMIT
@@ -654,7 +569,6 @@ pub fn run(cli: &Cli, args: &HomeArgs) -> Result<(), AppError> {
     let mut results = build_results(
         &bin,
         env!("CARGO_PKG_VERSION"),
-        &daemon,
         &browser,
         &tabs,
         page,
@@ -702,10 +616,6 @@ mod tests {
         json!({"reachable": true, "firefox_version": 143, "host": "localhost", "port": 6000, "detail": Value::Null})
     }
 
-    fn no_daemon() -> Value {
-        json!({"running": false, "pid": Value::Null, "proxy_port": Value::Null, "firefox_port": 6000})
-    }
-
     /// A `listTabs` entry, as the shared primitive now hands it to
     /// [`normalize_tabs`] (iter-239 made that projection typed).
     fn tab_info(title: &str, url: &str, selected: bool) -> TabInfo {
@@ -729,7 +639,6 @@ mod tests {
         let results = build_results(
             "~/.cargo/bin/ff-rdp",
             "0.3.0",
-            &no_daemon(),
             &no_browser(),
             &[],
             None,
@@ -756,7 +665,6 @@ mod tests {
         let results = build_results(
             "ff-rdp",
             "0.3.0",
-            &no_daemon(),
             &live_browser(),
             &[tab(1, "about:blank", true)],
             None,
@@ -781,12 +689,10 @@ mod tests {
         let page = json!({
             "headings": [{"level": 1, "text": "Example"}],
             "interactive": [{"role": "link", "name": "More", "ref": "e3"}],
-            "refs_registered": true,
         });
         let results = build_results(
             "ff-rdp",
             "0.3.0",
-            &no_daemon(),
             &live_browser(),
             &[tab(1, "https://example.com/", true)],
             Some(page),
@@ -809,19 +715,17 @@ mod tests {
         );
     }
 
-    /// Without a daemon there are no refs, so the hint has to be the command
-    /// that produces them rather than one that consumes them.
+    /// A page view with no refs gets the command that produces them rather
+    /// than one that consumes them.
     #[test]
     fn unit_212_loaded_page_without_refs_points_at_a11y_summary() {
         let page = json!({
             "headings": [{"level": 1, "text": "Example"}],
             "interactive": [{"role": "link", "name": "More"}],
-            "refs_registered": false,
         });
         let results = build_results(
             "ff-rdp",
             "0.3.0",
-            &no_daemon(),
             &live_browser(),
             &[tab(1, "https://example.com/", true)],
             Some(page),
@@ -872,7 +776,7 @@ mod tests {
     }
 
     #[test]
-    fn unit_270_hook_hints_do_not_invent_a_daemon_ref() {
+    fn unit_270_hook_hints_do_not_invent_a_ref() {
         let hints = hook_hints_for(HintState {
             browser_reachable: true,
             has_loaded_page: true,
@@ -916,14 +820,12 @@ mod tests {
         let results = build_results(
             "~/.cargo/bin/ff-rdp",
             "0.3.0",
-            &no_daemon(),
             &live_browser(),
             &tabs,
             Some(json!({
                 "landmarks": landmarks,
                 "headings": headings,
                 "interactive": interactive,
-                "refs_registered": true,
             })),
         );
         let text = render_text(&results);
@@ -949,14 +851,12 @@ mod tests {
         let results = build_results(
             "~/.cargo/bin/ff-rdp",
             "0.3.0",
-            &no_daemon(),
             &no_browser(),
             &[],
             None,
         );
         let text = render_text(&results);
         assert!(text.contains("bin: ~/.cargo/bin/ff-rdp"), "{text}");
-        assert!(text.contains("daemon: not running"), "{text}");
         assert!(
             text.contains("browser: not reachable at localhost:6000"),
             "{text}"
@@ -1046,7 +946,7 @@ mod tests {
     /// constant the generated skill section opens with (Theme C).
     #[test]
     fn unit_212_description_is_the_shared_one() {
-        let results = build_results("ff-rdp", "0.3.0", &no_daemon(), &no_browser(), &[], None);
+        let results = build_results("ff-rdp", "0.3.0", &no_browser(), &[], None);
         assert_eq!(results["description"], json!(DESCRIPTION));
         assert!(
             super::super::skill_doc::generate_block().contains(DESCRIPTION),
@@ -1145,8 +1045,8 @@ mod tests {
     ///
     /// iter-239 collapsed the home view's two RDP connections into one. That
     /// is a round-trip change and nothing else, so the `results` payload for
-    /// the representative scenario — browser up, daemon up, a page loaded with
-    /// refs minted — must be byte-for-byte what the two-connection assembly
+    /// the representative scenario — browser up, a page loaded with refs
+    /// minted — must be byte-for-byte what the two-connection assembly
     /// produced. The golden below is that payload, written out in full rather
     /// than recomputed from the same helpers it is meant to pin.
     ///
@@ -1160,8 +1060,7 @@ mod tests {
         let tabs: Vec<TabInfo> =
             serde_json::from_value(listed["tabs"].clone()).expect("listTabs tabs array");
 
-        // What `page_block` returns for that first tab: the page view plus the
-        // `refs_registered` flag it splices in.
+        // What `page_block` returns for that first tab: the page view.
         let page = json!({
             "url": "https://example.com/",
             "title": "Example Domain",
@@ -1170,13 +1069,11 @@ mod tests {
             "interactive": [
                 {"ref": "e1", "role": "link", "name": "More information...", "href": "https://www.iana.org/domains/example"}
             ],
-            "refs_registered": true,
         });
 
         let results = build_results(
             "~/.cargo/bin/ff-rdp",
             "0.3.0",
-            &json!({"running": true, "pid": 4242, "proxy_port": 6001, "firefox_port": 6000}),
             &browser_block("localhost", 6000, true, Some(143), None),
             &normalize_tabs(&tabs),
             Some(page.clone()),
@@ -1188,12 +1085,6 @@ mod tests {
                 "bin": "~/.cargo/bin/ff-rdp",
                 "description": DESCRIPTION,
                 "version": "0.3.0",
-                "daemon": {
-                    "running": true,
-                    "pid": 4242,
-                    "proxy_port": 6001,
-                    "firefox_port": 6000,
-                },
                 "browser": {
                     "reachable": true,
                     "firefox_version": 143,

@@ -170,7 +170,7 @@ pub(crate) const OWNER_TEST_MARKER: &str = ".ff-rdp-owner-test";
 /// (iter-171).
 ///
 /// Holds the opaque start token
-/// [`crate::daemon::process::process_start_token`] returns for the PID in
+/// [`crate::util::process::process_start_token`] returns for the PID in
 /// [`OWNER_PID_MARKER`], written at the same moment. The PID marker outlives
 /// the process it names — a leaked profile directory keeps it forever — and
 /// `kill(pid, 0)` cannot tell "the Firefox that wrote this" from "whatever
@@ -291,7 +291,7 @@ pub(crate) fn latest_profile_activity(dir: &Path, dir_mtime: SystemTime) -> Syst
 /// Only ever call this for a managed (`ff-rdp-profile-*`) directory ff-rdp
 /// created for itself; a user `--profile` dir must never receive a marker.
 pub(crate) fn write_owner_pid_marker(dir: &Path, pid: u32) {
-    let start_token = crate::daemon::process::process_start_token(pid);
+    let start_token = crate::util::process::process_start_token(pid);
 
     // iter-175: this call now *overwrites* an earlier marker pair on the
     // normal path — `launch` claims the directory with its own PID the instant
@@ -518,14 +518,14 @@ fn owner_liveness(dir: &Path) -> OwnerLiveness {
         OwnerPidMarker::Unreadable => return OwnerLiveness::Unreadable,
         OwnerPidMarker::Pid(pid) => pid,
     };
-    if !crate::daemon::process::is_process_alive(pid) {
+    if !crate::util::process::is_process_alive(pid) {
         return OwnerLiveness::Dead;
     }
     let Some(recorded) = read_owner_start_marker(dir) else {
         // Pre-iter-171 profile, or the token was unobtainable at launch.
         return OwnerLiveness::Live;
     };
-    match crate::daemon::process::process_start_token(pid) {
+    match crate::util::process::process_start_token(pid) {
         Some(current) if current == recorded => OwnerLiveness::Live,
         Some(_) => OwnerLiveness::Dead,
         None => OwnerLiveness::Unverified,
@@ -649,7 +649,7 @@ fn read_owner_pid_marker_graded(dir: &Path) -> OwnerPidMarker {
 /// `pid` identifies a Firefox that **ff-rdp itself spawned** (iter-110 Theme
 /// A0).
 ///
-/// This is the ownership gate the port-owner kill fallback in `daemon::client`
+/// This is the ownership gate `launch --replace`'s port-owner kill path
 /// consults before signalling a process it discovered merely by *listening on
 /// the RDP port*. A foreign Firefox the user launched by hand — even one on
 /// ff-rdp's default port 6000 — never planted a marker under our per-user
@@ -694,9 +694,7 @@ pub(crate) fn pid_is_ff_rdp_spawned(pid: u32) -> bool {
 ///   children across an override. That is not hypothetical: with the override
 ///   honoured but ownership narrowed to one root, `launch --replace` under an
 ///   isolated `$FF_RDP_HOME` stopped recognising the Firefox it had launched
-///   under the default home, so the port-owner branch in `daemon/client.rs`
-///   left `firefox_pid` as `None`, escalated against the proxy daemon instead,
-///   and failed with "port still listening after 8 s"
+///   under the default home and failed with "port still listening after 8 s"
 ///   (`live_153_replace_double_envelope`, 3/3 during iteration 188).
 ///
 /// Widening the *read* does not, by itself, authorise a kill ff-rdp was not
@@ -855,7 +853,7 @@ fn pid_is_ff_rdp_spawned_under(root: &Path, pid: u32) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Theme A: active-profile cleanup on `daemon stop`
+// Managed-profile cleanup (failed launches)
 // ---------------------------------------------------------------------------
 
 /// Outcome of [`cleanup_profile_dir`].
@@ -867,11 +865,8 @@ pub enum ProfileCleanup {
     /// removal itself failed. Both cases are silent (warn-not-fail): see
     /// the function doc for why this never surfaces as an error.
     ///
-    /// iter-242: carries *why*. `daemon stop` reports the outcome as a bare
-    /// `"profile_removed": false` with no reason attached, which is how an
-    /// iteration-224 sweep failure (`stopped: true`, `profile_removed:
-    /// false`, passing in isolation minutes later) arrived with nothing to
-    /// distinguish "the path was refused" from "`remove_dir_all` failed".
+    /// iter-242: carries *why*, so "the path was refused" and
+    /// "`remove_dir_all` failed" stay distinguishable.
     Skipped(ProfileCleanupSkip),
 }
 
@@ -907,15 +902,8 @@ impl ProfileCleanupSkip {
     }
 }
 
+#[cfg(test)]
 impl ProfileCleanup {
-    /// `Some(path)` if the directory was removed, `None` if it was skipped.
-    pub fn removed_path(&self) -> Option<&Path> {
-        match self {
-            Self::Removed(p) => Some(p),
-            Self::Skipped(_) => None,
-        }
-    }
-
     /// `Some(reason)` if nothing was removed, `None` if it was (iter-242).
     pub fn skip_reason(&self) -> Option<ProfileCleanupSkip> {
         match self {
@@ -929,13 +917,14 @@ impl ProfileCleanup {
 /// itself: under [`secure_profile_root`] AND named
 /// `ff-rdp-profile-<16 alphanumeric chars>`.
 ///
-/// Both checks must pass. This is what stands between `daemon stop` and
-/// deleting a directory the user passed via `--profile`, so the function
+/// Both checks must pass. This is what stands between a failed-launch cleanup
+/// and deleting a directory the user passed via `--profile`, so the function
 /// fails closed: an unresolvable profile root, a path outside it, or a
 /// basename mismatch all return [`ProfileCleanup::Skipped`] silently
 /// (debug-level log only, no error). A `remove_dir_all` failure on an
 /// otherwise-valid managed path is logged at `warn` and also returns
 /// `Skipped` — callers never see an `Err` from this function.
+#[cfg(test)]
 pub fn cleanup_profile_dir(path: &Path) -> ProfileCleanup {
     let root = match secure_profile_root() {
         Ok(root) => root,
@@ -1579,7 +1568,7 @@ mod tests {
     /// the `ff-rdp-profile-*` naming convention) must never be removed, and
     /// the function must report `Skipped` rather than surfacing an error.
     /// This is the guard that keeps a user-supplied `--profile` directory
-    /// safe from `daemon stop`.
+    /// safe from a failed-launch cleanup.
     #[test]
     fn unit_cleanup_profile_dir_refuses_path_outside_profile_root() {
         let outside = tempfile::Builder::new()
@@ -2450,10 +2439,9 @@ mod tests {
         assert!(labels.iter().all(|l| !l.is_empty()));
     }
 
-    /// `cleanup_profile_dir`'s four skip reasons are distinguishable, which is
-    /// what `daemon stop`'s `profile_skip_reason` reports. `profile_removed:
-    /// false` on its own could not tell a refused path from a
-    /// `remove_dir_all` that failed.
+    /// `cleanup_profile_dir`'s four skip reasons are distinguishable: a bare
+    /// "not removed" could not tell a refused path from a `remove_dir_all`
+    /// that failed.
     #[test]
     fn unit_242_cleanup_skip_reasons_are_distinct() {
         let all = [

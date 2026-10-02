@@ -16,7 +16,7 @@ use crate::hints::{HintContext, HintSource};
 use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
-use super::connect_tab::connect_direct;
+use super::connect_tab::connect_and_get_target;
 use super::js_helpers::eval_or_bail;
 
 /// Options accepted by [`run`].
@@ -162,7 +162,7 @@ pub fn run_core(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<serde_json::Valu
     // Screenshot always connects directly to Firefox, bypassing the daemon.
     // The daemon's watcher subscription interferes with the two-step screenshot
     // protocol, causing Firefox-side timeouts.
-    let mut ctx = connect_direct(cli)?;
+    let mut ctx = connect_and_get_target(cli)?;
 
     let sc_actor = ctx.target().screenshot_content_actor.clone();
     let browsing_ctx_id = ctx.target().browsing_context_id;
@@ -385,7 +385,7 @@ fn run_batch_window_size(
 /// capture subprocess (a separate Firefox process, see
 /// [`run_batch_window_size`]) can navigate to the same page.
 fn resolve_current_tab_url(cli: &Cli) -> Result<String, AppError> {
-    let mut ctx = connect_direct(cli)?;
+    let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target().console_actor.clone();
     let result = eval_or_bail(
         &mut ctx,
@@ -412,11 +412,6 @@ pub fn run(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<(), AppError> {
         None,
         cli.is_verbose(),
     );
-    // iter-134: screenshot always connects directly (see `run_core`'s doc
-    // comment — the daemon's watcher subscription breaks the two-step
-    // capture protocol), and the `--window-size` batch path never opens an
-    // RDP connection at all, so the route is unconditionally "direct".
-    crate::connection_meta::merge_route(&mut meta, false);
     let envelope = output::envelope(&results, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Screenshot);

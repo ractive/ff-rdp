@@ -7,7 +7,7 @@ use crate::hints::{HintContext, HintSource};
 use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
-use super::connect_tab::{ConnectedTab, connect_direct};
+use super::connect_tab::{ConnectedTab, connect_and_get_target};
 use super::js_helpers::escape_selector;
 
 /// Common CMP (Consent Management Platform) selectors used to detect consent
@@ -22,7 +22,7 @@ const CMP_SELECTORS: &[&str] = &[
 ];
 
 pub fn run(cli: &Cli, name: Option<&str>, include_document_cookie: bool) -> Result<(), AppError> {
-    let mut ctx = connect_direct(cli)?;
+    let mut ctx = connect_and_get_target(cli)?;
     let tab_actor = ctx.target_tab_actor().clone();
 
     // Theme L (iter-84): StorageActor may not yet have committed cookies that
@@ -104,10 +104,6 @@ pub fn run(cli: &Cli, name: Option<&str>, include_document_cookie: bool) -> Resu
         None,
         cli.is_verbose(),
     );
-    // iter-134: always present, not gated by --verbose — an
-    // agent can tell how this command executed without a
-    // separate `daemon status` round-trip.
-    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
     if total == 0
         && let Some(note) = detect_consent_banner(&mut ctx)
         && let Some(m) = meta.as_object_mut()

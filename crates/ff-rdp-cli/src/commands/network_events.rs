@@ -8,8 +8,7 @@ use ff_rdp_core::{
 };
 use serde_json::{Value, json};
 
-use crate::daemon::client::drain_daemon_events_since;
-use crate::error::AppError;
+
 
 /// Drain `resources-available-array` and `resources-updated-array` events from
 /// the transport until a [`ProtocolError::Timeout`] occurs, then return the
@@ -190,67 +189,6 @@ pub(crate) fn fold_update(
     }
 }
 
-/// Drain buffered network events from the daemon and split them into
-/// available resources and update entries.
-///
-/// The daemon stores individual items from both `resources-available-array`
-/// (items with an `actor` field) and `resources-updated-array` (items with a
-/// `resourceUpdates` field) in a single buffer keyed by `"network-event"`.
-/// This function separates them and reconstructs the wrapper format expected
-/// by [`parse_network_resources`] and [`parse_network_resource_updates`].
-pub(crate) fn drain_network_from_daemon(
-    transport: &mut RdpTransport,
-) -> Result<(Vec<NetworkResource>, Vec<NetworkResourceUpdate>), AppError> {
-    drain_network_from_daemon_since(transport, 0).map(|(r, u, _)| (r, u))
-}
-
-/// Result type for [`drain_network_from_daemon_since`].
-///
-/// `(resources, updates, nav_boundary)` — `nav_boundary` is the JSON
-/// `{sequence, url}` object from the daemon when a boundary was applied.
-pub(crate) type DaemonNetworkDrainResult = (
-    Vec<NetworkResource>,
-    Vec<NetworkResourceUpdate>,
-    Option<Value>,
-);
-
-/// Like [`drain_network_from_daemon`] but scoped to a navigation window.
-///
-/// `since_nav_index`:
-///  - `0`  → full buffer (all navigations)
-///  - `-1` → since the most-recent navigation
-///  - `-2` → since second-to-last, etc.
-///
-/// Returns `(resources, updates, nav_boundary)` where `nav_boundary` is the
-/// JSON object `{sequence, url}` from the daemon when a boundary was applied.
-pub(crate) fn drain_network_from_daemon_since(
-    transport: &mut RdpTransport,
-    since_nav_index: i64,
-) -> Result<DaemonNetworkDrainResult, AppError> {
-    let (drained, boundary) =
-        drain_daemon_events_since(transport, "network-event", since_nav_index)
-            .map_err(AppError::from)?;
-
-    let mut available_items: Vec<Value> = Vec::new();
-    let mut update_items: Vec<Value> = Vec::new();
-    for item in drained {
-        if item.get("resourceUpdates").is_some() {
-            update_items.push(item);
-        } else {
-            available_items.push(item);
-        }
-    }
-
-    // Reconstruct the wrapper format so the existing parsers can be reused.
-    let available_msg = json!({"array": [["network-event", available_items]]});
-    let update_msg = json!({"array": [["network-event", update_items]]});
-
-    let resources = parse_network_resources(&available_msg);
-    let resource_updates = parse_network_resource_updates(&update_msg);
-
-    Ok((resources, resource_updates, boundary))
-}
-
 /// Map a single PerformanceResourceTiming JSON entry (from `performance.getEntriesByType`)
 /// to the same JSON shape produced by [`build_network_entries`].
 pub(crate) fn map_perf_resource_to_network_entry(entry: &Value) -> Value {
@@ -295,7 +233,7 @@ pub(crate) fn map_perf_resource_to_network_entry(entry: &Value) -> Value {
 ///
 /// Returns an empty vec on any failure — this is a best-effort fallback only.
 /// Errors are printed to stderr so the caller can diagnose why the fallback
-/// returned nothing (e.g. daemon JS forwarding broken, page not yet loaded).
+/// returned nothing (e.g. page not yet loaded).
 pub(crate) fn performance_api_fallback(ctx: &mut super::connect_tab::ConnectedTab) -> Vec<Value> {
     const SCRIPT: &str =
         "JSON.stringify(performance.getEntriesByType('resource').map(e => e.toJSON()))";

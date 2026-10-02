@@ -70,10 +70,6 @@ pub fn run(cli: &Cli, selector: Option<&str>, fail_only: bool) -> Result<(), App
         None,
         cli.is_verbose(),
     );
-    // iter-134: always present, not gated by --verbose — an
-    // agent can tell how this command executed without a
-    // separate `daemon status` round-trip.
-    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
     // iter-143 Theme A: contrast checking is always DOM/computed-style based
     // — there is no native-actor equivalent — so this is always
     // "js-fallback". Reported for consistency with `a11y`'s `meta.source`.

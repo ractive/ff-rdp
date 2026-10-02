@@ -197,18 +197,19 @@ pub(crate) fn build_injection_js() -> String {
 
 /// The collector template.
 ///
-/// `__UNIQUE_SELECTOR_FN__` / `__ACC_NAME_FN__` / `__JSON_WRITER__` are spliced
+/// `__STAMP_REF_FN__` / `__ACC_NAME_FN__` / `__JSON_WRITER__` are spliced
 /// by [`build_page_view_js`]; `__LANDMARKS_BLOCK__` and `__READER_BLOCK__` are
 /// spliced or emptied depending on the caller, so `a11y summary` pays for
 /// neither the reader pass nor a Readability round trip it has no use for.
 const PAGE_VIEW_JS_TEMPLATE: &str = r#"(function() {
-  __UNIQUE_SELECTOR_FN__
+  __STAMP_REF_FN__
   __ACC_NAME_FN__
   __JSON_WRITER__
   var result = {headings: [], interactive: []};
   var __els = [];
   function __ffrdpAdd(el, entry) {
-    entry.__resolver = __ffrdpUniqueSelector(el);
+    var ref = __ffrdpStampRef(el);
+    if (ref) entry.ref = ref;
     __els[__els.length] = el;
     result.interactive[result.interactive.length] = entry;
   }
@@ -547,13 +548,15 @@ const FACTS_BLOCK_JS: &str = r#"
             fact.links_truncated = true;
             continue;
           }
-          var resolver = __ffrdpUniqueSelector(anchor);
-          var chars = name.length + href.length + resolver.length;
-          if (resolver.length > 2048 || __ffrdpFactLinkChars + chars > 8192) {
+          var chars = name.length + href.length;
+          if (__ffrdpFactLinkChars + chars > 8192) {
             fact.links_truncated = true;
             continue;
           }
-          links[links.length] = {name: name, href: href, __resolver: resolver};
+          var link = {name: name, href: href};
+          var linkRef = __ffrdpStampRef(anchor);
+          if (linkRef) link.ref = linkRef;
+          links[links.length] = link;
           __ffrdpFactLinkCount++;
           __ffrdpFactLinkChars += chars;
         }
@@ -631,10 +634,7 @@ pub(crate) fn build_page_view_js(landmarks: bool, reader: Option<usize>) -> Stri
         None => String::new(),
     };
     PAGE_VIEW_JS_TEMPLATE
-        .replace(
-            "__UNIQUE_SELECTOR_FN__",
-            super::js_helpers::UNIQUE_SELECTOR_JS_FN,
-        )
+        .replace("__STAMP_REF_FN__", super::js_helpers::STAMP_REF_JS_FN)
         .replace("__ACC_NAME_FN__", &super::js_helpers::acc_name_js_fn())
         .replace("__JSON_WRITER__", JSON_WRITER_JS)
         .replace(
@@ -702,7 +702,7 @@ mod tests {
         for (landmarks, reader) in [(true, None), (false, Some(1000)), (true, Some(1000))] {
             let js = build_page_view_js(landmarks, reader);
             for placeholder in [
-                "__UNIQUE_SELECTOR_FN__",
+                "__STAMP_REF_FN__",
                 "__ACC_NAME_FN__",
                 "__JSON_WRITER__",
                 "__LANDMARKS_BLOCK__",

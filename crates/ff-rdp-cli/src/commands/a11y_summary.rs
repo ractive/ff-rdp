@@ -11,13 +11,6 @@ use super::connect_tab::connect_and_get_target;
 use super::page_view::{self, CollectOptions, DEFAULT_INTERACTIVE_LIMIT};
 
 pub fn run(cli: &Cli, query: &QueryFilter) -> Result<(), AppError> {
-    // iter-210 Theme B: `connect_direct` until now, which made the daemon's
-    // ref store unreachable from here — so the first thing an agent looks at
-    // after navigating carried no `--ref` handles and it had to guess a
-    // selector for `dom` before it could click anything. Nothing about this
-    // command's protocol traffic conflicts with the proxy (see the
-    // daemon-routing table in `dispatch.rs`), so it takes the normal route
-    // now and registers refs exactly as `dom` does.
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target().console_actor.clone();
 
@@ -70,14 +63,6 @@ pub fn run(cli: &Cli, query: &QueryFilter) -> Result<(), AppError> {
     let output_results = output_results;
 
     let mut meta = json!({});
-    if ctx.via_daemon
-        && let Some(obj) = meta.as_object_mut()
-    {
-        // Same contract as `dom`'s `meta.refs_registered` (iter-61j D1):
-        // always emitted on the daemon route so a caller can check whether
-        // the `ref` handles in the output are usable before relying on them.
-        obj.insert("refs_registered".to_owned(), json!(page.refs_registered));
-    }
     if let (Some(matches), Some(obj)) = (query_matches, meta.as_object_mut()) {
         obj.insert("matches".to_owned(), json!(matches));
     }
@@ -89,10 +74,6 @@ pub fn run(cli: &Cli, query: &QueryFilter) -> Result<(), AppError> {
         None,
         cli.is_verbose(),
     );
-    // iter-134: always present, not gated by --verbose — an
-    // agent can tell how this command executed without a
-    // separate `daemon status` round-trip.
-    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
     let envelope = output::envelope(&output_results, 1, &meta);
 
     // Custom text rendering for a11y summary.

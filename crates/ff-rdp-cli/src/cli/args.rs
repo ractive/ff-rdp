@@ -385,14 +385,6 @@ pub struct Cli {
     #[arg(long, default_value_t = DEFAULT_TIMEOUT_MS, global = true)]
     pub timeout: u64,
 
-    /// Connect directly to Firefox, bypassing the daemon. Use for one-off commands or fresh connections. The daemon (default) keeps a persistent connection and buffers events for streaming commands (--follow).
-    #[arg(long, global = true)]
-    pub no_daemon: bool,
-
-    /// Daemon idle timeout in seconds
-    #[arg(long, default_value_t = 300, global = true)]
-    pub daemon_timeout: u64,
-
     /// Allow javascript: and data: URL schemes in navigate (unsafe)
     #[arg(long, global = true)]
     pub allow_unsafe_urls: bool,
@@ -1101,12 +1093,17 @@ already has.
 Output:              {\"results\": {\"action\": \"forward\", \"committed_url\": \"...\", \"ready_state\": \"complete\", \"elapsed_ms\": N, \"status\": 200|null, \"status_reason\": null|\"not_observed\"|\"no_document_request\"|\"no_status_reported\"}, \"total\": 1, \"meta\": {...}}
 Output (--no-wait): {\"results\": {\"action\": \"forward\", \"status\": null, \"status_reason\": \"not_observed\"}, \"total\": 1, \"meta\": {...}}")]
     Forward(BackForwardArgs),
-    /// Inspect a remote JavaScript object by its grip actor ID
-    #[command(long_about = "Inspect a remote JavaScript object by its grip actor ID.
+    /// Evaluate a JavaScript expression and inspect the resulting object
+    #[command(long_about = "Evaluate a JavaScript expression and inspect the resulting object.
 
-Actor IDs appear in eval results when the return value is a non-primitive
-(e.g. {\"type\": \"object\", \"actor\": \"server1.conn0.child0/obj12\", ...}).
+The expression is evaluated in the page and its result object is walked on the
+same connection: own properties with their descriptors, and the prototype.
 Use --depth to control how many levels of nested objects are resolved.
+A primitive result (number, string, null, ...) is returned as-is.
+
+Examples:
+  ff-rdp inspect 'window.location'
+  ff-rdp inspect 'document.forms[0]' --depth 2
 
 Output: {\"results\": {\"actor\": \"...\", \"prototype\": {...}, \"ownProperties\": {...}}, \"total\": 1, \"meta\": {...}}")]
     Inspect(InspectArgs),
@@ -1125,22 +1122,6 @@ single very long source URL can't blow the table out to thousands of columns.")]
 Output: {\"results\": {\"tag\": \"HTML\", \"children\": [...], ...}, \"total\": 1, \"meta\": {...}}"
     )]
     Snapshot(SnapshotArgs),
-    /// Internal: run as background daemon (not for direct use)
-    #[command(name = "_daemon", hide = true)]
-    DaemonInternal,
-
-    /// Manage the background daemon process
-    #[command(long_about = "Manage the background daemon process.
-
-The daemon keeps a persistent Firefox connection and buffers events across
-commands. It starts automatically on the first command that needs it.
-
-Output (status): {\"results\": {\"running\": bool, \"pid\": N, \"port\": N, \"uptime_seconds\": N, \"connections\": N, \"buffer_sizes\": {...}}, \"total\": 1, \"meta\": {...}}
-Output (stop):   {\"results\": {\"stopped\": bool}, \"total\": 1, \"meta\": {...}}")]
-    Daemon {
-        #[command(subcommand)]
-        daemon_command: DaemonCommand,
-    },
     /// Get element geometry: bounding rects, position, z-index, visibility, overflow,
     /// with automatic overlap detection between elements
     #[command(
@@ -1186,96 +1167,6 @@ Pass --include-hidden to receive those elements as well.
 
 Output: {\"results\": {\"breakpoints\": [{\"width\": 320, \"viewport\": {\"width\": N, \"height\": N}, \"media_query_check\": {\"requested\": 320, \"inner_width\": N, \"matches\": bool}, \"elements\": [{\"selector\": \"...\", \"rect\": {...}, \"visible\": bool}]}, ...], \"original_viewport\": {\"width\": N, \"height\": N}, \"warnings\": [...]}, \"total\": N, \"meta\": {...}}")]
     Responsive(ResponsiveArgs),
-    /// Emulate the page environment via the target-configuration actor
-    #[command(
-        long_about = "Emulate the page environment (server-side) via the Firefox \
-target-configuration actor.
-
-Each flag maps to one field of the actor's configuration and only the flags you
-pass are applied — a call patches the live configuration rather than replacing it.
-
-  --user-agent <S>          override navigator.userAgent / User-Agent header
-  --color-scheme light|dark|none   simulate prefers-color-scheme (none = system)
-  --dppx <F>                override window.devicePixelRatio (positive number)
-  --print on|off            toggle @media print simulation (compose with screenshot)
-  --touch on|off            toggle touch-event simulation
-  --js on|off               enable/disable JavaScript (server reloads the document)
-  --offline on|off          take the tab offline (navigator.onLine, fetch failures)
-  --cache on|off            'off' disables the HTTP cache (cold-load perf)
-  --reset                   restore every field to its default (cannot combine with others)
-
-LIFETIME: configuration lives as long as the RDP connection that set it. Under
-the daemon that means until the daemon restarts; with --no-daemon the one-shot
-process disconnects immediately and the setting is discarded — the envelope then
-carries a `lifetime_warning`. Disabling JavaScript or --reset triggers a
-server-side document reload; reload/re-probe to observe the effect.
-
-Examples:
-  ff-rdp emulate --color-scheme dark --user-agent 'ff-rdp-test/1.0'
-  ff-rdp emulate --dppx 2 --touch on
-  ff-rdp emulate --js off        # then `ff-rdp reload` before probing
-  ff-rdp emulate --reset
-
-Output: {\"results\": {\"applied\": {<wire-field>: <value>, ...}, \"reset\": bool, \
-\"lifetime_warning\"?: \"...\", \"note\"?: \"...\"}, \"total\": 1, \"meta\": {...}}"
-    )]
-    Emulate(EmulateArgs),
-    /// Throttle the network and/or block request URLs (network-parent actor)
-    #[command(
-        long_about = "Throttle network speed and/or block request URLs (server-side) via the \
-Firefox network-parent actor.
-
-Throttling and blocking are configured on the parent-process network-parent
-actor obtained from the watcher.  A positional PROFILE sets a throttling tier;
-`--block` replaces the URL block-list.  At least one must be supplied.
-
-  throttle slow-3g          ~400 kbit/s, 400 ms latency
-  throttle fast-3g          ~1.6 Mbit/s, 150 ms latency
-  throttle off              clear throttling (full speed)
-  throttle status           report the profile last applied via the daemon
-  throttle --block <PAT>    block requests whose URL matches PAT (repeatable)
-  throttle --unblock        clear the URL block-list
-
-PROFILE and --block compose: `throttle slow-3g --block '*.png'` throttles AND
-blocks in one call.  Blocked requests fail with NS_ERROR_ABORT and show up as
-errored entries in `network` output while other requests succeed.
-
-PREREQUISITE: this command subscribes to network-event resources first (the
-network-parent actor throws \"Not listening for network events\" otherwise).
-
-LIFETIME: throttling and blocking live as long as the RDP connection that set
-them.  Under the daemon that means until the daemon restarts; with --no-daemon
-the one-shot process disconnects immediately and the setting is discarded — the
-envelope then carries a `lifetime_warning`.  Both survive `navigate` and
-`reload` under the daemon (iter-164: they used not to — navigate's resource
-teardown destroyed the block-list on the shared connection, so `--block` was
-accepted, echoed here, and then not enforced).
-
-STATUS (iter-131): `throttle status` reports the profile the daemon last
-applied. Firefox's network-parent actor has no getter for the active
-throttling state, so this is client-side bookkeeping (a small file next to the
-daemon registry), not a live read from the browser — it reports `null` when no
-daemon is running, no `throttle <profile>` has been applied since it started,
-or the daemon has since restarted (which itself clears Firefox's throttling).
-Read-only: combining `status` with --block/--unblock is rejected.
-
-CACHE CAVEAT: throttling does not bypass the HTTP cache — a `reload` while
-throttled may still be served from cache and look far faster than the profile
-alone would suggest. Use `reload --hard` to force a network fetch.
-
-Examples:
-  ff-rdp throttle slow-3g
-  ff-rdp throttle fast-3g --block 'ads.example.com' --block '*.gif'
-  ff-rdp throttle off
-  ff-rdp throttle status
-  ff-rdp throttle --unblock
-
-Output (set): {\"results\": {\"profile\": \"slow-3g\"|\"fast-3g\"|\"off\"|null, \
-\"blocked_urls\": [\"...\"]|null, \"lifetime_warning\"?: \"...\"}, \"total\": 1, \"meta\": {...}}
-Output (status): {\"results\": {\"profile\": \"slow-3g\"|\"fast-3g\"|null, \
-\"note\"?: \"...\", \"cache_caveat\": \"...\"}, \"total\": 1, \"meta\": {...}}"
-    )]
-    Throttle(ThrottleArgs),
     /// Fetch and validate the page's Web App Manifest (PWA-readiness audit)
     #[command(
         long_about = "Fetch and validate the current page's Web App Manifest via the Firefox \
@@ -1757,6 +1648,8 @@ pub struct NavigateArgs {
     #[arg(long)]
     pub auto_consent: bool,
     #[command(flatten)]
+    pub conditions: NetworkConditionsArgs,
+    #[command(flatten)]
     pub page: PageViewArgs,
 }
 
@@ -2046,14 +1939,6 @@ pub struct NetworkArgs {
     /// source has no security info); implies detail output.
     #[arg(long)]
     pub security: bool,
-    /// Scope the result to a specific navigation window (daemon mode only).
-    /// -1 = current navigation (default), -2 = one back, 'all' = full cumulative buffer.
-    /// Positive integers are treated as 1-based indices from the oldest boundary.
-    ///
-    /// `allow_hyphen_values` lets the negative forms be passed as either
-    /// `--since -1` or `--since=-1` without clap mistaking `-1` for a flag.
-    #[arg(long, value_name = "NAV_INDEX_OR_ALL", allow_hyphen_values = true)]
-    pub since: Option<String>,
     /// Which capture source produces the rows.
     ///
     /// `watcher` (the default) reads the RDP resource watcher, the only source
@@ -2394,6 +2279,8 @@ pub struct ReloadArgs {
     #[arg(long, conflicts_with = "wait_idle")]
     pub no_wait: bool,
     #[command(flatten)]
+    pub conditions: NetworkConditionsArgs,
+    #[command(flatten)]
     pub page: PageViewArgs,
 }
 
@@ -2410,8 +2297,9 @@ pub struct BackForwardArgs {
 
 #[derive(clap::Args)]
 pub struct InspectArgs {
-    /// The actor ID of the object grip to inspect
-    pub actor_id: String,
+    /// JavaScript expression whose result to inspect (e.g. 'window.location',
+    /// 'document.forms[0]'). Evaluated and inspected on one connection.
+    pub expression: String,
     /// Recursion depth for nested objects (default: 1)
     #[arg(long, default_value_t = 1)]
     pub depth: u32,
@@ -2494,65 +2382,9 @@ pub struct ResponsiveArgs {
     pub strict: bool,
 }
 
-/// `prefers-color-scheme` simulation value for `emulate --color-scheme`.
-///
-/// Maps to the target-configuration actor's `colorSchemeSimulation` field:
-/// `none` restores the system default.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
-pub enum ColorScheme {
-    Light,
-    Dark,
-    None,
-}
 
-/// A generic on/off toggle used by several `emulate` flags
-/// (`--print`, `--touch`, `--js`, `--offline`, `--cache`).
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
-pub enum OnOff {
-    On,
-    Off,
-}
-
-/// Arguments for `emulate` — one option per target-configuration field.
-///
-/// Every flag is optional; a call applies only the fields the user names.
-/// `--reset` restores every field to its documented default and must be used
-/// on its own (enforced at runtime, not by clap, so the error is descriptive).
-#[derive(clap::Args)]
-pub struct EmulateArgs {
-    /// Override navigator.userAgent and the User-Agent request header
-    #[arg(long, value_name = "STRING")]
-    pub user_agent: Option<String>,
-    /// Simulate prefers-color-scheme (none = system default)
-    #[arg(long, value_enum, value_name = "SCHEME")]
-    pub color_scheme: Option<ColorScheme>,
-    /// Override window.devicePixelRatio (positive number, e.g. 2 for retina)
-    #[arg(long, value_name = "FLOAT")]
-    pub dppx: Option<f64>,
-    /// Toggle @media print simulation
-    #[arg(long, value_enum, value_name = "ON_OFF")]
-    pub print: Option<OnOff>,
-    /// Toggle touch-event simulation
-    #[arg(long, value_enum, value_name = "ON_OFF")]
-    pub touch: Option<OnOff>,
-    /// Enable/disable JavaScript (server reloads the document on change)
-    #[arg(long, value_enum, value_name = "ON_OFF")]
-    pub js: Option<OnOff>,
-    /// Take the tab offline (navigator.onLine === false, network requests fail)
-    #[arg(long, value_enum, value_name = "ON_OFF")]
-    pub offline: Option<OnOff>,
-    /// Toggle the HTTP cache ('off' disables it — maps to cacheDisabled=true)
-    #[arg(long, value_enum, value_name = "ON_OFF")]
-    pub cache: Option<OnOff>,
-    /// Restore every emulation field to its default (use on its own)
-    #[arg(long)]
-    pub reset: bool,
-}
-
-/// Network-throttling profile for `throttle` (positional).
 ///
 /// Maps to the network-parent actor's `setNetworkThrottling` options.
-/// `off` clears any active throttling (Firefox restores full speed).
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
 pub enum ThrottleProfileArg {
     /// Slow 3G: ~400 kbit/s, 400 ms round-trip latency.
@@ -2561,34 +2393,24 @@ pub enum ThrottleProfileArg {
     /// Fast 3G: ~1.6 Mbit/s, 150 ms round-trip latency.
     #[value(name = "fast-3g")]
     Fast3g,
-    /// Clear throttling and restore full-speed network behaviour.
-    Off,
-    /// Report the profile last applied via the daemon (iter-131 Theme D).
-    /// Read-only: does not touch throttling/blocking. Firefox's
-    /// network-parent actor has no getter, so this recalls client-side
-    /// bookkeeping rather than querying the browser — see `throttle --help`.
-    Status,
 }
 
-/// Arguments for `throttle` — network throttling and URL blocking.
+/// Network conditions applied on the command's own connection before it
+/// navigates (`navigate`, `reload`).
 ///
-/// The positional PROFILE sets a throttling tier (or `off`); `--block` replaces
-/// the URL block-list. At least one must be supplied. The envelope echoes the
-/// active profile and block-list so scripts can confirm what was applied.
-#[derive(clap::Args)]
-pub struct ThrottleArgs {
-    /// Throttling profile: slow-3g, fast-3g, off (clears throttling), or
-    /// status (read-only: reports the profile last applied via the daemon)
-    #[arg(value_enum, value_name = "PROFILE")]
-    pub profile: Option<ThrottleProfileArg>,
-    /// Block requests whose URL matches PATTERN (repeatable; substring/glob
-    /// match). Pass `--block` with no value list, or an empty `--block ''`,
-    /// to clear the block-list.
+/// Throttling and URL blocking live on the connection's network-parent actor
+/// and end when the command disconnects, so they are flags on the navigating
+/// command rather than a standalone `throttle` command.
+#[derive(clap::Args, Clone, Default)]
+pub struct NetworkConditionsArgs {
+    /// Throttle the network for this load: slow-3g (~400 kbit/s, 400 ms) or
+    /// fast-3g (~1.6 Mbit/s, 150 ms). Ends when the command exits.
+    #[arg(long, value_enum, value_name = "PROFILE")]
+    pub throttle: Option<ThrottleProfileArg>,
+    /// Block requests whose URL matches PATTERN for this load (repeatable;
+    /// substring/glob match). Blocked requests fail with NS_ERROR_ABORT.
     #[arg(long, value_name = "PATTERN", action = clap::ArgAction::Append)]
     pub block: Vec<String>,
-    /// Clear the URL block-list (equivalent to `--block` with no patterns)
-    #[arg(long, conflicts_with = "block")]
-    pub unblock: bool,
 }
 
 #[derive(clap::Args)]
@@ -3163,35 +2985,6 @@ Output: {\"results\": {\"scrolled\": true, \"text\": \"...\", \"viewport\": {...
         #[command(flatten)]
         page: PageViewArgs,
     },
-}
-
-#[derive(Subcommand)]
-pub enum DaemonCommand {
-    /// Print daemon status as JSON
-    #[command(long_about = "Print the current daemon status as JSON.
-
-If no daemon is running, reports running=false.
-
-Output: {\"results\": {\"running\": bool, \"pid\": N, \"port\": N, \"uptime_seconds\": N, \"connections\": N, \"buffer_sizes\": {...}}, \"total\": 1, \"meta\": {...}}")]
-    Status,
-    /// Gracefully stop the running daemon
-    #[command(long_about = "Gracefully stop the running daemon.
-
-Sends a shutdown RPC to the daemon. Falls back to SIGTERM if the RPC does
-not succeed within 2 seconds. Cleans up the daemon's per-port registry file
-(daemon.<port>.json) on success.
-
-When Firefox was started via `launch`, stopping it also removes its
-temporary profile directory (never a directory passed via --profile).
-
-When the profile directory is NOT removed, `profile_skip_reason` names why:
-`outside-profile-root` / `not-managed-basename` (a --profile directory, refused by design),
-`no-profile-root` (the per-user root could not be resolved), or `remove-failed`
-(a managed directory that should have gone away and did not). It is null when the
-profile was removed, and when the stop itself failed so cleanup was never attempted.
-
-Output: {\"results\": {\"stopped\": bool, \"pid\": N, \"port\": N, \"profile_removed\": bool, \"profile_removed_path\": \"...\"|null, \"profile_skip_reason\": \"...\"|null}, \"total\": 1, \"meta\": {...}}")]
-    Stop,
 }
 
 #[derive(Subcommand)]

@@ -1,37 +1,19 @@
 use crate::cli::args::{
     A11yArgs, A11yCommand, BackForwardArgs, CascadeArgs, Cli, ClickArgs, Command, ComputedArgs,
-    ConsentCommand, ConsoleArgs, CookiesArgs, DaemonCommand, DomArgs, DomCommand, EmulateArgs,
-    EvalArgs, GeometryArgs, HomeArgs, IndexArgs, InspectArgs, InstallHookArgs, LaunchArgs,
-    NavigateArgs, NetworkArgs, PerfArgs, PerfCommand, ProfilesCommand, RecordCommand, ReloadArgs,
+    ConsentCommand, ConsoleArgs, CookiesArgs, DomArgs, DomCommand, EvalArgs, GeometryArgs, HomeArgs, IndexArgs, InspectArgs, InstallHookArgs, LaunchArgs,
+    NavigateArgs, NetworkArgs, NetworkConditionsArgs, PerfArgs, PerfCommand, ProfilesCommand, RecordCommand, ReloadArgs,
     ResponsiveArgs, RunArgs, ScreenshotArgs, ScrollCommand, SnapshotArgs, SourcesArgs, StorageArgs,
-    StylesArgs, ThrottleArgs, TypeArgs, WaitArgs,
+    StylesArgs, TypeArgs, WaitArgs,
 };
 use crate::commands;
 use crate::commands::index::IndexOpts;
 use crate::commands::js_helpers::DispatchMode;
 use crate::commands::nav_action::NavAction;
-use crate::daemon::registry;
-use crate::daemon::server;
 use crate::error::AppError;
 use crate::output_controls::QueryFilter;
 use crate::script::format::{
     ElementStep, ElementTarget, EvalStep, NavigateStep, ScreenshotStep, Step,
 };
-
-/// Parse the `--since` flag for the `network` command into a navigation index.
-///
-/// - `"all"` or `"0"` → `0` (full buffer, no boundary filter)
-/// - `"-1"` → `-1` (since most-recent navigation; also the default when `None`)
-/// - Any other integer string → that value directly
-fn parse_since_arg(s: Option<&str>) -> Result<i64, AppError> {
-    match s {
-        None => Ok(-1), // default: current navigation
-        Some("all") => Ok(0),
-        Some(v) => v
-            .parse::<i64>()
-            .map_err(|_| AppError::User(format!("--since: expected a number or 'all', got {v:?}"))),
-    }
-}
 
 /// Parse a `--dispatch` flag value into a [`DispatchMode`].
 fn parse_dispatch_mode(s: &str) -> Result<DispatchMode, AppError> {
@@ -67,119 +49,46 @@ fn resolve_selector<'a>(
 
 /// Resolve a CSS selector from a positional/flag selector or a `--ref` ref ID.
 ///
-/// When `ref_id` is `Some`, the ref is resolved via the daemon.  In
-/// `--no-daemon` mode, refs are not available across invocations (the daemon
-/// is the ref store), so we return a clear user error.
-///
-/// The returned `String` is owned because the resolved selector is heap-allocated.
+/// A ref resolves to the attribute selector of the element `snapshot`, `dom`
+/// or a `--with-page` view stamped in the page (see [`ref_selector`]).
 fn resolve_selector_or_ref(
     positional: Option<&str>,
     flag: Option<&str>,
     ref_id: Option<&str>,
     command: &str,
-    cli: &Cli,
 ) -> Result<String, AppError> {
     match ref_id {
-        Some(id) => {
-            if cli.no_daemon {
-                return Err(AppError::User(
-                    "--ref is not available with --no-daemon: ref IDs are stored by the daemon and are only valid within a single daemon session".to_string()
-                ));
-            }
-            resolve_ref_via_daemon(cli, id)
-        }
+        Some(id) => ref_selector(id),
         None => resolve_selector(positional, flag, command).map(str::to_owned),
     }
 }
 
-/// Connect to the running daemon and resolve a ref ID to its unique CSS selector.
+/// The CSS selector for ref `id` (`e<N>`).
 ///
-/// Returns `AppError::User` with a clear message when the ref has expired,
-/// when no daemon is running, or when `--no-daemon` was passed.
-pub(crate) fn resolve_ref_via_daemon(cli: &Cli, ref_id: &str) -> Result<String, AppError> {
-    use ff_rdp_core::{FramedReader, FramedWriter};
-    use serde_json::{Value, json};
-    use std::net::TcpStream;
-    use std::time::Duration;
-
-    if cli.no_daemon {
-        return Err(AppError::User(
-            "--ref is not available with --no-daemon: ref IDs are stored by the daemon and are only valid within a single daemon session".to_string()
-        ));
+/// Refs live in the page, not in ff-rdp: the command that hands one out sets
+/// `data-ffrdp-ref="e<N>"` on the element in the same evaluation that
+/// enumerates it, so any later command — on any connection — finds it with
+/// `[data-ffrdp-ref="e<N>"]`. A navigation replaces the document and with it
+/// every ref; a stale ref then simply matches nothing.
+pub(crate) fn ref_selector(id: &str) -> Result<String, AppError> {
+    let valid = id
+        .strip_prefix('e')
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+    if valid {
+        Ok(format!("[{}=\"{id}\"]", crate::commands::js_helpers::REF_ATTR))
+    } else {
+        Err(AppError::User(format!(
+            "--ref {id:?}: expected a ref like 'e3' from `snapshot`, `dom` or `--with-page`"
+        )))
     }
-
-    let info = registry::read_registry(cli.port)
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("reading daemon registry: {e}")))?
-        .ok_or_else(|| AppError::User(
-            format!("--ref {ref_id}: no daemon is running — start the daemon first or use a CSS selector instead")
-        ))?;
-
-    let timeout = Duration::from_millis(cli.timeout);
-    let addr = format!("127.0.0.1:{}", info.proxy_port)
-        .parse::<std::net::SocketAddr>()
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("parsing daemon addr: {e}")))?;
-
-    let stream = TcpStream::connect_timeout(&addr, timeout).map_err(|e| {
-        AppError::Connection(format!(
-            "could not connect to daemon for ref resolution: {e}"
-        ))
-    })?;
-    stream
-        .set_read_timeout(Some(timeout))
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("setting read timeout: {e}")))?;
-
-    let mut writer = FramedWriter::from_stream(
-        stream
-            .try_clone()
-            .map_err(|e| AppError::Internal(anyhow::anyhow!("cloning stream: {e}")))?,
-    );
-    writer
-        .send(&json!({"auth": info.auth_token}))
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("sending auth frame: {e}")))?;
-
-    let mut reader = FramedReader::from_stream(stream);
-    // Read and discard the greeting.
-    reader
-        .recv()
-        .map_err(|e| AppError::User(format!("daemon auth failed: {e}")))?;
-
-    // Send resolve-ref request and read responses until we get a daemon reply.
-    writer
-        .send(&json!({"to": "daemon", "type": "resolve-ref", "id": ref_id}))
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("sending resolve-ref: {e}")))?;
-
-    for _ in 0..64 {
-        let resp = reader.recv().map_err(|e| {
-            AppError::Internal(anyhow::anyhow!("receiving resolve-ref response: {e}"))
-        })?;
-        if resp.get("from").and_then(Value::as_str) == Some("daemon") {
-            if let Some(err) = resp.get("error").and_then(Value::as_str) {
-                return Err(AppError::User(err.to_owned()));
-            }
-            return resp
-                .get("resolver")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .ok_or_else(|| {
-                    AppError::Internal(anyhow::anyhow!("resolve-ref response missing 'resolver'"))
-                });
-        }
-    }
-    Err(AppError::Internal(anyhow::anyhow!(
-        "did not receive resolve-ref response within 64 frames"
-    )))
 }
 
-/// Resolve a ref ID to its CSS selector expression for use in script runner verbs.
+/// Resolve a ref ID to its CSS selector for use in script runner verbs.
 ///
-/// Provides the same ref-resolution logic as the CLI dispatch path so that
-/// script steps with `ref:` targets work identically to `--ref` on the CLI.
-pub(crate) fn resolve_ref_for_script(
-    cli: &Cli,
-    ref_id: &str,
-    verb: &str,
-) -> Result<String, AppError> {
-    resolve_ref_via_daemon(cli, ref_id)
+/// Same resolution as `--ref` on the CLI, so script steps with `ref:` targets
+/// behave identically.
+pub(crate) fn resolve_ref_for_script(ref_id: &str, verb: &str) -> Result<String, AppError> {
+    ref_selector(ref_id)
         .map_err(|e| AppError::User(format!("script step '{verb}' ref '{ref_id}': {e}")))
 }
 
@@ -188,7 +97,7 @@ pub(crate) fn resolve_ref_for_script(
 ///
 /// Returns `None` for inspection-only commands (tabs, dom, snapshot, console,
 /// network, page-text, cookies, storage, sources, geometry, styles, computed,
-/// responsive, a11y, doctor, daemon *, launch, record *, inspect) that should
+/// responsive, a11y, doctor, launch, record *, inspect) that should
 /// not appear in recorded scripts.
 fn command_to_step(cmd: &Command, resolved_selector: Option<&str>) -> Option<Step> {
     match cmd {
@@ -333,8 +242,6 @@ fn command_to_step(cmd: &Command, resolved_selector: Option<&str>) -> Option<Ste
         | Command::Computed(ComputedArgs { .. })
         | Command::Cascade(CascadeArgs { .. })
         | Command::Responsive(ResponsiveArgs { .. })
-        | Command::Emulate(EmulateArgs { .. })
-        | Command::Throttle(ThrottleArgs { .. })
         | Command::Manifest
         | Command::A11y(A11yArgs { .. })
         | Command::Snapshot(SnapshotArgs { .. })
@@ -343,8 +250,6 @@ fn command_to_step(cmd: &Command, resolved_selector: Option<&str>) -> Option<Ste
         | Command::Launch(LaunchArgs { .. })
         | Command::Record { .. }
         | Command::Run(RunArgs { .. })
-        | Command::Daemon { .. }
-        | Command::DaemonInternal
         | Command::InstallSkill(_)
         | Command::InstallHook(_)
         | Command::Home(_)
@@ -358,45 +263,11 @@ fn command_to_step(cmd: &Command, resolved_selector: Option<&str>) -> Option<Ste
 
 /// Dispatch a CLI command to its handler.
 ///
-/// # Connection routing
-///
-/// Most commands connect via the daemon proxy when one is available.  The
-/// following commands always bypass the daemon and connect directly to
-/// Firefox (`connect_direct`), because their protocol interactions are
-/// incompatible with the daemon's watcher subscription or message routing:
-///
-/// | Command      | Reason                                          |
-/// |--------------|-------------------------------------------------|
-/// | `screenshot` | Two-step capture protocol conflicts with watcher|
-/// | `cookies`    | `watchResources("cookies")` intercepted by daemon watcher |
-/// | `storage`    | Same watcher interception issue as cookies       |
-/// | `a11y`       | Accessibility walker actors conflict with proxy  |
-/// | `sources`    | Thread actor `sources` method conflicts with proxy |
-///
-/// Commands that **require** daemon event buffering or streaming:
-///
-/// | Command                   | Reason                              |
-/// |---------------------------|-------------------------------------|
-/// | `console --follow`        | Streams buffered console events     |
-/// | `network --follow`        | Streams buffered network events     |
-/// | `navigate --with-network` | Captures network during navigation  |
-/// | `network` (no --follow)   | Drains buffered network events      |
-/// | `console` (no --follow)   | Calls `getCachedMessages` on the console actor — reads cached messages, not a daemon buffer |
-///
-/// All other commands use `connect_and_get_target`, which routes through
-/// the daemon when available or falls back to direct connection.
-///
-/// The one exception is the home view (bare `ff-rdp`, and the hidden `home`),
-/// which uses `connect_and_list_tabs` instead: it needs the full tab list *and*
-/// an attached target, and getting both from one connection is the point of
-/// iter-239.  It also picks its own route — through a daemon only when the
-/// registry already names a running one, never by starting one
-/// (`kb/decision-log.md` DEC-050).
-///
-/// **Note:** Non-streaming `network` and `console` intentionally use the
-/// daemon path because they drain events the daemon has been buffering in
-/// the background — this is the daemon's primary value proposition for
-/// these commands.
+/// Every browser-touching command opens its own connection to Firefox, does
+/// its work and disconnects; nothing outlives the process. State that must
+/// span commands lives in the browser (the page, its refs, Firefox's console
+/// cache), and event capture across commands is a `--follow` stream started
+/// before them.
 pub fn dispatch(cli: &Cli) -> Result<(), AppError> {
     // For recording: track the resolved selector (refs resolved to CSS) so the
     // recorded step uses the concrete selector, not the ephemeral ref ID.
@@ -433,6 +304,7 @@ fn dispatch_inner(
             wait,
             wait_strategy,
             auto_consent,
+            conditions,
             page,
         }) => {
             let wait_opts = commands::navigate::WaitAfterNav {
@@ -451,10 +323,11 @@ fn dispatch_inner(
                     &wait_opts,
                     *network_timeout,
                     *auto_consent,
+                    conditions,
                     page,
                 )
             } else {
-                commands::navigate::run(cli, url, &wait_opts, *auto_consent, page)
+                commands::navigate::run(cli, url, &wait_opts, *auto_consent, conditions, page)
             }
         }
         Command::Eval(EvalArgs {
@@ -487,6 +360,7 @@ fn dispatch_inner(
             reload_timeout,
             hard,
             no_wait,
+            conditions,
             page,
         }) => {
             if *wait_idle {
@@ -495,6 +369,7 @@ fn dispatch_inner(
                     *idle_ms,
                     *reload_timeout,
                     *hard,
+                    conditions,
                     page,
                 )
             } else {
@@ -504,16 +379,23 @@ fn dispatch_inner(
                         force: *hard,
                         no_wait: *no_wait,
                     },
+                    conditions,
                     page,
                 )
             }
         }
-        Command::Back(BackForwardArgs { no_wait, page }) => {
-            commands::nav_action::run(cli, NavAction::Back { no_wait: *no_wait }, page)
-        }
-        Command::Forward(BackForwardArgs { no_wait, page }) => {
-            commands::nav_action::run(cli, NavAction::Forward { no_wait: *no_wait }, page)
-        }
+        Command::Back(BackForwardArgs { no_wait, page }) => commands::nav_action::run(
+            cli,
+            NavAction::Back { no_wait: *no_wait },
+            &NetworkConditionsArgs::default(),
+            page,
+        ),
+        Command::Forward(BackForwardArgs { no_wait, page }) => commands::nav_action::run(
+            cli,
+            NavAction::Forward { no_wait: *no_wait },
+            &NetworkConditionsArgs::default(),
+            page,
+        ),
         Command::PageText(args) => commands::page_text::run(cli, args),
         Command::Dom(DomArgs {
             dom_command,
@@ -547,7 +429,7 @@ fn dispatch_inner(
             None => {
                 // --ref resolves to a genuinely-unique CSS selector (iter-140 Theme A).
                 let resolved: Option<String> = if let Some(id) = ref_id.as_deref() {
-                    Some(resolve_ref_via_daemon(cli, id)?)
+                    Some(ref_selector(id)?)
                 } else {
                     None
                 };
@@ -609,26 +491,18 @@ fn dispatch_inner(
             follow,
             headers,
             security,
-            since,
             source,
         }) => {
             if *follow {
                 commands::network::run_follow(cli, filter.as_deref(), method.as_deref())
             } else {
-                let since_nav = parse_since_arg(since.as_deref())?;
                 commands::network::run(
                     cli,
                     filter.as_deref(),
                     method.as_deref(),
                     *headers,
                     *security,
-                    since_nav,
                     *source,
-                    // iter-101 Theme D: whether the user *explicitly* passed
-                    // `--since`.  One-shot (`--no-daemon`) cannot honor nav-scoping,
-                    // so an explicit `--since` must fail loudly rather than
-                    // silently return the unfiltered buffer.
-                    since.is_some(),
                 )
             }
         }
@@ -677,7 +551,6 @@ fn dispatch_inner(
                 selector_flag.as_deref(),
                 ref_id.as_deref(),
                 "click",
-                cli,
             )?;
             // Capture the resolved selector for recording (ref → concrete CSS selector).
             *recording_resolved_selector = Some(selector.clone());
@@ -722,7 +595,6 @@ fn dispatch_inner(
                 selector_flag.as_deref(),
                 ref_id.as_deref(),
                 "type",
-                cli,
             )?;
             // Capture the resolved selector for recording.
             *recording_resolved_selector = Some(selector.clone());
@@ -769,10 +641,7 @@ fn dispatch_inner(
             let effective_timeout = *wait_timeout;
             // --ref resolves to a genuinely-unique CSS selector; treat it as a --selector.
             let resolved_selector: Option<String> = if let Some(id) = ref_id.as_deref() {
-                Some(
-                    resolve_ref_via_daemon(cli, id)
-                        .map_err(|e| AppError::User(format!("--ref: {e}")))?,
-                )
+                Some(ref_selector(id)?)
             } else {
                 None
             };
@@ -802,7 +671,7 @@ fn dispatch_inner(
             native,
         }) => {
             let resolved_selector: Option<String> = if let Some(id) = ref_id.as_deref() {
-                Some(resolve_ref_via_daemon(cli, id)?)
+                Some(ref_selector(id)?)
             } else {
                 None
             };
@@ -842,8 +711,8 @@ fn dispatch_inner(
         Command::Storage(StorageArgs { storage_type, key }) => {
             commands::storage::run(cli, storage_type, key.as_deref())
         }
-        Command::Inspect(InspectArgs { actor_id, depth }) => {
-            commands::inspect::run(cli, actor_id, *depth)
+        Command::Inspect(InspectArgs { expression, depth }) => {
+            commands::inspect::run(cli, expression, *depth)
         }
         Command::Sources(SourcesArgs { filter, pattern }) => {
             commands::sources::run(cli, filter.as_deref(), pattern.as_deref())
@@ -909,7 +778,6 @@ fn dispatch_inner(
                 selector_flag.as_deref(),
                 ref_id.as_deref(),
                 "computed",
-                cli,
             )?;
             commands::computed::run(cli, &selector, prop, *all)
         }
@@ -928,7 +796,6 @@ fn dispatch_inner(
                 selector_flag.as_deref(),
                 ref_id.as_deref(),
                 "styles",
-                cli,
             )?;
             // iter-140 Theme C: `--visible`/`--index` resolve an ambiguous
             // selector to one element before `styles` does anything else —
@@ -966,7 +833,6 @@ fn dispatch_inner(
                 selector_flag.as_deref(),
                 ref_id.as_deref(),
                 "cascade",
-                cli,
             )?;
             commands::cascade::run(cli, &selector, prop.as_deref(), *all, *debug_raw)
         }
@@ -976,7 +842,7 @@ fn dispatch_inner(
             include_hidden,
         }) => {
             if let Some(id) = ref_id.as_deref() {
-                let resolved = resolve_ref_via_daemon(cli, id)?;
+                let resolved = ref_selector(id)?;
                 commands::geometry::run(cli, &[resolved], *include_hidden)
             } else {
                 commands::geometry::run(cli, selectors, *include_hidden)
@@ -990,14 +856,12 @@ fn dispatch_inner(
             strict,
         }) => {
             if let Some(id) = ref_id.as_deref() {
-                let resolved = resolve_ref_via_daemon(cli, id)?;
+                let resolved = ref_selector(id)?;
                 commands::responsive::run(cli, &[resolved], widths, *include_hidden, *strict)
             } else {
                 commands::responsive::run(cli, selectors, widths, *include_hidden, *strict)
             }
         }
-        Command::Emulate(args) => commands::emulate::run(cli, args),
-        Command::Throttle(args) => commands::throttle::run(cli, args),
         Command::Manifest => commands::manifest::run(cli),
         Command::Snapshot(SnapshotArgs {
             depth,
@@ -1041,7 +905,6 @@ fn dispatch_inner(
                     None,
                     ref_id.as_deref(),
                     "scroll to",
-                    cli,
                 )?;
                 commands::scroll::run_to(
                     cli,
@@ -1095,13 +958,6 @@ fn dispatch_inner(
             ScrollCommand::Text { text, page } => commands::scroll::run_text(cli, text, page),
             ScrollCommand::Top { page } => commands::scroll::run_top(cli, page),
             ScrollCommand::Bottom { page } => commands::scroll::run_bottom(cli, page),
-        },
-        Command::DaemonInternal => {
-            server::run_daemon(&cli.host, cli.port, cli.daemon_timeout).map_err(AppError::Internal)
-        }
-        Command::Daemon { daemon_command } => match daemon_command {
-            DaemonCommand::Status => crate::daemon::client::run_daemon_status(cli),
-            DaemonCommand::Stop => crate::daemon::client::run_daemon_stop(cli, cli.port),
         },
         Command::Doctor => commands::doctor::run(cli),
         Command::Profiles { profiles_command } => match profiles_command {

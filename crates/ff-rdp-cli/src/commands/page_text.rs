@@ -62,10 +62,6 @@ pub fn run(cli: &Cli, args: &PageTextArgs) -> Result<(), AppError> {
         None,
         cli.is_verbose(),
     );
-    // iter-134: always present, not gated by --verbose — an
-    // agent can tell how this command executed without a
-    // separate `daemon status` round-trip.
-    crate::connection_meta::merge_route(&mut meta, ctx.via_daemon);
 
     // `results` holds the text string directly; the old `.text` alias has been
     // removed (iter-61j A1).  Use `--jq '.results'` to extract the text.

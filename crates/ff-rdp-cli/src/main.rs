@@ -3,9 +3,6 @@ use clap::Parser;
 mod cli;
 mod commands;
 mod connection_meta;
-mod daemon;
-mod daemon_record;
-mod daemon_status;
 mod dispatch;
 mod error;
 mod hints;
@@ -31,7 +28,7 @@ use error::AppError;
 /// clap's generic "unexpected argument" error — never for real parsing.
 fn find_subcommand_token(args: &[String]) -> Option<&str> {
     // Allowlist of value-taking global flags defined on `Cli`. All other
-    // globals are booleans (`--no-daemon`, `--all`, etc.) and do not consume
+    // globals are booleans (`--verbose`, `--all`, etc.) and do not consume
     // the next argv token. Keep in sync with `Cli` in `cli/args.rs`.
     const VALUE_GLOBALS: &[&str] = &[
         "--host",
@@ -40,7 +37,6 @@ fn find_subcommand_token(args: &[String]) -> Option<&str> {
         "--tab-id",
         "--jq",
         "--timeout",
-        "--daemon-timeout",
         "--limit",
         "--sort",
         "--fields",
@@ -146,23 +142,9 @@ fn init_tracing(cli: &Cli) {
             LogLevel::Warn => "warn".to_owned(),
             LogLevel::Error => "error".to_owned(),
         };
-        // iter-240 Part A Theme A: hand the same directive to any daemon this
-        // invocation autostarts, as `RUST_LOG` in the child's environment.
-        //
-        // `--log-level trace` used to configure *this* process only. The
-        // daemon is a separate `ff-rdp _daemon` process, and it inherits the
-        // parent's environment — so a daemon started by a plain `ff-rdp
-        // navigate` logged nothing, and re-running with `--log-level trace`
-        // produced a fully-traced CLI talking to a silent daemon that was
-        // already running from before. `RUST_LOG=trace ff-rdp …` did work, by
-        // accident of inheritance, which is how iteration 224 got as far as it
-        // did; making the flag do the same thing removes the trap.
-        crate::daemon::process::remember_daemon_log_directive(directive.clone());
         EnvFilter::new(directive)
     } else {
-        // Fall back to RUST_LOG if set; otherwise suppress everything.  A set
-        // `RUST_LOG` reaches an autostarted daemon through plain environment
-        // inheritance, so nothing extra is needed on this path.
+        // Fall back to RUST_LOG if set; otherwise suppress everything.
         EnvFilter::from_default_env()
     };
 
@@ -309,7 +291,7 @@ fn run(cli: &Cli) {
     // is a unit variant — it carries no elapsed time — and the CLI used to
     // fabricate `after_ms: 0`, producing the useless
     // "operation timed out after 0ms (phase: recv)" that dogfooding kept
-    // hitting when the daemon's RPC channel was contended.  The socket's read
+    // hitting.  The socket's read
     // timeout *is* the duration that elapsed, and it is known right here.
     error::remember_socket_timeout_ms(cli.timeout);
 
@@ -434,12 +416,12 @@ mod main_tests {
         assert!(!is_type_invocation(&args));
     }
 
-    // Boolean global flags (`--no-daemon`, `--all`, etc.) must NOT consume the
+    // Boolean global flags (`--verbose`, `--all`, etc.) must NOT consume the
     // following token; otherwise the heuristic swallows `type` and the hint
     // never fires.
     #[test]
     fn detects_type_after_boolean_global_flag() {
-        let args: Vec<String> = ["ff-rdp", "--no-daemon", "type", "--bogus"]
+        let args: Vec<String> = ["ff-rdp", "--verbose", "type", "--bogus"]
             .iter()
             .map(ToString::to_string)
             .collect();
@@ -450,7 +432,7 @@ mod main_tests {
     fn detects_type_after_mixed_globals() {
         let args: Vec<String> = [
             "ff-rdp",
-            "--no-daemon",
+            "--verbose",
             "--port",
             "6000",
             "--detail",

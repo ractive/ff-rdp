@@ -22,7 +22,7 @@ use sha2::{Digest, Sha256};
 
 use super::super::english_language_pack::{self, Pack, read_regular};
 use super::{LaunchHooks, USER_JS, startup};
-use crate::daemon::process;
+use crate::util::process;
 use crate::error::AppError;
 use crate::util::profile_dir::ManagedProfileGuard;
 

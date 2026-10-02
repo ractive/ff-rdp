@@ -79,14 +79,12 @@ pub fn run_core(
     wait_for_network: Option<&str>,
     network_timeout: Option<u64>,
     opts: &ClickOptions<'_>,
-) -> Result<(Value, bool), AppError> {
+) -> Result<Value, AppError> {
     let mut ctx = connect_and_get_target(cli)?;
-    tracing::debug!(target: "ff_rdp_cli::action_route",
-        "FF_RDP_ACTION_ROUTE action=click via_daemon={}", ctx.via_daemon);
 
-    // When --wait-for-network is requested in direct mode, subscribe to the
-    // watcher before clicking so we don't miss early events.
-    let watcher_sub = if wait_for_network.is_some() && !ctx.via_daemon {
+    // When --wait-for-network is requested, subscribe to the watcher before
+    // clicking so we don't miss early events.
+    let watcher_sub = if wait_for_network.is_some() {
         let tab_actor = ctx.target_tab_actor().clone();
         let watcher_actor =
             TabActor::get_watcher(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;
@@ -95,16 +93,6 @@ pub fn run_core(
         Some(watcher_actor)
     } else {
         None
-    };
-
-    // For daemon mode with --wait-for-network, start streaming before click
-    // so events that arrive immediately after the click aren't dropped.
-    let daemon_streaming = if wait_for_network.is_some() && ctx.via_daemon {
-        use crate::daemon::client::start_daemon_stream;
-        start_daemon_stream(ctx.transport_mut(), "network-event").map_err(AppError::from)?;
-        true
-    } else {
-        false
     };
 
     let wait_timeout_ms = opts.wait_timeout_ms.unwrap_or(cli.timeout);
@@ -208,12 +196,7 @@ pub fn run_core(
     // Gather the network result if requested.
     let network_result = if let Some(pattern) = wait_for_network {
         let timeout_ms = network_timeout.unwrap_or(cli.timeout);
-        let matched = if ctx.via_daemon {
-            wait_for_matching_request_daemon(&mut ctx, pattern, timeout_ms)?
-        } else {
-            wait_for_matching_request_direct(&mut ctx, pattern, timeout_ms)?
-        };
-        Some(matched)
+        Some(wait_for_matching_request(&mut ctx, pattern, timeout_ms)?)
     } else {
         None
     };
@@ -222,10 +205,6 @@ pub fn run_core(
     if let Some(ref watcher_actor) = watcher_sub {
         let _ =
             WatcherActor::unwatch_resources(ctx.transport_mut(), watcher_actor, &["network-event"]);
-    }
-    if daemon_streaming {
-        use crate::daemon::client::stop_daemon_stream;
-        let _ = stop_daemon_stream(ctx.transport_mut(), "network-event");
     }
 
     // Build the output.
@@ -259,7 +238,7 @@ pub fn run_core(
         )?;
     }
 
-    Ok((result, ctx.via_daemon))
+    Ok(result)
 }
 
 pub fn run(
@@ -269,8 +248,7 @@ pub fn run(
     network_timeout: Option<u64>,
     opts: &ClickOptions<'_>,
 ) -> Result<(), AppError> {
-    let (mut result, via_daemon) =
-        run_core(cli, selector, wait_for_network, network_timeout, opts)?;
+    let mut result = run_core(cli, selector, wait_for_network, network_timeout, opts)?;
 
     // Preserve the pre-iter-61c CLI output shape: `settle_method` belongs in
     // `meta`, not in `results`.  The script runner reads it from `results`
@@ -296,8 +274,6 @@ pub fn run(
         None,
         cli.is_verbose(),
     );
-    // iter-134: always present, not gated by --verbose.
-    crate::connection_meta::merge_route(&mut meta, via_daemon);
     let envelope = output::envelope(&result, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Click).with_selector(selector);
@@ -329,13 +305,8 @@ fn selector_exists(
 /// Enumerate this tab's frame targets — the one shared entry point every
 /// frame-aware call site in this file goes through.
 ///
-/// Delegates to [`crate::commands::frame_targets::fetch_frame_targets`], which
-/// picks the mechanism the current connection supports: the daemon's recorded
-/// target snapshot when proxied, the live `watchTargets` drain when direct.
-/// Before iter-137 this always took the direct path, which is a no-op through
-/// the daemon (the daemon already subscribed at startup) — so `--frame` and
-/// the cross-origin frame scan reported "0 frame(s) available" for every
-/// invocation that did not pass `--no-daemon`.
+/// Delegates to [`crate::commands::frame_targets::fetch_frame_targets`], the
+/// live `watchTargets` drain.
 ///
 /// **Callers MUST NOT call this more than once per `click` invocation.**
 /// `enumerate_frame_targets` deliberately never sends `unwatchTargets` (see
@@ -630,12 +601,12 @@ fn click_in_scanned_frame(
     )))
 }
 
-/// Wait for a resolved network request matching `pattern` using the daemon stream.
+/// Wait for a resolved network request matching `pattern`.
 ///
-/// The daemon is already streaming events to us (started before the click).
-/// We read the stream until we find a completed request whose URL contains
-/// `pattern`, or until the timeout fires.
-fn wait_for_matching_request_daemon(
+/// The watcher subscription was set up before the click. We read the event
+/// stream until we find a completed request whose URL contains `pattern`, or
+/// until the timeout fires.
+fn wait_for_matching_request(
     ctx: &mut ConnectedTab,
     pattern: &str,
     timeout_ms: u64,
@@ -705,21 +676,6 @@ fn run_wait_loop(
             Err(e) => return Err(AppError::from(e)),
         }
     }
-}
-
-/// Wait for a resolved network request matching `pattern` in direct (non-daemon) mode.
-///
-/// The watcher subscription was already set up before the click. We drain
-/// events from the transport until we find a completed matching request or
-/// the timeout fires.
-fn wait_for_matching_request_direct(
-    ctx: &mut ConnectedTab,
-    pattern: &str,
-    timeout_ms: u64,
-) -> Result<Value, AppError> {
-    // Reuse the same loop logic — the transport delivers watcher events the same
-    // way in direct mode; the watcher subscription was set up before the click.
-    wait_for_matching_request_daemon(ctx, pattern, timeout_ms)
 }
 
 /// Build a single network entry JSON from a matched resource + its update.

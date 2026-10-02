@@ -5,12 +5,9 @@ use ff_rdp_core::{
     ActorId, DeviceActor, FrontKind, ProtocolError, RdpConnection, RdpTransport, Registry,
     ResourceCommand, RootActor, Session, TabActor, TabInfo, TargetInfo,
 };
-use serde_json::json;
+
 
 use crate::cli::args::Cli;
-use crate::daemon::client::{
-    ConnectionTarget, TargetEndpoint, TargetSnapshot, resolve_connection_target,
-};
 use crate::error::AppError;
 
 // Debug-only observations have one origin per scope and add no protocol traffic.
@@ -29,7 +26,6 @@ fn trace_connection_timing(scope: &str, stage: &str, origin: Option<Instant>) {
 /// discovered during the `getTarget` handshake.
 pub struct ConnectedTab {
     session: Session,
-    pub(crate) target_endpoint: Option<TargetEndpoint>,
     target_timeout: Duration,
     /// Firefox major version, if detectable from the greeting or device actor.
     ///
@@ -41,189 +37,36 @@ pub struct ConnectedTab {
     pub(crate) firefox_version: Option<u32>,
     target: TargetInfo,
     tab_actor: ActorId,
-    /// Whether this connection goes through the daemon proxy.
-    pub(crate) via_daemon: bool,
 }
 
-/// Connect to Firefox (directly or via daemon), resolve the target tab, and
-/// call `getTarget` on it.
+/// Connect to Firefox, resolve the target tab, and call `getTarget` on it.
 ///
-/// When a daemon is available, the CLI connects to the daemon's proxy port on
-/// localhost.  The daemon transparently forwards RDP frames, so the rest of
-/// the protocol handshake is identical.
+/// Every command opens its own connection and drops it when it returns.
 pub fn connect_and_get_target(cli: &Cli) -> Result<ConnectedTab, AppError> {
     let timing_origin =
         tracing::enabled!(target: "ff_rdp_cli::navigation_timing", tracing::Level::DEBUG)
             .then(Instant::now);
     trace_connection_timing("connect", "entry", timing_origin);
-    let target = resolve_connection_target(&cli.host, cli.port, cli.daemon_timeout, cli.no_daemon);
-
-    let (connect_host, connect_port, via_daemon, auth_token, deferred_warning) = match target {
-        ConnectionTarget::Daemon { port, auth_token } => {
-            ("127.0.0.1".to_owned(), port, true, Some(auth_token), None)
-        }
-        ConnectionTarget::Direct { deferred_warning } => {
-            (cli.host.clone(), cli.port, false, None, deferred_warning)
-        }
-    };
-
-    // iter-164 (defect 2): the caller asked for daemon mode, autostart did not
-    // deliver one, and we are about to run over a direct connection instead.
-    // Historically `deferred_warning` was printed only if the *direct* fallback
-    // also failed, so on the (common, under-load) success path the fact that
-    // daemon mode silently degraded was dropped on the floor. Remember it so
-    // `meta` can report it under `--verbose`.
-    if let Some(w) = &deferred_warning {
-        crate::connection_meta::remember_daemon_fallback(w.clone());
-    }
-
-    trace_connection_timing("connect", "route_resolved", timing_origin);
-    let connection = connect_to_firefox(
-        &connect_host,
-        connect_port,
-        cli,
-        via_daemon,
-        auth_token.as_deref(),
-    )
-    .inspect_err(|_| {
-        // The direct fallback failed too — surface the original
-        // daemon-side warning alongside the connection error so the user
-        // sees the full picture.
-        if let Some(w) = &deferred_warning {
-            // stderr-ok: (b) debug/diagnostic — the real connection error
-            // still propagates through the envelope via `?` below.
-            eprintln!("{w}");
-        }
-    })
-    .map_err(ConnectFailure::into_app_error)?;
+    let connection =
+        connect_to_firefox(&cli.host, cli.port, cli).map_err(ConnectFailure::into_app_error)?;
     trace_connection_timing("connect", "greeted", timing_origin);
 
-    handshake_and_resolve_tab(
-        connection,
-        cli,
-        via_daemon,
-        auth_token
-            .as_deref()
-            .map(|token| TargetEndpoint::new(connect_port, token)),
-    )
-    .inspect(|_| trace_connection_timing("connect", "attached", timing_origin))
+    handshake_and_resolve_tab(connection, cli)
+        .inspect(|_| trace_connection_timing("connect", "attached", timing_origin))
 }
 
-/// Like [`connect_and_get_target`] but always bypasses the daemon and
-/// connects directly to Firefox.  Use this for commands (e.g. screenshot)
-/// whose protocol interactions are incompatible with the daemon proxy.
-pub fn connect_direct(cli: &Cli) -> Result<ConnectedTab, AppError> {
-    let connection = connect_to_firefox(&cli.host, cli.port, cli, false, None)
-        .map_err(ConnectFailure::into_app_error)?;
-
-    handshake_and_resolve_tab(connection, cli, false, None)
-}
-
-/// Establish a TCP connection to Firefox (or daemon proxy) and produce
-/// user-friendly errors on failure.
-///
-/// When `auth_token` is `Some`, the token is sent as the very first frame
-/// (`{"auth": "<token>"}`) to authenticate with the daemon before the normal
-/// RDP handshake begins.
-fn connect_to_firefox(
-    host: &str,
-    port: u16,
-    cli: &Cli,
-    via_daemon: bool,
-    auth_token: Option<&str>,
-) -> Result<RdpConnection, ConnectFailure> {
+/// Establish a TCP connection to Firefox and produce user-friendly errors on
+/// failure.
+fn connect_to_firefox(host: &str, port: u16, cli: &Cli) -> Result<RdpConnection, ConnectFailure> {
     let timeout = Duration::from_millis(cli.timeout);
-
-    if let Some(token) = auth_token {
-        // Daemon auth path:
-        // 1. Open raw TCP (no greeting read yet).
-        // 2. Send auth frame.
-        // 3. Then proceed with the normal connect (reads greeting).
-        let mut transport =
-            RdpTransport::connect_raw(host, port, timeout).map_err(|e| {
-                let detail = e.to_string();
-                let app = match e {
-                    ProtocolError::ConnectionFailed(_) | ProtocolError::Timeout => {
-                        AppError::Connection(format!(
-                            "could not connect to daemon on port {port} — try --no-daemon to connect directly to Firefox.\n\
-                             hint: run `ff-rdp doctor` to inspect daemon health."
-                        ))
-                    }
-                    other => AppError::from(other),
-                };
-                ConnectFailure::new(app, detail)
-            })?;
-
-        // Send the auth frame before any other request.
-        transport.send(&json!({"auth": token})).map_err(|e| {
-            ConnectFailure::same(AppError::Internal(anyhow::anyhow!(
-                "sending daemon auth frame: {e}"
-            )))
-        })?;
-
-        // Read the greeting (daemon sends it after successful auth).
-        // If the daemon closes the connection here it rejected our auth token.
-        // If it times out, the daemon is overloaded or the socket is stale.
-        let greeting = transport.recv().map_err(|e| {
-            let detail = e.to_string();
-            // Distinguish: a read timeout (or transient I/O error) means the
-            // daemon isn't responding, not that the token was wrong
-            // (E1 — honest error messages).
-            let app = if e.is_transient() {
-                AppError::Timeout(
-                    "daemon did not respond within the timeout after auth — \
-                     the daemon may be overloaded or the connection is stale.\n\
-                     hint: run `ff-rdp daemon stop` then retry, or use --no-daemon."
-                        .to_string(),
-                )
-            } else {
-                AppError::User(format!(
-                    "daemon auth rejected (wrong token): {e}\n\
-                     hint: stop the running daemon (`ff-rdp daemon stop`) or use --no-daemon."
-                ))
-            };
-            ConnectFailure::new(app, detail)
-        })?;
-
-        // Verify protocol version — a mismatch means the running daemon is a
-        // different build than this CLI binary.  A missing or non-numeric
-        // `protocol_version` field is also treated as a mismatch (reported as
-        // daemon=0) — a pre-versioning daemon predates this CLI and must be
-        // restarted to pick up the new handshake.
-        let daemon_version = greeting
-            .get("protocol_version")
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|v| u32::try_from(v).ok())
-            .unwrap_or(0);
-        let expected = crate::daemon::server::DAEMON_PROTOCOL_VERSION;
-        if daemon_version != expected {
-            return Err(ConnectFailure::same(AppError::DaemonVersionMismatch {
-                daemon: daemon_version,
-                cli: expected,
-            }));
-        }
-
-        // Now wrap in RdpConnection. We already consumed the greeting; pass it
-        // through so the Firefox version stays available for connection_meta.
-        return Ok(RdpConnection::from_authenticated_transport(
-            transport, &greeting,
-        ));
-    }
-
     RdpConnection::connect(host, port, timeout).map_err(|e| {
         let detail = e.to_string();
         let app = match e {
-            ProtocolError::ConnectionFailed(_) | ProtocolError::Timeout if !via_daemon => {
+            ProtocolError::ConnectionFailed(_) | ProtocolError::Timeout => {
                 AppError::Connection(format!(
                     "could not connect to Firefox at {}:{} — is Firefox running with --start-debugger-server {}?\n\
                      hint: run `ff-rdp doctor` for a full diagnostic, or `ff-rdp launch` to start Firefox with debugging enabled.",
                     cli.host, cli.port, cli.port
-                ))
-            }
-            ProtocolError::ConnectionFailed(_) | ProtocolError::Timeout if via_daemon => {
-                AppError::Connection(format!(
-                    "could not connect to daemon on port {port} — try --no-daemon to connect directly to Firefox.\n\
-                     hint: run `ff-rdp doctor` to inspect daemon health."
                 ))
             }
             other => AppError::from(other),
@@ -257,37 +100,9 @@ impl ConnectFailure {
         }
     }
 
-    /// A failure whose raw detail is simply the user-facing message — used for
-    /// the daemon-handshake errors that have no distinct transport-level text.
-    fn same(app: AppError) -> Self {
-        let detail = app.to_string();
-        Self::new(app, detail)
-    }
-
     fn into_app_error(self) -> AppError {
         *self.app
     }
-}
-
-/// How [`connect_and_list_tabs`] should reach Firefox.
-///
-/// This is an explicit parameter rather than a lookup inside the primitive
-/// because [`resolve_connection_target`] *starts* a daemon when it does not
-/// find one, and the home view must never do that ([[decision-log]] DEC-050:
-/// "the home view starts nothing"). Making the caller hand over the registry
-/// entry it already read turns that rule into something the type system keeps,
-/// and saves the redundant second registry read the old `page_block` paid for.
-#[derive(Clone, Copy)]
-pub enum TabListRouting<'a> {
-    /// Straight to Firefox's debugger port. Touches no daemon, starts nothing.
-    Direct,
-    /// Through the proxy of a daemon that is **already running** — so the refs
-    /// handed out by a later [`TabListing::attach`] are live handles in that
-    /// daemon's ref store.
-    RunningDaemon {
-        proxy_port: u16,
-        auth_token: &'a str,
-    },
 }
 
 /// Why [`connect_and_list_tabs`] gave up.
@@ -343,12 +158,10 @@ impl TabListError {
 /// two TCP round trips and two RDP handshakes for one invocation of the
 /// command the `SessionStart` hook runs on every agent session.
 pub struct TabListing {
-    target_endpoint: Option<TargetEndpoint>,
     connection: RdpConnection,
     /// The version the RDP greeting carried, before any device-actor fallback.
     greeting_version: Option<u32>,
     tabs: Vec<TabInfo>,
-    via_daemon: bool,
 }
 
 impl TabListing {
@@ -380,8 +193,6 @@ impl TabListing {
             mut connection,
             greeting_version,
             tabs,
-            via_daemon,
-            target_endpoint,
         } = self;
 
         // When the RDP greeting omits the `ua` field (some Firefox builds strip
@@ -414,7 +225,6 @@ impl TabListing {
         let target_timeout = Duration::from_millis(cli.timeout);
         let target_info = resolve_target_until(
             connection.transport_mut(),
-            target_endpoint.as_ref(),
             &tab_actor,
             Instant::now() + target_timeout,
         )?;
@@ -433,13 +243,11 @@ impl TabListing {
         trace_connection_timing("attach", "registered", timing_origin);
 
         Ok(ConnectedTab {
-            target_endpoint,
             target_timeout,
             session,
             firefox_version,
             target: target_info,
             tab_actor,
-            via_daemon,
         })
     }
 }
@@ -447,39 +255,18 @@ impl TabListing {
 /// Connect once and list every tab, leaving the connection open so the caller
 /// can [`attach`](TabListing::attach) to one of them without reconnecting.
 ///
-/// Unlike [`connect_and_get_target`], the route is the caller's decision (see
-/// [`TabListRouting`]) and no daemon is ever started. Unlike both existing
-/// entry points, the error distinguishes "never reached the browser" from
-/// "reached it, and `listTabs` failed" — the split the home view renders as
-/// `reachable: false` vs `reachable: true` with a `detail`.
-pub fn connect_and_list_tabs(
-    cli: &Cli,
-    routing: TabListRouting<'_>,
-) -> Result<TabListing, TabListError> {
-    let (host, port, via_daemon, auth_token) = match routing {
-        TabListRouting::Direct => (cli.host.as_str(), cli.port, false, None),
-        TabListRouting::RunningDaemon {
-            proxy_port,
-            auth_token,
-        } => ("127.0.0.1", proxy_port, true, Some(auth_token)),
-    };
-
-    let connection = connect_to_firefox(host, port, cli, via_daemon, auth_token)
+/// Unlike [`connect_and_get_target`], the error distinguishes "never reached
+/// the browser" from "reached it, and `listTabs` failed" — the split the home
+/// view renders as `reachable: false` vs `reachable: true` with a `detail`.
+pub fn connect_and_list_tabs(cli: &Cli) -> Result<TabListing, TabListError> {
+    let connection = connect_to_firefox(&cli.host, cli.port, cli)
         .map_err(|ConnectFailure { app, detail }| TabListError::Connect { error: app, detail })?;
 
-    handshake_and_list_tabs(
-        connection,
-        via_daemon,
-        auth_token.map(|token| TargetEndpoint::new(port, token)),
-    )
+    handshake_and_list_tabs(connection)
 }
 
 /// Greet, remember the version, and run `listTabs`.
-fn handshake_and_list_tabs(
-    mut connection: RdpConnection,
-    via_daemon: bool,
-    target_endpoint: Option<TargetEndpoint>,
-) -> Result<TabListing, TabListError> {
+fn handshake_and_list_tabs(mut connection: RdpConnection) -> Result<TabListing, TabListError> {
     let timing_origin =
         tracing::enabled!(target: "ff_rdp_cli::navigation_timing", tracing::Level::DEBUG)
             .then(Instant::now);
@@ -505,23 +292,16 @@ fn handshake_and_list_tabs(
 
     trace_connection_timing("list_tabs", "parsed", timing_origin);
     Ok(TabListing {
-        target_endpoint,
         connection,
         greeting_version,
         tabs,
-        via_daemon,
     })
 }
 
 /// Run the RDP handshake: list tabs, resolve the target tab, call `getTarget`,
 /// and register the discovered actor fronts in the session registry.
-fn handshake_and_resolve_tab(
-    connection: RdpConnection,
-    cli: &Cli,
-    via_daemon: bool,
-    target_endpoint: Option<TargetEndpoint>,
-) -> Result<ConnectedTab, AppError> {
-    handshake_and_list_tabs(connection, via_daemon, target_endpoint)
+fn handshake_and_resolve_tab(connection: RdpConnection, cli: &Cli) -> Result<ConnectedTab, AppError> {
+    handshake_and_list_tabs(connection)
         .map_err(TabListError::into_app_error)?
         .attach(cli)
 }
@@ -538,129 +318,26 @@ fn register_target_fronts(registry: &Arc<Registry>, target: &TargetInfo) {
     registry.register(console_id, FrontKind::Console, Some(target_id));
 }
 
-/// `None` means an eligible watched descriptor is between documents. Neither
-/// pending nor an endpoint failure permits a shared legacy lookup.
-pub(crate) fn resolve_target_snapshot(
+/// Call `getTarget` on `descriptor` under `deadline`.
+pub(crate) fn resolve_target(
     transport: &mut RdpTransport,
-    endpoint: Option<&TargetEndpoint>,
     descriptor: &ActorId,
     deadline: Instant,
-) -> Result<Option<TargetInfo>, AppError> {
-    if let Some(endpoint) = endpoint {
-        let snapshot = endpoint.snapshot(descriptor, deadline);
-        #[cfg(test)]
-        match &snapshot {
-            Ok(TargetSnapshot::Live(target)) => {
-                super::type_text::trace_submission("side_snapshot_consumed", deadline, target);
-            }
-            Ok(TargetSnapshot::Pending) => {
-                super::type_text::trace_submission("side_snapshot_consumed", deadline, "pending");
-            }
-            Ok(TargetSnapshot::StartupRecovery) => super::type_text::trace_submission(
-                "side_snapshot_consumed",
-                deadline,
-                "startup_recovery",
-            ),
-            Ok(TargetSnapshot::Unmanaged) => {
-                super::type_text::trace_submission("side_snapshot_consumed", deadline, "unmanaged");
-            }
-            Err(error) => {
-                super::type_text::trace_submission("side_snapshot_error", deadline, error);
-            }
-        }
-        match snapshot? {
-            TargetSnapshot::Live(mut target) => {
-                // The immutable WindowGlobal actor identifies this document;
-                // its availability-time URL does not track pushState/hash.
-                // Use the existing main RPC path, under the same deadline.
-                let metadata = {
-                    // A Live side-channel form can die before listFrames is
-                    // answered. Guard the sampled document, not the installed
-                    // (possibly older) document, and restore any outer guard.
-                    struct MetadataGuard<'a> {
-                        transport: &'a mut RdpTransport,
-                        previous: Option<u64>,
-                    }
-                    impl Drop for MetadataGuard<'_> {
-                        fn drop(&mut self) {
-                            self.transport.set_target_guard(self.previous);
-                        }
-                    }
-                    let previous = transport.target_guard();
-                    transport.set_target_guard(target.inner_window_id);
-                    let guard = MetadataGuard {
-                        transport,
-                        previous,
-                    };
-                    #[cfg(test)]
-                    super::type_text::trace_submission("metadata_begin", deadline, &target.actor);
-                    guard.transport.with_read_deadline(deadline, |t| {
-                        ff_rdp_core::WindowGlobalTarget::current_url(t, &target.actor)
-                    })
-                };
-                #[cfg(test)]
-                super::type_text::trace_submission(
-                    "metadata_outcome",
-                    deadline,
-                    (&target.actor, &metadata),
-                );
-                target.url = match metadata {
-                    Ok(url) => url,
-                    // Classify before AppError erases the typed actor error.
-                    // Only sampled-document lifecycle loss is retryable;
-                    // endpoint, authentication and other protocol errors stay errors.
-                    Err(
-                        ProtocolError::EvalTargetDestroyed { .. }
-                        | ProtocolError::ActorError {
-                            kind: ff_rdp_core::ActorErrorKind::UnknownActor,
-                            ..
-                        },
-                    ) => return Ok(None),
-                    Err(error) => return Err(error.into()),
-                };
-                return Ok(Some(target));
-            }
-            TargetSnapshot::Pending => return Ok(None),
-            TargetSnapshot::StartupRecovery => {
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                let request = json!({"to":"daemon", "type":"recover-startup-target",
-                    "descriptor":descriptor, "remaining_ms":remaining.as_millis()});
-                // This handshake owns no document: old destruction packets
-                // still queued on the proxy must not abort its daemon reply.
-                let previous = transport.target_guard();
-                transport.set_target_guard(None);
-                let recovered = transport.with_read_deadline(deadline, |t| {
-                    t.send(&request)?;
-                    ff_rdp_core::transport::recv_reply_from(t, "daemon")
-                });
-                transport.set_target_guard(previous);
-                recovered?;
-                return Ok(None);
-            }
-            TargetSnapshot::Unmanaged => {}
-        }
-    }
+) -> Result<TargetInfo, AppError> {
     transport
         .with_read_deadline(deadline, |t| TabActor::get_target(t, descriptor))
-        .map(Some)
         .map_err(AppError::from)
 }
 
 fn resolve_target_until(
     transport: &mut RdpTransport,
-    endpoint: Option<&TargetEndpoint>,
     descriptor: &ActorId,
     deadline: Instant,
 ) -> Result<TargetInfo, AppError> {
-    loop {
-        if let Some(target) = resolve_target_snapshot(transport, endpoint, descriptor, deadline)? {
-            return Ok(target);
-        }
-        let remaining = deadline
-            .checked_duration_since(Instant::now())
-            .ok_or_else(|| AppError::Timeout("waiting for watched tab target".into()))?;
-        std::thread::sleep(remaining.min(Duration::from_millis(10)));
+    if Instant::now() >= deadline {
+        return Err(AppError::Timeout("waiting for tab target".into()));
     }
+    resolve_target(transport, descriptor, deadline)
 }
 
 impl ConnectedTab {
@@ -757,14 +434,12 @@ impl ConnectedTab {
         // Best effort is one acquisition, including a Pending snapshot. Callers
         // such as page-view settlement own their retry budget and must get control
         // back instead of spending the full CLI timeout inside this refresh.
-        match resolve_target_snapshot(
+        match resolve_target(
             self.session.transport_mut(),
-            self.target_endpoint.as_ref(),
             &self.tab_actor,
             Instant::now() + self.target_timeout,
         ) {
-            Ok(Some(fresh)) => self.install_target(fresh),
-            Ok(None) => {}
+            Ok(fresh) => self.install_target(fresh),
             Err(e) => {
                 // stderr-ok: (b) warn-and-continue — non-fatal per the doc
                 // comment above; retried with a fresh target on next eval.
@@ -785,12 +460,7 @@ impl ConnectedTab {
 
     /// Acquire under the caller's existing deadline and install atomically.
     pub(crate) fn refresh_target_until(&mut self, deadline: Instant) -> Result<ActorId, AppError> {
-        let fresh = resolve_target_until(
-            self.session.transport_mut(),
-            self.target_endpoint.as_ref(),
-            &self.tab_actor,
-            deadline,
-        )?;
+        let fresh = resolve_target_until(self.session.transport_mut(), &self.tab_actor, deadline)?;
         let console_actor = fresh.console_actor.clone();
         self.install_target(fresh);
         Ok(console_actor)
@@ -807,45 +477,27 @@ impl ConnectedTab {
     ) -> Result<ActorId, AppError> {
         loop {
             if Instant::now() >= deadline {
-                #[cfg(test)]
-                super::type_text::trace_submission("handover_deadline_exhausted", deadline, ());
                 return Err(AppError::Timeout(
                     "waiting for submission target handover".into(),
                 ));
             }
             let pending_before = self.take_navigation_started();
-            let snapshot = resolve_target_snapshot(
-                self.session.transport_mut(),
-                self.target_endpoint.as_ref(),
-                &self.tab_actor,
-                deadline,
-            )
+            let snapshot = resolve_target(self.session.transport_mut(), &self.tab_actor, deadline)
             .map_err(|error| {
                 let timed_out =
                     Instant::now() >= deadline || matches!(error, AppError::RdpTimeout { .. });
-                #[cfg(test)]
-                super::type_text::trace_submission(
-                    "handover_timeout_conversion",
-                    deadline,
-                    (&error, timed_out),
-                );
                 if timed_out {
                     AppError::Timeout("waiting for submission target handover".into())
                 } else {
                     error
                 }
             })?;
-            if let Some(fresh) = snapshot {
+            {
+                let fresh = snapshot;
                 let replaced = matches!((inner_window_id, fresh.inner_window_id),
                     (Some(old), Some(new)) if old != new);
                 let moved = matches!((url, fresh.url.as_deref()),
                     (Some(old), Some(new)) if old != new);
-                #[cfg(test)]
-                super::type_text::trace_submission(
-                    "replacement_decision",
-                    deadline,
-                    (&fresh.actor, replaced, moved),
-                );
                 if replaced || moved {
                     let console = fresh.console_actor.clone();
                     self.install_target(fresh);
@@ -945,13 +597,11 @@ impl ConnectedTab {
         let session = Session::new(transport);
         register_target_fronts(session.registry(), &target);
         Self {
-            target_endpoint: None,
             target_timeout: Duration::from_secs(5),
             session,
             firefox_version: None,
             target,
             tab_actor: ActorId::from("conn0/tab1"),
-            via_daemon: false,
         }
     }
 
@@ -1004,7 +654,7 @@ mod tests {
 
     use clap::Parser as _;
     use ff_rdp_core::transport::encode_frame;
-    use serde_json::Value;
+    use serde_json::{Value, json};
 
     use super::*;
 
@@ -1083,7 +733,6 @@ mod tests {
                 "127.0.0.1",
                 "--port",
                 &port,
-                "--no-daemon",
                 "--timeout",
                 "5000",
             ];
@@ -1200,7 +849,7 @@ mod tests {
         let mock = MockFirefox::start(true);
         let cli = mock.cli(&[]);
 
-        let listing = connect_and_list_tabs(&cli, TabListRouting::Direct).unwrap_or_else(|e| {
+        let listing = connect_and_list_tabs(&cli).unwrap_or_else(|e| {
             panic!("connect_and_list_tabs: {}", e.into_app_error());
         });
 
@@ -1239,7 +888,7 @@ mod tests {
         let mock = MockFirefox::start(true);
         let cli = mock.cli(&["--tab", "2"]);
 
-        let listing = connect_and_list_tabs(&cli, TabListRouting::Direct)
+        let listing = connect_and_list_tabs(&cli)
             .unwrap_or_else(|e| panic!("connect_and_list_tabs: {}", e.into_app_error()));
         let ctx = listing.attach(&cli).expect("attach");
 
@@ -1255,7 +904,7 @@ mod tests {
     fn same_target_refresh_keeps_handles_alive_and_updates_metadata() {
         let mock = MockFirefox::start(true);
         let cli = mock.cli(&[]);
-        let mut ctx = connect_and_list_tabs(&cli, TabListRouting::Direct)
+        let mut ctx = connect_and_list_tabs(&cli)
             .unwrap_or_else(|e| panic!("connect_and_list_tabs: {}", e.into_app_error()))
             .attach(&cli)
             .expect("attach");
@@ -1278,7 +927,7 @@ mod tests {
     fn target_replacement_invalidates_old_handles_and_registers_new_fronts() {
         let mock = MockFirefox::start(true);
         let cli = mock.cli(&[]);
-        let mut ctx = connect_and_list_tabs(&cli, TabListRouting::Direct)
+        let mut ctx = connect_and_list_tabs(&cli)
             .unwrap_or_else(|e| panic!("connect_and_list_tabs: {}", e.into_app_error()))
             .attach(&cli)
             .expect("attach");
@@ -1305,7 +954,7 @@ mod tests {
     fn same_target_console_replacement_only_invalidates_displaced_front() {
         let mock = MockFirefox::start(true);
         let cli = mock.cli(&[]);
-        let mut ctx = connect_and_list_tabs(&cli, TabListRouting::Direct)
+        let mut ctx = connect_and_list_tabs(&cli)
             .unwrap_or_else(|e| panic!("connect_and_list_tabs: {}", e.into_app_error()))
             .attach(&cli)
             .expect("attach");
@@ -1328,7 +977,7 @@ mod tests {
     fn refresh_target_result_installs_mock_get_target_reply() {
         let mock = MockFirefox::start(true);
         let cli = mock.cli(&[]);
-        let mut ctx = connect_and_list_tabs(&cli, TabListRouting::Direct)
+        let mut ctx = connect_and_list_tabs(&cli)
             .unwrap_or_else(|e| panic!("connect_and_list_tabs: {}", e.into_app_error()))
             .attach(&cli)
             .expect("attach");
@@ -1355,7 +1004,7 @@ mod tests {
     fn refresh_target_result_failure_preserves_prior_metadata() {
         let mock = MockFirefox::start_with_get_target_failure(true, Some(1));
         let cli = mock.cli(&[]);
-        let mut ctx = connect_and_list_tabs(&cli, TabListRouting::Direct)
+        let mut ctx = connect_and_list_tabs(&cli)
             .unwrap_or_else(|e| panic!("connect_and_list_tabs: {}", e.into_app_error()))
             .attach(&cli)
             .expect("initial getTarget succeeds");
@@ -1386,7 +1035,7 @@ mod tests {
         let mock = MockFirefox::start(false);
         let cli = mock.cli(&[]);
 
-        match connect_and_list_tabs(&cli, TabListRouting::Direct) {
+        match connect_and_list_tabs(&cli) {
             Err(TabListError::ListTabs {
                 firefox_version,
                 detail,
@@ -1424,14 +1073,13 @@ mod tests {
             "127.0.0.1",
             "--port",
             &port,
-            "--no-daemon",
             "--timeout",
             "1500",
             "home",
         ])
         .expect("cli args parse");
 
-        match connect_and_list_tabs(&cli, TabListRouting::Direct) {
+        match connect_and_list_tabs(&cli) {
             Err(e @ TabListError::Connect { .. }) => {
                 let detail = e.detail().to_owned();
                 assert!(
@@ -1449,225 +1097,5 @@ mod tests {
             ),
             Ok(_) => panic!("nothing is listening on the dark port"),
         }
-    }
-}
-
-#[cfg(test)]
-mod snapshot_routing_tests {
-    use super::*;
-    use ff_rdp_core::transport::{encode_frame, recv_from};
-    use serde_json::Value;
-    use std::io::{BufReader, Read, Write};
-    use std::net::TcpListener;
-
-    #[test]
-    fn startup_recovery_uses_owner_stream_and_preserves_document_guard() {
-        let main = TcpListener::bind("127.0.0.1:0").unwrap();
-        let mut transport = RdpTransport::connect_raw(
-            "127.0.0.1",
-            main.local_addr().unwrap().port(),
-            Duration::from_secs(1),
-        )
-        .unwrap();
-        let (mut server, _) = main.accept().unwrap();
-        server
-            .set_read_timeout(Some(Duration::from_secs(1)))
-            .unwrap();
-        let side = TcpListener::bind("127.0.0.1:0").unwrap();
-        let endpoint = TargetEndpoint::new(side.local_addr().unwrap().port(), "token");
-        let side_thread = std::thread::spawn(move || {
-            let (mut stream, _) = side.accept().unwrap();
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            recv_from(&mut reader).unwrap();
-            stream
-                .write_all(
-                    encode_frame(
-                        &json!({"protocol_version":crate::daemon::server::DAEMON_PROTOCOL_VERSION})
-                            .to_string(),
-                    )
-                    .as_bytes(),
-                )
-                .unwrap();
-            let request = recv_from(&mut reader).unwrap();
-            assert_eq!(request["type"], "resolve-tab-target");
-            stream.write_all(encode_frame(&json!({"from":"daemon","type":"resolve-tab-target","state":"startup-recovery"}).to_string()).as_bytes()).unwrap();
-        });
-        let owner_thread = std::thread::spawn(move || {
-            let request = recv_from(&mut BufReader::new(server.try_clone().unwrap())).unwrap();
-            assert_eq!(request["to"], "daemon");
-            assert_eq!(request["type"], "recover-startup-target");
-            assert_eq!(request["descriptor"], "tab");
-            assert!(request["remaining_ms"].as_u64().unwrap() <= 1000);
-            for packet in [
-                json!({"from":"watcher","type":"target-destroyed-form","target":{"innerWindowId":21}}),
-                json!({"from":"daemon","recovered":true}),
-            ] {
-                server
-                    .write_all(encode_frame(&packet.to_string()).as_bytes())
-                    .unwrap();
-            }
-        });
-        transport.set_target_guard(Some(21));
-        assert!(
-            resolve_target_snapshot(
-                &mut transport,
-                Some(&endpoint),
-                &"tab".into(),
-                Instant::now() + Duration::from_secs(1)
-            )
-            .unwrap()
-            .is_none()
-        );
-        assert_eq!(transport.target_guard(), Some(21));
-        side_thread.join().unwrap();
-        owner_thread.join().unwrap();
-    }
-
-    #[test]
-    fn snapshot_pending_error_preserve_main_stream_and_unmanaged_uses_legacy() {
-        for state in ["pending", "bad", "unmanaged", "direct"] {
-            let main = TcpListener::bind("127.0.0.1:0").unwrap();
-            let mut transport = RdpTransport::connect_raw(
-                "127.0.0.1",
-                main.local_addr().unwrap().port(),
-                Duration::from_secs(2),
-            )
-            .unwrap();
-            let (mut server, _) = main.accept().unwrap();
-            let side = TcpListener::bind("127.0.0.1:0").unwrap();
-            let endpoint = TargetEndpoint::new(side.local_addr().unwrap().port(), "token");
-            let side_thread = (state != "direct").then(|| std::thread::spawn(move || {
-                let (mut stream, _) = side.accept().unwrap();
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                recv_from(&mut reader).unwrap();
-                stream.write_all(encode_frame(&json!({"protocol_version":crate::daemon::server::DAEMON_PROTOCOL_VERSION}).to_string()).as_bytes()).unwrap();
-                recv_from(&mut reader).unwrap();
-                stream.write_all(encode_frame(&json!({"from":"daemon","type":"resolve-tab-target","state":state}).to_string()).as_bytes()).unwrap();
-            }));
-            if state == "pending" || state == "bad" {
-                let event = json!({"from":"watcher","type":"resources-available-array","marker":"preserved"});
-                server
-                    .write_all(encode_frame(&event.to_string()).as_bytes())
-                    .unwrap();
-                let result = resolve_target_snapshot(
-                    &mut transport,
-                    Some(&endpoint),
-                    &"tab".into(),
-                    Instant::now() + Duration::from_secs(2),
-                );
-                if state == "pending" {
-                    assert!(result.unwrap().is_none());
-                } else {
-                    assert!(result.is_err());
-                }
-                assert_eq!(transport.recv().unwrap(), event);
-                server
-                    .set_read_timeout(Some(Duration::from_millis(50)))
-                    .unwrap();
-                assert!(
-                    server.read(&mut [0]).is_err(),
-                    "no getTarget on pending/error"
-                );
-            } else {
-                let legacy = std::thread::spawn(move || {
-                    let mut reader = BufReader::new(server.try_clone().unwrap());
-                    assert_eq!(
-                        recv_from(&mut reader).unwrap(),
-                        json!({"to":"tab","type":"getTarget"})
-                    );
-                    let mut reply: Value = serde_json::from_str(include_str!(
-                        "../../tests/fixtures/get_target_response.json"
-                    ))
-                    .unwrap();
-                    reply["from"] = json!("tab");
-                    server
-                        .write_all(encode_frame(&reply.to_string()).as_bytes())
-                        .unwrap();
-                });
-                assert!(
-                    resolve_target_snapshot(
-                        &mut transport,
-                        (state != "direct").then_some(&endpoint),
-                        &"tab".into(),
-                        Instant::now() + Duration::from_secs(2)
-                    )
-                    .unwrap()
-                    .is_some()
-                );
-                legacy.join().unwrap();
-            }
-            if let Some(thread) = side_thread {
-                thread.join().unwrap();
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod stable_snapshot_tests {
-    use super::*;
-    use ff_rdp_core::transport::{encode_frame, recv_from};
-    use std::io::{BufReader, Write};
-    use std::net::TcpListener;
-    #[test]
-    fn refreshing_same_watcher_actor_preserves_dependent_fronts() {
-        let main = TcpListener::bind("127.0.0.1:0").unwrap();
-        let transport = RdpTransport::connect_raw(
-            "127.0.0.1",
-            main.local_addr().unwrap().port(),
-            Duration::from_secs(2),
-        )
-        .unwrap();
-        let (mut server, _) = main.accept().unwrap();
-        let metadata = std::thread::spawn(move || {
-            let mut reader = BufReader::new(server.try_clone().unwrap());
-            let request = recv_from(&mut reader).unwrap();
-            assert_eq!(request["type"], "listFrames");
-            server
-                .write_all(
-                    encode_frame(
-                        &json!({"from":request["to"],
-                "frames":[{"isTopLevel":true,"url":"https://a/#here"}]})
-                        .to_string(),
-                    )
-                    .as_bytes(),
-                )
-                .unwrap();
-        });
-        let mut ctx = ConnectedTab::for_test(transport, "console".into());
-        register_target_fronts(ctx.registry(), &ctx.target);
-        let dependent = ActorId::from("inspector");
-        ctx.registry().register(
-            dependent.clone(),
-            FrontKind::Walker,
-            Some(ctx.target.actor.clone()),
-        );
-        let side = TcpListener::bind("127.0.0.1:0").unwrap();
-        ctx.target_endpoint = Some(TargetEndpoint::new(
-            side.local_addr().unwrap().port(),
-            "token",
-        ));
-        let thread = std::thread::spawn(move || {
-            let (mut stream, _) = side.accept().unwrap();
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            recv_from(&mut reader).unwrap();
-            stream
-                .write_all(
-                    encode_frame(
-                        &json!({"protocol_version":crate::daemon::server::DAEMON_PROTOCOL_VERSION})
-                            .to_string(),
-                    )
-                    .as_bytes(),
-                )
-                .unwrap();
-            recv_from(&mut reader).unwrap();
-            stream.write_all(encode_frame(&json!({"from":"daemon","type":"resolve-tab-target","state":"live","target":{"actor":"conn0/target1","consoleActor":"console","innerWindowId":42}}).to_string()).as_bytes()).unwrap();
-        });
-        ctx.refresh_target();
-        assert!(ctx.registry().assert_alive(&dependent).is_ok());
-        assert_eq!(ctx.target.inner_window_id, Some(42));
-        assert_eq!(ctx.target.url.as_deref(), Some("https://a/#here"));
-        metadata.join().unwrap();
-        thread.join().unwrap();
     }
 }
