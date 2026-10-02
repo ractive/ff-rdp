@@ -45,11 +45,12 @@ jobs:
       - name: Build ff-rdp
         run: cargo build -p ff-rdp-cli -p xtask --bins
 
-      - name: Run the live sweep (default parallelism)
+      - name: Run the live sweep
         # `live-sweep` reports env-gated tests as `ignored` instead of a fake
-        # `ok`, and runs targets that launch their own Firefox at its default
-        # `--jobs`.
-        run: cargo run -p xtask -- live-sweep
+        # `ok`. `--jobs 2`: the default (6, capped at ncpu) overloads a 4-core
+        # hosted runner — the first nightly on 2026-10-03 failed four auto-wait
+        # tests on "rect stability probe did not answer" that pass serially.
+        run: cargo run -p xtask -- live-sweep --jobs 2
 
   sites:
     # Weekly cron, or by hand.
@@ -72,5 +73,5 @@ jobs:
 
       - name: Run the third-party-site tests
         # Same sweep with the sites gate set; the local-fixture tests run too,
-        # which keeps this job a single command.
-        run: cargo run -p xtask -- live-sweep
+        # which keeps this job a single command. `--jobs 2` as above.
+        run: cargo run -p xtask -- live-sweep --jobs 2
