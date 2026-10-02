@@ -1,9 +1,7 @@
 //! iter-168 — dropping a [`LiveFirefox`] must leave **no** ff-rdp-managed
 //! profile dir whose owner-PID marker still reads as alive.
 //!
-//! This is the live half of the iteration: `iter_168_harness_kill_wait.rs`
-//! pins the waiting contract against stub probes, and this asserts the same
-//! contract end-to-end against a really-launched Firefox, through the exact
+//! This asserts the waiting contract end-to-end against a really-launched Firefox, through the exact
 //! scan (`live_owned_profile_dirs`) whose precondition failure in iter-165's
 //! sweep started all this.
 //!

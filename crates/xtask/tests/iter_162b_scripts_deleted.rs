@@ -193,7 +193,6 @@ const EXPECTED_SUBCOMMANDS: &[&str] = &[
     "check-firefox-refs",
     "check-actor-kb-sync",
     "check-live-test-layout",
-    "check-dogfood-script",
     "find-iteration-plan",
     "live-sweep",
     "gen-skill",

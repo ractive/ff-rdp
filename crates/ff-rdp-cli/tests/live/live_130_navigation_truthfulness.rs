@@ -42,8 +42,14 @@ fn parse_results(out: &std::process::Output) -> serde_json::Value {
 /// the real page had landed — a caller trusting `committed_url` would
 /// wrongly conclude the navigation failed.
 #[test]
-#[ignore = "requires Firefox + network — FF_RDP_LIVE_NETWORK_TESTS=1"]
+#[ignore = "requires Firefox + network — FF_RDP_LIVE_NETWORK_TESTS=1 + FF_RDP_LIVE_SITES_TESTS=1 (third-party site)"]
 fn live_130_spa_committed_url() {
+    if !crate::common::live_sites_tests_enabled() {
+        eprintln!(
+            "live_130_spa_committed_url: set FF_RDP_LIVE_SITES_TESTS=1 to run (third-party site)"
+        );
+        return;
+    }
     if !live_network_tests_enabled() {
         eprintln!("live_130_spa_committed_url: set FF_RDP_LIVE_NETWORK_TESTS=1 to run");
         return;

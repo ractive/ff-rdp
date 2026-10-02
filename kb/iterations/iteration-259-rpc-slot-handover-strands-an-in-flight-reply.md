@@ -2,7 +2,7 @@
 title: "Iteration 259: an RPC-slot handover can deliver one client's in-flight Firefox reply to the next client"
 type: iteration
 date: 2026-09-07
-status: planned
+status: obsolete
 branch: iter-259/rpc-slot-handover-strands-an-in-flight-reply
 depends_on:
   - iteration-240-daemon-frame-desync-root-cause
@@ -48,6 +48,8 @@ dogfood_path: |
   #    defect it closes.
 tags: [iteration, daemon, rpc-slot, correctness, carry-over, ff-rdp-cli]
 ---
+
+Closed 2026-10-02 by [[step-back-2026-10-02]]: daemon RPC-slot handover — moot once the daemon is removed (PR #281 closed unmerged).
 
 # Iteration 259: an RPC-slot handover can deliver one client's in-flight Firefox reply to the next client
 

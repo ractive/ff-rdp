@@ -16,20 +16,16 @@ refresh its indexes, after changing `*.rs` files.
 Make the code unit testable. Add tests if feasible. Add e2e tests for all commands/subcommands.
 It must be compatible with Windows, Linux and macOS.
 
-Before committing or creating a PR, run **in this order** and fix all issues:
+Run **once, after the last code change**, in this order, and fix all issues:
 1. `cargo fmt`
 2. `cargo clippy --workspace --all-targets -- -D warnings`
 3. `cargo test --workspace -q`
 
-Never skip a step. Never commit code that fails any of these.
-
-**A local pass is not a CI pass.** CI lints on whatever `stable` resolves to on the day it runs;
-your machine lints on whatever `stable` was when you last ran `rustup update`. Across a toolchain
-boundary step 2 exits 0 locally and fails in CI on *unchanged* code — that skew kept `main` red for
-four days in August 2026 (`kb/decision-log.md` DEC-044). So: run `rustup update stable` before
-treating a green clippy as evidence, and read `gh pr checks <PR>` instead of substituting your
-local run for it. `.github/workflows/toolchain-watch.yml` lints `main` weekly to catch the case
-where a stable release breaks the build with no commit at all.
+Never commit code that fails any of these. Do not re-run them in a later step (PR creation,
+review) when the tree is unchanged since the last green run — `git rev-parse HEAD^{tree}` (or
+`git write-tree` for uncommitted work) tells you. CI is the authority: read `gh pr checks <PR>`
+rather than substituting a local run for it (CI's `stable` may be newer than yours —
+`kb/decision-log.md` DEC-044).
 
 ## Code Patterns
 - No `.unwrap()` / `.expect()` outside of tests — use `anyhow::Context` with `?`
@@ -42,18 +38,29 @@ where a stable release breaks the build with no commit at all.
 - Spec drift — a field or method ff-rdp sends that the published Firefox spec dict does not
   declare — needs `// allow-spec-drift: bug NNNN` on the call site, naming a Bugzilla issue.
   `bug TBD (<rationale>)` only for a newly-discovered drift's first landing.
+- Every spec method change needs a test.
+- Every new `pub` item needs at least one non-test consumer in the same PR (review rule).
+- Every `TODO`/`FIXME`/`XXX` needs an issue link or `// allow-todo: <reason>` (review rule).
 
 ## Live tests
-Two env gates: `FF_RDP_LIVE_TESTS=1` (launches headless Firefox locally) and
-`FF_RDP_LIVE_NETWORK_TESTS=1` (also makes real network requests).
+Env gates: `FF_RDP_LIVE_TESTS=1` (launches headless Firefox locally), `FF_RDP_LIVE_NETWORK_TESTS=1`
+(also makes real network requests), `FF_RDP_LIVE_SITES_TESTS=1` (also drives third-party sites —
+BBC, Guardian, HN, Wikipedia, MDN; weekly CI job only).
 
-**Never quote a `cargo test-live` pass count as evidence — it does not mean the tests reached
-Firefox.** Use `cargo run -p xtask -- live-sweep`; the `iteration-close` skill explains how to run
-and read it.
+- **The full sweep is not a per-PR gate.** It runs nightly on `main` (`.github/workflows/live.yml`,
+  `cargo run -p xtask -- live-sweep` at default parallelism), on demand, and at release.
+- **Per PR**, run only the live tests for the modules you touched:
+  `FF_RDP_LIVE_TESTS=1 cargo test -p ff-rdp-cli --test live <module> -- --include-ignored`
+- **Flakes:** a live test that fails and then passes on one re-run is quarantined with
+  `#[ignore = "flaky: issue #N"]` plus a GitHub issue. Never an iteration plan, never an
+  "attribution" investigation. A red nightly gets one GitHub issue.
 
 ## PR Discipline
 - One iteration = one branch = one PR; branch `iter-N/short-description`
 - Self-review the diff before requesting review — catch fmt, clippy, dead code yourself
+- Plan ticks and `status: done` go in the **same commit** as the code, so the PR triggers one CI run.
+- One review pass; no re-review for style-only fixes.
+- Commit-message claims (`adds Foo::Bar`) must be backed by the branch diff (review rule).
 - Merge **on GitHub** (`gh pr merge <n> --merge --delete-branch`), never a local `git merge` +
   `git push origin main`, which bypasses branch protection and leaves it untestable. A refused
   merge is the enforcement working: report the reason and stop. Never `--squash`.
@@ -80,39 +87,16 @@ per run. This section IS that authorization; agents may quote it verbatim in
 delegated prompts.
 
 ## Iteration discipline
-
-**Before `/create-pr` on an `iter-*` branch, invoke the `iteration-close` skill.** It carries the
-three closing steps — the live sweep, the xtask gate enumeration, and the carry-over sweep — none
-of which is automated.
-
-Always-on rules:
 - **Never reword an acceptance criterion to make it match what happened.** If its premise turned
-  out wrong, leave it unticked and say why. Nothing checks tick state, so an honest empty box is
-  the only signal a later reader gets.
-- Carry-over work is filed as a new iteration plan **before** the current PR merges.
-- Every new `pub` item needs at least one non-test consumer in the same PR (review rule).
-- Every `TODO`/`FIXME`/`XXX` needs an issue link or `// allow-todo: <reason>` (review rule).
-- Every spec method change needs a live Firefox test, not just a unit test.
-- Commit-message claims (`adds Foo::Bar`) must be backed by the branch diff (review rule).
-- Checked-in `kb/iterations/*.dogfood.sh` scripts source `kb/iterations/dogfood-lib.sh` and
-  call `dogfood_init`. Two rules that library exists to keep, both linted by
-  `tools/lint-dogfood-script.sh`: drive the CLI through its `ffrdp` helper (or
-  `cargo run -p ff-rdp-cli --`), **never a bare `ff-rdp` from PATH** — a stale PATH binary
-  certifies a build that is not the one under test; and **tear down only the browser this
-  run launched** — no `pkill`, which on a shared working tree kills a sibling agent's
-  Firefox. Details in `CONTRIBUTING.md`.
-- Iteration plans include `dogfood_path`, and `first_call_sites` if they add pub items, and an
-  iteration number no other plan already claims. Validate:
-  `cargo run -p xtask -- check-iteration-plan <plan>` — it fails naming both files when two
-  plans share a number (five collisions before iter-187 taught it to look).
+  out wrong, leave it unticked and say why.
+- Acceptance criteria describe user-visible behaviour.
+- Iteration plans use a number no other plan claims. Validate:
+  `cargo run -p xtask -- check-iteration-plan <plan>` (`dogfood_path` / `first_call_sites` are
+  optional).
 - Plan `status:` is `planned | in-progress | in-review | done | obsolete` — `done`, never
   `completed`.
-- The ralph-loop and new-ralph-loop skill scripts are mirrored from `~/.claude/skills/*/scripts/`
-  to `tools/*/scripts/`. **Edit both by hand — nothing checks you.** Verify with
-  `diff -r ~/.claude/skills/<skill>/scripts/ tools/<skill>/scripts/`.
-- Skill-edit iterations (those touching `~/.claude/skills/`) cannot run through ralph-loop — drive
-  them by hand in a regular Claude session.
+- Follow-up work goes in the PR body or a GitHub issue; file a new plan only for real product work.
 
-Why these rules exist, and why the gates that used to enforce them were deleted:
-`kb/discipline-rationale.md`. Full contributor details: `CONTRIBUTING.md`. The repo has no
-pre-commit hook.
+Why the process was cut back on 2026-10-02: `kb/research/step-back-2026-10-02.md` and
+`kb/discipline-rationale.md`. Contributor details: `CONTRIBUTING.md`. The repo has no pre-commit
+hook.

@@ -1,17 +1,23 @@
 name: Live Tests
 
-# iter-117 Theme B (pre-landed): no longer runs per-PR. The lane was
-# permanently red from environmental runner failures (~27 min/PR, advisory,
-# no signal — see DEC-022 context and iter-114 Results); the real live gate
-# is local and enforced per-iteration by running `cargo run -p xtask --
-# live-sweep` by hand. Runs on-demand, at release, and as a weekly drift
-# canary instead.
+# The live-Firefox sweep is not a per-PR gate (2026-10-02 reset,
+# kb/research/step-back-2026-10-02.md §5). It runs nightly on `main`, on
+# demand, and at release. A red nightly gets one GitHub issue; a test that
+# fails and passes on one re-run is quarantined with
+# `#[ignore = "flaky: issue #N"]` — never an iteration plan.
+#
+# Third-party-site tests (BBC, Guardian, HN, Wikipedia, MDN, …) additionally
+# need FF_RDP_LIVE_SITES_TESTS=1 and run only in the weekly `sites` job: those
+# pages change and go down on their own schedule.
 on:
   workflow_dispatch:
   release:
     types: [published]
   schedule:
-    - cron: "0 3 * * 1"
+    # Nightly sweep.
+    - cron: "0 3 * * *"
+    # Weekly third-party-site canary (Monday).
+    - cron: "0 4 * * 1"
 
 env:
   CARGO_TERM_COLOR: always
@@ -20,8 +26,9 @@ env:
 
 jobs:
   live-tests:
+    # Every trigger except the weekly sites cron.
+    if: github.event_name != 'schedule' || github.event.schedule == '0 3 * * *'
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
@@ -36,24 +43,34 @@ jobs:
         run: firefox --version
 
       - name: Build ff-rdp
-        run: cargo build -p ff-rdp-cli
+        run: cargo build -p ff-rdp-cli -p xtask --bins
 
-      - name: Run live tests
-        # `--no-fail-fast` so a failure in an early-alphabetical test binary no
-        # longer masks every later binary (the exact masking bug iter-106 was
-        # created to fix: `cargo test` otherwise stops the whole invocation on
-        # the first failing binary, hiding late-alphabetical live tests from CI).
-        # `--test-threads=1` because the live tests share one Firefox/daemon per
-        # runner — concurrent tests steal each other's browser state and flake.
-        run: cargo test --workspace --no-fail-fast -- --include-ignored --test-threads=1
+      - name: Run the live sweep (default parallelism)
+        # `live-sweep` reports env-gated tests as `ignored` instead of a fake
+        # `ok`, and runs targets that launch their own Firefox at its default
+        # `--jobs`.
+        run: cargo run -p xtask -- live-sweep
 
-      # iter-117 Theme B follow-up: the former "Run dogfood-script gate (iter-*
-      # branches only)" step was removed here.  Its `if:` guard keyed on a
-      # per-PR event context that is unset under all three current triggers
-      # (workflow_dispatch, release, schedule) after the Theme B pre-landing
-      # swapped the `on:` block away from the per-PR trigger.  The guard
-      # therefore always evaluated false and the step was silently dead.  The
-      # dogfood-script gate is already enforced pre-merge locally by
-      # `cargo run -p xtask -- check-dogfood-script <plan>`, which also runs the
-      # `lint-dogfood-script` sub-check (see CLAUDE.md), so the CI step is
-      # redundant as well as dead — dropped rather than rewritten.
+  sites:
+    # Weekly cron, or by hand.
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 4 * * 1'
+    runs-on: ubuntu-latest
+    env:
+      FF_RDP_LIVE_SITES_TESTS: "1"
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Install Firefox
+        uses: browser-actions/setup-firefox@8058e910ee76e74bb76b7b2e5b61a55b3a65ed78 # v1.7.2
+
+      - name: Build ff-rdp
+        run: cargo build -p ff-rdp-cli -p xtask --bins
+
+      - name: Run the third-party-site tests
+        # Same sweep with the sites gate set; the local-fixture tests run too,
+        # which keeps this job a single command.
+        run: cargo run -p xtask -- live-sweep

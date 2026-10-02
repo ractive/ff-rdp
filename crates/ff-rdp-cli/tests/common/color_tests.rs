@@ -1,4 +1,4 @@
-//! Color helper assertions, included by iter_164_harness_daemon_poll only.
+//! Color helper assertions, included by the `live` target (`tests/live/main.rs`).
 
 use crate::common::{assert_colors_equal, parse_css_color};
 

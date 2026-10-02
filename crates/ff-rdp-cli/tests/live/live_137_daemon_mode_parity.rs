@@ -241,8 +241,14 @@ fn live_137_click_cross_origin_via_daemon() {
 /// **without** `--no-daemon`. This is iteration 129's own `dogfood_path`,
 /// which reported `{"cmp":null,"action":null}` until this iteration.
 #[test]
-#[ignore = "requires Firefox + network — FF_RDP_LIVE_NETWORK_TESTS=1"]
+#[ignore = "requires Firefox + network — FF_RDP_LIVE_NETWORK_TESTS=1 + FF_RDP_LIVE_SITES_TESTS=1 (third-party site)"]
 fn live_137_consent_accept_via_daemon() {
+    if !crate::common::live_sites_tests_enabled() {
+        eprintln!(
+            "live_137_consent_accept_via_daemon: set FF_RDP_LIVE_SITES_TESTS=1 to run (third-party site)"
+        );
+        return;
+    }
     if std::env::var("FF_RDP_LIVE_NETWORK_TESTS").is_err() {
         eprintln!("live_137_consent_accept_via_daemon: set FF_RDP_LIVE_NETWORK_TESTS=1 to run");
         return;

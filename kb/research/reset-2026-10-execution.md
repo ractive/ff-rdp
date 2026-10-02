@@ -28,3 +28,30 @@ investigate a historical flake.
 ## Log
 
 - 2026-10-02: phase 0 started.
+
+## Global skill follow-ups
+
+The skills under `~/.claude/skills/` are shared with the owner's other repositories, so the
+phase-2 PR did not edit them. Recommended edits, to be made by hand in a regular session:
+
+- **`create-pr` §2 "Pre-PR discipline gates"**: drop `check-dogfood-script` from the list of
+  plan-taking subcommands (it no longer exists). Run the xtask `check-*` enumeration **once per
+  iteration**, not on every `/create-pr` update: skip it when `git rev-parse HEAD^{tree}` equals
+  the tree the last green run recorded. The `--help` discovery stays (an absent gate is normal).
+- **`create-pr` §2 "Quality gates"**: skip `cargo fmt` / clippy / `cargo test` when the tree hash
+  is unchanged since the last green run in this session (CLAUDE.md now says "run once after the
+  last code change"). Only run them if `/create-pr` itself committed new code changes.
+- **`review-pr`**: one local review pass per PR; do not start a second independent review for
+  style-only or doc-only fixes, and do not re-run the quality gates after fixes that touch only
+  `kb/` or comments.
+- **`merge-pr` §4 "Update iteration status ON THE BRANCH"**: drop the separate
+  `chore(iter-N): mark status=done` commit. Plan ticks and `status: done` now land in the same
+  commit as the code (CLAUDE.md "PR Discipline"), so a status-flip commit only triggers a second
+  full CI run. Keep the step as a check: if the plan is not yet `done`, stop and say so rather
+  than committing.
+- **`ralph-loop` / `new-ralph-loop`**: `ralph-loop/SKILL.md` (line ~273) still refers to the
+  `live-sweep` as part of closing an iteration; the per-PR live sweep is gone and the
+  `iteration-close` skill was deleted from this repo. Remove that step; one fmt/clippy/test run
+  after the last code change, one xtask pass, `gh pr merge --merge --delete-branch`.
+  The in-repo mirrors under `tools/ralph-loop/` and `tools/new-ralph-loop/` are no longer
+  required to stay in sync (the mirror rule was dropped).

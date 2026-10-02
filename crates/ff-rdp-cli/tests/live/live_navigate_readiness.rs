@@ -17,8 +17,14 @@ use std::process::Command;
 use crate::common::{LiveFirefox, base_args, ff_rdp_bin};
 
 #[test]
-#[ignore = "requires Firefox, network, FF_RDP_LIVE_TESTS=1 and FF_RDP_LIVE_NETWORK_TESTS=1"]
+#[ignore = "requires Firefox, network, FF_RDP_LIVE_TESTS=1 and FF_RDP_LIVE_NETWORK_TESTS=1 + FF_RDP_LIVE_SITES_TESTS=1 (third-party site)"]
 fn live_navigate_default_wait_reaches_complete() {
+    if !crate::common::live_sites_tests_enabled() {
+        eprintln!(
+            "live_navigate_default_wait_reaches_complete: set FF_RDP_LIVE_SITES_TESTS=1 to run (third-party site)"
+        );
+        return;
+    }
     if std::env::var("FF_RDP_LIVE_TESTS").is_err() {
         eprintln!("live_navigate_default_wait_reaches_complete: set FF_RDP_LIVE_TESTS=1 to run");
         return;

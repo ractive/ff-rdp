@@ -303,6 +303,9 @@ pub struct GatedTest {
     pub full_name: String,
     pub needs_live: bool,
     pub needs_network: bool,
+    /// The ignore reason names `FF_RDP_LIVE_SITES_TESTS`: the test drives a
+    /// real third-party site and runs only in the weekly `sites` job.
+    pub needs_sites: bool,
     /// The test connects to a Firefox somebody else started on the fixed
     /// default port; it never launches one itself (iter-158 Theme F).
     pub needs_preexisting: bool,
@@ -453,6 +456,7 @@ pub fn scan_source(src: &str, module_prefix: Option<&str>) -> Vec<GatedTest> {
             && let Some(name) = parse_fn_name(src, scan)
         {
             let needs_network = reason.contains("FF_RDP_LIVE_NETWORK_TESTS");
+            let needs_sites = reason.contains("FF_RDP_LIVE_SITES_TESTS");
             let mut needs_live = reason.contains("FF_RDP_LIVE_TESTS");
             if !needs_live && !needs_network {
                 // Neither literal present despite matching "FF_RDP_LIVE" —
@@ -469,6 +473,7 @@ pub fn scan_source(src: &str, module_prefix: Option<&str>) -> Vec<GatedTest> {
                 full_name,
                 needs_live,
                 needs_network,
+                needs_sites,
                 needs_preexisting,
             });
         }
@@ -788,6 +793,8 @@ pub fn default_targets(workspace_root: &Path) -> Result<Vec<SweepTarget>> {
 pub struct EnvGates {
     pub live: bool,
     pub network: bool,
+    /// `FF_RDP_LIVE_SITES_TESTS=1`: third-party-site tests (weekly `sites` job only).
+    pub sites: bool,
     /// Something is listening on [`PREEXISTING_PORT`] (iter-158 Theme F).
     pub preexisting_available: bool,
 }
@@ -797,6 +804,7 @@ impl EnvGates {
         EnvGates {
             live: std::env::var("FF_RDP_LIVE_TESTS").as_deref() == Ok("1"),
             network: std::env::var("FF_RDP_LIVE_NETWORK_TESTS").as_deref() == Ok("1"),
+            sites: std::env::var("FF_RDP_LIVE_SITES_TESTS").as_deref() == Ok("1"),
             preexisting_available: preexisting_instance_available(),
         }
     }
@@ -833,7 +841,8 @@ pub fn partition(tests: &[GatedTest], gates: &EnvGates) -> Partition {
     for t in tests {
         let ok_live = !t.needs_live || gates.live;
         let ok_network = !t.needs_network || gates.network;
-        if !(ok_live && ok_network) {
+        let ok_sites = !t.needs_sites || gates.sites;
+        if !(ok_live && ok_network && ok_sites) {
             // An unmet env gate is reported first: it is the reason the user
             // can fix by exporting a variable, and it keeps `skipped` meaning
             // exactly what iter-155 made it mean.
@@ -2531,9 +2540,8 @@ pub fn run(args: Args) -> Result<()> {
          total={grand_total}"
     );
     // iter-245 Part A: a *second* line, deliberately. Every field of
-    // `LIVE_SWEEP_SUMMARY` counts a test, `total` conserves them, and several
-    // readers (the `iteration-close` skill, the loop's own log scraping) parse
-    // that invariant. A leaked profile is not a test, so it gets its own line
+    // `LIVE_SWEEP_SUMMARY` counts a test, `total` conserves them, and readers
+    // parse that invariant. A leaked profile is not a test, so it gets its own line
     // rather than an eighth field whose relationship to `total` would have to
     // be explained forever after.
     // iter-246 Part A: a third line, on the same principle as
@@ -2711,6 +2719,7 @@ fn unrelated() {}
             full_name: name.to_owned(),
             needs_live,
             needs_network,
+            needs_sites: false,
             needs_preexisting: false,
         }
     }
@@ -2730,6 +2739,7 @@ fn unrelated() {}
         let none_set = EnvGates {
             live: false,
             network: false,
+            sites: false,
             preexisting_available: true,
         };
         let summary = summarize(&partition(&tests, &none_set));
@@ -2743,6 +2753,7 @@ fn unrelated() {}
         let live_only = EnvGates {
             live: true,
             network: false,
+            sites: false,
             preexisting_available: true,
         };
         let summary = summarize(&partition(&tests, &live_only));
@@ -2755,6 +2766,7 @@ fn unrelated() {}
         let both_set = EnvGates {
             live: true,
             network: true,
+            sites: false,
             preexisting_available: true,
         };
         let summary = summarize(&partition(&tests, &both_set));
@@ -2768,10 +2780,43 @@ fn unrelated() {}
         let gates = EnvGates {
             live: true,
             network: true,
+            sites: false,
             preexisting_available: true,
         };
         let part = partition(&tests, &gates);
         assert_eq!(part.qualified, vec!["a".to_owned(), "z".to_owned()]);
+    }
+
+    /// A test whose ignore reason names `FF_RDP_LIVE_SITES_TESTS` stays
+    /// `ignored` in the nightly sweep (live + network set) and runs only when
+    /// the weekly `sites` job also sets the sites gate.
+    #[test]
+    fn sites_gated_test_runs_only_with_the_sites_gate() {
+        let src = r#"
+#[test]
+#[ignore = "requires Firefox, network and FF_RDP_LIVE_SITES_TESTS=1 — set FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1"]
+fn live_on_bbc() {}
+"#;
+        let tests = scan_source(src, Some("m"));
+        assert_eq!(tests.len(), 1);
+        assert!(tests[0].needs_sites);
+
+        let nightly = EnvGates {
+            live: true,
+            network: true,
+            sites: false,
+            preexisting_available: true,
+        };
+        assert_eq!(
+            partition(&tests, &nightly).unqualified,
+            vec!["m::live_on_bbc"]
+        );
+
+        let weekly = EnvGates {
+            sites: true,
+            ..nightly
+        };
+        assert_eq!(partition(&tests, &weekly).qualified, vec!["m::live_on_bbc"]);
     }
 
     // -----------------------------------------------------------------------
@@ -2783,6 +2828,7 @@ fn unrelated() {}
             full_name: name.to_owned(),
             needs_live: true,
             needs_network: false,
+            needs_sites: false,
             needs_preexisting: true,
         }
     }
@@ -2822,6 +2868,7 @@ fn unrelated() {}
         let no_instance = EnvGates {
             live: true,
             network: true,
+            sites: false,
             preexisting_available: false,
         };
         let part = partition(&tests, &no_instance);
@@ -2855,6 +2902,7 @@ fn unrelated() {}
         let gates = EnvGates {
             live: false,
             network: false,
+            sites: false,
             preexisting_available: false,
         };
         let summary = summarize(&partition(&tests, &gates));
@@ -2972,6 +3020,7 @@ fn live_172_published_record_is_complete() {
         let gates = EnvGates {
             live: true,
             network: true,
+            sites: false,
             preexisting_available: true,
         };
 
@@ -2998,6 +3047,7 @@ fn live_172_published_record_is_complete() {
         let gates = EnvGates {
             live: true,
             network: false,
+            sites: false,
             preexisting_available: true,
         };
         let (part, vanished) = repartition_for_probe(&tests, &gates, false);
@@ -3448,6 +3498,7 @@ failures:
                     full_name: name.into(),
                     needs_live: true,
                     needs_network: name == "live_network",
+                    needs_sites: false,
                     needs_preexisting: false,
                 })
                 .collect(),
@@ -3460,6 +3511,7 @@ failures:
         let gates = EnvGates {
             live: true,
             network: false,
+            sites: false,
             preexisting_available: true,
         };
         let mut target = parity_fixture();
@@ -3530,6 +3582,7 @@ failures:
         let gates = EnvGates {
             live: true,
             network: false,
+            sites: false,
             preexisting_available: true,
         };
         let part = partition(&gated, &gates);

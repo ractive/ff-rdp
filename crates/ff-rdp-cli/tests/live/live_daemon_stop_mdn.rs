@@ -48,8 +48,14 @@ fn wait_port_free(port: u16, timeout: Duration) -> bool {
 /// Gated by `FF_RDP_LIVE_NETWORK_TESTS=1` — requires real network access.
 /// Ignored by default so CI (which doesn't set this var) skips it.
 #[test]
-#[ignore = "requires live Firefox + network (MDN) — set FF_RDP_LIVE_NETWORK_TESTS=1"]
+#[ignore = "requires live Firefox + network (MDN) — set FF_RDP_LIVE_NETWORK_TESTS=1 + FF_RDP_LIVE_SITES_TESTS=1 (third-party site)"]
 fn live_daemon_stop_on_mdn_headless() {
+    if !crate::common::live_sites_tests_enabled() {
+        eprintln!(
+            "live_daemon_stop_on_mdn_headless: set FF_RDP_LIVE_SITES_TESTS=1 to run (third-party site)"
+        );
+        return;
+    }
     if !live_network_tests_enabled() {
         return;
     }

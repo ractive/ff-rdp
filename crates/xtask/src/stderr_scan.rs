@@ -4,9 +4,6 @@
 //! trees the same way and (for the two `eprintln!` ones) apply the same
 //! test-module exclusion rule. This module holds that common walk so each
 //! invariant only differs in what it looks for at each site.
-//!
-//! [`locate_repo_root`] is also used by `check-dogfood-script` to find
-//! `tools/lint-dogfood-script.sh`.
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
