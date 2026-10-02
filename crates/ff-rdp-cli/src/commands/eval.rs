@@ -1437,8 +1437,8 @@ fn frame_console_actor(targets: &[TargetEvent], filter: &str) -> Result<ActorId,
     let frames: Vec<&TargetEvent> = targets.iter().filter(|t| !t.is_top_level).collect();
     frames
         .iter()
-        .find(|t| t.url.as_deref().is_some_and(|u| u.contains(filter)))
-        .and_then(|t| t.console_actor.clone())
+        .filter(|t| t.url.as_deref().is_some_and(|u| u.contains(filter)))
+        .find_map(|t| t.console_actor.clone())
         .ok_or_else(|| {
             let urls: Vec<&str> = frames
                 .iter()
@@ -1718,6 +1718,15 @@ mod tests {
         ];
         let actor = frame_console_actor(&targets, "cmp.test").unwrap();
         assert_eq!(actor.as_ref(), "cmp1");
+    }
+
+    #[test]
+    fn frame_console_actor_skips_matching_frame_without_console() {
+        let mut no_console = target("https://cmp.test/a", false, "none");
+        no_console.console_actor = None;
+        let targets = [no_console, target("https://cmp.test/b", false, "cmp")];
+        let actor = frame_console_actor(&targets, "cmp.test").unwrap();
+        assert_eq!(actor.as_ref(), "cmp");
     }
 
     #[test]
