@@ -320,19 +320,15 @@ fn cancelled_form_fixture() -> HashMap<String, FixtureRoute> {
 /// host, not the product. The functional assertion (`navigated: false`) stays.
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
-fn live_237_cancelled_submit_does_not_wait_out_the_timeout() {
+fn live_237_cancelled_submit_reports_not_navigated() {
     if !live_tests_enabled() {
-        eprintln!(
-            "live_237_cancelled_submit_does_not_wait_out_the_timeout: set FF_RDP_LIVE_TESTS=1"
-        );
+        eprintln!("live_237_cancelled_submit_reports_not_navigated: set FF_RDP_LIVE_TESTS=1");
         return;
     }
-    let ff = firefox_with_daemon("live_237_cancelled_submit_does_not_wait_out_the_timeout");
+    let ff = firefox_with_daemon("live_237_cancelled_submit_reports_not_navigated");
     let port = ff.port();
     let Some(server) = FixtureServer::start(cancelled_form_fixture()) else {
-        eprintln!(
-            "live_237_cancelled_submit_does_not_wait_out_the_timeout: no fixture HTTP — skipping"
-        );
+        eprintln!("live_237_cancelled_submit_reports_not_navigated: no fixture HTTP — skipping");
         stop_daemon(port);
         return;
     };

@@ -50,7 +50,9 @@ BBC, Guardian, HN, Wikipedia, MDN; weekly CI job only).
 - **The full sweep is not a per-PR gate.** It runs nightly on `main` (`.github/workflows/live.yml`,
   `cargo run -p xtask -- live-sweep` at default parallelism), on demand, and at release.
 - **Per PR**, run only the live tests for the modules you touched:
-  `FF_RDP_LIVE_TESTS=1 cargo test -p ff-rdp-cli --test live <module> -- --include-ignored`
+  `FF_RDP_LIVE_TESTS=1 cargo test -p ff-rdp-cli --test live <module> -- --include-ignored`.
+  Tests whose gate is unset return early and still print `ok` — set every gate the module's
+  `#[ignore]` reasons name before reading the result as a pass.
 - **Flakes:** a live test that fails and then passes on one re-run is quarantined with
   `#[ignore = "flaky: issue #N"]` plus a GitHub issue. Never an iteration plan, never an
   "attribution" investigation. A red nightly gets one GitHub issue.

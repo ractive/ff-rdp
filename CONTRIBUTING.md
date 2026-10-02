@@ -72,6 +72,10 @@ FF_RDP_LIVE_TESTS=1 cargo test -p ff-rdp-cli --test live <module> -- --include-i
 cargo test -p ff-rdp-cli --test live -- --list   # enumerate live test names, no Firefox needed
 ```
 
+A test whose env gate is unset returns early and libtest still reports it `ok`. Set every gate
+the module's `#[ignore]` reasons name (`FF_RDP_LIVE_NETWORK_TESTS=1`, …) before treating the
+result as a pass; `live-sweep` below reports unmet gates as `ignored` instead.
+
 **The full sweep is not a per-PR gate.** `.github/workflows/live.yml` runs it nightly on `main`,
 on `workflow_dispatch` and at release; a weekly `sites` job adds `FF_RDP_LIVE_SITES_TESTS=1`.
 To run it by hand:
