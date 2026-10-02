@@ -19,13 +19,15 @@ investigate a historical flake.
 |---|---|---|---|---|
 | 0 | Land step-back note and Codex handoff docs on `main` | session | done | docs merge |
 | 1 | 286 `sources` native-path fix from archived patch; `dom --frames` hint fix | agent (Rust) | planned | |
-| 2 | Process cut: CLAUDE.md, skills, plan template, `live.yml` nightly, quarantine rule, timing assertions removed, AGENTS.md reset, close 259/266/268/293/294 + PR #281, roadmap done | agent (process) | in-review | #286 |
+| 2 | Process cut: CLAUDE.md, skills, plan template, `live.yml` nightly, quarantine rule, timing assertions removed, AGENTS.md reset, close 259/266/268/293/294 + PR #281, roadmap done | agent (process) | done | #286 (4def27f4) |
 | 3 | Daemon deletion; refs in-page; throttle/emulate per-call or removed; capture-mode docs | agent (Rust) | planned | |
 | 4a | Env-var and iteration-hook purge; help drift; deprecated aliases; `allow(dead_code)` | agent (Rust) | planned | |
 | 4b | `actors`/`fronts` collapse; launch/profile simplification | agent (Rust) | planned | |
 | 5 | Watch nightly live run for a week; then product features | session | planned | |
 
 ## Log
+
+- 2026-10-02: phase 2 merged (#286). Leftovers for phase 4a: live_220 2.5 s bound + `timing_load_note`; `HANDOFF-iter-233-256.md` still mentions iteration-close; historical `*.dogfood.sh` + `dogfood-lib.sh` (used by tools/axi-bench). Rust 1.99 `assert_is_empty` is allowed in the lint tables rather than fixed at ~30 sites.
 
 - 2026-10-02: phase 0 started.
 - 2026-10-02: phase 2 PR #286 opened; PR #281 closed unmerged.
