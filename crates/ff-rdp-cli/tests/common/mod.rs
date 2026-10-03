@@ -83,7 +83,7 @@ pub fn ff_rdp_launch_command() -> Command {
 /// own home, it goes when the home does. Gecko honours `TMPDIR` on Linux; on
 /// macOS it asks the OS for the per-user temp dir and ignores the variable,
 /// so there the file still lands in the system temp dir.
-pub(crate) fn confine_temp_dir(command: &mut Command, home: &Path) {
+pub fn confine_temp_dir(command: &mut Command, home: &Path) {
     let tmp = home.join("tmp");
     if std::fs::create_dir_all(&tmp).is_ok() {
         for var in ["TMPDIR", "TMP", "TEMP"] {

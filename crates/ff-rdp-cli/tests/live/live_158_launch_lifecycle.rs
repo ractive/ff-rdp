@@ -77,8 +77,12 @@ fn live_158_launch_survives_contended_bind() {
                 .name(owner.clone())
                 .spawn(move || {
                     let port = 7101 + u16::from(i);
+                    let mut command = ff_rdp_launch_command();
+                    // Firefox's temp dir must be the shared home too, not
+                    // this worker's (deleted when the worker exits).
+                    crate::common::confine_temp_dir(&mut command, &home);
                     let out = recorded_launch_output(
-                        ff_rdp_launch_command()
+                        command
                             .env("FF_RDP_HOME", &home)
                             .args(["launch", "--headless"])
                             .args(["--debug-port", &port.to_string()]),
