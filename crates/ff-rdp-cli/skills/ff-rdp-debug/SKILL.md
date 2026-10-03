@@ -229,7 +229,12 @@ Each playbook lives in `playbooks/<ID>.md`:
 
 Two flags from iter-57 tighten Tier 1 playbooks:
 
-- `network --headers` — A1, A2, B5, E3 use this to read response headers.
+- `network --headers` — A2, B5, E3 use this to read response headers.
+  Headers can only be read on the connection that observed the request,
+  so a `network --headers` run after the request finished returns
+  nothing: capture them in the same command with
+  `navigate <url> --with-network --headers` (a page load) or
+  `click <sel> --wait-for-network <pattern> --headers` (A1).
   **Fallback:** if the running `ff-rdp` rejects `--headers`, run
   `curl -i <url>` against the same endpoint and reason from those
   headers.

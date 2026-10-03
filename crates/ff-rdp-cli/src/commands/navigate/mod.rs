@@ -18,7 +18,7 @@ mod network_capture;
 mod readiness;
 mod status;
 
-pub(crate) use network_capture::run_with_network;
+pub(crate) use network_capture::{NetworkDetail, run_with_network};
 pub(crate) use readiness::{eval_location_href, wait_for_navigation_commit};
 pub(crate) use status::not_observed_status;
 

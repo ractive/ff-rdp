@@ -553,6 +553,7 @@ Examples:
   ff-rdp navigate https://example.com
   ff-rdp navigate https://example.com --with-network
   ff-rdp navigate https://example.com --with-network --throttle slow-3g --block '*.png'
+  ff-rdp navigate https://example.com --with-network --headers --jq '.results.network.entries[0].headers'
   ff-rdp navigate https://example.com --wait-text \"Welcome\"
   ff-rdp navigate https://example.com --wait-for selector:.athing
   ff-rdp navigate https://example.com --no-wait
@@ -576,6 +577,10 @@ Output: {\"results\": {\"navigated\": \"...\", \"status\": 200|null, \"status_re
 --with-network output: results.network is ONE canonical object on every path (quiet or busy page, --detail/--jq or default, --all or capped); 'committed_url'/'ready_state'/'status' are also present alongside it (iter-138 — previously dropped, forcing a choice between truthful navigation info and network data):
   {\"navigated\": \"...\", \"network\": {\"entries\": [...], \"shown\": N, \"total\": N, \"truncated\": bool, \"total_requests\": N, \"total_transfer_bytes\": N, \"by_cause_type\": {...}, \"slowest\": [...], \"timeout_reached\": false}, \"committed_url\": \"...\", \"ready_state\": \"...\", \"status\": 200|null, \"status_reason\": null|\"not_observed\"|\"no_document_request\"|\"no_status_reported\"}
   entries is capped at 20 by default (use --all to expand); summary fields always reflect the FULL capture.
+  --headers adds {\"headers\": {\"request\": [{\"name\": \"...\", \"value\": \"...\"}], \"response\": [...]}} to each shown entry and
+  --security adds a per-entry \"security\" object plus network.insecure_requests — the same shapes as `network --headers`/`--security`.
+  Both imply the detail view and are fetched before this command's connection closes: Firefox drops a request's headers with
+  the connection that observed it, so a later `ff-rdp network --headers` cannot recover them.
   Note (iter-126): previously results.network was a BARE ARRAY in non-truncated detail mode (and --all), so .results.network.entries / .total_requests threw \"cannot index array\" on quiet pages. It is now always the object above; consumers of the old bare-array form should read .results.network.entries.")]
     Navigate(NavigateArgs),
     /// Evaluate JavaScript in the target tab
@@ -776,6 +781,12 @@ that matches the question:
 `click --wait-for-network <pattern>` waits for one matching request on the
 click's own connection.
 
+Headers and TLS detail (--headers/--security) live on per-request actors that
+Firefox drops with the connection that observed the request — after the fact
+there is nothing left to ask. Fetch them in the capturing command instead:
+`ff-rdp navigate <url> --with-network --headers [--security]`, or
+`ff-rdp click <selector> --wait-for-network <pattern> --headers`.
+
 The --filter and --method flags narrow results after capture; they do not
 affect which requests Firefox records.
 
@@ -924,7 +935,9 @@ test decides WHETHER to dispatch; it does not give the events real coordinates.
 Output: {\"results\": {\"clicked\": true, \"matched\": true, \"reachable\": true, \"obscured_by\": null, \"tag\": \"...\", \"text\": \"...\", \"frame_url\": null}, \"total\": 1, \"meta\": {\"frame_url\": null, ...}}
 `frame_url` is always present (never omitted) — null when the click landed on
 the top-level document, the frame's URL string when it landed inside a frame.
-With --wait-for-network: adds {\"network\": {\"url\": \"...\", \"method\": \"...\", \"status\": N, ...}} to results.")]
+With --wait-for-network: adds {\"network\": {\"url\": \"...\", \"method\": \"...\", \"status\": N, ...}} to results.
+With --wait-for-network ... --headers: that object also carries {\"headers\": {\"request\": [{\"name\": \"...\", \"value\": \"...\"}], \"response\": [...]}},
+fetched before the click's connection closes (a later `network --headers` cannot see them).")]
     Click(ClickArgs),
     /// Type text into an input element matching a CSS selector
     #[command(long_about = "Type text into an input element matching a CSS selector.
@@ -1602,6 +1615,19 @@ pub struct NavigateArgs {
     /// Collection runs for this duration then returns all captured events.
     #[arg(long, default_value_t = 10000)]
     pub network_timeout: u64,
+    /// With --with-network: add `headers: {request, response}` (the `network
+    /// --headers` shape) to each shown entry. Fetched on this command's own
+    /// connection before it closes — the only time Firefox still has them; a
+    /// later `network --headers` cannot. Implies the detail view (20 slowest,
+    /// `--all` for every entry).
+    #[arg(long, requires = "with_network")]
+    pub headers: bool,
+    /// With --with-network: add a per-request `security` object (TLS/cert
+    /// detail; null for plain HTTP) to each shown entry and an
+    /// `insecure_requests` count to `results.network`, as `network --security`
+    /// does. Implies the detail view.
+    #[arg(long, requires = "with_network")]
+    pub security: bool,
     /// After navigating, wait for this text to appear in the page's visible content. Runs after the navigation load event completes.
     #[arg(long, conflicts_with = "wait_selector")]
     pub wait_text: Option<String>,
@@ -2033,6 +2059,12 @@ pub struct ClickArgs {
     /// Timeout in milliseconds for --wait-for-network (default: global --timeout)
     #[arg(long, value_name = "MS", requires = "wait_for_network")]
     pub network_timeout: Option<u64>,
+    /// With --wait-for-network: add `headers: {request, response}` (the
+    /// `network --headers` shape) to the matched request, fetched on this
+    /// command's connection before it closes — a later `network --headers`
+    /// cannot see them.
+    #[arg(long, requires = "wait_for_network")]
+    pub headers: bool,
     /// Skip auto-wait and click immediately (reverts to pre-iter-59 fire-and-forget)
     #[arg(long)]
     pub no_wait: bool,

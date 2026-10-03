@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 use ff_rdp_core::{
-    Grip, NetworkResource, NetworkResourceUpdate, ProtocolError, TabActor, TargetEvent,
+    ActorId, Grip, NetworkResource, NetworkResourceUpdate, ProtocolError, TabActor, TargetEvent,
     WatcherActor, WebConsoleActor, parse_network_resource_updates, parse_network_resources,
     sanitize_for_terminal,
 };
@@ -52,6 +52,9 @@ pub struct ClickOptions<'a> {
     /// under `results.page`, collected after the click settles. Carries
     /// `--page-chars` and `--query` with it since iter-219.
     pub page: crate::cli::args::PageViewArgs,
+    /// `--headers` (with `--wait-for-network`): add the matched request's
+    /// `headers: {request, response}`, fetched before the connection closes.
+    pub network_headers: bool,
 }
 
 impl Default for ClickOptions<'_> {
@@ -66,6 +69,7 @@ impl Default for ClickOptions<'_> {
             frame: None,
             match_policy: None,
             page: crate::cli::args::PageViewArgs::default(),
+            network_headers: false,
         }
     }
 }
@@ -196,7 +200,12 @@ pub fn run_core(
     // Gather the network result if requested.
     let network_result = if let Some(pattern) = wait_for_network {
         let timeout_ms = network_timeout.unwrap_or(cli.timeout);
-        Some(wait_for_matching_request(&mut ctx, pattern, timeout_ms)?)
+        let (mut entry, actor) = wait_for_matching_request(&mut ctx, pattern, timeout_ms)?;
+        // Before the unwatch below: the request's actor dies with it.
+        if opts.network_headers {
+            super::network::attach_headers_to(&mut entry, ctx.transport_mut(), &actor);
+        }
+        Some(entry)
     } else {
         None
     };
@@ -610,7 +619,7 @@ fn wait_for_matching_request(
     ctx: &mut ConnectedTab,
     pattern: &str,
     timeout_ms: u64,
-) -> Result<Value, AppError> {
+) -> Result<(Value, ActorId), AppError> {
     let timeout = Duration::from_millis(timeout_ms);
     let started = Instant::now();
 
@@ -637,7 +646,7 @@ fn run_wait_loop(
     started: Instant,
     timeout_ms: u64,
     pending: &mut std::collections::HashMap<u64, NetworkResource>,
-) -> Result<Value, AppError> {
+) -> Result<(Value, ActorId), AppError> {
     loop {
         if started.elapsed() >= timeout {
             return Err(AppError::Timeout(format!(
@@ -660,7 +669,7 @@ fn run_wait_loop(
                         for update in parse_network_resource_updates(&msg) {
                             if let Some(res) = pending.remove(&update.resource_id) {
                                 if update.status.is_some() {
-                                    return Ok(build_matched_entry(&res, &update));
+                                    return Ok((build_matched_entry(&res, &update), res.actor));
                                 }
                                 // Status not yet available — put it back.
                                 pending.insert(res.resource_id, res);

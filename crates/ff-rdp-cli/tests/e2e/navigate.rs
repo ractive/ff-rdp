@@ -831,3 +831,221 @@ fn e2e_279_script_navigate_then_eval_connects_to_new_document() {
     assert!(refresh < eval, "{requests:?}");
     assert_eq!(eval_connection[eval]["to"], "new-document/console");
 }
+
+// ---------------------------------------------------------------------------
+// --with-network --headers / --security (#287): per-request detail is fetched
+// on the capturing connection, before it unwatches `network-event`.
+// ---------------------------------------------------------------------------
+
+fn run_navigate_with_network(
+    server: MockRdpServer,
+    extra: &[&str],
+) -> (serde_json::Value, Vec<serde_json::Value>) {
+    let log = server.request_log();
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(
+        ["navigate", "https://example.com", "--with-network"]
+            .iter()
+            .chain(extra)
+            .map(|s| (*s).to_owned()),
+    );
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        support::output_note(&output)
+    );
+    let json = serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+    let requests = log.lock().unwrap().clone();
+    (json, requests)
+}
+
+/// Index of the first request of `kind` in the server's log.
+fn first_request(requests: &[serde_json::Value], kind: &str) -> usize {
+    requests
+        .iter()
+        .position(|r| r["type"] == kind)
+        .unwrap_or_else(|| panic!("no {kind} request in {requests:?}"))
+}
+
+#[test]
+fn navigate_with_network_headers_fetches_before_unwatch() {
+    let server = navigate_with_network_server()
+        .on(
+            "getRequestHeaders",
+            load_fixture("get_request_headers_response.json"),
+        )
+        .on(
+            "getResponseHeaders",
+            load_fixture("get_response_headers_response.json"),
+        );
+    let (json, requests) = run_navigate_with_network(server, &["--headers"]);
+
+    let network = &json["results"]["network"];
+    let entries = network["entries"].as_array().expect("entries array");
+    assert_eq!(entries.len(), 2, "both captured requests shown: {network}");
+    for entry in entries {
+        let request = entry["headers"]["request"]
+            .as_array()
+            .expect("request headers");
+        let response = entry["headers"]["response"]
+            .as_array()
+            .expect("response headers");
+        assert!(
+            request.iter().any(|h| h["name"] == "Host"),
+            "request headers carry Host: {entry}"
+        );
+        assert!(
+            response.iter().any(|h| h["name"] == "content-type"),
+            "response headers carry content-type: {entry}"
+        );
+        assert!(
+            entry.get("_resource_id").is_none(),
+            "internal join marker must not leak: {entry}"
+        );
+    }
+
+    // One fetch per entry, addressed to that entry's own actor, all before the
+    // unwatch that destroys the actors.
+    let addressed: Vec<&str> = requests
+        .iter()
+        .filter(|r| r["type"] == "getRequestHeaders")
+        .filter_map(|r| r["to"].as_str())
+        .collect();
+    assert_eq!(addressed.len(), 2, "{requests:?}");
+    assert!(
+        addressed.contains(&"server1.conn0.netEvent6"),
+        "{addressed:?}"
+    );
+    assert!(
+        addressed.contains(&"server1.conn0.netEvent7"),
+        "{addressed:?}"
+    );
+    let unwatch = first_request(&requests, "unwatchResources");
+    let last_fetch = requests
+        .iter()
+        .rposition(|r| r["type"] == "getResponseHeaders")
+        .expect("getResponseHeaders sent");
+    assert!(
+        last_fetch < unwatch,
+        "headers must be fetched before unwatchResources: {requests:?}"
+    );
+}
+
+#[test]
+fn navigate_with_network_without_headers_sends_no_header_requests() {
+    let (json, requests) = run_navigate_with_network(navigate_with_network_server(), &[]);
+    assert!(
+        !requests
+            .iter()
+            .any(|r| r["type"] == "getRequestHeaders" || r["type"] == "getSecurityInfo"),
+        "{requests:?}"
+    );
+    for entry in json["results"]["network"]["entries"].as_array().unwrap() {
+        assert!(entry.get("headers").is_none(), "{entry}");
+        assert!(entry.get("_resource_id").is_none(), "{entry}");
+    }
+}
+
+#[test]
+fn navigate_with_network_security_attaches_tls_detail() {
+    let server = navigate_with_network_server().on(
+        "getSecurityInfo",
+        load_fixture("get_security_info_response.json"),
+    );
+    let (json, requests) = run_navigate_with_network(server, &["--security"]);
+
+    let network = &json["results"]["network"];
+    assert_eq!(network["insecure_requests"], 0, "{network}");
+    for entry in network["entries"].as_array().expect("entries array") {
+        assert_eq!(entry["security"]["protocolVersion"], "TLSv1.3", "{entry}");
+    }
+    let last_fetch = requests
+        .iter()
+        .rposition(|r| r["type"] == "getSecurityInfo")
+        .expect("getSecurityInfo sent");
+    assert!(last_fetch < first_request(&requests, "unwatchResources"));
+}
+
+/// `--fields` is checked against the entries as emitted: the keys
+/// `--headers` attaches after the cap are selectable…
+#[test]
+fn navigate_with_network_headers_fields_can_select_headers() {
+    let server = navigate_with_network_server()
+        .on(
+            "getRequestHeaders",
+            load_fixture("get_request_headers_response.json"),
+        )
+        .on(
+            "getResponseHeaders",
+            load_fixture("get_response_headers_response.json"),
+        );
+    let (json, _) = run_navigate_with_network(server, &["--headers", "--fields", "url,headers"]);
+    for entry in json["results"]["network"]["entries"].as_array().unwrap() {
+        let keys: Vec<&String> = entry.as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["url", "headers"], "{entry}");
+    }
+}
+
+/// …and the internal `_resource_id` join key is neither selectable nor
+/// advertised.
+#[test]
+fn navigate_with_network_fields_rejects_internal_join_key() {
+    let server = navigate_with_network_server();
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+    let mut args = base_args(port);
+    args.extend(
+        [
+            "navigate",
+            "https://example.com",
+            "--with-network",
+            "--fields",
+            "_resource_id",
+        ]
+        .map(str::to_owned),
+    );
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+    handle.join().unwrap();
+
+    assert!(
+        !output.status.success(),
+        "{}",
+        support::output_note(&output)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let error = json["error"].as_str().unwrap_or_default();
+    assert!(error.contains("--fields"), "{json}");
+    assert_eq!(
+        error.matches("_resource_id").count(),
+        1,
+        "named once as the unknown field, never listed as available: {error}"
+    );
+}
+
+#[test]
+fn navigate_headers_requires_with_network() {
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(["navigate", "https://example.com", "--headers"])
+        .output()
+        .expect("failed to spawn ff-rdp");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "{}",
+        support::output_note(&output)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--with-network"), "{stderr}");
+}

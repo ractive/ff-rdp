@@ -1,12 +1,14 @@
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use ff_rdp_core::{TabActor, WatcherActor};
+use ff_rdp_core::{ActorId, TabActor, WatcherActor};
 use serde_json::json;
 
 use crate::cli::args::Cli;
 use crate::commands::connect_tab::connect_and_get_target;
+use crate::commands::network::{attach_headers, attach_security};
 use crate::commands::network_events::{
-    build_network_entries, drain_network_events_timed, merge_updates,
+    build_network_entries_with_ids, drain_network_events_timed, merge_updates,
 };
 use crate::commands::url_validation::validate_content_navigation_url;
 use crate::error::AppError;
@@ -40,7 +42,9 @@ pub(crate) const CONSENT_POST_DRAIN_MS: u64 = 8_000;
 /// 4. Navigate with `WindowGlobalTarget::navigate_to`.
 /// 5. Drain `resources-available-array` / `resources-updated-array` events
 ///    (timeout-bounded, same pattern as the `network` command).
-/// 6. Merge updates into resources by `resource_id`.
+/// 6. Merge updates into resources by `resource_id`, apply the output
+///    controls, and — with `--headers`/`--security` — fetch per-request detail
+///    for the shown entries while their NetworkEventActors are still alive.
 /// 7. Unwatch resources to clean up server-side state.
 /// 8. Optionally wait for a condition (--wait-text / --wait-selector).
 /// 9. Emit combined JSON output.
@@ -58,6 +62,7 @@ pub(crate) fn run_with_network(
     url: &str,
     wait_opts: &WaitAfterNav<'_>,
     network_timeout_ms: u64,
+    detail: NetworkDetail,
     auto_consent: bool,
     conditions: &crate::cli::args::NetworkConditionsArgs,
     page_args: &crate::cli::args::PageViewArgs,
@@ -156,8 +161,36 @@ pub(crate) fn run_with_network(
     // Merge updates into resources by resource_id.
     let update_map = merge_updates(all_updates);
 
-    // Build the network entries array (no URL/method filtering here).
-    let network_entries = build_network_entries(&all_resources, &update_map);
+    // Build the network entries array (no URL/method filtering here). Entries
+    // carry an internal `_resource_id` until `apply_network_controls` strips
+    // it, so `--headers`/`--security` can find each request's actor.
+    let network_entries = build_network_entries_with_ids(&all_resources, &update_map);
+
+    // `--headers`/`--security` read per-request detail from the
+    // NetworkEventActors, which die when this connection unwatches
+    // `network-event` (below) or closes — a later `network --headers` has
+    // nothing to ask. So the output controls run here, while the actors are
+    // alive, and the detail is fetched for the entries that will be shown.
+    let network_entries = {
+        let actor_by_resource_id: HashMap<u64, ActorId> = all_resources
+            .iter()
+            .map(|r| (r.resource_id, r.actor.clone()))
+            .collect();
+        apply_network_controls(
+            cli,
+            &network_entries,
+            timeout_reached,
+            detail,
+            |shown: &mut [serde_json::Value]| {
+                if detail.headers {
+                    attach_headers(shown, ctx.transport_mut(), &actor_by_resource_id);
+                }
+                if detail.security {
+                    attach_security(shown, &mut ctx, &actor_by_resource_id, false);
+                }
+            },
+        )?
+    };
 
     // Unwatch to clean up server-side resources — unless `--throttle`/`--block`
     // are in force: unwatching `network-event` would tear them down before the
@@ -213,8 +246,6 @@ pub(crate) fn run_with_network(
 
     let wait_result = wait_after_navigate(&mut ctx, wait_opts)?;
     let wait_for_result = run_wait_for_predicates(&mut ctx, wait_opts)?;
-
-    let network_entries = apply_network_controls(cli, &network_entries, timeout_reached)?;
 
     let mut result = json!({
         "navigated": url,
@@ -285,10 +316,18 @@ pub(crate) fn run_with_network(
 /// a summary object (non-detail), so `.results.network.entries` and
 /// `.results.network.total_requests` threw `cannot index array` half the time.
 ///
-/// In detail mode (`--detail`/`--jq`/`--sort`/`--limit`/`--fields`/`--all`) the
+/// In detail mode (`--detail`/`--jq`/`--sort`/`--limit`/`--fields`/`--all`, and
+/// `--headers`/`--security`, which imply it exactly as on `network`) the
 /// `entries` list is sorted, capped at 20 (unless `--all`), and field-projected;
 /// in summary mode `entries` carries the full unsorted capture. Summary fields
 /// (`total_requests`, …) always reflect the full capture regardless of the view.
+///
+/// `enrich` runs on the shown entries after the cap and before `--fields`
+/// projection, while they still carry the internal `_resource_id` marker — the
+/// hook `--headers`/`--security` use to join each entry to its
+/// `NetworkEventActor`. The marker is stripped from every entry afterwards.
+/// With `--security` the object also carries `insecure_requests`, counted over
+/// the full capture as on `network --security`.
 ///
 /// `timeout_reached` is forwarded to [`crate::commands::network::build_network_summary`]
 /// so the object carries the hint field when the collection deadline fired while
@@ -297,20 +336,29 @@ pub(crate) fn apply_network_controls(
     cli: &Cli,
     network_entries: &[serde_json::Value],
     timeout_reached: bool,
+    detail: NetworkDetail,
+    enrich: impl FnOnce(&mut [serde_json::Value]),
 ) -> Result<serde_json::Value, AppError> {
     let use_detail = cli.detail
         || cli.jq.is_some()
         || cli.sort.is_some()
         || cli.limit.is_some()
         || cli.all
-        || cli.fields.is_some();
+        || cli.fields.is_some()
+        || detail.headers
+        || detail.security;
 
-    if use_detail {
+    let mut canonical = if use_detail {
         let controls = OutputControls::from_cli(cli, SortDir::Desc);
-        let mut detail = network_entries.to_vec();
+        let added: Vec<&str> = [(detail.headers, "headers"), (detail.security, "security")]
+            .into_iter()
+            .filter_map(|(on, key)| on.then_some(key))
+            .collect();
+        crate::commands::network::validate_controls_for_view(&controls, network_entries, &added)?;
+        let mut sorted = network_entries.to_vec();
         if cli.sort.is_none() {
             let dir = controls.sort_dir;
-            detail.sort_by(|a, b| {
+            sorted.sort_by(|a, b| {
                 let da = a["duration_ms"].as_f64().unwrap_or(0.0);
                 let db = b["duration_ms"].as_f64().unwrap_or(0.0);
                 let cmp = da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal);
@@ -320,33 +368,66 @@ pub(crate) fn apply_network_controls(
                 }
             });
         } else {
-            controls.apply_sort(&mut detail)?;
+            controls.apply_sort(&mut sorted)?;
         }
-        controls.validate_fields(&detail)?;
-        let (limited, total, truncated) = controls.apply_limit(detail, Some(20));
+        let (mut limited, total, truncated) = controls.apply_limit(sorted, Some(20));
+        enrich(&mut limited);
+        strip_resource_ids(&mut limited);
         let limited = controls.apply_fields(limited);
         let shown = limited.len();
         // Summary fields are computed from the FULL capture (`network_entries`),
         // never the truncated/field-projected `limited` view.
-        Ok(crate::commands::network::build_canonical_network(
+        crate::commands::network::build_canonical_network(
             limited,
             shown,
             total,
             truncated,
             network_entries,
             timeout_reached,
-        ))
+        )
     } else {
         // Summary mode: `entries` carries the full unsorted capture so consumers
         // can still reach `.entries` without flipping to detail mode.
-        let total = network_entries.len();
-        Ok(crate::commands::network::build_canonical_network(
-            network_entries.to_vec(),
+        let mut entries = network_entries.to_vec();
+        strip_resource_ids(&mut entries);
+        let total = entries.len();
+        crate::commands::network::build_canonical_network(
+            entries,
             total,
             total,
             false,
             network_entries,
             timeout_reached,
-        ))
+        )
+    };
+    if detail.security
+        && let Some(obj) = canonical.as_object_mut()
+    {
+        obj.insert(
+            "insecure_requests".to_string(),
+            json!(crate::commands::network::count_insecure_requests(
+                network_entries
+            )),
+        );
+    }
+    Ok(canonical)
+}
+
+/// Which per-request detail `navigate --with-network` fetches before its
+/// connection closes.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct NetworkDetail {
+    /// `--headers`: request + response headers per shown entry.
+    pub(crate) headers: bool,
+    /// `--security`: TLS/certificate detail per shown entry.
+    pub(crate) security: bool,
+}
+
+/// Remove the internal `_resource_id` join marker from every entry.
+fn strip_resource_ids(entries: &mut [serde_json::Value]) {
+    for entry in entries {
+        if let Some(obj) = entry.as_object_mut() {
+            obj.remove("_resource_id");
+        }
     }
 }

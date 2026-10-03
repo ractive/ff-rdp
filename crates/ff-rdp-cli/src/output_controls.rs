@@ -99,6 +99,16 @@ impl OutputControls {
         validate_names("--fields", fields, results)
     }
 
+    /// The `--sort` half of [`Self::apply_sort`]'s check, on its own: for a
+    /// caller that sorts entries carrying internal join keys and must
+    /// validate against the entries as the user will see them instead.
+    pub fn validate_sort(&self, results: &[Value]) -> Result<(), AppError> {
+        let Some(ref field) = self.sort_field else {
+            return Ok(());
+        };
+        validate_names("--sort", std::slice::from_ref(field), results)
+    }
+
     /// Filter to only the requested fields on each result entry.
     ///
     /// Does NOT validate `--fields` names — call [`Self::validate_fields`]
