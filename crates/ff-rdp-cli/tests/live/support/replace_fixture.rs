@@ -1,114 +1,13 @@
-//! Iter153 paired ownership fixture. Every home and command receipt survives unwind.
-//! Native start-token lookup mirrors src/util/process.rs because the CLI has no lib target.
-use crate::common::{self, LIVE_LAUNCH_LOG_ENV, OWNER_PID_MARKER};
+//! Iter153 paired ownership fixture. Every home and command receipt survives unwind
+//! when a capture ledger is set; otherwise the home is removed on drop.
+//! Native start-token lookup is `common::process_start_token`.
+use crate::common::{self, LIVE_LAUNCH_LOG_ENV, OWNER_PID_MARKER, process_start_token};
 use serde_json::{Value, json};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
-
-pub fn process_start_token(pid: u32) -> Option<String> {
-    #[cfg(any(target_os = "macos", target_os = "ios"))]
-    {
-        let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
-        let size = libc::c_int::try_from(std::mem::size_of::<libc::proc_bsdinfo>()).ok()?;
-        // SAFETY: `proc_pidinfo` writes at most `size` bytes into the buffer we
-        // pass, and `size` is exactly `size_of::<proc_bsdinfo>()`. The pointer
-        // comes from a live, correctly-aligned `MaybeUninit<proc_bsdinfo>` that
-        // outlives the call. The only side effect is filling that buffer; a
-        // non-existent or inaccessible PID is reported through the return
-        // value, which we check against the full struct size before reading.
-        #[allow(clippy::cast_possible_wrap)]
-        let written = unsafe {
-            libc::proc_pidinfo(
-                pid as libc::c_int,
-                libc::PROC_PIDTBSDINFO,
-                0,
-                info.as_mut_ptr().cast::<libc::c_void>(),
-                size,
-            )
-        };
-        if written != size {
-            return None;
-        }
-        // SAFETY: `proc_pidinfo` returned exactly `size_of::<proc_bsdinfo>()`
-        // bytes written, so the buffer is fully initialised.
-        let info = unsafe { info.assume_init() };
-        Some(format!(
-            "{}.{:06}",
-            info.pbi_start_tvsec, info.pbi_start_tvusec
-        ))
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    {
-        // Field 22 of /proc/<pid>/stat is `starttime`. Fields 1 and 2 are the
-        // PID and the comm, and comm is parenthesised and may itself contain
-        // spaces and ')' — so split after the LAST ')' rather than tokenising
-        // the whole line.
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-        let after_comm = &stat[stat.rfind(')')? + 1..];
-        // After the comm, field 3 is `state`; `starttime` is field 22, i.e.
-        // the 20th whitespace-separated token of this remainder.
-        let starttime = after_comm.split_whitespace().nth(19)?;
-        (!starttime.is_empty()).then(|| starttime.to_owned())
-    }
-
-    #[cfg(windows)]
-    {
-        use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
-        use windows_sys::Win32::System::Threading::{
-            GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-        };
-
-        // SAFETY: `OpenProcess` only returns a handle (or NULL); we close it on
-        // every path below.
-        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-        if handle.is_null() {
-            return None;
-        }
-        let mut creation = FILETIME {
-            dwLowDateTime: 0,
-            dwHighDateTime: 0,
-        };
-        let mut exit = creation;
-        let mut kernel = creation;
-        let mut user = creation;
-        // SAFETY: `handle` is a valid handle we just opened, and all four
-        // out-pointers reference live, initialised `FILETIME` locals that
-        // outlive the call.
-        let ok = unsafe {
-            GetProcessTimes(
-                handle,
-                &raw mut creation,
-                &raw mut exit,
-                &raw mut kernel,
-                &raw mut user,
-            )
-        };
-        // SAFETY: `handle` is the valid handle opened above and is not used
-        // again after this call.
-        unsafe { CloseHandle(handle) };
-        if ok == 0 {
-            return None;
-        }
-        let ticks = (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime);
-        (ticks != 0).then(|| ticks.to_string())
-    }
-
-    #[cfg(not(any(
-        target_os = "macos",
-        target_os = "ios",
-        target_os = "linux",
-        target_os = "android",
-        windows
-    )))]
-    {
-        let _ = pid;
-        None
-    }
-}
 
 fn save(path: &Path, bytes: &[u8]) {
     let mut file = OpenOptions::new()
@@ -126,10 +25,10 @@ fn save_json(path: &Path, value: &Value) {
         &serde_json::to_vec_pretty(value).expect("serialize receipt"),
     );
 }
-pub fn home() -> PathBuf {
+pub fn home() -> common::TestHome {
     let ledger = std::env::var_os(LIVE_LAUNCH_LOG_ENV).map(PathBuf::from);
     let home = common::retained_failed_launch_home(ledger.as_deref()).expect("retained153 home");
-    eprintln!("live153 retained home={}", home.display());
+    eprintln!("live153 home={}", home.display());
     home
 }
 

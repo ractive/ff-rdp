@@ -87,9 +87,9 @@ fn live_175_failed_launch_leaves_no_profile_dir() {
         return;
     }
 
-    // Still isolate this test from sibling live tests, but retain its actual
-    // home on every path. With a capture ledger it lives inside that occurrence's
-    // evidence directory rather than outside the supervisor's profile census.
+    // Still isolate this test from sibling live tests. With a capture ledger
+    // the home lives inside that occurrence's evidence directory and is
+    // retained on every path; without one it is removed on drop.
     let capture_ledger = std::env::var_os(LIVE_LAUNCH_LOG_ENV).map(PathBuf::from);
     let home = retained_failed_launch_home(capture_ledger.as_deref())
         .expect("retained private home for failed launch");

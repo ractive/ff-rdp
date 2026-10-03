@@ -30,6 +30,8 @@ product work that needs design. Keep items to one line — if an item needs more
 - [ ] `clippy::assert_is_empty` is allowed in the lint tables rather than fixed at ~30 test sites (#286)
 - [ ] `kb/iterations/dogfood-lib.sh` and the historical `*.dogfood.sh` scripts remain only because `tools/axi-bench` sources the lib; move the lib under `tools/axi-bench/` and drop the scripts (#286)
 - [ ] `count_tabs` in `launch` does not reuse `connect_tab`'s list helper because that helper takes `&Cli` (#291)
+- [x] Per-test `FF_RDP_HOME`/profile dirs leaked under `$TMPDIR` (1,157 in two days); now removed on drop, including after panics (#PR)
+- [ ] Firefox leaves `remote-settings-startup-bundle-<n>` in the system temp dir when killed during its startup download; tests confine `TMPDIR`, which Gecko ignores on macOS — needs a launch pref or policy that skips the startup bundle (#PR)
 - [ ] `kb/dogfooding/*` session logs still mention `--wait-timeout`; historical, leave or annotate (#291)
 
 ## Global skills (edit by hand in `~/.claude/skills/`, shared with other repos)

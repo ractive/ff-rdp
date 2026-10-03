@@ -22,8 +22,8 @@
 use std::process::Command;
 
 use crate::common::{
-    FirefoxGuard, LIVE_LAUNCH_LOG_ENV, LiveFirefox, base_args, current_test_name, ff_rdp_bin,
-    ff_rdp_launch_command, live_tests_enabled, pid_alive, recorded_launch_output,
+    FirefoxGuard, LIVE_LAUNCH_LOG_ENV, LiveFirefox, TestHome, base_args, current_test_name,
+    ff_rdp_bin, ff_rdp_launch_command, live_tests_enabled, pid_alive, recorded_launch_output,
 };
 
 /// Parse a `ff-rdp` stdout buffer into JSON, with the raw text in the panic
@@ -282,8 +282,8 @@ fn live_158_launch_creates_missing_profile_dir() {
         return;
     }
 
-    let root = std::env::temp_dir().join(format!("ff-rdp-158-profile-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    // Removed on drop, after `_guard` below has killed this Firefox.
+    let root = TestHome::new("ff-rdp-158-profile-").expect("create profile root");
     let profile = root.join("absent").join("prof");
     assert!(
         !profile.exists(),
@@ -323,8 +323,6 @@ fn live_158_launch_creates_missing_profile_dir() {
         contents.contains("devtools.debugger.remote-enabled"),
         "user.js must carry the devtools prefs: {contents}"
     );
-
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// The occupied-port branch, end to end: a plain TCP listener squatting the

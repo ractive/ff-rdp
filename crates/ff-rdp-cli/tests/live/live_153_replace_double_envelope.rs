@@ -6,7 +6,9 @@
 //! Each case launches a prior instance in one fresh private home; `--replace`
 //! stops it on the strength of its real owner marker/start token.
 
-use crate::common::{ff_rdp_launch_command, live_tests_enabled, pid_alive, recorded_launch_output};
+use crate::common::{
+    TestHome, ff_rdp_launch_command, live_tests_enabled, pid_alive, recorded_launch_output,
+};
 #[path = "support/replace_fixture.rs"]
 mod fixture;
 use fixture::ProcessGuard as FirefoxGuard;
@@ -36,10 +38,10 @@ fn run_raw(home: &std::path::Path, port: u16, attempt: u8, args: &[&str]) -> (bo
 }
 
 /// A prior ff-rdp-launched instance in a fresh private home.
-fn setup_prior_instance() -> (fixture::Browser, std::path::PathBuf) {
+fn setup_prior_instance() -> (TestHome, fixture::Browser) {
     let home = fixture::home();
     let ff = fixture::launch(&home);
-    (ff, home)
+    (home, ff)
 }
 
 /// AC `live_153_replace_emits_single_envelope`: stdout of `launch --replace`
@@ -52,11 +54,12 @@ fn live_153_replace_emits_single_envelope() {
         eprintln!("live_153_replace_emits_single_envelope: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let (ff, home) = setup_prior_instance();
+    // `home` first, so it drops last: Firefox is stopped before the home goes.
+    let (home, ff) = setup_prior_instance();
     let port = ff.port();
 
     let (ok, stdout) = run_raw(
-        home.as_path(),
+        &home,
         port,
         1,
         &[
@@ -123,12 +126,13 @@ fn live_153_replace_reports_launched_pid() {
         eprintln!("live_153_replace_reports_launched_pid: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let (ff, home) = setup_prior_instance();
+    // `home` first, so it drops last: Firefox is stopped before the home goes.
+    let (home, ff) = setup_prior_instance();
     let port = ff.port();
     let prior_pid = ff.pid();
 
     let (ok, stdout) = run_raw(
-        home.as_path(),
+        &home,
         port,
         1,
         &[
@@ -192,12 +196,13 @@ fn live_153_replace_reports_stopped_instance() {
         eprintln!("live_153_replace_reports_stopped_instance: set FF_RDP_LIVE_TESTS=1 to run");
         return;
     }
-    let (ff, home) = setup_prior_instance();
+    // `home` first, so it drops last: Firefox is stopped before the home goes.
+    let (home, ff) = setup_prior_instance();
     let port = ff.port();
     let prior_pid = ff.pid();
 
     let (ok, stdout) = run_raw(
-        home.as_path(),
+        &home,
         port,
         1,
         &[
