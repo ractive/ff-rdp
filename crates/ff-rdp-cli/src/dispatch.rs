@@ -333,6 +333,8 @@ fn dispatch_inner(
             url,
             with_network,
             network_timeout,
+            headers,
+            security,
             wait_text,
             wait_selector,
             wait_timeout,
@@ -360,6 +362,10 @@ fn dispatch_inner(
                     url,
                     &wait_opts,
                     *network_timeout,
+                    commands::navigate::NetworkDetail {
+                        headers: *headers,
+                        security: *security,
+                    },
                     *auto_consent,
                     conditions,
                     page,
@@ -580,6 +586,7 @@ fn dispatch_inner(
             ref_id,
             wait_for_network,
             network_timeout,
+            headers,
             no_wait,
             dispatch,
             wait_for,
@@ -614,6 +621,7 @@ fn dispatch_inner(
                     frame: frame.as_deref(),
                     match_policy,
                     page: page.clone(),
+                    network_headers: *headers,
                     ..Default::default()
                 },
             )

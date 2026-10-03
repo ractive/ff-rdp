@@ -3,8 +3,7 @@
   "expected_diagnosis": "edge/proxy",
   "expected_evidence_commands": [
     "ff-rdp cookies",
-    "ff-rdp click '#submit' --wait-for-network '/api/login'",
-    "ff-rdp network --filter '/api/login' --detail --headers --limit 5",
+    "ff-rdp click '#submit' --wait-for-network '/api/login' --headers",
     "ff-rdp cookies"
   ],
   "must_not_conclude": ["A2", "B5", "D2"]

@@ -2157,6 +2157,85 @@ fn live_network_resources() {
     }
 }
 
+/// Record `getSecurityInfo` for an HTTPS document request, on the connection
+/// that observed it — the call `navigate --with-network --security` makes
+/// before it unwatches. Records only `get_security_info_response.json`, so it
+/// can be re-run without disturbing the `resources_*_network.json` fixtures
+/// `live_network_resources` owns.
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_network_event_security_info() {
+    if !should_run_live() {
+        return;
+    }
+    let mut conn = connect();
+    let transport = conn.transport_mut();
+
+    transport
+        .send(&json!({"to": "root", "type": "listTabs"}))
+        .expect("send listTabs");
+    let list_tabs = recv_from_actor(transport, "root");
+    let tab_actor = list_tabs["tabs"][0]["actor"]
+        .as_str()
+        .expect("tab actor")
+        .to_owned();
+    transport
+        .send(&json!({"to": &tab_actor, "type": "getTarget"}))
+        .expect("send getTarget");
+    let target_actor = recv_from_actor(transport, &tab_actor)["frame"]["actor"]
+        .as_str()
+        .expect("target actor")
+        .to_owned();
+    transport
+        .send(&json!({"to": &tab_actor, "type": "getWatcher"}))
+        .expect("send getWatcher");
+    let watcher_actor = recv_from_actor(transport, &tab_actor)["actor"]
+        .as_str()
+        .expect("watcher actor")
+        .to_owned();
+
+    transport
+        .send(&json!({
+            "to": &watcher_actor,
+            "type": "watchResources",
+            "resourceTypes": ["network-event"]
+        }))
+        .expect("send watchResources");
+    drain_messages(transport, Duration::from_secs(2));
+
+    transport
+        .send(&json!({
+            "to": &target_actor,
+            "type": "navigateTo",
+            "url": "https://example.com/"
+        }))
+        .expect("send navigateTo");
+    std::thread::sleep(Duration::from_secs(3));
+    let events = drain_messages(transport, Duration::from_secs(3));
+
+    let doc_actor = events
+        .iter()
+        .filter(|m| m["type"] == "resources-available-array")
+        .filter_map(|m| m["array"].as_array())
+        .flatten()
+        .filter_map(|sub| sub.as_array().and_then(|s| s.get(1)?.as_array()))
+        .flatten()
+        .find(|res| res["cause"]["type"] == "document")
+        .and_then(|res| res["actor"].as_str())
+        .expect("document network-event actor for https://example.com/")
+        .to_owned();
+
+    transport
+        .send(&json!({"to": &doc_actor, "type": "getSecurityInfo"}))
+        .expect("send getSecurityInfo");
+    let resp = recv_from_actor(transport, &doc_actor);
+    assert!(
+        resp["securityInfo"].is_object(),
+        "an HTTPS document request must carry securityInfo: {resp}"
+    );
+    save_cli_fixture("get_security_info_response.json", &resp);
+}
+
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
 fn live_snapshot() {

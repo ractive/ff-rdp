@@ -412,6 +412,44 @@ fn network_empty_when_no_events() {
     assert_eq!(json["results"]["total_requests"], 0);
 }
 
+/// #287: an empty `network --headers` after the fact cannot be rescued by
+/// `--source performance-api` (no headers there), so the hint names the one
+/// command that fetches headers before its connection closes.
+#[test]
+fn network_headers_empty_capture_hint_names_navigate_with_network_headers() {
+    let server = MockRdpServer::new()
+        .on("listTabs", load_fixture("list_tabs_response.json"))
+        .on("getTarget", load_fixture("get_target_response.json"))
+        .on("getWatcher", load_fixture("get_watcher_response.json"))
+        .on(
+            "watchResources",
+            load_fixture("watch_resources_response.json"),
+        );
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["network".to_owned(), "--headers".to_owned()]);
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+    handle.join().unwrap();
+
+    assert!(output.status.success(), "{}", support::output_note(&output));
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let hint = json["hint"].as_str().expect("hint string");
+    assert!(
+        hint.contains("navigate <url> --with-network --headers"),
+        "{hint}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("navigate <url> --with-network --headers"),
+        "{stderr}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Performance API as an explicit opt-out (iter-159: never as a silent fallback)
 // ---------------------------------------------------------------------------
