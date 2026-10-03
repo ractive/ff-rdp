@@ -1,4 +1,8 @@
-//! Auto-wait's 500ms stability budget must also bound diagnostic reads.
+//! Auto-wait's probes all draw from the command's one `--timeout` deadline.
+//! A probe that blocks for 2.5 s inside a 4 s budget — readiness, the
+//! post-ready selector diagnostic, or a rect-stability sample — spends budget
+//! but still lets the action through; there is no separate stability
+//! sub-budget to fail it (nightly 2026-10-03 under load).
 //! Run the actual CLI on an owned Firefox instance.
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
@@ -52,6 +56,7 @@ fn live_272_diagnostics_and_blocked_stability() {
             "hidden_many",
             "moving",
             "blocked_readiness",
+            "blocked_diagnostic",
             "blocked_stability",
         ] {
             let mut setup = "document.body.innerHTML='<input id=target><input class=twins style=display:none><input class=twins>';window.__probeCalls=0;".to_owned();
@@ -64,7 +69,10 @@ fn live_272_diagnostics_and_blocked_stability() {
                 "hidden" => setup.push_str("document.getElementById('target').style.display='none';"),
                 "moving" => setup.push_str("document.getElementById('target').getBoundingClientRect=function(){window.__probeCalls++;return {top:window.__probeCalls,left:0,width:100,height:20}};"),
                 "blocked_readiness" => setup.push_str("window.__qs=document.querySelector.bind(document);document.querySelector=function(s){if(s==='#target'&&window.__probeCalls++===0){var end=Date.now()+2500;while(Date.now()<end){}}return window.__qs(s)};"),
-                "blocked_stability" => setup.push_str("window.__rect=document.getElementById('target').getBoundingClientRect.bind(document.getElementById('target'));document.getElementById('target').getBoundingClientRect=function(){if(++window.__probeCalls===2){var end=Date.now()+2500;while(Date.now()<end){}}return window.__rect()};"),
+                // getBoundingClientRect call 1 is readiness, call 2 the post-ready
+                // selector diagnostic, call 3 the first rect-stability sample.
+                "blocked_diagnostic" => setup.push_str("window.__rect=document.getElementById('target').getBoundingClientRect.bind(document.getElementById('target'));document.getElementById('target').getBoundingClientRect=function(){if(++window.__probeCalls===2){var end=Date.now()+2500;while(Date.now()<end){}}return window.__rect()};"),
+                "blocked_stability" => setup.push_str("window.__rect=document.getElementById('target').getBoundingClientRect.bind(document.getElementById('target'));document.getElementById('target').getBoundingClientRect=function(){if(++window.__probeCalls===3){var end=Date.now()+2500;while(Date.now()<end){}}return window.__rect()};"),
                 _ => {}
             }
             setup.push_str("true");
@@ -89,8 +97,15 @@ fn live_272_diagnostics_and_blocked_stability() {
                 port,
                 "if(window.__qs){document.querySelector=window.__qs;delete window.__qs;}window.__probeCalls",
             );
-            if case == "blocked_readiness" {
-                assert!(output.status.success(), "{message}");
+            if matches!(
+                case,
+                "blocked_readiness" | "blocked_diagnostic" | "blocked_stability"
+            ) {
+                assert!(output.status.success(), "{case}: {message}");
+                assert!(
+                    elapsed >= Duration::from_millis(2_000),
+                    "{case}: the blocked probe must actually have been waited out: {elapsed:?}"
+                );
                 assert!(calls.as_u64().is_some_and(|count| count > 0));
                 assert_eq!(
                     eval(port, "document.getElementById('target').value"),
@@ -104,24 +119,13 @@ fn live_272_diagnostics_and_blocked_stability() {
                 "hidden" => "the 1 matching element is hidden",
                 "hidden_many" => "matched 2 elements, chose index 0 which is hidden",
                 "moving" => "rect did not stabilise",
-                "blocked_stability" => "selector diagnostic",
                 _ => unreachable!(),
             };
             assert!(message.contains(expected), "{case}: {message}");
-            if case == "blocked_stability" {
+            if case == "moving" {
                 assert!(
-                    elapsed < Duration::from_millis(1_800),
-                    "blocked probe inherited4000ms socket timeout: {elapsed:?}: {message}"
-                );
-                assert_eq!(calls, 2, "the intended second rect call must have blocked");
-                assert!(
-                    !message.contains("rect did not stabilise"),
-                    "blocked is not moving: {message}"
-                );
-                assert_eq!(
-                    eval(port, "document.getElementById('target').value"),
-                    "",
-                    "no type action after failed readiness"
+                    message.contains("4000ms --timeout budget"),
+                    "moving must fail on the overall budget: {message}"
                 );
             }
         }
