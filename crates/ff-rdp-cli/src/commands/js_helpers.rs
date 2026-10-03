@@ -505,18 +505,19 @@ pub(crate) fn autowait_element(
     timeout_ms: u64,
     for_input: bool,
 ) -> Result<Value, AppError> {
-    use std::time::{Duration, Instant};
-
     let escaped = escape_selector(selector);
     let readiness_js = build_autowait_js(&escaped, for_input);
     let stability_js = build_stability_check_js(&escaped);
 
-    let timeout = Duration::from_millis(timeout_ms);
     let poll = Duration::from_millis(POLL_INTERVAL_MS);
     let started = Instant::now();
-    let deadline = started + timeout;
+    // One absolute deadline for every probe in both phases. There is no
+    // per-phase sub-budget: a probe answering slowly (a loaded machine, a busy
+    // content process) spends auto-wait time but cannot fail the action on its
+    // own — only running out of the caller's whole budget does.
+    let budget = AutowaitBudget::new(started, timeout_ms);
+    let deadline = budget.deadline();
     let mut observed: Option<(String, SelectorFinding)> = None;
-    let mut stability_deadline = deadline;
     // iter-237 Part B: state for the "page is idle and the selector still
     // matches nothing" short-circuit. Starts `Uninstalled` — nothing is
     // injected until a poll actually fails to find the element.
@@ -524,7 +525,7 @@ pub(crate) fn autowait_element(
 
     // Phase 1: wait for element to exist + be visible + have non-zero rect.
     loop {
-        if started.elapsed() >= timeout {
+        if budget.expired(Instant::now()) {
             return Err(autowait_timeout(
                 selector,
                 timeout_ms,
@@ -588,19 +589,17 @@ pub(crate) fn autowait_element(
         // read must not start a fresh diagnostic under the socket timeout.
         let ready = is_truthy(&eval.result);
         if ready {
-            stability_deadline = deadline.min(Instant::now() + Duration::from_millis(500));
             observed = Some((
                 format!("selector '{selector}' was ready; match count unavailable"),
                 SelectorFinding::Unavailable,
             ));
         }
-        let diagnostic_deadline = if ready { stability_deadline } else { deadline };
         let diagnostic =
-            diagnose_selector_failure(ctx, console_actor, selector, &escaped, diagnostic_deadline);
+            diagnose_selector_failure(ctx, console_actor, selector, &escaped, deadline);
         if !matches!(diagnostic.1, SelectorFinding::Unavailable) {
             observed = Some(diagnostic);
         }
-        if Instant::now() >= diagnostic_deadline {
+        if budget.expired(Instant::now()) {
             return Err(autowait_timeout(
                 selector,
                 timeout_ms,
@@ -663,7 +662,7 @@ pub(crate) fn autowait_element(
             ));
         }
 
-        std::thread::sleep(poll.min(deadline.saturating_duration_since(Instant::now())));
+        std::thread::sleep(budget.clamp_sleep(poll, Instant::now()));
     }
 
     // Phase 2: wait for stable rect (two consecutive reads must match).
@@ -671,7 +670,7 @@ pub(crate) fn autowait_element(
     let mut rect_changed = false;
 
     loop {
-        if Instant::now() >= stability_deadline {
+        if budget.expired(Instant::now()) {
             // Only observed changes establish motion; a missing second sample
             // leaves stability unknown.
             let stage = if rect_changed {
@@ -689,7 +688,7 @@ pub(crate) fn autowait_element(
 
         let eval = match ctx
             .transport_mut()
-            .with_read_deadline(stability_deadline, |transport| {
+            .with_read_deadline(deadline, |transport| {
                 WebConsoleActor::evaluate_js_async(transport, console_actor, &stability_js)
             }) {
             Ok(eval) => eval,
@@ -743,8 +742,7 @@ pub(crate) fn autowait_element(
         }
 
         std::thread::sleep(
-            Duration::from_millis(50)
-                .min(stability_deadline.saturating_duration_since(Instant::now())),
+            budget.clamp_sleep(Duration::from_millis(STABILITY_SAMPLE_MS), Instant::now()),
         );
     }
 
@@ -765,8 +763,54 @@ fn autowait_timeout(
         |(message, _)| format!("last observation: {message}"),
     );
     AppError::Timeout(format!(
-        "selector '{selector}' auto-wait stopped during {stage} (budget {timeout_ms}ms); {evidence}"
+        "selector '{selector}' auto-wait stopped during {stage} — the command's {timeout_ms}ms \
+         --timeout budget, shared by every auto-wait probe, ran out; {evidence}"
     ))
+}
+
+/// Gap between two rect samples in auto-wait's stability phase.
+const STABILITY_SAMPLE_MS: u64 = 50;
+
+/// The single absolute deadline every [`autowait_element`] probe draws from.
+///
+/// Before this existed the stability phase ran under its own 500 ms window
+/// carved out of the moment readiness succeeded, and since iteration 272 bound
+/// each probe's socket read to that window, a probe whose answer took longer
+/// than 500 ms on a loaded machine failed the whole action with "rect
+/// stability probe did not answer" while most of `--timeout` was still unspent
+/// (nightly 2026-10-03, `--jobs 4` on a 4-core runner). Now readiness,
+/// diagnostics, settle probes and rect sampling all share this one deadline.
+#[derive(Clone, Copy, Debug)]
+struct AutowaitBudget {
+    deadline: Instant,
+}
+
+impl AutowaitBudget {
+    /// A budget of `timeout_ms` starting at `started`. A timeout too large to
+    /// represent as an `Instant` saturates at roughly a century, which no
+    /// command will ever reach, instead of panicking on overflow.
+    fn new(started: Instant, timeout_ms: u64) -> Self {
+        const FAR_FUTURE: Duration = Duration::from_hours(100 * 365 * 24);
+        let timeout = Duration::from_millis(timeout_ms);
+        let deadline = started
+            .checked_add(timeout)
+            .or_else(|| started.checked_add(FAR_FUTURE))
+            .unwrap_or(started);
+        Self { deadline }
+    }
+
+    fn deadline(self) -> Instant {
+        self.deadline
+    }
+
+    fn expired(self, now: Instant) -> bool {
+        now >= self.deadline
+    }
+
+    /// `interval`, shortened so a sleep never runs past the deadline.
+    fn clamp_sleep(self, interval: Duration, now: Instant) -> Duration {
+        interval.min(self.deadline.saturating_duration_since(now))
+    }
 }
 
 /// Diagnose *why* a selector never became ready, for a richer timeout error
@@ -2100,6 +2144,89 @@ mod tests {
                 "{message}"
             );
         }
+    }
+
+    #[test]
+    fn autowait_budget_is_one_absolute_deadline() {
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let budget = AutowaitBudget::new(t0, 1_000);
+        assert_eq!(budget.deadline(), t0 + ms(1_000));
+        assert!(!budget.expired(t0));
+        assert!(!budget.expired(t0 + ms(999)));
+        assert!(budget.expired(t0 + ms(1_000)));
+        assert!(budget.expired(t0 + ms(5_000)));
+
+        // Sleeps are clamped to what is left, never past the deadline.
+        assert_eq!(budget.clamp_sleep(ms(50), t0), ms(50));
+        assert_eq!(budget.clamp_sleep(ms(50), t0 + ms(980)), ms(20));
+        assert_eq!(budget.clamp_sleep(ms(50), t0 + ms(2_000)), Duration::ZERO);
+
+        // A zero budget is spent before the first probe.
+        assert!(AutowaitBudget::new(t0, 0).expired(t0));
+
+        // An unrepresentable budget saturates instead of panicking.
+        let huge = AutowaitBudget::new(t0, u64::MAX);
+        assert!(!huge.expired(t0 + Duration::from_hours(365 * 24)));
+    }
+
+    /// Nightly 2026-10-03 regression: under `--jobs 4` on a 4-core runner, a
+    /// rect-stability (or post-ready diagnostic) probe took longer than the old
+    /// fixed 500 ms stability window to answer and failed the action with "rect
+    /// stability probe did not answer" while most of `--timeout` was unspent.
+    /// Each probe here answers in 700 ms — past that old window — and the
+    /// action must still succeed inside its 5 s budget.
+    #[test]
+    fn slow_probes_after_readiness_spend_the_budget_instead_of_failing() {
+        let (port, server) = spawn_scripted_console(|js| match classify_eval(js) {
+            "readiness" => json!("ready"),
+            "diagnose" => {
+                std::thread::sleep(Duration::from_millis(700));
+                json!(r#"{"matchCount":1,"hidden":false}"#)
+            }
+            _ => {
+                std::thread::sleep(Duration::from_millis(700));
+                json!("[0,0,10,10]")
+            }
+        });
+        let (mut ctx, actor) = connect_for_test(port);
+        let result = autowait_element(&mut ctx, &actor, "#slow", 5_000, false);
+        drop(ctx);
+        server.join().unwrap();
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    /// A genuinely moving element still fails, with the motion diagnosis — but
+    /// only once the whole command budget is gone, and the message names that
+    /// budget rather than a hidden sub-budget.
+    #[test]
+    fn moving_element_fails_only_at_the_overall_deadline() {
+        let sequence = std::sync::atomic::AtomicUsize::new(0);
+        let (port, server) = spawn_scripted_console(move |js| match classify_eval(js) {
+            "readiness" => json!("ready"),
+            "diagnose" => json!(r#"{"matchCount":1,"hidden":false}"#),
+            _ => json!(format!(
+                "[{},0,10,10]",
+                sequence.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            )),
+        });
+        let (mut ctx, actor) = connect_for_test(port);
+        let start = Instant::now();
+        let result = autowait_element(&mut ctx, &actor, "#moving", 1_200, false);
+        let elapsed = start.elapsed();
+        drop(ctx);
+        server.join().unwrap();
+        let Err(AppError::Timeout(message)) = result else {
+            panic!("{result:?}")
+        };
+        assert!(elapsed >= Duration::from_millis(1_200), "{elapsed:?}");
+        assert!(message.contains("rect did not stabilise"), "{message}");
+        assert!(message.contains("matched 1 element"), "{message}");
+        assert!(
+            message.contains("the command's 1200ms --timeout budget"),
+            "{message}"
+        );
+        assert!(!message.contains("(budget "), "{message}");
     }
 
     #[test]
