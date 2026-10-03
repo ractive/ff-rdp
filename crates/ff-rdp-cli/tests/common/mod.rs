@@ -68,8 +68,28 @@ pub fn current_test_name() -> String {
 /// `std::thread::Builder::name` before calling this.
 pub fn ff_rdp_launch_command() -> Command {
     let mut cmd = Command::new(ff_rdp_bin());
-    cmd.env("FF_RDP_HOME", isolated_live_home());
+    let home = isolated_live_home();
+    cmd.env("FF_RDP_HOME", &home);
+    confine_temp_dir(&mut cmd, &home);
     cmd
+}
+
+/// Point the temp directory of a command that (directly or through
+/// `ff-rdp launch`) starts Firefox at `home/tmp`.
+///
+/// Firefox's Remote Settings creates `remote-settings-startup-bundle-<n>` in
+/// its temp dir on startup and removes it only when the download finishes, so
+/// a live-test browser killed early leaves one behind. Confined to the test's
+/// own home, it goes when the home does. Gecko honours `TMPDIR` on Linux; on
+/// macOS it asks the OS for the per-user temp dir and ignores the variable,
+/// so there the file still lands in the system temp dir.
+pub fn confine_temp_dir(command: &mut Command, home: &Path) {
+    let tmp = home.join("tmp");
+    if std::fs::create_dir_all(&tmp).is_ok() {
+        for var in ["TMPDIR", "TMP", "TEMP"] {
+            command.env(var, &tmp);
+        }
+    }
 }
 
 thread_local! {
@@ -96,8 +116,155 @@ thread_local! {
     /// [`current_live_home`] to its workers via `.env("FF_RDP_HOME", ..)`.
     ///
     /// Dropped — and so removed from disk — when the owning thread exits,
-    /// i.e. when the test using it finishes.
-    static ISOLATED_LIVE_HOME: RefCell<Option<tempfile::TempDir>> = const { RefCell::new(None) };
+    /// i.e. when the test using it finishes, including by panic. libtest joins
+    /// every test thread, so its thread-local destructors have run before the
+    /// harness reports the test. The [`TestHome`] guard first stops any Firefox
+    /// still running from a profile inside it (kill → wait → remove), because
+    /// a plain `TempDir` silently gave up on a tree Firefox was still writing
+    /// into and left it under `$TMPDIR`.
+    static ISOLATED_LIVE_HOME: RefCell<Option<TestHome>> = const { RefCell::new(None) };
+}
+
+/// Retry delay for [`remove_test_dir`].
+const REMOVE_RETRY_DELAY: Duration = Duration::from_millis(500);
+
+/// A per-test temporary directory — an `FF_RDP_HOME`, or a raw Firefox
+/// profile root — that is removed when dropped, including while a failing
+/// test unwinds.
+///
+/// Replaces bare `tempfile::TempDir` for directories a Firefox may be using:
+/// `TempDir`'s `Drop` ignores removal errors, so a tree Firefox was still
+/// writing into stayed under `$TMPDIR` with no trace. Dropping this instead
+///
+/// 1. stops every Firefox whose ff-rdp owner markers (PID **and** native
+///    start token, so a recycled PID is never signalled) sit in a managed
+///    profile under it, and waits for it to exit;
+/// 2. removes the tree, retrying once after 500 ms;
+/// 3. if that also fails, names the path on stderr — never silently keeps it.
+pub struct TestHome {
+    path: PathBuf,
+    /// Set by [`TestHome::keep`] or for a supervisor-owned evidence home
+    /// ([`retained_failed_launch_home`] with a capture ledger).
+    retain: bool,
+}
+
+impl TestHome {
+    /// A fresh, empty directory under the system temp dir.
+    pub fn new(prefix: &str) -> std::io::Result<Self> {
+        Ok(tempfile::Builder::new().prefix(prefix).tempdir()?.into())
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Stop this directory's Firefox and remove it now, reporting failure to
+    /// the caller instead of stderr.
+    pub fn close(mut self) -> Result<(), String> {
+        self.retain = true;
+        stop_firefox_owning(&self.path);
+        remove_test_dir(&self.path)
+    }
+
+    /// Give up cleanup and return the path, for a caller that must preserve
+    /// the tree for inspection and reports that it did.
+    pub fn keep(mut self) -> PathBuf {
+        self.retain = true;
+        std::mem::take(&mut self.path)
+    }
+}
+
+/// Adopt an existing `TempDir` (e.g. one created inside a fixture directory).
+impl From<tempfile::TempDir> for TestHome {
+    fn from(dir: tempfile::TempDir) -> Self {
+        Self {
+            path: dir.keep(),
+            retain: false,
+        }
+    }
+}
+
+impl std::ops::Deref for TestHome {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl AsRef<Path> for TestHome {
+    fn as_ref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl AsRef<std::ffi::OsStr> for TestHome {
+    fn as_ref(&self) -> &std::ffi::OsStr {
+        self.path.as_os_str()
+    }
+}
+
+impl Drop for TestHome {
+    fn drop(&mut self) {
+        if self.retain {
+            return;
+        }
+        stop_firefox_owning(&self.path);
+        if let Err(reason) = remove_test_dir(&self.path) {
+            // `writeln!` rather than `eprintln!`: this runs during unwind, and
+            // a panic there aborts the whole test binary.
+            let _ = writeln!(std::io::stderr(), "TestHome: {reason}");
+        }
+    }
+}
+
+/// Kill and await every Firefox whose ff-rdp owner markers sit in a managed
+/// profile directly under `home/ff-rdp/profiles`.
+///
+/// Signals a PID only while its current native start token equals the
+/// recorded `.ff-rdp-owner-start` marker: the directory is this test's own
+/// private home, so a matching incarnation is a browser this test launched,
+/// and a PID the OS has reissued since never matches.
+pub(crate) fn stop_firefox_owning(home: &Path) {
+    let Ok(entries) = std::fs::read_dir(home.join("ff-rdp").join("profiles")) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let profile = entry.path();
+        let Some(pid) = std::fs::read_to_string(profile.join(OWNER_PID_MARKER))
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .filter(|pid| *pid > 1)
+        else {
+            continue;
+        };
+        let Ok(recorded) = std::fs::read_to_string(profile.join(OWNER_START_MARKER)) else {
+            continue;
+        };
+        if process_start_token(pid).as_deref() == Some(recorded.trim()) {
+            kill_pid_and_wait(pid);
+        }
+    }
+}
+
+/// Remove `path` and everything under it; a missing path is success. Retries
+/// once after [`REMOVE_RETRY_DELAY`] — a just-killed Firefox's child processes
+/// can still be closing files in it — and on a second failure returns a
+/// message naming the path and both errors.
+pub(crate) fn remove_test_dir(path: &Path) -> Result<(), String> {
+    let first = match std::fs::remove_dir_all(path) {
+        Ok(()) => return Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => e,
+    };
+    std::thread::sleep(REMOVE_RETRY_DELAY);
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(second) => Err(format!(
+            "could not remove test directory {} ({first}; retried after {REMOVE_RETRY_DELAY:?}: {second}); left on disk",
+            path.display()
+        )),
+    }
 }
 
 /// The per-test isolated profile-root home every live-test `ff-rdp launch`
@@ -110,9 +277,7 @@ fn isolated_live_home() -> PathBuf {
     ISOLATED_LIVE_HOME.with(|slot| {
         let mut slot = slot.borrow_mut();
         let dir = slot.get_or_insert_with(|| {
-            tempfile::Builder::new()
-                .prefix("ff-rdp-live-home-")
-                .tempdir()
+            TestHome::new("ff-rdp-live-home-")
                 .expect("create this test thread's isolated FF_RDP_HOME")
         });
         dir.path().to_path_buf()
@@ -569,6 +734,10 @@ pub fn await_document_ready(port: u16, timeout: Duration) -> DocumentState {
 /// spelled it out independently.
 pub const OWNER_PID_MARKER: &str = ".ff-rdp-owner-pid";
 
+/// Owner start-token marker beside [`OWNER_PID_MARKER`]; mirrors the
+/// product's private `util::profile_dir::OWNER_START_MARKER`.
+pub const OWNER_START_MARKER: &str = ".ff-rdp-owner-start";
+
 /// Scan `root` for `ff-rdp-profile-*` directories whose owner-PID marker names
 /// a still-alive process, as `(dir, pid)` pairs.
 ///
@@ -859,10 +1028,14 @@ pub(crate) fn recorded_launch_output(
     output.map_err(|e| format!("launch command failed: {e}"))
 }
 
-/// A failed-launch probe must retain its actual home even while unwinding.
-/// With a capture ledger, put it beside that ledger so the occurrence census
-/// can discover every profile. This path deliberately has no deleting Drop.
-pub(crate) fn retained_failed_launch_home(ledger: Option<&Path>) -> std::io::Result<PathBuf> {
+/// A failed-launch probe's private home.
+///
+/// With a capture ledger it is put beside that ledger, so the occurrence
+/// census can discover every profile, and it is retained even while
+/// unwinding: that directory is the supervisor's evidence, not `$TMPDIR`.
+/// Without one (a plain `cargo test`) it is an ordinary [`TestHome`] removed
+/// on drop — retaining it there leaked one directory per test run.
+pub(crate) fn retained_failed_launch_home(ledger: Option<&Path>) -> std::io::Result<TestHome> {
     let mut builder = tempfile::Builder::new();
     builder.prefix("ff-rdp-failed-launch-");
     let home = match ledger {
@@ -878,7 +1051,9 @@ pub(crate) fn retained_failed_launch_home(ledger: Option<&Path>) -> std::io::Res
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(home.path(), std::fs::Permissions::from_mode(0o700))?;
     }
-    Ok(home.keep())
+    let mut home = TestHome::from(home);
+    home.retain = ledger.is_some();
+    Ok(home)
 }
 
 /// In a fresh exclusive failed-launch home every surviving managed profile is
@@ -922,9 +1097,10 @@ fn chrono_now_rfc3339() -> String {
 
 /// A live Firefox instance launched via `ff-rdp launch --headless`.
 ///
-/// Holds the Firefox PID and the RDP debug port.  `Drop` kills Firefox; the
-/// temporary profile created by `ff-rdp launch` is left for the OS to reap
-/// (deferred to a future cleanup pass — see iter-61o notes).
+/// Holds the Firefox PID and the RDP debug port.  `Drop` kills Firefox and
+/// waits for it to exit; the profile `ff-rdp launch` created lives under the
+/// test thread's isolated `FF_RDP_HOME` ([`ISOLATED_LIVE_HOME`]), which is
+/// removed when the test thread ends.
 pub struct LiveFirefox {
     firefox_pid: u32,
     port: u16,
@@ -973,7 +1149,7 @@ pub struct LiveLaunchReceipt {
 pub struct IsolatedLiveFirefox {
     firefox: Option<LiveFirefox>,
     ff_rdp_binary: PathBuf,
-    home: Option<tempfile::TempDir>,
+    home: Option<TestHome>,
     finished: bool,
     receipt: LiveLaunchReceipt,
 }
@@ -1016,25 +1192,26 @@ impl IsolatedLiveFirefox {
         command_timeout: Duration,
     ) -> Result<Self, String> {
         let ff_rdp_binary = validate_session_binary(ff_rdp_binary)?;
-        let home = tempfile::tempdir().map_err(|e| format!("create isolated FF_RDP_HOME: {e}"))?;
+        let home = TestHome::new("ff-rdp-isolated-home-")
+            .map_err(|e| format!("create isolated FF_RDP_HOME: {e}"))?;
         let profile = home.path().join("profile");
         write_requested_profile_prefs(&profile, preferences)?;
         let port = free_port().ok_or_else(|| "reserve a random debugger port".to_owned())?;
         let product_timeout_secs = product_timeout.as_secs().to_string();
 
+        let mut launch = Command::new(&ff_rdp_binary);
+        confine_temp_dir(&mut launch, &home);
         let launch_result = bounded_command_output(
-            Command::new(&ff_rdp_binary)
-                .env("FF_RDP_HOME", home.path())
-                .args([
-                    "launch",
-                    "--headless",
-                    "--debug-port",
-                    &port.to_string(),
-                    "--profile",
-                    &profile.to_string_lossy(),
-                    "--launch-timeout",
-                    &product_timeout_secs,
-                ]),
+            launch.env("FF_RDP_HOME", home.path()).args([
+                "launch",
+                "--headless",
+                "--debug-port",
+                &port.to_string(),
+                "--profile",
+                &profile.to_string_lossy(),
+                "--launch-timeout",
+                &product_timeout_secs,
+            ]),
             command_timeout,
             "isolated launch",
         )
@@ -1175,8 +1352,7 @@ impl IsolatedLiveFirefox {
                     failures.push(format!("remove isolated FF_RDP_HOME: {e}"));
                 }
             } else {
-                let preserved = home.path().to_path_buf();
-                std::mem::forget(home);
+                let preserved = home.keep();
                 failures.push(format!(
                     "preserved isolated FF_RDP_HOME at {}",
                     preserved.display()
@@ -1332,7 +1508,7 @@ pub(crate) fn launch_request_context(home: &Path, port: u16) -> serde_json::Valu
 /// are the authority. A failed `launch` reaps the Firefox it spawned itself
 /// (iter-282), so a port that is still listening means something survived:
 /// the home is preserved for inspection rather than removed under it.
-pub(crate) fn failed_launch_error(reason: &str, home: tempfile::TempDir, port: u16) -> String {
+pub(crate) fn failed_launch_error(reason: &str, home: TestHome, port: u16) -> String {
     // Parent-selected authority survives even when the launch child never
     // executes or writes a receipt. Keep it separate from cleanup's response.
     let request = launch_request_context(home.path(), port);
@@ -1344,8 +1520,7 @@ pub(crate) fn failed_launch_error(reason: &str, home: tempfile::TempDir, port: u
         );
         format!("{reason}; port {port} is free; {removal}")
     } else {
-        let preserved = home.path().to_path_buf();
-        std::mem::forget(home);
+        let preserved = home.keep();
         format!(
             "{reason}; port {port} is still listening after the failed launch; preserving {} for inspection",
             preserved.display()
@@ -1543,14 +1718,13 @@ impl LiveFirefox {
                 PathBuf::from,
             )
             .with_extension("attempts.jsonl");
-        let mut command = Command::new(ff_rdp_bin());
+        // See `ISOLATED_LIVE_HOME`: every managed profile this launch creates
+        // lands under this test thread's own temp root, never the developer's
+        // real per-user profile root.
+        let mut command = ff_rdp_launch_command();
         command
             .args(["launch", "--headless", "--debug-port", &port.to_string()])
-            .args(extra_args)
-            // See `ISOLATED_LIVE_HOME`: every managed profile this launch
-            // creates lands under this test thread's own temp root, never the
-            // developer's real per-user profile root.
-            .env("FF_RDP_HOME", isolated_live_home());
+            .args(extra_args);
         let output = recorded_launch_output(&mut command, &ledger, attempt, port).map_err(|e| {
             format!(
                 "attempt {attempt} (port {port}): could not spawn `{} launch`: {e}",
@@ -1714,7 +1888,7 @@ pub fn find_firefox_binary() -> Option<PathBuf> {
 pub struct RawFirefox {
     pid: u32,
     port: u16,
-    profile: PathBuf,
+    profile: TestHome,
     // Held so `Drop` can `wait()` after killing — without reaping, the
     // process would remain a zombie (Unix) until some other code waits on
     // it, since it is a direct child of this test process.
@@ -1751,9 +1925,8 @@ impl RawFirefox {
             .ok_or_else(|| "could not bind 127.0.0.1:0 to discover a free port".to_owned())?;
         // A profile dir that is NOT under ff-rdp's managed root and does NOT
         // match the `ff-rdp-profile-*` convention.
-        let profile = std::env::temp_dir().join(format!("raw-ff-{}-{port}", std::process::id()));
-        std::fs::create_dir_all(&profile)
-            .map_err(|e| format!("could not create profile {}: {e}", profile.display()))?;
+        let profile = TestHome::new(&format!("raw-ff-{}-{port}-", std::process::id()))
+            .map_err(|e| format!("could not create a raw Firefox profile: {e}"))?;
 
         // Firefox reads prefs at startup, so the debugger prefs MUST be on disk
         // before spawn — otherwise the --start-debugger-server port never opens
@@ -1767,7 +1940,9 @@ impl RawFirefox {
         )
         .map_err(|e| format!("could not write {}/user.js: {e}", profile.display()))?;
 
-        let child = Command::new(&firefox)
+        let mut command = Command::new(&firefox);
+        confine_temp_dir(&mut command, &profile);
+        let child = command
             .args([
                 "-no-remote",
                 "-headless",
@@ -1817,7 +1992,8 @@ impl Drop for RawFirefox {
         // exactly why the latter had to poll.
         kill_pid(self.pid);
         let _ = self.child.wait();
-        let _ = std::fs::remove_dir_all(&self.profile);
+        // `self.profile` (a `TestHome`) is dropped after this body returns —
+        // i.e. after Firefox has been reaped — and removes the profile then.
     }
 }
 
@@ -2293,5 +2469,111 @@ fn handle_connection(mut stream: TcpStream, routes: &HashMap<String, FixtureRout
         );
         let _ = stream.write_all(header.as_bytes());
         let _ = stream.write_all(body);
+    }
+}
+
+/// Native start token of `pid` (its creation time), or `None` when the
+/// process does not exist or the platform has no source. Mirrors the
+/// product's `util::process::process_start_token`: this crate has no `[lib]`
+/// target for an integration test to import it from.
+pub fn process_start_token(pid: u32) -> Option<String> {
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    {
+        let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+        let size = libc::c_int::try_from(std::mem::size_of::<libc::proc_bsdinfo>()).ok()?;
+        // SAFETY: `proc_pidinfo` writes at most `size` bytes into the buffer we
+        // pass, and `size` is exactly `size_of::<proc_bsdinfo>()`. The pointer
+        // comes from a live, correctly-aligned `MaybeUninit<proc_bsdinfo>` that
+        // outlives the call. The only side effect is filling that buffer; a
+        // non-existent or inaccessible PID is reported through the return
+        // value, which we check against the full struct size before reading.
+        #[allow(clippy::cast_possible_wrap)]
+        let written = unsafe {
+            libc::proc_pidinfo(
+                pid as libc::c_int,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                info.as_mut_ptr().cast::<libc::c_void>(),
+                size,
+            )
+        };
+        if written != size {
+            return None;
+        }
+        // SAFETY: `proc_pidinfo` returned exactly `size_of::<proc_bsdinfo>()`
+        // bytes written, so the buffer is fully initialised.
+        let info = unsafe { info.assume_init() };
+        Some(format!(
+            "{}.{:06}",
+            info.pbi_start_tvsec, info.pbi_start_tvusec
+        ))
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        // Field 22 of /proc/<pid>/stat is `starttime`. Fields 1 and 2 are the
+        // PID and the comm, and comm is parenthesised and may itself contain
+        // spaces and ')' — so split after the LAST ')' rather than tokenising
+        // the whole line.
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let after_comm = &stat[stat.rfind(')')? + 1..];
+        // After the comm, field 3 is `state`; `starttime` is field 22, i.e.
+        // the 20th whitespace-separated token of this remainder.
+        let starttime = after_comm.split_whitespace().nth(19)?;
+        (!starttime.is_empty()).then(|| starttime.to_owned())
+    }
+
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+        use windows_sys::Win32::System::Threading::{
+            GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        // SAFETY: `OpenProcess` only returns a handle (or NULL); we close it on
+        // every path below.
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            return None;
+        }
+        let mut creation = FILETIME {
+            dwLowDateTime: 0,
+            dwHighDateTime: 0,
+        };
+        let mut exit = creation;
+        let mut kernel = creation;
+        let mut user = creation;
+        // SAFETY: `handle` is a valid handle we just opened, and all four
+        // out-pointers reference live, initialised `FILETIME` locals that
+        // outlive the call.
+        let ok = unsafe {
+            GetProcessTimes(
+                handle,
+                &raw mut creation,
+                &raw mut exit,
+                &raw mut kernel,
+                &raw mut user,
+            )
+        };
+        // SAFETY: `handle` is the valid handle opened above and is not used
+        // again after this call.
+        unsafe { CloseHandle(handle) };
+        if ok == 0 {
+            return None;
+        }
+        let ticks = (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime);
+        (ticks != 0).then(|| ticks.to_string())
+    }
+
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "linux",
+        target_os = "android",
+        windows
+    )))]
+    {
+        let _ = pid;
+        None
     }
 }

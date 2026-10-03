@@ -5,13 +5,14 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use super::common::{
-    IsolatedLiveFirefox, ProfilePreference, bounded_command_output,
+    IsolatedLiveFirefox, ProfilePreference, TestHome, bounded_command_output,
     isolated_launch_command_timeout, launch_receipt_from_output, parse_product_launch_timeout,
-    validate_session_binary, write_requested_profile_prefs,
+    retained_failed_launch_home, validate_session_binary, write_requested_profile_prefs,
 };
 #[cfg(unix)]
 use super::common::{
-    bounded_command_output_with_poll, failed_launch_error, launch_request_context, pid_alive,
+    OWNER_PID_MARKER, OWNER_START_MARKER, bounded_command_output_with_poll, failed_launch_error,
+    kill_pid, launch_request_context, pid_alive, process_start_token,
 };
 
 #[test]
@@ -182,7 +183,7 @@ fn failed_launch_removes_home_only_when_the_requested_port_is_free() {
         if !occupied {
             drop(listener);
         }
-        let error = failed_launch_error("regression launch failure", home, port);
+        let error = failed_launch_error("regression launch failure", home.into(), port);
         let request: serde_json::Value = serde_json::from_str(
             error
                 .lines()
@@ -489,4 +490,83 @@ fn unit_282_direct_failed_launch_retains_raw_outcome_and_actual_home() {
     let _ = std::panic::catch_unwind(|| panic!("subsequent test assertion"));
     assert!(home.is_dir());
     assert!(ledger.is_file());
+}
+
+#[test]
+fn test_home_is_removed_on_drop_even_while_unwinding() {
+    let home = TestHome::new("ff-rdp-test-home-unwind-").unwrap();
+    let path = home.to_path_buf();
+    let profile = path.join("ff-rdp/profiles/ff-rdp-profile-x");
+    std::fs::create_dir_all(&profile).unwrap();
+    std::fs::write(profile.join("prefs.js"), b"x").unwrap();
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _home = home;
+        panic!("simulated assertion failure");
+    }));
+    assert!(unwound.is_err());
+    assert!(!path.exists(), "{} survived the unwind", path.display());
+}
+
+#[test]
+fn failed_launch_home_without_a_ledger_is_removed_on_drop() {
+    let home = retained_failed_launch_home(None).unwrap();
+    let path = home.to_path_buf();
+    assert!(path.is_dir());
+    drop(home);
+    assert!(!path.exists(), "{} leaked under $TMPDIR", path.display());
+}
+
+#[test]
+fn test_home_close_reports_success_for_an_already_removed_tree() {
+    let home = TestHome::new("ff-rdp-test-home-gone-").unwrap();
+    std::fs::remove_dir_all(&*home).unwrap();
+    assert_eq!(home.close(), Ok(()));
+}
+
+/// Spawn a stand-in "Firefox" and plant ff-rdp owner markers for it inside
+/// `home`'s managed profile root; `start` overrides the recorded start token.
+/// The child is reaped on a thread so, once killed, it does not linger as a
+/// zombie that `kill(pid, 0)` still reports alive.
+#[cfg(unix)]
+fn plant_owned_process(
+    home: &Path,
+    start: Option<&str>,
+) -> (
+    u32,
+    std::thread::JoinHandle<std::io::Result<std::process::ExitStatus>>,
+) {
+    let mut child = Command::new("sleep").arg("30").spawn().unwrap();
+    let pid = child.id();
+    let token = process_start_token(pid).expect("native start token");
+    let profile = home.join("ff-rdp/profiles/ff-rdp-profile-owned");
+    std::fs::create_dir_all(&profile).unwrap();
+    std::fs::write(profile.join(OWNER_PID_MARKER), pid.to_string()).unwrap();
+    std::fs::write(profile.join(OWNER_START_MARKER), start.unwrap_or(&token)).unwrap();
+    (pid, std::thread::spawn(move || child.wait()))
+}
+
+#[cfg(unix)]
+#[test]
+fn test_home_drop_kills_its_own_browser_before_removing_the_tree() {
+    use std::os::unix::process::ExitStatusExt;
+    let home = TestHome::new("ff-rdp-test-home-kill-").unwrap();
+    let path = home.to_path_buf();
+    let (_pid, waiter) = plant_owned_process(&home, None);
+    drop(home);
+    let status = waiter.join().unwrap().unwrap();
+    assert_eq!(status.signal(), Some(libc::SIGKILL), "{status:?}");
+    assert!(!path.exists(), "{} survived", path.display());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_home_drop_never_signals_a_pid_whose_start_token_differs() {
+    let home = TestHome::new("ff-rdp-test-home-recycled-").unwrap();
+    let path = home.to_path_buf();
+    let (pid, waiter) = plant_owned_process(&home, Some("not-this-incarnation"));
+    drop(home);
+    assert!(pid_alive(pid), "a recycled PID must not be signalled");
+    assert!(!path.exists(), "{} survived", path.display());
+    kill_pid(pid);
+    waiter.join().unwrap().unwrap();
 }

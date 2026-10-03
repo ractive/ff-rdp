@@ -9,6 +9,8 @@
 
 use std::path::PathBuf;
 
+use tempfile::TempDir;
+
 use super::support::{self, MockRdpServer, load_fixture};
 
 fn ff_rdp_bin() -> PathBuf {
@@ -20,14 +22,17 @@ fn ff_rdp_bin() -> PathBuf {
 /// Returns `(state_dir, output_path)`.  The state dir is passed as
 /// `XDG_STATE_HOME` so the recording state file lives there instead of in the
 /// developer's real `~/.local/state/ff-rdp/`.
-fn temp_recording_env(label: &str) -> (PathBuf, PathBuf) {
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let state_dir = std::env::temp_dir().join(format!("ff_rdp_rec_{label}_{ts}_state"));
-    let output_path = std::env::temp_dir().join(format!("ff_rdp_rec_{label}_{ts}.json"));
-    std::fs::create_dir_all(&state_dir).expect("create state dir");
+///
+/// The state dir is a `TempDir` the test holds for its lifetime, and the
+/// output file lives inside it, so both are removed when the test ends —
+/// including by panic. A `$TMPDIR/ff_rdp_rec_*_state` path built by hand
+/// leaked six directories per `cargo test` run.
+fn temp_recording_env(label: &str) -> (TempDir, PathBuf) {
+    let state_dir = tempfile::Builder::new()
+        .prefix(&format!("ff_rdp_rec_{label}_"))
+        .tempdir()
+        .expect("create state dir");
+    let output_path = state_dir.path().join("recording.json");
     (state_dir, output_path)
 }
 
@@ -43,10 +48,10 @@ fn base_args(port: u16) -> Vec<String> {
 /// Run a command with `XDG_STATE_HOME` set to `state_dir`.
 ///
 /// Returns the `std::process::Output` of the command.
-fn run_with_state(args: &[String], state_dir: &PathBuf) -> std::process::Output {
+fn run_with_state(args: &[String], state_dir: &TempDir) -> std::process::Output {
     std::process::Command::new(ff_rdp_bin())
         .args(args)
-        .env("XDG_STATE_HOME", state_dir)
+        .env("XDG_STATE_HOME", state_dir.path())
         .output()
         .expect("failed to spawn ff-rdp")
 }
