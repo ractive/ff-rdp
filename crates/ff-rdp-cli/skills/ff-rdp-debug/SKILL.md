@@ -229,7 +229,7 @@ Each playbook lives in `playbooks/<ID>.md`:
 
 Two flags from iter-57 tighten Tier 1 playbooks:
 
-- `network --headers` — A2, B5, E3 use this to read response headers.
+- `--headers` — A1, A2, D2, E1, E3 read request/response headers.
   Headers can only be read on the connection that observed the request,
   so a `network --headers` run after the request finished returns
   nothing: capture them in the same command with

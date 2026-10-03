@@ -28,7 +28,7 @@
 
 use std::collections::HashMap;
 use std::process::{Command, Output};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde_json::Value;
 
@@ -332,12 +332,13 @@ fn static_fixture() -> HashMap<String, FixtureRoute> {
     routes
 }
 
-/// AC: a selector matching nothing on a settled page is reported in
-/// measurably less than `--timeout`.
+/// AC: a selector matching nothing on a settled page is reported before
+/// `--timeout` runs out.
 ///
-/// The bound is half the budget rather than a tight one: the point of the AC
-/// is "not the whole timeout", and a tight bound would turn ordinary CI
-/// jitter into a red suite. `main` fails this at ~10 s, not at 5.1 s.
+/// Asserted through the settle short-circuit's own diagnostic ("the page is
+/// idle …"), which only that early exit produces; the budget-exhaustion path
+/// reports a different message. The former `< timeout/2` wall-clock bound was
+/// dropped in #290: it measured the host's load, not the product.
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
 fn live_237_absent_selector_reports_well_under_the_timeout() {
@@ -358,9 +359,7 @@ fn live_237_absent_selector_reports_well_under_the_timeout() {
 
     run_json(port, &["navigate", &server.base_url()]);
 
-    let started = Instant::now();
     let out = run(port, &["click", "a[href=\"/wiki/Charles_Babbage\"]"]);
-    let elapsed = started.elapsed();
 
     assert!(
         !out.status.success(),
@@ -377,9 +376,9 @@ fn live_237_absent_selector_reports_well_under_the_timeout() {
         "the early answer must keep the not-found diagnostic: {combined}"
     );
     assert!(
-        elapsed < Duration::from_millis(CLICK_TIMEOUT_MS / 2),
-        "a guessed selector on an idle page must not cost the full \
-         {CLICK_TIMEOUT_MS}ms budget, took {elapsed:?}: {combined}"
+        combined.contains("the page is idle"),
+        "a guessed selector on an idle page must be answered by the settle \
+         short-circuit, not by exhausting the {CLICK_TIMEOUT_MS}ms budget: {combined}"
     );
 }
 

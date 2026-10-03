@@ -3,7 +3,7 @@
   "expected_diagnosis": "stale-index-html-cache",
   "expected_evidence_commands": [
     "ff-rdp console --level error --filter 'ChunkLoadError|Loading chunk' --limit 5",
-    "ff-rdp network --filter '/static/|/chunks/' --detail --limit 30"
+    "ff-rdp navigate http://127.0.0.1:8000/ --with-network --all --jq '.results.network.entries[] | select(.status == 404) | {url, status}'"
   ],
   "must_not_conclude": ["B5", "D2", "E3"]
 }
