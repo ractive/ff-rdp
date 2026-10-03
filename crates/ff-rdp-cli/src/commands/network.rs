@@ -203,6 +203,20 @@ pub fn run(
         // harmless here.
         let summary_source = results.clone();
         let mut detail = results;
+        // The keys the per-entry joins below attach, so `--fields` may name them.
+        let added: Vec<&str> = if is_perf_source {
+            if headers || security {
+                vec!["note"]
+            } else {
+                vec![]
+            }
+        } else {
+            [(headers, "headers"), (security, "security")]
+                .into_iter()
+                .filter_map(|(on, key)| on.then_some(key))
+                .collect()
+        };
+        validate_controls_for_view(&controls, &detail, &added)?;
         // Default sort by duration_ms desc when no explicit sort is provided.
         if cli.sort.is_none() {
             let dir = controls.sort_dir;
@@ -218,7 +232,6 @@ pub fn run(
         } else {
             controls.apply_sort(&mut detail)?;
         }
-        controls.validate_fields(&detail)?;
         let (limited, total, truncated) = controls.apply_limit(detail, Some(20));
         let shown = limited.len();
 
@@ -425,6 +438,41 @@ fn content_type_from_headers(headers: &[Value]) -> Option<String> {
             Some(bare.to_owned())
         }
     })
+}
+
+/// Validate `--sort`/`--fields` against the entries as the user will see them.
+///
+/// Watcher entries carry the internal `_resource_id` join key until the
+/// per-request joins are done, and `--headers`/`--security` add their keys only
+/// after the cap. Validating the raw entries would accept `--fields
+/// _resource_id` (then strip it, printing `{}` rows), list `_resource_id` as an
+/// available name, and reject `--fields headers`. So: drop the join key, and
+/// for `--fields` count `added` (the keys the joins will attach) as available.
+pub(crate) fn validate_controls_for_view(
+    controls: &OutputControls,
+    entries: &[Value],
+    added: &[&str],
+) -> Result<(), AppError> {
+    if controls.sort_field.is_none() && controls.fields.is_none() {
+        return Ok(());
+    }
+    let mut view: Vec<Value> = entries
+        .iter()
+        .map(|e| {
+            let mut e = e.clone();
+            if let Some(obj) = e.as_object_mut() {
+                obj.remove("_resource_id");
+            }
+            e
+        })
+        .collect();
+    controls.validate_sort(&view)?;
+    if let Some(obj) = view.first_mut().and_then(Value::as_object_mut) {
+        for key in added {
+            obj.insert((*key).to_owned(), Value::Null);
+        }
+    }
+    controls.validate_fields(&view)
 }
 
 /// Fetch one request's headers from its `NetworkEventActor` as the

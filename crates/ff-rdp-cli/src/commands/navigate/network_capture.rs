@@ -350,6 +350,11 @@ pub(crate) fn apply_network_controls(
 
     let mut canonical = if use_detail {
         let controls = OutputControls::from_cli(cli, SortDir::Desc);
+        let added: Vec<&str> = [(detail.headers, "headers"), (detail.security, "security")]
+            .into_iter()
+            .filter_map(|(on, key)| on.then_some(key))
+            .collect();
+        crate::commands::network::validate_controls_for_view(&controls, network_entries, &added)?;
         let mut sorted = network_entries.to_vec();
         if cli.sort.is_none() {
             let dir = controls.sort_dir;
@@ -365,7 +370,6 @@ pub(crate) fn apply_network_controls(
         } else {
             controls.apply_sort(&mut sorted)?;
         }
-        controls.validate_fields(&sorted)?;
         let (mut limited, total, truncated) = controls.apply_limit(sorted, Some(20));
         enrich(&mut limited);
         strip_resource_ids(&mut limited);

@@ -975,6 +975,65 @@ fn navigate_with_network_security_attaches_tls_detail() {
     assert!(last_fetch < first_request(&requests, "unwatchResources"));
 }
 
+/// `--fields` is checked against the entries as emitted: the keys
+/// `--headers` attaches after the cap are selectable…
+#[test]
+fn navigate_with_network_headers_fields_can_select_headers() {
+    let server = navigate_with_network_server()
+        .on(
+            "getRequestHeaders",
+            load_fixture("get_request_headers_response.json"),
+        )
+        .on(
+            "getResponseHeaders",
+            load_fixture("get_response_headers_response.json"),
+        );
+    let (json, _) = run_navigate_with_network(server, &["--headers", "--fields", "url,headers"]);
+    for entry in json["results"]["network"]["entries"].as_array().unwrap() {
+        let keys: Vec<&String> = entry.as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["url", "headers"], "{entry}");
+    }
+}
+
+/// …and the internal `_resource_id` join key is neither selectable nor
+/// advertised.
+#[test]
+fn navigate_with_network_fields_rejects_internal_join_key() {
+    let server = navigate_with_network_server();
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+    let mut args = base_args(port);
+    args.extend(
+        [
+            "navigate",
+            "https://example.com",
+            "--with-network",
+            "--fields",
+            "_resource_id",
+        ]
+        .map(str::to_owned),
+    );
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+    handle.join().unwrap();
+
+    assert!(
+        !output.status.success(),
+        "{}",
+        support::output_note(&output)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let error = json["error"].as_str().unwrap_or_default();
+    assert!(error.contains("--fields"), "{json}");
+    assert_eq!(
+        error.matches("_resource_id").count(),
+        1,
+        "named once as the unknown field, never listed as available: {error}"
+    );
+}
+
 #[test]
 fn navigate_headers_requires_with_network() {
     let output = std::process::Command::new(ff_rdp_bin())
