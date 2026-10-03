@@ -547,6 +547,15 @@ and end when the command exits, so they cannot be combined with --no-wait. Block
 requests fail with NS_ERROR_ABORT. Throttling does not bypass the HTTP cache. The
 envelope echoes what was applied under results.network_conditions.
 
+--user-agent UA overrides the User-Agent for this load: the document request's
+`User-Agent` header, its sub-resource requests, and `navigator.userAgent` while
+the command runs. It is set on the command's own connection right before
+navigating and ends when the command exits: the page stays loaded, but a later
+`eval` reads the original `navigator.userAgent` and a later reload sends the
+original header. Not combinable with --no-wait, --with-network, or
+--auto-consent (whose click runs on a second connection, after the override
+has ended). Echoed as results.user_agent.
+
 The URL is a positional argument (not a flag). There is no --url option.
 
 Examples:
@@ -557,6 +566,7 @@ Examples:
   ff-rdp navigate https://example.com --wait-text \"Welcome\"
   ff-rdp navigate https://example.com --wait-for selector:.athing
   ff-rdp navigate https://example.com --no-wait
+  ff-rdp navigate https://example.com --user-agent 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)'
   ff-rdp navigate https://www.theguardian.com --auto-consent
 
 --auto-consent (iter-129): after the document commits, run the same
@@ -852,8 +862,24 @@ state from the live tab are NOT carried over. No density knob here —
 found to have zero effect on the output raster (Firefox 153.0.3). Mutually
 exclusive with --full-page/--viewport-height.
 
+--color-scheme dark|light simulates `prefers-color-scheme`, and --media print
+simulates the print medium (`@media print` rules apply; --media screen is the
+default and simulates nothing). Both are set on this command's own connection
+right before the capture, and the command waits until the page's matchMedia
+reports them. They end when the command exits: the tab is back to its own
+settings afterwards, and a later `eval` sees the unemulated page. Not
+available with --window-size, which captures in a separate Firefox process.
+--color-scheme dark is refused with --media print: Firefox always renders
+print media with a light colour scheme.
+
+Examples:
+  ff-rdp screenshot -o page.png
+  ff-rdp screenshot --color-scheme dark -o dark.png
+  ff-rdp screenshot --media print --full-page -o print.png
+
 Output: {\"results\": {\"path\": \"...\", \"width\": N, \"height\": N}, \"total\": 1, \"meta\": {...}}
 With --base64: {\"results\": {\"base64\": \"...\"}, \"total\": 1, \"meta\": {...}}
+With --color-scheme/--media: results also carries \"emulation\": {\"color_scheme\": \"dark\", \"media\": \"print\"} (only the flags passed).
 With --window-size: {\"results\": {\"path\"|\"base64\": ..., \"width\": N, \"height\": N, \"capture\": \"batch-window-size\"}, \"total\": 1, \"meta\": {...}}")]
     Screenshot(ScreenshotArgs),
     /// Click an element matching a CSS selector
@@ -1670,6 +1696,11 @@ pub struct NavigateArgs {
     /// need both — forced a choice between them.
     #[arg(long)]
     pub auto_consent: bool,
+    /// Send this User-Agent for this navigation only: the document request's
+    /// `User-Agent` header and `navigator.userAgent` while the command runs.
+    /// Ends when the command exits — later commands see the original UA.
+    #[arg(long, value_name = "UA", conflicts_with_all = ["no_wait", "with_network", "auto_consent"])]
+    pub user_agent: Option<String>,
     #[command(flatten)]
     pub conditions: NetworkConditionsArgs,
     #[command(flatten)]
@@ -2037,6 +2068,54 @@ pub struct ScreenshotArgs {
     /// and found to have zero effect on the output raster (Firefox 153.0.3).
     #[arg(long, value_name = "WxH", conflicts_with_all = ["full_page", "viewport_height"])]
     pub window_size: Option<String>,
+    /// Simulate `prefers-color-scheme` for this capture only (ends when the
+    /// command exits).
+    #[arg(
+        long,
+        value_enum,
+        value_name = "SCHEME",
+        conflicts_with = "window_size"
+    )]
+    pub color_scheme: Option<ColorSchemeArg>,
+    /// Simulate a CSS media type for this capture only: `print` applies
+    /// `@media print` rules; `screen` (the default) simulates nothing. Ends
+    /// when the command exits.
+    #[arg(long, value_enum, value_name = "MEDIA", conflicts_with = "window_size")]
+    pub media: Option<MediaArg>,
+}
+
+/// `screenshot --color-scheme`: the simulated `prefers-color-scheme` value.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub enum ColorSchemeArg {
+    Light,
+    Dark,
+}
+
+impl ColorSchemeArg {
+    /// The `colorSchemeSimulation` wire value, also echoed in the envelope.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ColorSchemeArg::Light => "light",
+            ColorSchemeArg::Dark => "dark",
+        }
+    }
+}
+
+/// `screenshot --media`: the simulated CSS media type.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+pub enum MediaArg {
+    Screen,
+    Print,
+}
+
+impl MediaArg {
+    /// The media type name, echoed in the envelope.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MediaArg::Screen => "screen",
+            MediaArg::Print => "print",
+        }
+    }
 }
 
 #[derive(clap::Args)]

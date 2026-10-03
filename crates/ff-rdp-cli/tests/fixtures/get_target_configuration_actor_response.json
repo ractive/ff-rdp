@@ -1,0 +1,33 @@
+{
+  "configuration": {
+    "actor": "server1.conn0.target-configuration4",
+    "configuration": {},
+    "traits": {
+      "supportedOptions": {
+        "animationsPlayBackRateMultiplier": true,
+        "cacheDisabled": true,
+        "colorSchemeSimulation": true,
+        "customFormatters": true,
+        "customUserAgent": true,
+        "enabledHighlighters": true,
+        "isTracerFeatureEnabled": true,
+        "javascriptEnabled": true,
+        "networkBodyLimit": true,
+        "overrideDPPX": true,
+        "printSimulationEnabled": true,
+        "rdmPaneMaxTouchPoints": true,
+        "rdmPaneOrientation": true,
+        "recordAllocations": true,
+        "reducedMotionEmulation": true,
+        "reloadOnTouchSimulationToggle": true,
+        "restoreFocus": true,
+        "serviceWorkersTestingEnabled": true,
+        "setTabOffline": true,
+        "touchEventsOverride": true,
+        "tracerOptions": true,
+        "useSimpleHighlightersForReducedMotion": true
+      }
+    }
+  },
+  "from": "server1.conn0.watcher3"
+}

@@ -20,6 +20,7 @@ pub mod page_style;
 pub mod root;
 pub mod screenshot;
 pub mod target;
+pub mod target_configuration;
 pub mod types;
 pub mod walker;
 pub mod watcher;

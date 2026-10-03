@@ -147,6 +147,7 @@ pub fn run_core(
     url: &str,
     wait_opts: &WaitAfterNav<'_>,
     conditions: &crate::cli::args::NetworkConditionsArgs,
+    user_agent: Option<&str>,
     page_args: &crate::cli::args::PageViewArgs,
 ) -> Result<serde_json::Value, AppError> {
     validate_content_navigation_url(url, cli.allow_file_urls, cli.allow_unsafe_urls)?;
@@ -154,6 +155,13 @@ pub fn run_core(
         return Err(AppError::User(
             "--throttle/--block only last as long as the command's connection — they \
              cannot be combined with --no-wait"
+                .to_owned(),
+        ));
+    }
+    if wait_opts.no_wait && user_agent.is_some() {
+        return Err(AppError::User(
+            "--user-agent only lasts as long as the command's connection — it cannot be \
+             combined with --no-wait"
                 .to_owned(),
         ));
     }
@@ -175,6 +183,15 @@ pub fn run_core(
     // `navigateTo`, so they govern the load this command waits for.
     let conditions_applied =
         super::network_conditions::apply(&mut ctx, &watcher_actor, conditions)?;
+    // `--user-agent`: same lifetime as the conditions above — this load and
+    // whatever the command does on the page before it disconnects.
+    if let Some(ua) = user_agent {
+        let configuration = ff_rdp_core::TargetConfiguration {
+            custom_user_agent: Some(ua.to_owned()),
+            ..Default::default()
+        };
+        super::emulation::apply(&mut ctx, &watcher_actor, &configuration)?;
+    }
 
     // Missing baseline evidence stays absent, never a synthetic epoch zero.
     let pre_nav_epoch = if wait_opts.no_wait {
@@ -514,6 +531,9 @@ pub fn run_core(
     }
 
     super::network_conditions::insert_echo(&mut result, conditions_applied.as_ref());
+    if let (Some(ua), Some(obj)) = (user_agent, result.as_object_mut()) {
+        obj.insert("user_agent".to_owned(), json!(ua));
+    }
     Ok(result)
 }
 
@@ -523,6 +543,7 @@ pub fn run(
     wait_opts: &WaitAfterNav<'_>,
     auto_consent: bool,
     conditions: &crate::cli::args::NetworkConditionsArgs,
+    user_agent: Option<&str>,
     page_args: &crate::cli::args::PageViewArgs,
 ) -> Result<(), AppError> {
     // iter-210: `--with-page` promises the page it returns describes the
@@ -544,7 +565,14 @@ pub fn run(
     } else {
         std::borrow::Cow::Borrowed(page_args)
     };
-    let mut result = run_core(cli, url, wait_opts, conditions, core_args.as_ref())?;
+    let mut result = run_core(
+        cli,
+        url,
+        wait_opts,
+        conditions,
+        user_agent,
+        core_args.as_ref(),
+    )?;
     if auto_consent {
         merge_auto_consent(cli, &mut result);
     }

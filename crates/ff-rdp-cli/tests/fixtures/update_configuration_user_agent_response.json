@@ -1,0 +1,6 @@
+{
+  "configuration": {
+    "customUserAgent": "ff-rdp-fixture-UA/1.0"
+  },
+  "from": "server1.conn0.target-configuration4"
+}

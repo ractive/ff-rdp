@@ -6,11 +6,11 @@ use anyhow::Context as _;
 use base64::Engine as _;
 use ff_rdp_core::{
     CAPTURE_NO_IMAGE_DATA, COMPATIBLE_FIREFOX_MIN, CaptureRect, Grip, ProtocolError,
-    ScreenshotActor, ScreenshotContentActor,
+    ScreenshotActor, ScreenshotContentActor, TabActor, TargetConfiguration,
 };
 use serde_json::json;
 
-use crate::cli::args::Cli;
+use crate::cli::args::{Cli, ColorSchemeArg, MediaArg};
 use crate::error::AppError;
 use crate::hints::{HintContext, HintSource};
 use crate::output;
@@ -53,6 +53,39 @@ pub(crate) struct ScreenshotOpts<'a> {
     /// with or without e10s; see `kb/research/viewport-emulation.md`
     /// addendum.
     pub(crate) window_size: Option<&'a str>,
+    /// `--color-scheme`: simulated `prefers-color-scheme` for this capture.
+    pub(crate) color_scheme: Option<ColorSchemeArg>,
+    /// `--media`: simulated CSS media type for this capture.
+    pub(crate) media: Option<MediaArg>,
+}
+
+impl ScreenshotOpts<'_> {
+    /// The target-configuration patch for `--color-scheme`/`--media`, or
+    /// `None` when neither asks for a simulation (`--media screen` is the
+    /// unemulated default and needs no round trip).
+    fn emulation(&self) -> Option<TargetConfiguration> {
+        let print = self.media == Some(MediaArg::Print);
+        if self.color_scheme.is_none() && !print {
+            return None;
+        }
+        Some(TargetConfiguration {
+            color_scheme_simulation: self.color_scheme.map(|s| s.as_str().to_owned()),
+            print_simulation_enabled: print.then_some(true),
+            ..Default::default()
+        })
+    }
+
+    /// The `results.emulation` echo: the flags passed, or `None` without any.
+    fn emulation_echo(&self) -> Option<serde_json::Value> {
+        let mut echo = serde_json::Map::new();
+        if let Some(scheme) = self.color_scheme {
+            echo.insert("color_scheme".to_owned(), json!(scheme.as_str()));
+        }
+        if let Some(media) = self.media {
+            echo.insert("media".to_owned(), json!(media.as_str()));
+        }
+        (!echo.is_empty()).then_some(serde_json::Value::Object(echo))
+    }
 }
 
 /// Data URL prefix returned by the screenshot actor.
@@ -139,6 +172,23 @@ pub fn run_core(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<serde_json::Valu
     // iter-133 Theme B: `--window-size` switches to an entirely separate
     // capture path (a one-shot headless-shell subprocess) — see
     // `run_batch_window_size` for why this can't reuse the live RDP path.
+    // Firefox evaluates the print medium with a light colour scheme, so a
+    // dark print simulation would never take effect.
+    if opts.color_scheme == Some(ColorSchemeArg::Dark) && opts.media == Some(MediaArg::Print) {
+        return Err(AppError::User(
+            "screenshot: --color-scheme dark cannot be combined with --media print — Firefox \
+             always renders print media with a light colour scheme"
+                .to_owned(),
+        ));
+    }
+    // Emulation lives on the RDP connection, so it cannot reach that process.
+    if opts.window_size.is_some() && opts.emulation_echo().is_some() {
+        return Err(AppError::User(
+            "screenshot: --color-scheme/--media cannot be combined with --window-size, which \
+             captures in a separate Firefox process"
+                .to_owned(),
+        ));
+    }
     if let Some(window_size) = opts.window_size {
         return run_batch_window_size(cli, opts, window_size);
     }
@@ -157,6 +207,16 @@ pub fn run_core(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<serde_json::Valu
     }
 
     let mut ctx = connect_and_get_target(cli)?;
+
+    // `--color-scheme`/`--media`: set on this connection right before the
+    // capture; Firefox restores them when the command disconnects.
+    if let Some(configuration) = opts.emulation() {
+        let tab_actor = ctx.target_tab_actor().clone();
+        let watcher =
+            TabActor::get_watcher(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;
+        super::emulation::apply(&mut ctx, &watcher, &configuration)?;
+        super::emulation::wait_for_media(&mut ctx, &configuration)?;
+    }
 
     let sc_actor = ctx.target().screenshot_content_actor.clone();
     let browsing_ctx_id = ctx.target().browsing_context_id;
@@ -186,7 +246,10 @@ pub fn run_core(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<serde_json::Valu
         .decode(b64)
         .map_err(|e| AppError::from(anyhow::anyhow!("screenshot: base64 decode failed: {e}")))?;
 
-    build_capture_result(opts, &png_bytes, &[])
+    match opts.emulation_echo() {
+        Some(echo) => build_capture_result(opts, &png_bytes, &[("emulation", echo)]),
+        None => build_capture_result(opts, &png_bytes, &[]),
+    }
 }
 
 /// Build the final `results` JSON for a captured PNG: `{base64, width,
