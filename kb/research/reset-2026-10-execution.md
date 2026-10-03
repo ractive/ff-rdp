@@ -27,6 +27,22 @@ investigate a historical flake.
 
 ## Log
 
+- 2026-10-03: deleted 13 stale remote branches (SHAs recorded for recovery via GitHub's reflog-less dangling-commit window; 4 were merged, 9 belonged to done/obsolete daemon-era plans):
+- `iter-259/reply-ownership-after271` cee57bf4
+- `iter-259/rpc-slot-handover-strands-an-in-flight-reply` cc44e873
+- `iter-262/daemon-live-target-never-promoted` f2a95706
+- `iter-268/auth-loss-attribution-20260921` 551abe6a
+- `iter-268/daemon-pre-auth-connection-loss` 27604336
+- `iter-271/bbc-consent-no-cmp-recurrence` 10312d2f
+- `iter-275/guardian-consent-ready-target-failures` 803fc888
+- `iter-276/cascade-fixture-attribution` cf91a06b
+- `iter-277/direct-navigate-committed-about-blank` 62fda89d
+- `iter-49/scroll-reload-fixes` 5fa7b132
+- `reset/structure-core` e2629e8d
+- `reset/structure-launch` af0020c9
+- `reset/structure-navigate` 86a3a9cc
+
+
 - 2026-10-03: backlog round 1, four PRs between 10:20 and 11:45 CEST (≈1 h 25 min, two agents at a time): #295 auto-wait probe shares `--timeout` (cause: 500 ms post-readiness window from iter-59; passes at load avg 165), #296 `navigate --with-network --headers/--security` + `click --wait-for-network --headers`, #297 `screenshot --color-scheme/--media` + `navigate --user-agent` (new `TargetConfigurationActor`), #298 ten wall-clock bounds removed + playbooks A2/D2/E1/E3 fixed. Also #293/#294: `ci` is now the single required status check on `main` (docs-only PRs pass in ~20 s; direct pushes refused). 9 backlog lines remain.
 
 - 2026-10-03: follow-ups consolidated into `kb/backlog.md`; issues #288/#289 closed.
