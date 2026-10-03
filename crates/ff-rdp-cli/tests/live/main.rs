@@ -114,6 +114,7 @@ mod live_cookies_set_cookie_header;
 mod live_cross_actor;
 mod live_dom_include_style;
 mod live_dom_stats_perf_audit_parity;
+mod live_emulation;
 mod live_eval_csp;
 mod live_eval_scope;
 mod live_navigate_default_fast;

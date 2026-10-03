@@ -17,5 +17,6 @@ pub mod storage;
 pub mod string;
 pub mod tab;
 pub mod target;
+pub mod target_configuration;
 pub mod thread;
 pub mod watcher;

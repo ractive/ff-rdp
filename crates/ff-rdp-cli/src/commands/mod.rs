@@ -13,6 +13,7 @@ pub(crate) mod cookies;
 pub(crate) mod doctor;
 pub(crate) mod dom;
 pub(crate) mod dom_tree;
+pub(crate) mod emulation;
 mod english_language_pack;
 pub(crate) mod eval;
 pub(crate) mod frame_targets;

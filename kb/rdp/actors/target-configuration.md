@@ -15,6 +15,35 @@ title: TargetConfigurationActor
 
 # TargetConfigurationActor
 
+## Current use (2026-10-03): per-command emulation flags
+
+`crates/ff-rdp-core/src/actors/target_configuration.rs` has two stateless
+calls: `TargetConfigurationActor::for_watcher` (`getTargetConfigurationActor`
+on the tab watcher) and `update_configuration` (`updateConfiguration`, typed by
+`specs::target_configuration`). They back three CLI flags, each applied on the
+command's own connection:
+
+| Flag | Wire field | Applied |
+|------|------------|---------|
+| `screenshot --color-scheme light\|dark` | `colorSchemeSimulation` | before the capture; the command polls `matchMedia` until it reports the scheme |
+| `screenshot --media print` | `printSimulationEnabled: true` | same; `--media screen` sends nothing |
+| `navigate --user-agent UA` | `customUserAgent` | before `navigateTo`, on the navigation watcher |
+
+Verified live (Firefox 157, 2026-10-03): the dark/print styles are in the
+captured pixels; the UA override reaches the document request's `User-Agent`
+header (`HttpBaseChannel` reads `BrowsingContext.customUserAgent`) and
+`navigator.userAgent`; and every setting is gone on the next command — the
+actor's `destroy()` runs `_restoreParentProcessConfiguration` when the
+connection closes. Firefox renders print media with a light colour scheme, so
+`prefers-color-scheme: dark` never matches under `printSimulationEnabled`;
+`screenshot` refuses `--color-scheme dark --media print`.
+
+`update_configuration` checks the echoed `configuration` for every key it sent
+and fails naming a key that is missing or different, since Firefox drops
+unsupported keys silently (see the iter-133 note below).
+
+## History
+
 Changes per-target ("page environment") settings without requiring
 browser-wide pref changes. Obtained via
 `WatcherFront::get_target_configuration_actor` (the watcher's

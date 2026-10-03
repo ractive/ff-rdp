@@ -396,6 +396,10 @@ ff-rdp navigate https://example.com --with-network
 ff-rdp navigate https://example.com --with-network --throttle slow-3g --block '*.png'
 ff-rdp reload --hard --throttle fast-3g
 
+# Load a page as another browser: the User-Agent header and navigator.userAgent
+# are overridden for this navigation only (the override ends with the command)
+ff-rdp navigate https://example.com --user-agent 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)'
+
 # Dismiss a cookie banner and capture the network in the same call — the
 # consent click happens inside the capture window.
 ff-rdp navigate https://www.theguardian.com --with-network --auto-consent
@@ -467,6 +471,10 @@ ff-rdp screenshot --output page.png
 
 # Full-page screenshot (captures entire scrollable document)
 ff-rdp screenshot --full-page --output full.png
+
+# Dark-mode and print-stylesheet captures; the simulation ends with the command
+ff-rdp screenshot --color-scheme dark --output dark.png
+ff-rdp screenshot --media print --full-page --output print.png
 
 # Screenshot at explicit height
 ff-rdp screenshot --viewport-height 2000 --output tall.png

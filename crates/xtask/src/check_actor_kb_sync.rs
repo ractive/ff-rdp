@@ -46,6 +46,10 @@ const ACTOR_KB_MAP: &[(&str, &[&str])] = &[
     ("string", &["kb/rdp/actors/string.md"]),
     ("tab", &["kb/rdp/actors/tab.md"]),
     ("target", &["kb/rdp/actors/target.md"]),
+    (
+        "target_configuration",
+        &["kb/rdp/actors/target-configuration.md"],
+    ),
     ("thread", &["kb/rdp/actors/thread.md"]),
     ("watcher", &["kb/rdp/actors/watcher.md"]),
     ("accessibility", &["kb/rdp/actors/accessibility.md"]),

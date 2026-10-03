@@ -831,3 +831,87 @@ fn e2e_279_script_navigate_then_eval_connects_to_new_document() {
     assert!(refresh < eval, "{requests:?}");
     assert_eq!(eval_connection[eval]["to"], "new-document/console");
 }
+
+// ---------------------------------------------------------------------------
+// --user-agent (per-command emulation)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn navigate_user_agent_applies_before_navigating() {
+    let server = navigate_server()
+        .on(
+            "getTargetConfigurationActor",
+            load_fixture("get_target_configuration_actor_response.json"),
+        )
+        .on(
+            "updateConfiguration",
+            load_fixture("update_configuration_user_agent_response.json"),
+        );
+    let port = server.port();
+    let log = server.request_log();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "navigate".to_owned(),
+        "https://example.com".to_owned(),
+        "--user-agent".to_owned(),
+        "ff-rdp-fixture-UA/1.0".to_owned(),
+    ]);
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success: {}",
+        support::output_note(&output)
+    );
+    let requests = log.lock().unwrap().clone();
+    let types: Vec<&str> = requests.iter().filter_map(|r| r["type"].as_str()).collect();
+    let update = types
+        .iter()
+        .position(|t| *t == "updateConfiguration")
+        .unwrap_or_else(|| panic!("no updateConfiguration sent: {types:?}"));
+    let navigate = types
+        .iter()
+        .position(|t| *t == "navigateTo")
+        .unwrap_or_else(|| panic!("no navigateTo sent: {types:?}"));
+    assert!(
+        update < navigate,
+        "UA must be set before navigateTo: {types:?}"
+    );
+    assert_eq!(
+        requests[update]["configuration"],
+        serde_json::json!({"customUserAgent": "ff-rdp-fixture-UA/1.0"})
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["results"]["user_agent"], "ff-rdp-fixture-UA/1.0");
+}
+
+/// The UA ends with the connection, so it is refused where the command would
+/// return before the load (`--no-wait`) and on the `--with-network` path.
+#[test]
+fn navigate_user_agent_refused_with_no_wait_and_with_network() {
+    for flag in ["--no-wait", "--with-network"] {
+        let output = std::process::Command::new(ff_rdp_bin())
+            .args([
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "1",
+                "navigate",
+                "https://example.com",
+                "--user-agent",
+                "UA",
+                flag,
+            ])
+            .output()
+            .expect("failed to spawn ff-rdp");
+        assert!(!output.status.success(), "{flag} must be refused");
+        let note = support::output_note(&output);
+        assert!(note.contains("--user-agent"), "{flag}: {note}");
+    }
+}

@@ -341,6 +341,7 @@ fn dispatch_inner(
             wait,
             wait_strategy,
             auto_consent,
+            user_agent,
             conditions,
             page,
         }) => {
@@ -364,7 +365,15 @@ fn dispatch_inner(
                     page,
                 )
             } else {
-                commands::navigate::run(cli, url, &wait_opts, *auto_consent, conditions, page)
+                commands::navigate::run(
+                    cli,
+                    url,
+                    &wait_opts,
+                    *auto_consent,
+                    conditions,
+                    user_agent.as_deref(),
+                    page,
+                )
             }
         }
         Command::Eval(EvalArgs {
@@ -760,6 +769,8 @@ fn dispatch_inner(
             output_root,
             bulk,
             window_size,
+            color_scheme,
+            media,
         }) => commands::screenshot::run(
             cli,
             &commands::screenshot::ScreenshotOpts {
@@ -770,6 +781,8 @@ fn dispatch_inner(
                 viewport_height: *viewport_height,
                 output_root: output_root.as_deref(),
                 window_size: window_size.as_deref(),
+                color_scheme: *color_scheme,
+                media: *media,
             },
         ),
         Command::Launch(LaunchArgs {

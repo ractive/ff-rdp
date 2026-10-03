@@ -59,6 +59,7 @@ pub use actors::storage::{
 pub use actors::string::LongStringActor;
 pub use actors::tab::{TabActor, TabInfo, TargetInfo, note_tab_navigated_scheme_change};
 pub use actors::target::WindowGlobalTarget;
+pub use actors::target_configuration::{TargetConfiguration, TargetConfigurationActor};
 pub use actors::thread::{SourceInfo, ThreadActor};
 pub use actors::watcher::{
     ConsoleResource, DEFAULT_FRAME_TARGETS_SETTLE, NetworkResource, NetworkResourceUpdate,

@@ -298,6 +298,72 @@ fn live_get_watcher() {
     save_cli_fixture("get_watcher_response.json", &resp);
 }
 
+/// Record `getTargetConfigurationActor` and one `updateConfiguration` reply per
+/// setting ff-rdp sends (`screenshot --color-scheme/--media`,
+/// `navigate --user-agent`). Each update runs on its own connection so its
+/// echo carries only that setting — Firefox restores the settings when the
+/// connection closes.
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_target_configuration() {
+    if !should_run_live() {
+        return;
+    }
+    let cases = [
+        (
+            json!({"colorSchemeSimulation": "dark"}),
+            "update_configuration_color_scheme_response.json",
+        ),
+        (
+            json!({"printSimulationEnabled": true}),
+            "update_configuration_print_response.json",
+        ),
+        (
+            json!({"customUserAgent": "ff-rdp-fixture-UA/1.0"}),
+            "update_configuration_user_agent_response.json",
+        ),
+    ];
+    for (index, (configuration, fixture)) in cases.iter().enumerate() {
+        let mut conn = connect();
+        let transport = conn.transport_mut();
+        let list_tabs = send_raw(transport, &json!({"to": "root", "type": "listTabs"}));
+        let tab_actor = list_tabs["tabs"][0]["actor"]
+            .as_str()
+            .expect("tab actor")
+            .to_owned();
+        let watcher = send_raw(transport, &json!({"to": &tab_actor, "type": "getWatcher"}));
+        let watcher_actor = watcher["actor"].as_str().expect("watcher actor").to_owned();
+
+        transport
+            .send(&json!({"to": &watcher_actor, "type": "getTargetConfigurationActor"}))
+            .expect("send getTargetConfigurationActor");
+        let config_ref = recv_from_actor(transport, &watcher_actor);
+        let config_actor = config_ref["configuration"]["actor"]
+            .as_str()
+            .unwrap_or_else(|| panic!("configuration.actor missing: {config_ref}"))
+            .to_owned();
+        if index == 0 {
+            save_cli_fixture("get_target_configuration_actor_response.json", &config_ref);
+        }
+
+        transport
+            .send(&json!({
+                "to": &config_actor,
+                "type": "updateConfiguration",
+                "configuration": configuration,
+            }))
+            .expect("send updateConfiguration");
+        let reply = recv_from_actor(transport, &config_actor);
+        for (key, value) in configuration.as_object().expect("object") {
+            assert_eq!(
+                &reply["configuration"][key], value,
+                "echo of {key}: {reply}"
+            );
+        }
+        save_cli_fixture(fixture, &reply);
+    }
+}
+
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
 fn live_watch_resources() {

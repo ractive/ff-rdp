@@ -816,6 +816,7 @@ fn execute_navigate(
         &effective_url,
         &wait_opts,
         &crate::cli::args::NetworkConditionsArgs::default(),
+        None,
         &crate::cli::args::PageViewArgs::default(),
     )
 }
@@ -1301,6 +1302,8 @@ fn execute_screenshot(step: &ScreenshotStep, cli: &Cli) -> Result<Value, AppErro
         viewport_height: None,
         output_root: None,
         window_size: None,
+        color_scheme: None,
+        media: None,
     };
     screenshot_run_core(cli, &opts)
 }

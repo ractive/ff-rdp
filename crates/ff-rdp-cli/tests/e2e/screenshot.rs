@@ -575,3 +575,165 @@ fn screenshot_window_size_invalid_rejected() {
         "error must name the expected WxH form; stderr={stderr:?} stdout={stdout:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// --color-scheme / --media (per-command emulation)
+// ---------------------------------------------------------------------------
+
+/// `screenshot_server` plus the emulation prelude: `getWatcher` →
+/// `getTargetConfigurationActor` → `updateConfiguration` (replying with
+/// `update_fixture`) → one `evaluateJSAsync` matchMedia check that is true.
+fn emulation_server(update_fixture: &str) -> MockRdpServer {
+    screenshot_server()
+        .on("getWatcher", load_fixture("get_watcher_response.json"))
+        .on(
+            "getTargetConfigurationActor",
+            load_fixture("get_target_configuration_actor_response.json"),
+        )
+        .on("updateConfiguration", load_fixture(update_fixture))
+        .on_with_followup(
+            "evaluateJSAsync",
+            load_fixture("eval_immediate_response.json"),
+            load_fixture("eval_result_wait_true.json"),
+        )
+}
+
+/// Run `screenshot --base64 <extra...>` against `server`, returning the
+/// output and every request the CLI sent.
+fn run_emulated(
+    server: MockRdpServer,
+    extra: &[&str],
+) -> (std::process::Output, Vec<serde_json::Value>) {
+    let port = server.port();
+    let log = server.request_log();
+    let handle = std::thread::spawn(move || server.serve_one());
+    let mut args = base_args(port);
+    args.extend(["screenshot".to_owned(), "--base64".to_owned()]);
+    args.extend(extra.iter().map(|s| (*s).to_owned()));
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+    handle.join().unwrap();
+    let requests = log.lock().unwrap().clone();
+    (output, requests)
+}
+
+fn sent_configuration(requests: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    requests
+        .iter()
+        .filter(|r| r["type"] == "updateConfiguration")
+        .map(|r| r["configuration"].clone())
+        .collect()
+}
+
+#[test]
+fn screenshot_color_scheme_dark_applies_before_capture() {
+    let (output, requests) = run_emulated(
+        emulation_server("update_configuration_color_scheme_response.json"),
+        &["--color-scheme", "dark"],
+    );
+    assert!(
+        output.status.success(),
+        "expected success: {}",
+        support::output_note(&output)
+    );
+    assert_eq!(
+        sent_configuration(&requests),
+        vec![serde_json::json!({"colorSchemeSimulation": "dark"})]
+    );
+    let types: Vec<&str> = requests.iter().filter_map(|r| r["type"].as_str()).collect();
+    let update = types
+        .iter()
+        .position(|t| *t == "updateConfiguration")
+        .unwrap_or_else(|| panic!("no updateConfiguration: {types:?}"));
+    let capture = types
+        .iter()
+        .position(|t| *t == "capture")
+        .unwrap_or_else(|| panic!("no capture: {types:?}"));
+    assert!(
+        update < capture,
+        "the setting must be applied before the capture: {types:?}"
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        json["results"]["emulation"],
+        serde_json::json!({"color_scheme": "dark"})
+    );
+}
+
+#[test]
+fn screenshot_media_print_applies_print_simulation() {
+    let (output, requests) = run_emulated(
+        emulation_server("update_configuration_print_response.json"),
+        &["--media", "print"],
+    );
+    assert!(
+        output.status.success(),
+        "expected success: {}",
+        support::output_note(&output)
+    );
+    assert_eq!(
+        sent_configuration(&requests),
+        vec![serde_json::json!({"printSimulationEnabled": true})]
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        json["results"]["emulation"],
+        serde_json::json!({"media": "print"})
+    );
+}
+
+/// `--media screen` is the unemulated default: no configuration round trip.
+#[test]
+fn screenshot_media_screen_sends_no_configuration() {
+    let (output, requests) = run_emulated(screenshot_server(), &["--media", "screen"]);
+    assert!(
+        output.status.success(),
+        "expected success: {}",
+        support::output_note(&output)
+    );
+    assert!(sent_configuration(&requests).is_empty());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        json["results"]["emulation"],
+        serde_json::json!({"media": "screen"})
+    );
+}
+
+/// Firefox echoes only the options it applied; a reply that lacks the one
+/// sent fails the command instead of capturing an unemulated page.
+#[test]
+fn screenshot_emulation_fails_when_firefox_drops_the_setting() {
+    let (output, _) = run_emulated(
+        emulation_server("update_configuration_color_scheme_response.json"),
+        &["--media", "print"],
+    );
+    assert!(!output.status.success(), "a dropped setting must fail");
+    let note = support::output_note(&output);
+    assert!(note.contains("printSimulationEnabled"), "{note}");
+}
+
+/// Both refusals happen before any connection (port 1 is unroutable).
+#[test]
+fn screenshot_emulation_refuses_impossible_combinations() {
+    for (extra, needle) in [
+        (
+            &["--color-scheme", "dark", "--media", "print"][..],
+            "light colour scheme",
+        ),
+        (
+            &["--color-scheme", "dark", "--window-size", "400x300"][..],
+            "--window-size",
+        ),
+    ] {
+        let output = std::process::Command::new(ff_rdp_bin())
+            .args(["--host", "127.0.0.1", "--port", "1", "screenshot"])
+            .args(extra)
+            .output()
+            .expect("failed to spawn ff-rdp");
+        assert!(!output.status.success(), "{extra:?} must be refused");
+        let note = support::output_note(&output);
+        assert!(note.contains(needle), "{extra:?}: {note}");
+    }
+}
