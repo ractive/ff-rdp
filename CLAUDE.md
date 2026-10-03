@@ -64,8 +64,12 @@ BBC, Guardian, HN, Wikipedia, MDN; weekly CI job only).
 - One review pass; no re-review for style-only fixes.
 - Commit-message claims (`adds Foo::Bar`) must be backed by the branch diff (review rule).
 - Merge **on GitHub** (`gh pr merge <n> --merge --delete-branch`), never a local `git merge` +
-  `git push origin main`, which bypasses branch protection and leaves it untestable. A refused
-  merge is the enforcement working: report the reason and stop. Never `--squash`.
+  `git push origin main`. The `main` ruleset requires the `ci` status check (since 2026-10-03),
+  so a direct push is refused and a red PR cannot merge. A refused merge is the enforcement
+  working: report the reason and stop. Never `--squash`.
+- **Docs-only changes go through a PR too** — `main` rejects direct pushes. CI's `changes` gate
+  skips the Rust matrix for `kb/**` and `*.md`, so `ci` is green in ~20 s:
+  `gh pr create --fill && gh pr merge --merge --delete-branch --auto`.
 
 ## Autonomous merges — standing authorization from the repo owner
 
