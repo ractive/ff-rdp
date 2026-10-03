@@ -1,4 +1,7 @@
-//! Auto-wait's 500ms stability budget must also bound diagnostic reads.
+//! Auto-wait's probes all draw from the command's one `--timeout` deadline.
+//! A probe that blocks for 2.5 s inside a 4 s budget (readiness or stability)
+//! spends budget but still lets the action through; there is no separate
+//! stability sub-budget to fail it (nightly 2026-10-03 under load).
 //! Run the actual CLI on an owned Firefox instance.
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
@@ -89,8 +92,12 @@ fn live_272_diagnostics_and_blocked_stability() {
                 port,
                 "if(window.__qs){document.querySelector=window.__qs;delete window.__qs;}window.__probeCalls",
             );
-            if case == "blocked_readiness" {
-                assert!(output.status.success(), "{message}");
+            if matches!(case, "blocked_readiness" | "blocked_stability") {
+                assert!(output.status.success(), "{case}: {message}");
+                assert!(
+                    elapsed >= Duration::from_millis(2_000),
+                    "{case}: the blocked probe must actually have been waited out: {elapsed:?}"
+                );
                 assert!(calls.as_u64().is_some_and(|count| count > 0));
                 assert_eq!(
                     eval(port, "document.getElementById('target').value"),
@@ -104,24 +111,13 @@ fn live_272_diagnostics_and_blocked_stability() {
                 "hidden" => "the 1 matching element is hidden",
                 "hidden_many" => "matched 2 elements, chose index 0 which is hidden",
                 "moving" => "rect did not stabilise",
-                "blocked_stability" => "selector diagnostic",
                 _ => unreachable!(),
             };
             assert!(message.contains(expected), "{case}: {message}");
-            if case == "blocked_stability" {
+            if case == "moving" {
                 assert!(
-                    elapsed < Duration::from_millis(1_800),
-                    "blocked probe inherited4000ms socket timeout: {elapsed:?}: {message}"
-                );
-                assert_eq!(calls, 2, "the intended second rect call must have blocked");
-                assert!(
-                    !message.contains("rect did not stabilise"),
-                    "blocked is not moving: {message}"
-                );
-                assert_eq!(
-                    eval(port, "document.getElementById('target').value"),
-                    "",
-                    "no type action after failed readiness"
+                    message.contains("4000ms --timeout budget"),
+                    "moving must fail on the overall budget: {message}"
                 );
             }
         }
