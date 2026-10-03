@@ -4,14 +4,6 @@ on:
   pull_request:
     branches:
       - main
-    # Docs-only pushes (plan ticks, kb notes, README) do not need the Rust
-    # matrix. `main` has no required status checks, so a PR whose every commit
-    # is docs-only simply shows no CI and can still merge.
-    paths-ignore:
-      - "kb/**"
-      - "**.md"
-      - "LICENSE*"
-      - ".gitignore"
 
 # Only newer runs of the same PR supersede one another. Other events use a
 # unique run id, so future manual/main runs cannot cancel a PR or each other.
@@ -23,7 +15,29 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  changes:
+    # Decides whether the Rust matrix runs. Docs-only pushes (plan ticks, kb
+    # notes, README) skip it; the `ci` job below still reports, so `ci` can be
+    # the one required status check without stranding docs-only PRs.
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+      - id: filter
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          if git diff --name-only "$base...HEAD" | grep -vE '^(kb/|.*\.md$|LICENSE|\.gitignore$)' | grep -q .; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
   fmt:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -33,6 +47,8 @@ jobs:
       - run: cargo fmt --all --check
 
   clippy:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -48,6 +64,8 @@ jobs:
   # the exact MSRV toolchain and only *builds* (compile is the MSRV contract;
   # tests/lints keep running on stable in the jobs above).
   msrv:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -59,6 +77,8 @@ jobs:
         run: cargo build --workspace --all-targets
 
   test:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -81,6 +101,8 @@ jobs:
         run: cargo run -p ff-rdp-cli -- --help
 
   supply-chain:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -96,6 +118,8 @@ jobs:
         run: cargo deny check
 
   fuzz:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -133,6 +157,8 @@ jobs:
             fuzz/corpus/
 
   discipline:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     # These default-target paths belong to the fresh build in this Ubuntu job.
     env:
@@ -221,7 +247,8 @@ jobs:
   # or a Sigstore transparency-log regression before they reach a tagged
   # release. Skipped on fork PRs (no OIDC token).
   verify-attestation:
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -260,3 +287,15 @@ jobs:
           # check — if this fails on a no-op PR, the release would too.
           gh attestation verify ff-rdp-x86_64-unknown-linux-gnu.tar.gz \
             --owner ractive
+
+  ci:
+    # The single required status check on `main`. Green when every job that
+    # ran succeeded; skipped jobs (docs-only PRs, fork PRs) count as fine.
+    needs: [changes, fmt, clippy, msrv, test, supply-chain, fuzz, discipline, verify-attestation]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check job results
+        run: |
+          echo '${{ toJSON(needs) }}' | jq -r 'to_entries[] | "\(.key)=\(.value.result)"'
+          echo '${{ toJSON(needs) }}' | jq -e '[.[] | .result] | all(. == "success" or . == "skipped")' > /dev/null
