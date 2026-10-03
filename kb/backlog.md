@@ -14,7 +14,8 @@ product work that needs design. Keep items to one line — if an item needs more
 
 ## Product
 
-- [ ] `navigate --with-network --headers` (and `click --wait-for-network`): fetch response headers before the connection closes; `network --headers` after a finished navigate returns nothing (#287)
+- [x] `navigate --with-network --headers` (and `click --wait-for-network`): fetch response headers before the connection closes; `network --headers` after a finished navigate returns nothing (#287)
+- [ ] Skill playbooks A2, D2, E1, E3 (and their `evals/fixtures/*/bug.json`) still read headers with an after-the-fact `network --detail --headers`, which returns nothing on a new connection; rewrite them to `navigate <page> --with-network --headers --all` filtered by `--jq` (A1 done) (#287 follow-up)
 - [ ] Per-command emulation flags replacing the removed `emulate`: `screenshot --color-scheme dark|light`, `screenshot --media print`, `navigate --user-agent <ua>` — settings reset with the connection (#287)
 - [ ] `snapshot` / `a11y` stamp every interactive element with `data-ffrdp-ref` before the output cap applies; stamp only what is emitted (#287)
 - [ ] Auto-wait's rect-stability probe has a fixed sub-budget that fails under machine load ("auto-wait stopped during rect stability probe did not answer"); first nightly 2026-10-03 hit it in live_160/210/224/237 at `--jobs 4` on a 4-core runner. Make the probe share the command's `--timeout-ms` instead of a separate small budget (nightly run 37071459324)

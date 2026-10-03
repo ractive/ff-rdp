@@ -26,6 +26,26 @@ pub(crate) const EMPTY_CAPTURE_HINT: &str = "No network events captured: a one-s
      Capture a page load with `ff-rdp navigate <url> --with-network`; capture traffic caused by later commands by starting \
      `ff-rdp network --follow > net.ndjson &` before them; or read what already loaded with `ff-rdp network --source performance-api`.";
 
+/// [`EMPTY_CAPTURE_HINT`]'s variant for `--headers`/`--security`: per-request
+/// detail lives on `NetworkEventActor`s that die with the connection that
+/// observed the request, so after the fact neither `network` nor
+/// `--source performance-api` can produce it — only a capture that fetches it
+/// before closing can.
+pub(crate) const EMPTY_CAPTURE_HEADERS_HINT: &str = "No network events captured: a one-shot `network` only sees requests made while it is connected, \
+     and request/response headers and TLS detail can only be read on the connection that observed the request. \
+     Capture a page load with its headers in one command: `ff-rdp navigate <url> --with-network --headers` (add `--security` for TLS detail); \
+     for a request a click triggers, `ff-rdp click <selector> --wait-for-network <pattern> --headers`.";
+
+/// The empty-capture hint for this invocation: the headers variant when the
+/// caller asked for per-request detail no after-the-fact source can supply.
+fn empty_capture_hint(wants_per_request_detail: bool) -> &'static str {
+    if wants_per_request_detail {
+        EMPTY_CAPTURE_HEADERS_HINT
+    } else {
+        EMPTY_CAPTURE_HINT
+    }
+}
+
 pub fn run(
     cli: &Cli,
     filter: Option<&str>,
@@ -152,14 +172,15 @@ pub fn run(
 
     let use_detail = use_detail_mode(cli, headers, security);
 
+    let empty_capture_hint = empty_capture_hint(headers || security);
     if results.is_empty() {
         // stderr-ok: (b) hint — stdout still carries the (empty) JSON result
         // envelope, whose top-level `hint` says the same thing.
-        eprintln!("hint: {EMPTY_CAPTURE_HINT}");
+        eprintln!("hint: {empty_capture_hint}");
     }
 
     let empty_hint = if results.is_empty() && filter.is_none() && method.is_none() {
-        Some(json!(EMPTY_CAPTURE_HINT))
+        Some(json!(empty_capture_hint))
     } else if results.is_empty() {
         Some(json!(
             "No requests matched the current --filter/--method. Remove the filter to see all captured events."
@@ -245,26 +266,7 @@ pub fn run(
                 let needs_content_type = entry.get("content_type").is_none_or(Value::is_null);
 
                 if headers {
-                    let req_hdrs =
-                        NetworkEventActor::get_request_headers(ctx.transport_mut(), actor)
-                            .ok()
-                            .map(|hs| {
-                                hs.into_iter()
-                                    .map(|h| json!({"name": h.name, "value": h.value}))
-                                    .collect::<Vec<_>>()
-                            })
-                            .unwrap_or_default();
-
-                    let resp_hdrs =
-                        NetworkEventActor::get_response_headers(ctx.transport_mut(), actor)
-                            .ok()
-                            .map(|hs| {
-                                hs.into_iter()
-                                    .map(|h| json!({"name": h.name, "value": h.value}))
-                                    .collect::<Vec<_>>()
-                            })
-                            .unwrap_or_default();
-
+                    let (req_hdrs, resp_hdrs) = fetch_headers(ctx.transport_mut(), actor);
                     if needs_content_type && let Some(ct) = content_type_from_headers(&resp_hdrs) {
                         entry["content_type"] = json!(ct);
                     }
@@ -396,7 +398,7 @@ fn use_detail_mode(cli: &Cli, headers: bool, security: bool) -> bool {
         || security
 }
 
-fn count_insecure_requests(entries: &[Value]) -> usize {
+pub(crate) fn count_insecure_requests(entries: &[Value]) -> usize {
     entries
         .iter()
         .filter(|e| e["url"].as_str().is_some_and(|u| u.starts_with("http://")))
@@ -423,6 +425,72 @@ fn content_type_from_headers(headers: &[Value]) -> Option<String> {
             Some(bare.to_owned())
         }
     })
+}
+
+/// Fetch one request's headers from its `NetworkEventActor` as the
+/// `(request, response)` pair of `{name, value}` lists `--headers` emits. A
+/// failed fetch yields an empty list for that side, so the entry's `headers`
+/// object never changes shape with the outcome.
+///
+/// Must run on the connection that observed the request, before it unwatches
+/// `network-event`: the actor dies with either.
+fn fetch_headers(
+    transport: &mut RdpTransport,
+    actor: &ff_rdp_core::ActorId,
+) -> (Vec<Value>, Vec<Value>) {
+    fn to_json(hs: Vec<ff_rdp_core::Header>) -> Vec<Value> {
+        hs.into_iter()
+            .map(|h| json!({"name": h.name, "value": h.value}))
+            .collect()
+    }
+    let req = NetworkEventActor::get_request_headers(transport, actor)
+        .map(to_json)
+        .unwrap_or_default();
+    let resp = NetworkEventActor::get_response_headers(transport, actor)
+        .map(to_json)
+        .unwrap_or_default();
+    (req, resp)
+}
+
+/// Attach `headers: {request, response}` — the `network --headers` shape — to
+/// every entry whose internal `_resource_id` maps to a live
+/// `NetworkEventActor`, backfilling a null `content_type` from the response's
+/// `Content-Type` on the way.
+///
+/// `navigate --with-network --headers` and `click --wait-for-network
+/// --headers` call this before their connection unwatches: the actors die with
+/// the subscription, which is why a later `network --headers` sees nothing.
+pub(crate) fn attach_headers(
+    entries: &mut [Value],
+    transport: &mut RdpTransport,
+    actor_by_resource_id: &HashMap<u64, ff_rdp_core::ActorId>,
+) {
+    for entry in entries.iter_mut() {
+        let Some(actor) = entry
+            .get("_resource_id")
+            .and_then(Value::as_u64)
+            .and_then(|rid| actor_by_resource_id.get(&rid))
+        else {
+            continue;
+        };
+        attach_headers_to(entry, transport, actor);
+    }
+}
+
+/// [`attach_headers`] for one entry whose `NetworkEventActor` is already known
+/// (`click --wait-for-network --headers`).
+pub(crate) fn attach_headers_to(
+    entry: &mut Value,
+    transport: &mut RdpTransport,
+    actor: &ff_rdp_core::ActorId,
+) {
+    let (req, resp) = fetch_headers(transport, actor);
+    if entry.get("content_type").is_none_or(Value::is_null)
+        && let Some(ct) = content_type_from_headers(&resp)
+    {
+        entry["content_type"] = json!(ct);
+    }
+    entry["headers"] = json!({"request": req, "response": resp});
 }
 
 /// Render a [`SecurityInfo`] as the JSON `security` object attached to a
@@ -455,7 +523,7 @@ fn security_to_json(si: &ff_rdp_core::SecurityInfo) -> Value {
 /// performance-api fallback (no NetworkEventActor ids), every entry gets a note
 /// explaining why security info is unavailable, matching the `--headers`
 /// behaviour.
-fn attach_security(
+pub(crate) fn attach_security(
     limited: &mut [Value],
     ctx: &mut ConnectedTab,
     actor_by_resource_id: &HashMap<u64, ff_rdp_core::ActorId>,

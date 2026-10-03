@@ -328,3 +328,110 @@ fn e2e_272_frame_records_actual_direct_result() {
         support::output_note(&output)
     );
 }
+
+/// #287: `click --wait-for-network <pattern> --headers` attaches the matched
+/// request's headers, fetched from its own actor before the click's
+/// connection unwatches `network-event`.
+#[test]
+fn click_wait_for_network_headers_attaches_matched_request_headers() {
+    // Every evaluate (auto-wait probes and the click itself) is followed by
+    // the recorded network events; only those arriving after the click's
+    // result reach the `--wait-for-network` loop.
+    let server = MockRdpServer::new()
+        .on("listTabs", load_fixture("list_tabs_response.json"))
+        .on("getTarget", load_fixture("get_target_response.json"))
+        .on("getWatcher", load_fixture("get_watcher_response.json"))
+        .on(
+            "watchResources",
+            load_fixture("watch_resources_response.json"),
+        )
+        .on_with_followups(
+            "evaluateJSAsync",
+            load_fixture("eval_immediate_response.json"),
+            vec![
+                load_fixture("eval_result_click.json"),
+                load_fixture("resources_available_network.json"),
+                load_fixture("resources_updated_network.json"),
+            ],
+        )
+        .on(
+            "getRequestHeaders",
+            load_fixture("get_request_headers_response.json"),
+        )
+        .on(
+            "getResponseHeaders",
+            load_fixture("get_response_headers_response.json"),
+        )
+        .on(
+            "unwatchResources",
+            load_fixture("watch_resources_response.json"),
+        );
+    let log = server.request_log();
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(
+        [
+            "click",
+            "button.submit",
+            "--wait-for-network",
+            "favicon",
+            "--headers",
+        ]
+        .map(str::to_owned),
+    );
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        support::output_note(&output)
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+    let network = &json["results"]["network"];
+    assert_eq!(network["url"], "https://example.com/favicon.ico", "{json}");
+    assert!(
+        network["headers"]["request"]
+            .as_array()
+            .is_some_and(|h| h.iter().any(|h| h["name"] == "Host")),
+        "{network}"
+    );
+    assert!(
+        network["headers"]["response"]
+            .as_array()
+            .is_some_and(|h| !h.is_empty()),
+        "{network}"
+    );
+
+    let requests = log.lock().unwrap().clone();
+    let fetch = requests
+        .iter()
+        .position(|r| r["type"] == "getRequestHeaders")
+        .expect("getRequestHeaders sent");
+    assert_eq!(requests[fetch]["to"], "server1.conn0.netEvent7");
+    let unwatch = requests
+        .iter()
+        .position(|r| r["type"] == "unwatchResources")
+        .expect("unwatchResources sent");
+    assert!(fetch < unwatch, "{requests:?}");
+}
+
+#[test]
+fn click_headers_requires_wait_for_network() {
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(["click", "button", "--headers"])
+        .output()
+        .expect("failed to spawn ff-rdp");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "{}",
+        support::output_note(&output)
+    );
+}
