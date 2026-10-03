@@ -1110,10 +1110,11 @@ fn navigate_user_agent_applies_before_navigating() {
 }
 
 /// The UA ends with the connection, so it is refused where the command would
-/// return before the load (`--no-wait`) and on the `--with-network` path.
+/// return before the load (`--no-wait`), on the `--with-network` path, and with
+/// `--auto-consent`, whose click runs on a second connection.
 #[test]
-fn navigate_user_agent_refused_with_no_wait_and_with_network() {
-    for flag in ["--no-wait", "--with-network"] {
+fn navigate_user_agent_refused_with_no_wait_with_network_and_auto_consent() {
+    for flag in ["--no-wait", "--with-network", "--auto-consent"] {
         let output = std::process::Command::new(ff_rdp_bin())
             .args([
                 "--host",

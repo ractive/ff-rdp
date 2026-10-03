@@ -552,8 +552,9 @@ envelope echoes what was applied under results.network_conditions.
 the command runs. It is set on the command's own connection right before
 navigating and ends when the command exits: the page stays loaded, but a later
 `eval` reads the original `navigator.userAgent` and a later reload sends the
-original header. Not combinable with --no-wait or --with-network. Echoed as
-results.user_agent.
+original header. Not combinable with --no-wait, --with-network, or
+--auto-consent (whose click runs on a second connection, after the override
+has ended). Echoed as results.user_agent.
 
 The URL is a positional argument (not a flag). There is no --url option.
 
@@ -1698,7 +1699,7 @@ pub struct NavigateArgs {
     /// Send this User-Agent for this navigation only: the document request's
     /// `User-Agent` header and `navigator.userAgent` while the command runs.
     /// Ends when the command exits — later commands see the original UA.
-    #[arg(long, value_name = "UA", conflicts_with_all = ["no_wait", "with_network"])]
+    #[arg(long, value_name = "UA", conflicts_with_all = ["no_wait", "with_network", "auto_consent"])]
     pub user_agent: Option<String>,
     #[command(flatten)]
     pub conditions: NetworkConditionsArgs,
