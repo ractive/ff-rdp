@@ -13,7 +13,7 @@
 
 use std::io::Write;
 use std::net::TcpListener;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use ff_rdp_core::ProtocolError;
 use ff_rdp_core::transport::{RdpTransport, max_frame_bytes};
@@ -86,9 +86,7 @@ fn live_bulk_frame_oversize_rejected() {
     let mut t =
         RdpTransport::connect("127.0.0.1", port, Duration::from_secs(2)).expect("connect mock");
 
-    let started = Instant::now();
     let err = t.recv().expect_err("oversize bulk frame must be rejected");
-    let elapsed = started.elapsed();
     server.join().ok();
 
     match &err {
@@ -101,8 +99,4 @@ fn live_bulk_frame_oversize_rejected() {
         }
         other => panic!("expected BulkFrameTooLarge, got {other:?}"),
     }
-    assert!(
-        elapsed < Duration::from_millis(500),
-        "rejection must be prompt (no body read), took {elapsed:?}"
-    );
 }

@@ -3,7 +3,7 @@
   "expected_diagnosis": "redirect-content-type-mismatch",
   "expected_evidence_commands": [
     "ff-rdp console --level error --filter 'JSON|parse|Unexpected token <|SyntaxError' --limit 5",
-    "ff-rdp network --filter '/api/data' --detail --headers --limit 5"
+    "ff-rdp navigate http://127.0.0.1:8000/ --with-network --headers --all --jq '.results.network.entries[] | select(.url | contains(\"/api/data\")) | {url, status, content_type: [.headers.response[] | select(.name | ascii_downcase == \"content-type\") | .value][0], location: [.headers.response[] | select(.name | ascii_downcase == \"location\") | .value][0]}'"
   ],
   "must_not_conclude": ["A1", "B5", "E1"]
 }

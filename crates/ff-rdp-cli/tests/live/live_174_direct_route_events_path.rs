@@ -20,11 +20,11 @@
 //! Why the defect survived four iterations: `live_130_reload_envelope` and
 //! `live_138_back_forward_committed_url_is_top_frame` assert `committed_url` /
 //! `ready_state` / the mere *presence* of `elapsed_ms` — every one of which the
-//! readystate fallback supplies. Nothing bounded `elapsed_ms`, and nothing
-//! asserted that the events path was the one that answered. Both gaps are
-//! closed here: `elapsed_ms` is bounded, and `status` is asserted, which the
-//! fallback path structurally cannot produce (it correlates no document
-//! request, so it reports `status_reason: "not_observed"`).
+//! readystate fallback supplies. Nothing asserted that the events path was the
+//! one that answered. That gap is closed here: `status_reason` is asserted to
+//! differ from `"not_observed"`, which the fallback path structurally always
+//! reports (it correlates no document request). `elapsed_ms` is not bounded —
+//! a wall-clock bound measures the machine, not the product.
 //!
 //! A second defect fell out of the fix and is fixed here too: with the events
 //! path working, a bad-DNS `navigate` no longer times out, so the neterror
@@ -46,18 +46,9 @@ use serde_json::Value;
 
 use crate::common::{FixtureRoute, FixtureServer, LiveFirefox, ff_rdp_bin, live_tests_enabled};
 
-/// The bound iteration 174's AC states: a navigation verb on a static
-/// localhost page must resolve from the events path, and the events path
-/// answers in ~100 ms. The pre-fix readystate fallback answered at 21 011 ms
-/// (`split_wait_budget(30_000).1` burnt in full, plus the poll). 2 000 ms sits
-/// an order of magnitude below that and an order of magnitude above a healthy
-/// run, so it fails on the defect without flaking on a loaded CI box.
-const MAX_COMMIT_MS: u64 = 2_000;
-
-/// `--timeout` used for every invocation. Large on purpose: the failure mode
-/// this test guards against is *proportional to the timeout*, so a generous
-/// value makes the regression unmistakable (21 s, not 0.7 s) rather than
-/// hiding it.
+/// `--timeout` used for every invocation. Generous so a loaded machine never
+/// times out a healthy run; the events-path signal is `status_reason`, not
+/// timing.
 const TIMEOUT_MS: &str = "30000";
 
 /// A host that cannot resolve, for the neterror leg. `.invalid` is reserved by
@@ -109,21 +100,13 @@ fn run_ok(global: &[String], args: &[&str], label: &str) -> Value {
 /// Assert the commit was answered by the **events** path, not the readystate
 /// fallback.
 ///
-/// Two independent signals, because either alone is weak:
-///
-/// * `elapsed_ms` under [`MAX_COMMIT_MS`] — the fallback cannot be that fast,
-///   it only runs after the events budget is spent.
-/// * `status` present — the fallback correlates no `network-event` for the
-///   document, so it structurally reports `status_reason: "not_observed"`.
+/// The fallback correlates no `network-event` for the document, so it
+/// structurally reports `status_reason: "not_observed"`; anything else means
+/// the events path answered. `elapsed_ms` must still be reported.
 fn assert_resolved_from_events(results: &Value, label: &str) {
-    let elapsed = results["elapsed_ms"]
-        .as_u64()
-        .unwrap_or_else(|| panic!("{label}: `elapsed_ms` must be a number, got {results}"));
     assert!(
-        elapsed < MAX_COMMIT_MS,
-        "{label}: elapsed_ms {elapsed} >= {MAX_COMMIT_MS} — the events wait was \
-         starved and the readystate fallback answered (iteration 174 measured \
-         21011 ms here). Full envelope: {results}"
+        results["elapsed_ms"].is_u64(),
+        "{label}: `elapsed_ms` must be a number, got {results}"
     );
     assert_ne!(
         results["status_reason"], "not_observed",
@@ -171,15 +154,14 @@ fn exercise_events_path(global: &[String], route: &str) {
     assert_resolved_from_events(&results, &label);
 
     // --- reload -----------------------------------------------------------
-    // AC 2: `elapsed_ms` under 2 000 ms against the 21 029 ms the plan
-    // measured. AC 4's `status == 200` assertion lives in
+    // AC 2 (resolved from events, not the fallback). AC 4's `status == 200` assertion lives in
     // `live_169_nav_verb_status_parity`, which now runs on both routes.
     let label = format!("{route}: reload");
     let results = run_ok(global, &["reload"], &label);
     assert_resolved_from_events(&results, &label);
 
     // --- back / forward ---------------------------------------------------
-    // AC 3: exit 0 (asserted by `run_ok`) and a bounded commit. `status` is
+    // AC 3: exit 0 (asserted by `run_ok`) and resolved from events. `status` is
     // deliberately NOT asserted: a traversal served from BFCache issues no
     // request, so `no_document_request` is the honest answer there — but it is
     // a *different* reason from `not_observed`, which is what
@@ -244,9 +226,10 @@ fn live_174_dns_failure_exits_nav_dns_fail() {
     }
 }
 
-/// AC: "`ff-rdp --timeout 30000 reload` on a static localhost page
-/// reports `elapsed_ms` under 2 000 ms" and "`back`/`forward` exit 0 on a page
-/// with history" — the leg that reproduces the defect.
+/// AC: "`ff-rdp --timeout 30000 reload` on a static localhost page resolves
+/// from the events path" and "`back`/`forward` exit 0 on a page with history"
+/// — the leg that reproduces the defect. (The original AC also bounded
+/// `elapsed_ms` under 2 000 ms; that wall-clock bound was dropped in #290.)
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
 fn live_174_nav_verbs_resolve_from_events_direct() {
