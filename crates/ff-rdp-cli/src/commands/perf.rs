@@ -101,28 +101,34 @@ fn resources_pending(resource_count: usize, ready_state: &str, ms_since_nav_star
 
 /// Build a JS snippet that uses `PerformanceObserver` with `buffered: true`.
 ///
-/// The callback fires synchronously for already-recorded entries when
-/// `buffered: true` is set, so we don't need Promises or async/await.
+/// `buffered: true` copies the already-recorded entries into the observer's
+/// buffer synchronously, but the callback only runs on a later task — after
+/// this one-shot eval has returned.  The entries are therefore read with
+/// `takeRecords()` before `disconnect()`.  Types missing from
+/// `PerformanceObserver.supportedEntryTypes` are skipped rather than observed,
+/// because observing them logs a console warning into the page under test.
 ///
-/// For `largest-contentful-paint` a three-layer fallback is used:
-/// 1. PerformanceObserver with buffered:true
-/// 2. `performance.getEntriesByType('largest-contentful-paint')` direct query
-/// 3. DOM-based approximation using the largest visible img/video/svg/canvas element
+/// For `largest-contentful-paint` on a browser that does not list it as
+/// supported, a fallback is used:
+/// 1. `performance.getEntriesByType('largest-contentful-paint')` direct query
+/// 2. DOM-based approximation using the largest visible img/video/svg/canvas element
 fn script_observer(entry_type: &str) -> String {
     if entry_type == "largest-contentful-paint" {
         // Single-quote raw string — no double quotes inside. The CSS attribute selector
         // intentionally omits quotes around the attribute value: [style*=background-image]
         // is valid CSS and avoids the double-quote restriction.
         return r"(function() {
-  try {
-    var entries = [];
-    var obs = new PerformanceObserver(function(list) {
-      entries = entries.concat(list.getEntries().map(function(e) { return e.toJSON(); }));
-    });
-    obs.observe({ type: 'largest-contentful-paint', buffered: true });
-    obs.disconnect();
-    if (entries.length > 0) { return JSON.stringify(entries); }
-  } catch(e) {}
+  var supported =
+    (typeof PerformanceObserver !== 'undefined' && PerformanceObserver.supportedEntryTypes) || [];
+  if (supported.indexOf('largest-contentful-paint') >= 0) {
+    try {
+      var obs = new PerformanceObserver(function() {});
+      obs.observe({ type: 'largest-contentful-paint', buffered: true });
+      var entries = obs.takeRecords().map(function(e) { return e.toJSON(); });
+      obs.disconnect();
+      return JSON.stringify(entries);
+    } catch(e) {}
+  }
   // Layer 2: direct getEntriesByType query
   try {
     var direct = performance.getEntriesByType('largest-contentful-paint');
@@ -172,12 +178,13 @@ fn script_observer(entry_type: &str) -> String {
 
     format!(
         r"(function() {{
+  var supported =
+    (typeof PerformanceObserver !== 'undefined' && PerformanceObserver.supportedEntryTypes) || [];
+  if (supported.indexOf('{entry_type}') < 0) {{ return JSON.stringify([]); }}
   try {{
-    var entries = [];
-    var obs = new PerformanceObserver(function(list) {{
-      entries = entries.concat(list.getEntries().map(function(e) {{ return e.toJSON(); }}));
-    }});
+    var obs = new PerformanceObserver(function() {{}});
     obs.observe({{ type: '{entry_type}', buffered: true }});
+    var entries = obs.takeRecords().map(function(e) {{ return e.toJSON(); }});
     obs.disconnect();
     return JSON.stringify(entries);
   }} catch(e) {{ return JSON.stringify([]); }}
@@ -492,20 +499,27 @@ pub fn run(cli: &Cli, entry_type: &str, filter: Option<&str>) -> Result<(), AppE
 
 /// Collect all CWV-relevant entry types in a single eval and compute Core Web Vitals.
 pub fn run_vitals(cli: &Cli) -> Result<(), AppError> {
-    // Use synchronous PerformanceObserver with `buffered: true`.  The
-    // callback fires synchronously for already-recorded entries, so we
-    // don't need Promises or async/await (which `evaluateJSAsync` doesn't
-    // auto-resolve).
+    // `buffered: true` + `takeRecords()` reads already-recorded entries
+    // synchronously, so we don't need Promises or async/await (which
+    // `evaluateJSAsync` doesn't auto-resolve).  The callback itself would only
+    // fire on a later task, after this eval has returned — the reason the
+    // pre-fix script never saw a single LCP entry.
     let script = r"(function() {
   var entries = {};
+  var supported =
+    (typeof PerformanceObserver !== 'undefined' && PerformanceObserver.supportedEntryTypes) || [];
   var types = ['largest-contentful-paint', 'layout-shift', 'longtask', 'paint'];
   types.forEach(function(type) {
+    entries[type] = [];
+    // Observing an unsupported type logs a console warning into the page.
+    if (supported.indexOf(type) < 0) { return; }
     try {
-      entries[type] = [];
-      var obs = new PerformanceObserver(function(list) {
-        entries[type] = entries[type].concat(list.getEntries().map(function(e) { return e.toJSON(); }));
-      });
+      // buffered:true queues the recorded entries into the observer buffer
+      // synchronously; the callback only fires on a later task, so read
+      // them with takeRecords() before disconnecting.
+      var obs = new PerformanceObserver(function() {});
       obs.observe({ type: type, buffered: true });
+      entries[type] = obs.takeRecords().map(function(e) { return e.toJSON(); });
       obs.disconnect();
     } catch(e) {}
   });
@@ -522,8 +536,9 @@ pub fn run_vitals(cli: &Cli) -> Result<(), AppError> {
       }
     } catch(e) {}
   }
-  // LCP layer 3: DOM-based approximation if still empty
-  if (!entries['largest-contentful-paint'] || entries['largest-contentful-paint'].length === 0) {
+  // LCP layer 3: DOM-based approximation, only where the browser cannot report LCP
+  if (supported.indexOf('largest-contentful-paint') < 0 &&
+      (!entries['largest-contentful-paint'] || entries['largest-contentful-paint'].length === 0)) {
     try {
       var best = null;
       var bestArea = 0;
@@ -561,8 +576,7 @@ pub fn run_vitals(cli: &Cli) -> Result<(), AppError> {
   // Theme A (iter-139): the structural, non-heuristic signal for whether CLS
   // ('layout-shift') / TBT ('longtask') are measurable at all on this
   // browser — Firefox's list has neither, always, regardless of page content.
-  entries.supported_entry_types =
-    (typeof PerformanceObserver !== 'undefined' && PerformanceObserver.supportedEntryTypes) || [];
+  entries.supported_entry_types = supported;
   entries.page_url = (performance.getEntriesByType('navigation')[0] || {}).name || document.location.href;
   entries.measured_at_ms = Date.now();
   return JSON.stringify(entries);
@@ -601,6 +615,7 @@ pub fn run_vitals(cli: &Cli) -> Result<(), AppError> {
     let cls = compute_cls(cls_entries);
     let tbt = compute_tbt(longtask_entries, fcp);
     let lcp_approximate = is_lcp_approximate(lcp_entries);
+    let lcp_supported = entry_type_supported(&all, "largest-contentful-paint");
     let cls_supported = entry_type_supported(&all, "layout-shift");
     let tbt_supported = entry_type_supported(&all, "longtask");
 
@@ -626,7 +641,7 @@ pub fn run_vitals(cli: &Cli) -> Result<(), AppError> {
         "ttfb_ms": ttfb,
         "ttfb_rating": ttfb.map(|v| rate(v, 800.0, 1800.0)),
     });
-    apply_lcp_fields(&mut results, lcp, lcp_approximate);
+    apply_lcp_fields(&mut results, lcp, lcp_approximate, lcp_supported);
     // Theme A (iter-139): CLS/TBT get the same unavailable-guard as LCP —
     // Firefox structurally cannot measure either (no `layout-shift`/`longtask`
     // in `PerformanceObserver.supportedEntryTypes`), so a `0.0` here is never
@@ -933,14 +948,17 @@ pub fn run_audit(cli: &Cli) -> Result<(), AppError> {
   var result = {};
 
   // CWV via PerformanceObserver with buffered: true
+  // Same feature-detect + takeRecords() pattern as `perf vitals`.
+  var supported =
+    (typeof PerformanceObserver !== 'undefined' && PerformanceObserver.supportedEntryTypes) || [];
   var cwvTypes = ['largest-contentful-paint', 'layout-shift', 'longtask', 'paint'];
   cwvTypes.forEach(function(type) {
+    result[type] = [];
+    if (supported.indexOf(type) < 0) { return; }
     try {
-      result[type] = [];
-      var obs = new PerformanceObserver(function(list) {
-        result[type] = result[type].concat(list.getEntries().map(function(e) { return e.toJSON(); }));
-      });
+      var obs = new PerformanceObserver(function() {});
       obs.observe({ type: type, buffered: true });
+      result[type] = obs.takeRecords().map(function(e) { return e.toJSON(); });
       obs.disconnect();
     } catch(e) {}
   });
@@ -959,8 +977,9 @@ pub fn run_audit(cli: &Cli) -> Result<(), AppError> {
       }
     } catch(e) {}
   }
-  // LCP layer 3: DOM-based approximation if still empty
-  if (!result['largest-contentful-paint'] || result['largest-contentful-paint'].length === 0) {
+  // LCP layer 3: DOM-based approximation, only where the browser cannot report LCP
+  if (supported.indexOf('largest-contentful-paint') < 0 &&
+      (!result['largest-contentful-paint'] || result['largest-contentful-paint'].length === 0)) {
     try {
       var lcpBest = null;
       var lcpBestArea = 0;
@@ -1044,8 +1063,7 @@ pub fn run_audit(cli: &Cli) -> Result<(), AppError> {
   result.ready_state = document.readyState;
   result.ms_since_nav_start = Date.now() - performance.timing.navigationStart;
   // Theme A (iter-139): see the identical field in `perf vitals`'s script.
-  result.supported_entry_types =
-    (typeof PerformanceObserver !== 'undefined' && PerformanceObserver.supportedEntryTypes) || [];
+  result.supported_entry_types = supported;
   // Theme C (iter-139): page identity, so stale vitals are detectable.
   result.page_url = (performance.getEntriesByType('navigation')[0] || {}).name || document.location.href;
   result.measured_at_ms = Date.now();
@@ -1100,6 +1118,7 @@ pub fn run_audit(cli: &Cli) -> Result<(), AppError> {
     let cls = compute_cls(cls_entries);
     let tbt = compute_tbt(longtask_entries, fcp);
     let lcp_approximate = is_lcp_approximate(lcp_entries);
+    let lcp_supported = entry_type_supported(&all, "largest-contentful-paint");
     let cls_supported = entry_type_supported(&all, "layout-shift");
     let tbt_supported = entry_type_supported(&all, "longtask");
 
@@ -1126,7 +1145,7 @@ pub fn run_audit(cli: &Cli) -> Result<(), AppError> {
         "tbt_ms": Value::Null,
         "tbt_rating": Value::Null,
     });
-    apply_lcp_fields(&mut vitals, lcp, lcp_approximate);
+    apply_lcp_fields(&mut vitals, lcp, lcp_approximate, lcp_supported);
     // Theme A (iter-139): see identical treatment + rationale in `perf vitals`.
     apply_unavailable_metric_fields(&mut vitals, &CLS_METRIC_SPEC, cls, cls_supported);
     apply_unavailable_metric_fields(&mut vitals, &TBT_METRIC_SPEC, tbt, tbt_supported);
@@ -1749,7 +1768,12 @@ pub(crate) fn rate(value: f64, good: f64, poor: f64) -> &'static str {
 ///   `lcp_ms: null`, `lcp_rating: "unavailable"`, plus the approximation note.
 /// - otherwise → `lcp_ms: <value>`, `lcp_rating: rate(value, 2500, 4000)`; a
 ///   non-zero approximate value still carries the `lcp_approximate`/note context.
-pub(crate) fn apply_lcp_fields(target: &mut Value, lcp: Option<f64>, lcp_approximate: bool) {
+pub(crate) fn apply_lcp_fields(
+    target: &mut Value,
+    lcp: Option<f64>,
+    lcp_approximate: bool,
+    lcp_supported: bool,
+) {
     // N7 / Theme F (iter-83): when LCP is not measurable or is an approximate 0ms
     // estimate, emit "unavailable" and null rather than "good" + 0.0.
     let lcp_unavailable = lcp.is_none() || (lcp_approximate && lcp.unwrap_or(1.0) == 0.0);
@@ -1765,19 +1789,44 @@ pub(crate) fn apply_lcp_fields(target: &mut Value, lcp: Option<f64>, lcp_approxi
         json!(rate(lcp.unwrap_or(0.0), 2500.0, 4000.0))
     };
 
+    target["lcp_source"] = json!(lcp_source(
+        (!lcp_unavailable).then_some(lcp).flatten(),
+        lcp_approximate
+    ));
+
     if lcp_approximate {
         target["lcp_approximate"] = json!(true);
         target["lcp_note"] = json!(
-            "LCP estimated via DOM approximation — Firefox does not implement the Chromium LCP observer. \
-             This is a Firefox platform limitation, not specific to any launch mode. \
-             For canonical LCP, use Lighthouse against Chromium."
+            "LCP estimated via DOM approximation — this Firefox's PerformanceObserver.supportedEntryTypes \
+             lacks 'largest-contentful-paint'. This is a platform limitation, not specific to any launch mode."
         );
     } else if lcp.is_none() {
-        target["lcp_note"] = json!(
-            "LCP not available — Firefox does not implement the Chromium LCP PerformanceObserver entry. \
-             This is a Firefox platform limitation, not specific to any launch mode. \
-             For canonical LCP, use Lighthouse against Chromium."
-        );
+        target["lcp_note"] = json!(lcp_missing_note(lcp_supported));
+    }
+}
+
+/// Where an `lcp_ms` value came from: `"performance_observer"` for a real
+/// `largest-contentful-paint` entry, `"dom_approximation"` for the fallback
+/// estimate, `None` when there is no value at all.
+pub(crate) fn lcp_source(lcp: Option<f64>, lcp_approximate: bool) -> Option<&'static str> {
+    match (lcp, lcp_approximate) {
+        (None, _) => None,
+        (Some(_), true) => Some("dom_approximation"),
+        (Some(_), false) => Some("performance_observer"),
+    }
+}
+
+/// The note for a missing LCP value.  Firefox 122+ lists
+/// `largest-contentful-paint` in `supportedEntryTypes`; claiming "Firefox does
+/// not implement LCP" there was false (dogfooding-session-64 #11).  A
+/// supported-but-empty list means this document recorded no candidate.
+pub(crate) fn lcp_missing_note(lcp_supported: bool) -> &'static str {
+    if lcp_supported {
+        "LCP not available — Firefox supports largest-contentful-paint, but this document has recorded \
+         no entry yet (nothing contentful painted, or the page was never visible). Re-run after the page has rendered."
+    } else {
+        "LCP not available — this Firefox's PerformanceObserver.supportedEntryTypes lacks \
+         'largest-contentful-paint'. This is a platform limitation, not specific to any launch mode."
     }
 }
 
@@ -2245,7 +2294,7 @@ mod tests {
             "cls": 0.0,
         });
         let lcp: Option<f64> = None;
-        apply_lcp_fields(&mut vitals, lcp, false);
+        apply_lcp_fields(&mut vitals, lcp, false, false);
 
         assert_eq!(
             vitals["lcp_rating"],
@@ -2295,7 +2344,7 @@ mod tests {
             "lcp_ms": Value::Null,
             "lcp_rating": Value::Null,
         });
-        apply_lcp_fields(&mut vitals, lcp, lcp_approximate);
+        apply_lcp_fields(&mut vitals, lcp, lcp_approximate, false);
 
         assert_eq!(
             vitals["lcp_rating"],
@@ -2329,7 +2378,7 @@ mod tests {
             "lcp_ms": Value::Null,
             "lcp_rating": Value::Null,
         });
-        apply_lcp_fields(&mut vitals, Some(587.0), true);
+        apply_lcp_fields(&mut vitals, Some(587.0), true, false);
 
         assert_eq!(
             vitals["lcp_ms"],
@@ -2360,12 +2409,12 @@ mod tests {
             ("approximate-zero", Some(0.0), true),
         ] {
             let mut audit = json!({});
-            apply_lcp_fields(&mut audit, lcp, approx);
+            apply_lcp_fields(&mut audit, lcp, approx, false);
 
             // The vitals command feeds the identical inputs to the identical
             // helper, so build the reference the same way and compare.
             let mut vitals = json!({});
-            apply_lcp_fields(&mut vitals, lcp, approx);
+            apply_lcp_fields(&mut vitals, lcp, approx, false);
 
             assert_eq!(
                 audit["lcp_rating"],
@@ -2388,13 +2437,44 @@ mod tests {
         }
     }
 
+    /// dogfooding-session-64 #11: on a Firefox that lists
+    /// `largest-contentful-paint` as supported, a missing value must not claim
+    /// Firefox lacks LCP, and a measured value reports its source.
+    #[test]
+    fn unit_lcp_supported_missing_note_and_source() {
+        let mut vitals = json!({});
+        apply_lcp_fields(&mut vitals, None, false, true);
+        let note = vitals["lcp_note"].as_str().unwrap_or_default();
+        assert!(note.contains("recorded no entry"), "{note}");
+        assert!(!note.contains("lacks"), "{note}");
+        assert_eq!(vitals["lcp_source"], Value::Null);
+
+        let mut measured = json!({});
+        apply_lcp_fields(&mut measured, Some(71.0), false, true);
+        assert_eq!(measured["lcp_ms"], json!(71.0));
+        assert_eq!(measured["lcp_source"], json!("performance_observer"));
+        assert!(measured.get("lcp_note").is_none());
+
+        let mut approx = json!({});
+        apply_lcp_fields(&mut approx, Some(587.0), true, false);
+        assert_eq!(approx["lcp_source"], json!("dom_approximation"));
+
+        let mut unsupported = json!({});
+        apply_lcp_fields(&mut unsupported, None, false, false);
+        assert!(
+            unsupported["lcp_note"]
+                .as_str()
+                .is_some_and(|s| s.contains("lacks 'largest-contentful-paint'"))
+        );
+    }
+
     /// A measurable (non-approximate) LCP must be rated exactly as before the
     /// iter-125 extraction — proving the helper is behaviour-preserving for the
     /// common measurable-LCP path.
     #[test]
     fn unit_perf_audit_lcp_rated_when_measurable() {
         let mut vitals = json!({});
-        apply_lcp_fields(&mut vitals, Some(3200.0), false);
+        apply_lcp_fields(&mut vitals, Some(3200.0), false, false);
 
         assert_eq!(vitals["lcp_ms"], json!(3200.0));
         assert_eq!(

@@ -135,8 +135,12 @@ impl TabListError {
 /// command the `SessionStart` hook runs on every agent session.
 pub struct TabListing {
     connection: RdpConnection,
-    /// The version the RDP greeting carried, before any device-actor fallback.
-    greeting_version: Option<u32>,
+    /// The version the RDP greeting carried; replaced by the device-actor
+    /// fallback once [`firefox_version`](Self::firefox_version) resolved it.
+    version: Option<u32>,
+    /// Whether the device-actor fallback already ran, so `home` followed by
+    /// `attach` costs one probe, not two.
+    device_probed: bool,
     tabs: Vec<TabInfo>,
 }
 
@@ -146,42 +150,43 @@ impl TabListing {
         &self.tabs
     }
 
-    /// The Firefox version as the greeting reported it, or `None` when the
-    /// greeting omitted `ua`.
+    /// The Firefox major version: the greeting's, or — when the greeting
+    /// omitted `ua`, as Firefox 157's does — the device actor's
+    /// `getDescription`, the same fallback `doctor` and [`attach`](Self::attach)
+    /// use.  The home view used to report only the greeting and said "version
+    /// unknown" where `doctor` said 157 (dogfooding-session-64 #45).
     ///
-    /// Deliberately *not* the device-actor fallback [`attach`](Self::attach)
-    /// resolves: this is what the connection announced about itself, and the
-    /// home view reports it verbatim rather than a value synthesised by a
-    /// round trip it may never make.
-    pub fn greeting_version(&self) -> Option<u32> {
-        self.greeting_version
+    /// A failed device probe is `None`, never an error: the version is
+    /// informational.
+    pub fn firefox_version(&mut self) -> Option<u32> {
+        if self.version.is_none() && !self.device_probed {
+            self.device_probed = true;
+            self.version =
+                DeviceActor::query_version(self.connection.transport_mut()).unwrap_or(None);
+            if self.version.is_some() {
+                self.connection.set_firefox_version(self.version);
+            }
+        }
+        self.version
     }
 
     /// Resolve the target tab on **this** connection and call `getTarget` on
     /// it, yielding the same [`ConnectedTab`] a plain
     /// [`connect_and_get_target`] would have produced.
-    pub fn attach(self, cli: &Cli) -> Result<ConnectedTab, AppError> {
-        let Self {
-            mut connection,
-            greeting_version,
-            tabs,
-        } = self;
-
+    pub fn attach(mut self, cli: &Cli) -> Result<ConnectedTab, AppError> {
         // When the RDP greeting omits the `ua` field (some Firefox builds strip
         // it), try the device actor's `getDescription` as a version fallback.
         // This ensures `remembered_version()` is populated for all downstream
         // callers (e.g. `version_mismatch_message()` in the screenshot path) and
         // that the compatibility warning is emitted based on the resolved
         // version, not the (absent) greeting one.
-        let effective_version = if greeting_version.is_none() {
-            DeviceActor::query_version(connection.transport_mut()).unwrap_or(None)
-        } else {
-            greeting_version
-        };
-        if effective_version != greeting_version {
-            connection.set_firefox_version(effective_version);
-        }
+        let effective_version = self.firefox_version();
         crate::connection_meta::remember_version(effective_version);
+        let Self {
+            mut connection,
+            tabs,
+            ..
+        } = self;
 
         let tab = crate::tab_target::resolve_tab_with_context(
             &tabs,
@@ -252,7 +257,8 @@ fn handshake_and_list_tabs(mut connection: RdpConnection) -> Result<TabListing, 
     };
     Ok(TabListing {
         connection,
-        greeting_version,
+        version: greeting_version,
+        device_probed: false,
         tabs,
     })
 }
@@ -801,11 +807,11 @@ mod tests {
         let mock = MockFirefox::start(true);
         let cli = mock.cli(&[]);
 
-        let listing = connect_and_list_tabs(&cli).unwrap_or_else(|e| {
+        let mut listing = connect_and_list_tabs(&cli).unwrap_or_else(|e| {
             panic!("connect_and_list_tabs: {}", e.into_app_error());
         });
 
-        assert_eq!(listing.greeting_version(), Some(143));
+        assert_eq!(listing.firefox_version(), Some(143));
         let urls: Vec<&str> = listing.tabs().iter().map(|t| t.url.as_str()).collect();
         assert_eq!(
             urls,

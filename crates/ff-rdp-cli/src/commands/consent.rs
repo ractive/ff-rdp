@@ -144,11 +144,22 @@ struct NativeCmpEntry {
     /// Machine-readable CMP name, reported verbatim as `results.cmp`.
     name: &'static str,
     /// Case-insensitive substrings checked against the top-level target's
-    /// URL. Any match makes this entry's `selector` the one tried.
+    /// URL. Any match makes this entry's `selector` the one tried. Empty means
+    /// "any host": a multi-tenant CMP recognised by its own markup, which the
+    /// `selector` both detects and actions.
     host_url_substrings: &'static [&'static str],
     /// CSS selector for the accept control, evaluated against the top
     /// document.
     selector: &'static str,
+}
+
+impl NativeCmpEntry {
+    /// Whether an ambiguous evaluation of this entry counts as a pre-action
+    /// miss: true for an any-host entry (empty `host_url_substrings`), whose
+    /// probe runs on every page whether or not the CMP is there.
+    fn ambiguity_is_miss(&self) -> bool {
+        self.host_url_substrings.is_empty()
+    }
 }
 
 /// Native CMP table. BBC's own cookie banner (`kb/iterations/
@@ -162,11 +173,26 @@ struct NativeCmpEntry {
 /// presence. `detect_and_accept` tries this table before `CMP_TABLE`, so a
 /// second `consent accept` call (after the first dismissed Sourcepoint)
 /// reaches it.
-const NATIVE_CMP_TABLE: &[NativeCmpEntry] = &[NativeCmpEntry {
-    name: "bbc",
-    host_url_substrings: &["bbc.com", "bbc.co.uk"],
-    selector: "#bbccookies-continue-button",
-}];
+///
+/// consentmanager.net (dogfooding-session-64 #23) is a multi-tenant CMP
+/// (comparis.ch among many) that injects `#cmpbox` into the top document —
+/// no iframe, so `CMP_TABLE` never saw it. Its accept control is
+/// `a.cmpboxbtnyes` ("I Accept" / "Akzeptieren", so the selector, not the
+/// label, is what is stable). Verified live 2026-10-04 on
+/// www.comparis.ch/hypotheken: the click hides `#cmpbox` on the next task and
+/// `__tcfapi('getTCData')` reports `eventStatus: "useractioncomplete"`.
+const NATIVE_CMP_TABLE: &[NativeCmpEntry] = &[
+    NativeCmpEntry {
+        name: "bbc",
+        host_url_substrings: &["bbc.com", "bbc.co.uk"],
+        selector: "#bbccookies-continue-button",
+    },
+    NativeCmpEntry {
+        name: "consentmanager",
+        host_url_substrings: &[],
+        selector: "#cmpbox a.cmpboxbtnyes",
+    },
+];
 
 /// Result of a consent-detection pass. Both fields are always present in the
 /// JSON form (`to_json`) — `null`/`null` when no known CMP was found, never
@@ -329,10 +355,11 @@ fn evaluate_accept(
 }
 
 /// Try every [`NATIVE_CMP_TABLE`] entry whose host substring matches the
-/// tab's current top-level URL, clicking the first one found visible.
+/// tab's current top-level URL, in table order, clicking the first one found
+/// visible.
 ///
-/// Returns `Ok(None)` when no entry's host matches, or the matching entry's
-/// selector wasn't found/visible — the caller falls through to the
+/// Returns `Ok(None)` when no entry's host matches, or no matching entry's
+/// selector was found/visible — the caller falls through to the
 /// iframe-based [`CMP_TABLE`] path in either case, so a same-origin miss
 /// never masks a real cross-origin CMP.
 fn try_native_cmp(
@@ -340,24 +367,34 @@ fn try_native_cmp(
     console_actor: &ff_rdp_core::ActorId,
     top_level_url: &str,
 ) -> Result<Option<ConsentResult>, AppError> {
-    let Some(entry) = match_native_cmp(top_level_url) else {
-        return Ok(None);
-    };
-
-    let js = native_accept_js(entry.selector);
-    match evaluate_accept(ctx, console_actor, &js)? {
-        AcceptAttempt::Miss => Ok(None),
-        AcceptAttempt::Accepted => Ok(Some(ConsentResult {
-            cmp: Some(entry.name),
-            action: Some("accepted"),
-        })),
-        // An exception may occur after a partial action. Never try an iframe
-        // after an ambiguous native action, including an unexpected result.
-        AcceptAttempt::Unconfirmed => Ok(Some(ConsentResult {
-            cmp: Some(entry.name),
-            action: None,
-        })),
+    for entry in matching_native_cmps(top_level_url) {
+        let js = native_accept_js(entry.selector);
+        match evaluate_accept(ctx, console_actor, &js)? {
+            AcceptAttempt::Miss => {}
+            AcceptAttempt::Accepted => {
+                return Ok(Some(ConsentResult {
+                    cmp: Some(entry.name),
+                    action: Some("accepted"),
+                }));
+            }
+            // An any-host probe runs on pages that never had this CMP, so an
+            // ambiguous result there (a dead document mid-navigation, say) is
+            // far likelier a failed probe than a partial click; treating it as
+            // terminal would report a CMP the site does not use and skip the
+            // real iframe CMP.
+            AcceptAttempt::Unconfirmed if entry.ambiguity_is_miss() => {}
+            // An exception may occur after a partial action. Never try another
+            // entry or an iframe after an ambiguous host-matched action,
+            // including an unexpected result.
+            AcceptAttempt::Unconfirmed => {
+                return Ok(Some(ConsentResult {
+                    cmp: Some(entry.name),
+                    action: None,
+                }));
+            }
+        }
     }
+    Ok(None)
 }
 
 /// Detect a known CMP on the current tab and click its "accept all" control.
@@ -427,15 +464,16 @@ fn match_cmp(url: &str) -> Option<&'static str> {
         .map(|cmp| cmp.name)
 }
 
-/// Returns the first [`NativeCmpEntry`] whose `host_url_substrings` matches
-/// `url` (case-insensitive). Pure and side-effect-free, mirroring
-/// [`match_cmp`] — factored out of [`try_native_cmp`] so the host-matching
-/// rule is unit-testable without a live connection.
-fn match_native_cmp(url: &str) -> Option<&'static NativeCmpEntry> {
+/// Every [`NativeCmpEntry`] whose `host_url_substrings` matches `url`
+/// (case-insensitive), in table order; an entry with no substrings matches
+/// every host. Pure and side-effect-free, mirroring [`match_cmp`] — factored
+/// out of [`try_native_cmp`] so the host-matching rule is unit-testable
+/// without a live connection.
+fn matching_native_cmps(url: &str) -> impl Iterator<Item = &'static NativeCmpEntry> {
     let lower = url.to_ascii_lowercase();
-    NATIVE_CMP_TABLE
-        .iter()
-        .find(|e| e.host_url_substrings.iter().any(|s| lower.contains(s)))
+    NATIVE_CMP_TABLE.iter().filter(move |e| {
+        e.host_url_substrings.is_empty() || e.host_url_substrings.iter().any(|s| lower.contains(s))
+    })
 }
 
 #[cfg(test)]
@@ -548,35 +586,64 @@ mod tests {
 
     /// AC: `live_144_bbc_cmp_dismissed` (matching-rule half) — bbc.com and
     /// bbc.co.uk both resolve to the same native entry.
+    fn native_names(url: &str) -> Vec<&'static str> {
+        matching_native_cmps(url).map(|e| e.name).collect()
+    }
+
     #[test]
     fn match_native_cmp_matches_bbc_hosts() {
         assert_eq!(
-            match_native_cmp("https://www.bbc.com/news").map(|e| e.name),
-            Some("bbc")
+            native_names("https://www.bbc.com/news"),
+            ["bbc", "consentmanager"]
         );
         assert_eq!(
-            match_native_cmp("https://www.bbc.co.uk/news").map(|e| e.name),
-            Some("bbc")
+            native_names("https://www.bbc.co.uk/news"),
+            ["bbc", "consentmanager"]
         );
     }
 
     #[test]
     fn match_native_cmp_is_case_insensitive() {
+        assert_eq!(native_names("HTTPS://WWW.BBC.COM/NEWS")[0], "bbc");
+    }
+
+    /// Only the any-host entry treats an ambiguous evaluation as a miss; the
+    /// host-matched BBC entry keeps the stop-after-ambiguity rule (PR #312
+    /// review).
+    #[test]
+    fn only_any_host_entries_treat_ambiguity_as_miss() {
+        for entry in NATIVE_CMP_TABLE {
+            assert_eq!(
+                entry.ambiguity_is_miss(),
+                entry.name == "consentmanager",
+                "{}",
+                entry.name
+            );
+        }
+    }
+
+    /// dogfooding-session-64 #23: consentmanager.net is multi-tenant, so it is
+    /// tried on every host, and its selector targets the in-document box.
+    #[test]
+    fn consentmanager_matches_any_host_with_cmpbox_selector() {
         assert_eq!(
-            match_native_cmp("HTTPS://WWW.BBC.COM/NEWS").map(|e| e.name),
-            Some("bbc")
+            native_names("https://www.comparis.ch/hypotheken"),
+            ["consentmanager"]
         );
+        let entry = matching_native_cmps("https://www.comparis.ch/")
+            .next()
+            .expect("consentmanager entry");
+        assert_eq!(entry.selector, "#cmpbox a.cmpboxbtnyes");
     }
 
     /// AC: `live_144_bbc_cmp_dismissed` (no-match half) — a non-BBC host
-    /// must not match, so the native table can't false-positive on
-    /// unrelated sites and mask a real iframe-based CMP.
+    /// must not match the BBC entry, so the native table can't false-positive
+    /// on unrelated sites. Only the any-host consentmanager entry applies, and
+    /// its selector misses on a page without `#cmpbox`, falling through to the
+    /// iframe table.
     #[test]
     fn match_native_cmp_no_match_for_unrelated_url() {
-        assert_eq!(
-            match_native_cmp("https://example.com/").map(|e| e.name),
-            None
-        );
+        assert_eq!(native_names("https://example.com/"), ["consentmanager"]);
     }
 
     #[test]

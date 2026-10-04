@@ -1018,6 +1018,11 @@ fn send(stream: &mut TcpStream, value: &Value) {
     stream.write_all(&body).unwrap();
 }
 
+/// The consentmanager.net native entry's accept script.
+fn is_cmpbox_probe(js: &str) -> bool {
+    js.contains("#cmpbox a.cmpboxbtnyes")
+}
+
 #[derive(Clone, Copy)]
 enum Reply {
     Boolean(bool),
@@ -1136,6 +1141,18 @@ fn selection(scenario: Scenario, expected_actors: &[&str], expected: Expected) {
                 }
                 "evaluateJSAsync" => {
                     assert!(request.get("frameActor").is_none());
+                    // The any-host consentmanager.net entry probes `#cmpbox` in
+                    // the top document on every page; none of these fixtures
+                    // has one, so it is a pre-action miss.
+                    if request["text"].as_str().is_some_and(is_cmpbox_probe) {
+                        assert_eq!(actor, "top-console");
+                        send(&mut stream, &json!({"from":actor,"resultID":"cmpbox"}));
+                        send(
+                            &mut stream,
+                            &json!({"from":actor,"type":"evaluationResult","resultID":"cmpbox","result":false}),
+                        );
+                        continue;
+                    }
                     let reply = match actor {
                         "top-console" => scenario.native,
                         "first-console" => scenario.first,
@@ -1189,9 +1206,17 @@ fn selection(scenario: Scenario, expected_actors: &[&str], expected: Expected) {
         String::from_utf8_lossy(&output.stderr),
         json!(requests)
     );
+    let is_eval = |r: &&Value| r["type"] == "evaluateJSAsync";
+    let probes = requests
+        .iter()
+        .filter(is_eval)
+        .filter(|r| r["text"].as_str().is_some_and(is_cmpbox_probe))
+        .count();
+    assert!(probes <= 1, "the consentmanager probe runs at most once");
     let actors: Vec<_> = requests
         .iter()
-        .filter(|r| r["type"] == "evaluateJSAsync")
+        .filter(is_eval)
+        .filter(|r| !r["text"].as_str().is_some_and(is_cmpbox_probe))
         .map(|r| r["to"].as_str().unwrap())
         .collect();
     assert_eq!(

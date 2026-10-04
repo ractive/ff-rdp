@@ -333,7 +333,7 @@ pub fn parse_console_notification(msg: &Value) -> Option<ConsoleMessage> {
 fn parse_page_error(wrapper: &Value) -> Option<ConsoleMessage> {
     let err = wrapper.get("pageError")?;
 
-    let level = "error".to_owned();
+    let level = page_error_level(err).to_owned();
     let message = err
         .get("errorMessage")
         .and_then(Value::as_str)
@@ -370,6 +370,27 @@ fn parse_page_error(wrapper: &Value) -> Option<ConsoleMessage> {
         column,
         timestamp,
     })
+}
+
+/// Map a `pageError` form's severity flags to a console level.
+///
+/// Firefox's `preparePageErrorForRemote` (devtools/server/actors/webconsole.js)
+/// serialises the `nsIScriptError` flags as three booleans — `warning`, `info`
+/// and `error`.  Platform warnings (unsupported `entryTypes`, cookie
+/// partitioning, `Referrer-Policy`, unused preloads) arrive as `pageError`
+/// with `warning: true`; labelling them all `"error"` made
+/// `console --level error` report the browser's advisories as page errors.
+/// A form with none of the flags (older servers, hand-written fixtures) stays
+/// `"error"`, which is what an uncaught exception is.
+pub(crate) fn page_error_level(err: &Value) -> &'static str {
+    let flag = |name: &str| err.get(name).and_then(Value::as_bool).unwrap_or(false);
+    if flag("warning") {
+        "warn"
+    } else if flag("info") {
+        "info"
+    } else {
+        "error"
+    }
 }
 
 /// Parse a single console message from the `getCachedMessages` response.
@@ -750,6 +771,38 @@ mod tests {
         assert_eq!(msg.source, "https://example.com/app.js");
         assert_eq!(msg.line, 42);
         assert_eq!(msg.column, 5);
+    }
+
+    #[test]
+    fn parse_page_error_warning_flag_maps_to_warn() {
+        let wrapper = json!({
+            "pageError": {
+                "errorMessage": "Ignoring unsupported entryTypes: longtask.",
+                "warning": true,
+                "error": false,
+                "info": false
+            },
+            "type": "pageError"
+        });
+        assert_eq!(parse_page_error(&wrapper).unwrap().level, "warn");
+    }
+
+    #[test]
+    fn parse_page_error_info_flag_maps_to_info() {
+        let wrapper = json!({
+            "pageError": {"errorMessage": "note", "warning": false, "error": false, "info": true},
+            "type": "pageError"
+        });
+        assert_eq!(parse_page_error(&wrapper).unwrap().level, "info");
+    }
+
+    #[test]
+    fn parse_page_error_error_flag_stays_error() {
+        let wrapper = json!({
+            "pageError": {"errorMessage": "boom", "warning": false, "error": true, "info": false},
+            "type": "pageError"
+        });
+        assert_eq!(parse_page_error(&wrapper).unwrap().level, "error");
     }
 
     #[test]

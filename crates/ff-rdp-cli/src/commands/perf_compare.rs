@@ -13,7 +13,7 @@ use crate::output_pipeline::OutputPipeline;
 use super::connect_tab::{ConnectedTab, connect_and_get_target};
 use super::perf::{
     compute_cls, compute_fcp, compute_lcp, compute_tbt, compute_ttfb, entry_type_supported,
-    is_lcp_approximate, round2,
+    is_lcp_approximate, lcp_missing_note, lcp_source, round2,
 };
 use super::url_validation::validate_content_navigation_url;
 
@@ -101,20 +101,23 @@ fn navigate_and_wait(
 /// Combined JS script that collects all CWV-relevant entry types plus resource
 /// stats in a single eval, mirroring the script used by `run_vitals` / `run_audit`.
 ///
-/// Includes three fallback layers for LCP (same as `run_vitals`):
-/// 1. PerformanceObserver with buffered:true
-/// 2. `performance.getEntriesByType('largest-contentful-paint')` direct query
-/// 3. DOM-based approximation using the largest visible img/video/svg/canvas element
+/// LCP comes from a buffered `PerformanceObserver` read with `takeRecords()`
+/// (same as `run_vitals`); only where `supportedEntryTypes` lacks
+/// `largest-contentful-paint` does it fall back to `getEntriesByType` and then
+/// a DOM-based approximation using the largest visible img/video/svg/canvas.
 const COLLECT_SCRIPT: &str = r"(function() {
   var result = {};
+  // Same feature-detect + takeRecords() pattern as `perf vitals`.
+  var supported =
+    (typeof PerformanceObserver !== 'undefined' && PerformanceObserver.supportedEntryTypes) || [];
   var cwvTypes = ['largest-contentful-paint', 'layout-shift', 'longtask', 'paint'];
   cwvTypes.forEach(function(type) {
+    result[type] = [];
+    if (supported.indexOf(type) < 0) { return; }
     try {
-      result[type] = [];
-      var obs = new PerformanceObserver(function(list) {
-        result[type] = result[type].concat(list.getEntries().map(function(e) { return e.toJSON(); }));
-      });
+      var obs = new PerformanceObserver(function() {});
       obs.observe({ type: type, buffered: true });
+      result[type] = obs.takeRecords().map(function(e) { return e.toJSON(); });
       obs.disconnect();
     } catch(e) {}
   });
@@ -130,8 +133,9 @@ const COLLECT_SCRIPT: &str = r"(function() {
       }
     } catch(e) {}
   }
-  // LCP layer 3: DOM-based approximation if still empty
-  if (!result['largest-contentful-paint'] || result['largest-contentful-paint'].length === 0) {
+  // LCP layer 3: DOM-based approximation, only where the browser cannot report LCP
+  if (supported.indexOf('largest-contentful-paint') < 0 &&
+      (!result['largest-contentful-paint'] || result['largest-contentful-paint'].length === 0)) {
     try {
       var best = null;
       var bestArea = 0;
@@ -171,8 +175,7 @@ const COLLECT_SCRIPT: &str = r"(function() {
   // surface the iteration plan calls out to check (it also derives cls/tbt
   // from layout-shift/longtask, so it had the identical false-good-number
   // exposure even though it doesn't render a `_rating` field).
-  result.supported_entry_types =
-    (typeof PerformanceObserver !== 'undefined' && PerformanceObserver.supportedEntryTypes) || [];
+  result.supported_entry_types = supported;
   return JSON.stringify(result);
 })()";
 
@@ -272,13 +275,16 @@ fn collect_page_perf(ctx: &mut ConnectedTab, label: &str) -> Result<Value, AppEr
              'longtask' entry type, so this cannot be measured (not the same as a measured 0)."
         );
     }
+    let lcp_supported = entry_type_supported(&all, "largest-contentful-paint");
+    vitals["lcp_source"] = json!(lcp_source(lcp, lcp_approximate));
     if lcp_approximate {
         vitals["lcp_approximate"] = json!(true);
         vitals["lcp_note"] = json!(
-            "LCP estimated via DOM approximation; not available from PerformanceObserver in headless Firefox"
+            "LCP estimated via DOM approximation; this browser's PerformanceObserver \
+             does not support the 'largest-contentful-paint' entry type"
         );
     } else if lcp.is_none() {
-        vitals["lcp_note"] = json!("LCP not available in headless Firefox");
+        vitals["lcp_note"] = json!(lcp_missing_note(lcp_supported));
     }
 
     // ── navigation timing ────────────────────────────────────────────────────
