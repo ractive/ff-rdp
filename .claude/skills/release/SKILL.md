@@ -69,7 +69,11 @@ gh run watch <id> --exit-status
 
 If a job fails: read its log (`gh run view <id> --log-failed`) before anything else. Known
 quirks: the `aur` job is `continue-on-error` — read its log even when the run is green;
-cross-compiled targets skip tests by design; Windows test hangs have happened on the runner.
+cross-compiled targets skip tests by design; Windows test hangs have happened on the runner;
+the `winget` job fails with "Upstream commits contain workflow changes, which require the
+`workflow` scope" whenever `microsoft/winget-pkgs` has touched its workflows since the fork was
+last synced (`WINGET_TOKEN` lacks that scope) — run `gh repo sync ractive/winget-pkgs` locally
+(the local `gh` token has `workflow`) and re-run the failed job; it then opens the manifest PR.
 Never delete and re-create a tag to retry — fix the cause (usually in `release-workflows`),
 then re-run the failed jobs (`gh run rerun <id> --failed`).
 

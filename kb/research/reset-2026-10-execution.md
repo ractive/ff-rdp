@@ -27,7 +27,7 @@ investigate a historical flake.
 
 ## Log
 
-- 2026-10-04 (night): **v0.4.0 released** from `fc6330b1` — https://github.com/ractive/ff-rdp/releases/tag/v0.4.0, pipeline https://github.com/ractive/ff-rdp/actions/runs/37229772393. crates.io, Homebrew, Scoop, Cloudsmith and AUR (first push) succeeded; `winget` failed: `gh repo sync ractive/winget-pkgs` needs the `workflow` scope on `WINGET_TOKEN` (upstream commits touch workflows) — regenerate the token, then `gh run rerun 37229772393 --failed`. Installed 0.4.0 smoke (launch/navigate/page-text/screenshot/network --follow) green.
+- 2026-10-04 (night): **v0.4.0 released** from `fc6330b1` — https://github.com/ractive/ff-rdp/releases/tag/v0.4.0, pipeline https://github.com/ractive/ff-rdp/actions/runs/37229772393. crates.io, Homebrew, Scoop, Cloudsmith and AUR (first push) succeeded; `winget` failed first (`gh repo sync ractive/winget-pkgs` needs the `workflow` scope, which `WINGET_TOKEN` lacks; upstream commits touch workflows) — synced the fork with the local `gh` (which has the scope), re-ran the failed job, manifest PR https://github.com/microsoft/winget-pkgs/pull/446699. Installed 0.4.0 smoke (launch/navigate/page-text/screenshot/network --follow) green.
 
 - 2026-10-04 (evening): verification gaps closed (#308); easy batches #312 (console levels, perf probes/LCP, EPIPE, doctor/home, `--replace` hint, consentmanager CMP) and #313 (`styles --layout` px parsing, cookies/storage controls, reload idle, network shape, throttled capture `partial`, prune dry-run, type hint, eval rc 5). Agents: `rust-developer`/`rust-release-engineer` replaced by `ff-rdp-implementer` + `/release` skill (#309–#311). Backlog 49 → 35 open. `main` 5c1ed2fb is the v0.4.0 candidate; next: `/release`.
 

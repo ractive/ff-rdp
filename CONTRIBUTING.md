@@ -242,7 +242,9 @@ log explicitly).
    grouped Added / Changed / Removed (breaking first). Pre-1.0, removed flags bump the minor.
 4. `gh release create vX.Y.Z --title vX.Y.Z --notes-file notes.md` — this is the trigger.
 5. Watch `gh run list --workflow=release.yml --limit 1` to the end; on a red job read its log
-   before retrying. Then `cargo install --path crates/ff-rdp-cli` and run a short dogfood.
+   before retrying. A red `winget` job complaining about the `workflow` scope means the fork
+   is behind upstream: `gh repo sync ractive/winget-pkgs` locally, then `gh run rerun <id>
+   --failed`. Then `cargo install --path crates/ff-rdp-cli` and run a short dogfood.
 
 Secrets the pipeline expects are repository secrets: `CARGO_TOKEN`, `HOMEBREW_TAP_TOKEN`,
 `SCOOP_BUCKET_TOKEN`, `WINGET_TOKEN`, `CLOUDSMITH_API_KEY`, `AUR_SSH_PRIVATE_KEY`.
