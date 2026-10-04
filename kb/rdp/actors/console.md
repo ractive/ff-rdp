@@ -132,7 +132,11 @@ Listener kinds: `"PageError"`, `"ConsoleAPI"`, `"FileActivity"`, `"ReflowActivit
 
 - `evaluationResult` — the async return for `evaluateJSAsync`. Fields: `resultID, awaitResult, exception, exceptionMessage, exceptionStack, hasException, frame, helperResult, input, notes, result, startTime, timestamp, topLevelAwaitRejected`.
 - `consoleAPICall` — `{message, clonedFromContentProcess?}` for `console.log/warn/error/…`.
-- `pageError` — `{pageError}` for JS exceptions / CSP violations / parse errors.
+- `pageError` — `{pageError}` for JS exceptions / CSP violations / parse errors, and for platform
+  warnings too (unsupported `entryTypes`, cookie partitioning, unused preloads). The form carries the
+  `nsIScriptError` severity as three booleans `warning` / `info` / `error`; ff-rdp maps them to
+  `level` `"warn"` / `"info"` / `"error"` (`page_error_level`, verified on Firefox 157 — before
+  that every `pageError` was reported as `"error"`, [[dogfooding-session-64]] #14).
 - `logMessage` — generic `{message, timeStamp}`.
 - `serverNetworkEvent` (renamed to `networkEvent` client-side) — `{eventActor}`. Used in legacy non-Watcher mode.
 - `reflowActivity`, `fileActivity`, `documentEvent`, `inspectObject`.

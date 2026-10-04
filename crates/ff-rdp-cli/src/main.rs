@@ -199,8 +199,48 @@ fn parse_as_home(argv: &[String], err: &clap::Error) -> Option<Cli> {
     Cli::try_parse_from(&with_home).ok()
 }
 
+/// Exit status for "the reader of stdout went away" — 128 + SIGPIPE, what a
+/// shell reports for a Unix tool killed by a closed pipe.
+const BROKEN_PIPE_EXIT: i32 = 141;
+
+/// True when a panic message is std's `print!`/`println!` failure on a stdout
+/// whose reader has gone away (`… | head -1`).  Unix reports EPIPE ("Broken
+/// pipe", os error 32); Windows reports ERROR_NO_DATA ("The pipe is being
+/// closed", os error 232) or ERROR_BROKEN_PIPE (os error 109).
+fn is_closed_stdout_panic(message: &str) -> bool {
+    message.starts_with("failed printing to stdout")
+        && ["os error 32)", "os error 232)", "os error 109)"]
+            .iter()
+            .any(|code| message.contains(code))
+}
+
+/// `snapshot … | head -1` used to panic with "failed printing to stdout:
+/// Broken pipe" (dogfooding-session-64 #39).  Rust ignores SIGPIPE, so a write
+/// to a closed pipe surfaces as an error, which `println!` turns into a panic.
+/// Restoring the default SIGPIPE disposition instead would also apply to the
+/// child-process pipes this binary writes, so the closed-reader case is
+/// handled here: exit quietly with [`BROKEN_PIPE_EXIT`].  Every other panic
+/// still goes through the default hook.
+fn install_closed_stdout_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let payload = info.payload();
+        let message = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or_default();
+        if is_closed_stdout_panic(message) {
+            std::process::exit(BROKEN_PIPE_EXIT);
+        }
+        default_hook(info);
+    }));
+}
+
 fn main() {
     use clap::error::ErrorKind;
+
+    install_closed_stdout_hook();
 
     let argv: Vec<String> = std::env::args().collect();
     let cli = match Cli::try_parse_from(&argv) {
@@ -336,8 +376,23 @@ fn run(cli: &Cli) {
 
 #[cfg(test)]
 mod main_tests {
-    use super::is_type_invocation;
+    use super::{is_closed_stdout_panic, is_type_invocation};
     use crate::error::AppError;
+
+    #[test]
+    fn closed_stdout_panic_matches_epipe_only() {
+        assert!(is_closed_stdout_panic(
+            "failed printing to stdout: Broken pipe (os error 32)"
+        ));
+        assert!(is_closed_stdout_panic(
+            "failed printing to stdout: The pipe is being closed. (os error 232)"
+        ));
+        // A full disk is a real failure the user must see.
+        assert!(!is_closed_stdout_panic(
+            "failed printing to stdout: No space left on device (os error 28)"
+        ));
+        assert!(!is_closed_stdout_panic("index out of bounds (os error 32)"));
+    }
 
     #[test]
     fn detects_type_subcommand() {
