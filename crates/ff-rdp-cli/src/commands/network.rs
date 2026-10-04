@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::io::Write;
+use std::time::{Duration, Instant};
 
 use ff_rdp_core::{
     NetworkEventActor, NetworkResource, ProtocolError, RdpTransport, TabActor, WatcherActor,
@@ -16,7 +17,8 @@ use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::{ConnectedTab, connect_and_get_target};
 use super::network_events::{
-    build_network_entries_with_ids, drain_network_events, merge_updates, performance_api_fallback,
+    build_network_entries_with_ids, drain_network_events_until, merge_updates,
+    performance_api_fallback,
 };
 
 /// Hint for an empty one-shot capture: a fresh connection only sees requests
@@ -46,6 +48,33 @@ fn empty_capture_hint(wants_per_request_detail: bool) -> &'static str {
     }
 }
 
+/// Hint for a one-shot capture the wall clock cut short.
+const NETWORK_TIMEOUT_HINT: &str = "Network collection was still receiving events when --timeout ran out, \
+     so this is what arrived before the wall clock, not the full traffic. Raise --timeout for a longer \
+     window, or use `ff-rdp network --follow` to stream a page that never goes quiet.";
+
+/// Upper bound on the slice of `--timeout` held back from the drain for the
+/// per-entry header/security/content-type fetches in detail mode: a quarter
+/// of the wall, at most one second. Those RPCs answer in milliseconds, so this
+/// covers the default 20 entries with room to spare.
+fn detail_fetch_reserve(wall: Duration) -> Duration {
+    (wall / 4).min(Duration::from_secs(1))
+}
+
+/// Whether the wall clock cut off a stream that was still busy: the drain ran
+/// its whole `budget` and the last event was recent — within half the budget,
+/// at most the 2 s idle cutoff. A stream that had already been silent that long
+/// had finished, wall or no wall (a short `--timeout` can expire before the
+/// idle cutoff would have). A drain that saw no event ran out the clock
+/// waiting for a first one, which cut nothing short.
+fn wall_cut_capture(elapsed: Duration, budget: Duration, quiet_for: Option<Duration>) -> bool {
+    let Some(quiet_for) = quiet_for else {
+        return false;
+    };
+    let still_active = (budget / 2).min(Duration::from_secs(2));
+    elapsed >= budget && quiet_for < still_active
+}
+
 pub fn run(
     cli: &Cli,
     filter: Option<&str>,
@@ -54,12 +83,17 @@ pub fn run(
     security: bool,
     source: NetworkSource,
 ) -> Result<(), AppError> {
+    // `--timeout` is a hard wall for the whole command, connect included.
+    let wall = Duration::from_millis(cli.timeout);
+    let deadline = Instant::now() + wall;
+    let use_detail = use_detail_mode(cli, headers, security);
+
     let mut ctx = connect_and_get_target(cli)?;
-    let (all_resources, all_updates) = if source == NetworkSource::PerformanceApi {
+    let (all_resources, all_updates, timeout_reached) = if source == NetworkSource::PerformanceApi {
         // iter-137 Theme C: `--source performance-api` must not touch the
         // watcher at all — its cost must not depend on a source the user
         // explicitly opted out of.
-        (Vec::new(), Vec::new())
+        (Vec::new(), Vec::new(), false)
     } else {
         let tab_actor = ctx.target_tab_actor().clone();
 
@@ -75,13 +109,36 @@ pub fn run(
         WatcherActor::watch_resources(ctx.transport_mut(), &watcher_actor, &["network-event"])
             .map_err(AppError::from)?;
 
-        // Collect resource events until timeout.
-        let result = drain_network_events(ctx.transport_mut()).map_err(AppError::from)?;
+        // Collect until the stream has been quiet for the idle period, or the
+        // wall clock runs out — whichever comes first. This used to drain
+        // until one socket read timed out, i.e. until the page stayed silent
+        // for a whole `--timeout`; a page with steady beacon traffic never
+        // does, so `network --timeout 3000` hung indefinitely (dogfooding
+        // session 64 #6). Detail mode keeps a slice of the wall back for the
+        // per-entry header/security/content-type fetches below.
+        let reserve = if use_detail {
+            detail_fetch_reserve(wall)
+        } else {
+            Duration::ZERO
+        };
+        let budget = deadline
+            .saturating_duration_since(Instant::now())
+            .saturating_sub(reserve);
+        let drain_started = Instant::now();
+        let drained = drain_network_events_until(ctx.transport_mut(), budget);
+        // The drain shortens the socket read timeout to its poll interval;
+        // put the global one back before the per-entry RPCs.
+        if let Err(e) = ctx.transport_mut().set_read_timeout(Some(wall)) {
+            // stderr-ok: (b) warn-and-continue — the capture already completed.
+            eprintln!("warning: failed to restore socket read timeout: {e:#}");
+        }
+        let drain = drained.map_err(AppError::from)?;
+        let timeout_reached = wall_cut_capture(drain_started.elapsed(), budget, drain.quiet_for);
 
         // No `unwatchResources` here: unwatching destroys the network-event
         // actors, and `--headers`/`--security` still have to query them
         // below. The subscription ends with this command's connection.
-        (result.0, result.1)
+        (drain.resources, drain.updates, timeout_reached)
     };
 
     // Merge updates into resources by resource_id.
@@ -170,8 +227,6 @@ pub fn run(
         cli.is_verbose(),
     );
 
-    let use_detail = use_detail_mode(cli, headers, security);
-
     let empty_capture_hint = empty_capture_hint(headers || security);
     if results.is_empty() {
         // stderr-ok: (b) hint — stdout still carries the (empty) JSON result
@@ -240,6 +295,11 @@ pub fn run(
         // `_resource_id` marker is stripped once at the end, after both the
         // header and the security joins have had a chance to use it.
         let mut limited = limited;
+        // Entries whose per-request RPCs were skipped because the wall clock
+        // ran out. Each fetch is bounded by the reply latency, so checking
+        // the deadline before each one keeps the command inside `--timeout`
+        // even with `--all` on a page with hundreds of requests.
+        let mut detail_skipped = 0usize;
         if headers && is_perf_source {
             // Performance-api source has no response headers. Emit a note per
             // entry so callers know why headers are absent; never silently drop.
@@ -277,6 +337,13 @@ pub fn run(
                     continue;
                 };
                 let needs_content_type = entry.get("content_type").is_none_or(Value::is_null);
+                if (headers || needs_content_type) && Instant::now() >= deadline {
+                    if headers {
+                        entry["headers"] = Value::Null;
+                        detail_skipped += 1;
+                    }
+                    continue;
+                }
 
                 if headers {
                     let (req_hdrs, resp_hdrs) = fetch_headers(ctx.transport_mut(), actor);
@@ -306,12 +373,16 @@ pub fn run(
         // performance-api fallback gets a per-entry note instead of silently
         // dropping the flag.
         if security {
-            attach_security(
+            let skipped = attach_security_until(
                 &mut limited,
                 &mut ctx,
                 &actor_by_resource_id,
                 is_perf_source,
+                Some(deadline),
             );
+            // An entry missing both its headers and its security info is
+            // one skipped entry, not two.
+            detail_skipped = detail_skipped.max(skipped);
         }
 
         // Strip the internal `_resource_id` marker now that all per-entry joins
@@ -328,13 +399,24 @@ pub fn run(
         // Iteration 126: carry the summary fields alongside `results` in the
         // detail envelope so `--jq` consumers get total_requests etc. Summary
         // counts are computed from the full capture, never the truncated view.
-        // `timeout_reached` is always false here: the non-timed drain used by
-        // the standalone `network` command stops on idle (see summary mode).
-        merge_summary_fields(&mut envelope, &summary_source, false);
-        if let Some(hint) = empty_hint
-            && let Some(obj) = envelope.as_object_mut()
-        {
-            obj.insert("hint".to_string(), hint);
+        merge_summary_fields(&mut envelope, &summary_source, timeout_reached);
+        if let Some(obj) = envelope.as_object_mut() {
+            if timeout_reached {
+                obj.insert("hint".to_string(), json!(NETWORK_TIMEOUT_HINT));
+            }
+            if detail_skipped > 0 {
+                obj.insert(
+                    "hint".to_string(),
+                    json!(format!(
+                        "{detail_skipped} of {shown} shown entries have `headers`/`security` null: \
+                         --timeout ran out before they were fetched. Raise --timeout, or narrow \
+                         the list with --filter/--limit."
+                    )),
+                );
+            }
+            if let Some(hint) = empty_hint {
+                obj.insert("hint".to_string(), hint);
+            }
         }
         // Surface the mixed-content count at the top level so `--security`
         // audits can flag insecure requests without scanning every entry.
@@ -359,8 +441,11 @@ pub fn run(
         .collect();
 
     // Summary mode (default).
-    // The non-timed drain_network_events() stops on idle, so timeout is never reached.
-    let summary = build_network_summary(&results, false);
+    let mut summary = build_network_summary(&results, timeout_reached);
+    if timeout_reached {
+        // build_network_summary's hint names navigate's --network-timeout.
+        summary["hint"] = json!(NETWORK_TIMEOUT_HINT);
+    }
 
     // Text short-circuit for summary mode.
     if cli.format == "text" && cli.jq.is_none() {
@@ -577,9 +662,23 @@ pub(crate) fn attach_security(
     actor_by_resource_id: &HashMap<u64, ff_rdp_core::ActorId>,
     is_perf_source: bool,
 ) {
+    attach_security_until(limited, ctx, actor_by_resource_id, is_perf_source, None);
+}
+
+/// [`attach_security`] that stops issuing RPCs once `deadline` passes, giving
+/// the remaining HTTPS entries `security: null`. Returns how many entries were
+/// skipped that way.
+fn attach_security_until(
+    limited: &mut [Value],
+    ctx: &mut ConnectedTab,
+    actor_by_resource_id: &HashMap<u64, ff_rdp_core::ActorId>,
+    is_perf_source: bool,
+    deadline: Option<Instant>,
+) -> usize {
     const SECURITY_NOTE: &str = "--security ignored (performance-api source has no \
         per-request security info; use --with-network to engage the watcher)";
 
+    let mut skipped = 0;
     for entry in limited.iter_mut() {
         if is_perf_source {
             if let Some(obj) = entry.as_object_mut() {
@@ -605,6 +704,12 @@ pub(crate) fn attach_security(
             continue;
         }
 
+        if deadline.is_some_and(|d| Instant::now() >= d) {
+            entry["security"] = Value::Null;
+            skipped += 1;
+            continue;
+        }
+
         // HTTPS (or other secure-ish scheme): fetch security info from the
         // NetworkEventActor we already hold for this request.
         let security_value = entry
@@ -619,6 +724,7 @@ pub(crate) fn attach_security(
             .map_or(Value::Null, |si| security_to_json(&si));
         entry["security"] = security_value;
     }
+    skipped
 }
 
 /// Render network summary as human-readable text to `out`.
@@ -1227,6 +1333,62 @@ mod tests {
     }
 
     /// AC `unit_160_use_detail_excludes_jq`.
+    /// The wall clock ended the drain while events were arriving (a 200 ms
+    /// beacon): the capture is partial and must say so.
+    #[test]
+    fn wall_cut_capture_true_when_clock_cut_a_busy_stream() {
+        let budget = Duration::from_millis(3000);
+        let recent = Some(Duration::from_millis(150));
+        assert!(wall_cut_capture(
+            Duration::from_millis(3010),
+            budget,
+            recent
+        ));
+        assert!(wall_cut_capture(budget, budget, recent));
+    }
+
+    /// The idle cutoff ended the drain before the budget: complete.
+    #[test]
+    fn wall_cut_capture_false_when_stream_went_idle() {
+        assert!(!wall_cut_capture(
+            Duration::from_millis(2100),
+            Duration::from_millis(3000),
+            Some(Duration::from_millis(2000))
+        ));
+    }
+
+    /// A `--timeout` shorter than the idle cutoff expires on a stream that
+    /// went silent long before: the wall cut nothing short.
+    #[test]
+    fn wall_cut_capture_false_when_short_budget_outlasts_a_quiet_stream() {
+        assert!(!wall_cut_capture(
+            Duration::from_millis(1000),
+            Duration::from_millis(1000),
+            Some(Duration::from_millis(990))
+        ));
+    }
+
+    /// No event ever arrived (a quiet, already-loaded page): the clock ran
+    /// out waiting for a first one, which cut nothing short.
+    #[test]
+    fn wall_cut_capture_false_without_events() {
+        let budget = Duration::from_millis(3000);
+        assert!(!wall_cut_capture(Duration::from_millis(3010), budget, None));
+    }
+
+    #[test]
+    fn detail_fetch_reserve_is_a_quarter_capped_at_one_second() {
+        assert_eq!(
+            detail_fetch_reserve(Duration::from_millis(2000)),
+            Duration::from_millis(500)
+        );
+        assert_eq!(
+            detail_fetch_reserve(Duration::from_secs(10)),
+            Duration::from_secs(1)
+        );
+        assert_eq!(detail_fetch_reserve(Duration::ZERO), Duration::ZERO);
+    }
+
     #[test]
     fn unit_160_use_detail_excludes_jq() {
         // `--jq` alone must leave the shape alone: a filter that changes the

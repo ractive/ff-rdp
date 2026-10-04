@@ -3,8 +3,8 @@
   "expected_diagnosis": "fallback",
   "expected_evidence_commands": [
     "ff-rdp console --level error --limit 10",
-    "ff-rdp network --status '4..|5..' --detail --limit 10",
-    "ff-rdp snapshot --interactive-only --limit 30"
+    "ff-rdp navigate http://127.0.0.1:8000/ --with-network --all --jq '[.results.network.entries[] | select((.status // 0) >= 400) | {url, status, method}] | .[:10]'",
+    "ff-rdp a11y summary --limit 30"
   ],
   "must_not_conclude": ["A1", "A2", "B5", "C1", "C2", "C3", "D2", "E1", "E3"]
 }
