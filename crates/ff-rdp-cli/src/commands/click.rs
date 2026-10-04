@@ -147,6 +147,10 @@ pub fn run_core(
         && let Err(timeout_err) =
             autowait_element(&mut ctx, &console_actor, selector, wait_timeout_ms, false)
     {
+        // Refs are top-document only: a stale one is in no frame either.
+        if timeout_err.error_type() == "stale_ref" {
+            return Err(timeout_err);
+        }
         let targets = fetch_frame_targets(&mut ctx)?;
         if selector_exists_in_targets(&mut ctx, &targets, selector)? {
             prefetched_targets = Some(targets);

@@ -44,9 +44,9 @@ product work that needs design. Keep items to one line — if an item needs more
 
 - [x] **lie** `navigate https://expired.badssl.com/` reports success (`ready_state:"complete"`, rc 0) while the tab is on about:certerror; return a `nav_cert_error` ([[dogfooding-session-64]] #1) (fix/navigate-truthfulness)
 - [x] **lie** `navigate --throttle slow-3g` reports `ready_state:"complete"` at ~480 ms while the document is still interactive, and strands in-flight requests after exit (2/2 repros; two agents) ([[dogfooding-session-64]] #2) (fix/navigate-truthfulness: cause was an iframe's `dom-complete` taken for the page's; the "stranded" page was the throttled load still finishing at the throttled pace after the early exit)
-- [ ] **lie** `eval 'Promise.reject(new Error("boom"))'` returns `{"results":null}` with rc 0 instead of the error envelope a sync throw gets ([[dogfooding-session-64]] #3)
-- [ ] **lie** `snapshot` at default depth returns 0 refs on HN and react.dev with `meta.truncated:false` and no depth hint ([[dogfooding-session-64]] #4)
-- [ ] **lie** refs restart at `e1` on every document, so a stale `click --ref e4` silently clicks a different element on the next page; add a per-document epoch ([[dogfooding-session-64]] #5)
+- [x] **lie** `eval 'Promise.reject(new Error("boom"))'` returns `{"results":null}` with rc 0 instead of the error envelope a sync throw gets ([[dogfooding-session-64]] #3) — fixed: error envelope with `stack`, `promise_rejected:true`, rc 1
+- [x] **lie** `snapshot` at default depth returns 0 refs on HN and react.dev with `meta.truncated:false` and no depth hint ([[dogfooding-session-64]] #4) — fixed: folded nodes list `refs_below`; `truncated`/`depth_truncated` + hint
+- [x] **lie** refs restart at `e1` on every document, so a stale `click --ref e4` silently clicks a different element on the next page; add a per-document epoch ([[dogfooding-session-64]] #5) — fixed: refs numbered from a random per-document base; stale ref → `stale_ref`
 - [ ] **lie** one-shot `network` on comparis hangs past `--timeout 3000` (30 s+, 3/3) because beacon traffic never goes quiet ([[dogfooding-session-64]] #6)
 - [ ] **wrong** `styles --layout` reports margin/border/padding all 0 where `getComputedStyle` gives 14px/1px/2.8px ([[dogfooding-session-64]] #7)
 - [ ] **wrong** `cascade` puts the winning declared value (`var(...)`, `22em`) in `computed`, has `stylesheet:null`/`line:1` on every rule, and lists no UA rules ([[dogfooding-session-64]] #8)
@@ -62,17 +62,17 @@ product work that needs design. Keep items to one line — if an item needs more
 - [ ] **wrong** `sources` `actor` ids are per-connection (`conn29` → `conn30`), so no later command can use them ([[dogfooding-session-64]] #18)
 - [ ] **wrong** `reload --wait-idle` reports `status_reason:"not_observed"` alongside `requests_observed:293` ([[dogfooding-session-64]] #19)
 - [ ] **wrong** `--with-page` collects before SPA work settles and, on non-readerable pages, fills its cap with nav links while dropping all form controls ([[dogfooding-session-64]] #20)
-- [ ] **wrong** `snapshot` `max_chars` counts compact bytes while stdout is pretty-printed (50 KB budget → 352 KB output) ([[dogfooding-session-64]] #21)
+- [x] **wrong** `snapshot` `max_chars` counts compact bytes while stdout is pretty-printed (50 KB budget → 352 KB output) ([[dogfooding-session-64]] #21) — fixed: budget measured on the printed JSON
 - [ ] **wrong** `click` on a disabled control's label returns `clicked:true` with no warning ([[dogfooding-session-64]] #22)
 - [ ] **gap** `navigate --auto-consent` / `consent accept` do not handle consentmanager.net (`#cmpbox`, `a.cmpboxbtnyes`) used by comparis ([[dogfooding-session-64]] #23)
 - [ ] **gap** `storage localStorage` has no per-value cap and printed 1.05 MB on Wikipedia ([[dogfooding-session-64]] #24)
 - [ ] **gap** `navigate --block` leaves no `blocked` marker or count on blocked requests, and `--block ''` is silently dropped ([[dogfooding-session-64]] #25)
 - [ ] **gap** `cookies` ignores `--fields`, `--limit` and `--sort` and accepts unknown fields with exit 0 ([[dogfooding-session-64]] #26)
-- [ ] **gap** unknown or stale `--ref` fails as a ~3 s generic selector timeout (exit 124) leaking `[data-ffrdp-ref=…]` instead of an immediate ref-specific error ([[dogfooding-session-64]] #27)
+- [x] **gap** unknown or stale `--ref` fails as a ~3 s generic selector timeout (exit 124) leaking `[data-ffrdp-ref=…]` instead of an immediate ref-specific error ([[dogfooding-session-64]] #27) — fixed: `stale_ref` before the auto-wait, < 100 ms
 - [x] **gap** a plain `click` on a link returns before navigation commits with no signal that one is pending ([[dogfooding-session-64]] #28) (fix/navigate-truthfulness)
 - [ ] **gap** `click --ref` on a visually hidden custom radio times out instead of falling back to its `<label>` ([[dogfooding-session-64]] #29)
 - [ ] **gap** `inspect` shows getter/setter descriptors but no values for accessor properties (`window.location.href`) ([[dogfooding-session-64]] #30)
-- [ ] **gap** `snapshot --query` searches only the depth-limited tree and gives no hint when depth caused the miss ([[dogfooding-session-64]] #31)
+- [x] **gap** `snapshot --query` searches only the depth-limited tree and gives no hint when depth caused the miss ([[dogfooding-session-64]] #31) — fixed: `--query` walks the whole document
 - [ ] **docs** `screenshot --viewport-height` is in `README.md:480` and `--help` but refused at runtime; remove or implement ([[dogfooding-session-64]] #32)
 - [ ] **docs** shipped `ff-rdp-debug` playbooks K0/C2 (and `evals/fixtures/K0/bug.json`) use nonexistent `network --status`, `snapshot --interactive-only` and `snapshot --filter` ([[dogfooding-session-64]] #33)
 - [ ] **docs** `kb/reference/script-format.md` still mentions the daemon and documents the removed `--env-file` ([[dogfooding-session-64]] #34)
@@ -82,7 +82,7 @@ product work that needs design. Keep items to one line — if an item needs more
 - [ ] **polish** `perf vitals`/`audit` log two unsupported-entryTypes console errors per call, polluting `console --level error` ([[dogfooding-session-64]] #38)
 - [ ] **polish** writing to a closed pipe (`snapshot … | head -1`) panics with "failed printing to stdout: Broken pipe" ([[dogfooding-session-64]] #39)
 - [ ] **polish** invalid selectors in `click` classify as `Timeout`/124 while `dom` says `User`, timeouts exit 124 or 5 by command, and `error_type` casing is mixed ([[dogfooding-session-64]] #40)
-- [ ] **polish** `snapshot --format text` omits `e<N>` refs ([[dogfooding-session-64]] #41)
+- [x] **polish** `snapshot --format text` omits `e<N>` refs ([[dogfooding-session-64]] #41) — fixed: `ref=e…` and `refs_below` lines in text mode
 - [ ] **polish** `scroll until` brute-forces an element already in the DOM (79 scrolls, 16 s) and says "not found" on timeout ([[dogfooding-session-64]] #42)
 - [ ] **polish** `page-text --query` joins match windows with no gap marker ([[dogfooding-session-64]] #43)
 - [ ] **polish** `navigate --with-network` duplicates `entries` in `slowest`, emits `total_transfer_bytes` as a float, and reports `status:200` for `data:` URLs ([[dogfooding-session-64]] #44)

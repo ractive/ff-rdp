@@ -70,7 +70,9 @@ fn resolve_selector_or_ref(
 /// `data-ffrdp-ref="e<N>"` on the element in the same evaluation that
 /// enumerates it, so any later command — on any connection — finds it with
 /// `[data-ffrdp-ref="e<N>"]`. A navigation replaces the document and with it
-/// every ref; a stale ref then simply matches nothing.
+/// every ref; each document numbers its refs from a random base, so a stale
+/// ref matches nothing and fails as `stale_ref` rather than naming an element
+/// on the new page.
 pub(crate) fn ref_selector(id: &str) -> Result<String, AppError> {
     // Stamping produces `e1`, `e2`, … — no `e0`, no leading zeros.
     let valid = id.strip_prefix('e').is_some_and(|n| {
@@ -91,7 +93,24 @@ pub(crate) fn ref_selector(id: &str) -> Result<String, AppError> {
 /// A `--ref` that matched nothing usually belongs to a page that has since
 /// navigated or re-rendered; say so instead of leaving a bare
 /// "no element matches `[data-ffrdp-ref=…]`".
+///
+/// A failure that says the ref matched nothing becomes the typed `stale_ref`
+/// error, the same one the auto-wait's up-front check raises
+/// (`js_helpers::check_ref_alive`), so a caller branches on one
+/// `error_type` whichever command path noticed it.
 fn with_stale_ref_hint(err: AppError, selector: Option<&str>) -> AppError {
+    let stale = match &err {
+        AppError::User(msg) | AppError::Timeout(msg) if says_nothing_matched(msg) => {
+            ref_id_in_message(msg)
+        }
+        _ => None,
+    };
+    if let Some(id) = stale {
+        return crate::commands::js_helpers::stale_ref_error(
+            &id,
+            crate::commands::js_helpers::StaleRef::Unknown,
+        );
+    }
     match (err, selector) {
         (AppError::User(msg), Some(sel)) if is_ref_selector(sel) && msg.contains(sel) => {
             AppError::User(format!(
@@ -101,6 +120,35 @@ fn with_stale_ref_hint(err: AppError, selector: Option<&str>) -> AppError {
         }
         (err, _) => err,
     }
+}
+
+/// Whether an error message reports that a selector matched no element.
+fn says_nothing_matched(msg: &str) -> bool {
+    let lower = msg.to_ascii_lowercase();
+    // Only phrasings that mean "the selector matched no element" — not, say,
+    // `scroll until`'s "not found in viewport", where the element exists.
+    [
+        "0 elements matched",
+        "matched in 0 of",
+        "no element matching",
+        "no element matches",
+        "no element found",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+/// The ref (`e<N>`) named by a `[data-ffrdp-ref="e<N>"]` selector quoted in
+/// `msg`, however the quotes around it were escaped; `None` when `msg` quotes
+/// no ref selector. Commands report a missing selector in their own words, so
+/// the message is the one place every path has in common.
+fn ref_id_in_message(msg: &str) -> Option<String> {
+    let marker = format!("[{}=", crate::commands::js_helpers::REF_ATTR);
+    let at = msg.find(&marker)? + marker.len();
+    let rest = msg[at..].trim_start_matches(['\\', '"', '\'']);
+    let digits = rest.strip_prefix('e')?;
+    let len = digits.bytes().take_while(u8::is_ascii_digit).count();
+    (len > 0).then(|| format!("e{}", &digits[..len]))
 }
 
 /// Whether `selector` is the attribute selector [`ref_selector`] produces.
@@ -1182,6 +1230,57 @@ mod tests {
         ] {
             assert!(ref_selector(bad).is_err(), "{bad:?} must be rejected");
         }
+    }
+
+    #[test]
+    fn ref_id_in_message_reads_any_quoting() {
+        for msg in [
+            "no element matching selector '[data-ffrdp-ref=\"e615001\"]'",
+            r#"click: selector "[data-ffrdp-ref=\"e615001\"]" matched in 0 of 0 frame(s)"#,
+        ] {
+            assert_eq!(ref_id_in_message(msg).as_deref(), Some("e615001"), "{msg}");
+        }
+        assert_eq!(
+            ref_id_in_message("no element matching selector 'button'"),
+            None
+        );
+    }
+
+    /// Whatever path noticed it, a ref that matches nothing is `stale_ref`.
+    #[test]
+    fn a_ref_that_matched_nothing_becomes_stale_ref() {
+        let sel = ref_selector("e615001").expect("valid");
+        let err = with_stale_ref_hint(
+            AppError::User(format!("no element matching selector '{sel}'")),
+            None,
+        );
+        assert_eq!(err.error_type(), "stale_ref");
+        assert_eq!(err.exit_code(), 1);
+        assert_eq!(err.to_error_json()["ref"], "e615001");
+
+        // Not a no-match (a hidden element): keeps its type, gains the hint.
+        let hidden = with_stale_ref_hint(
+            AppError::User(format!(
+                "selector '{sel}' not ready — the 1 matching element is hidden"
+            )),
+            Some(&sel),
+        );
+        assert_eq!(hidden.error_type(), "User");
+        assert!(
+            hidden.to_string().contains("hint: refs are stamped"),
+            "{hidden}"
+        );
+
+        // A plain selector is left alone.
+        let plain = with_stale_ref_hint(AppError::User("no element matching 'a'".into()), None);
+        assert_eq!(plain.error_type(), "User");
+
+        // An element that exists but was not reached is not stale.
+        let unreached = with_stale_ref_hint(
+            AppError::Timeout(format!("{sel} not found in viewport after 5000ms")),
+            None,
+        );
+        assert_eq!(unreached.error_type(), "Timeout");
     }
 }
 

@@ -683,6 +683,14 @@ scripts are untouched by this rule; they never enter the wrap.
 
 Output: {\"results\": <value>, \"total\": 1, \"meta\": {...}}
 
+Errors: a script that throws, or whose resulting Promise rejects, exits 1 with
+{\"error\": \"<message>\", \"error_type\": \"User\", \"stack\": \"...\"}; a rejection
+adds \"promise_rejected\": true. `eval 'Promise.reject(new Error(\"boom\"))'`,
+`eval 'await Promise.reject(new Error(\"boom\"))'` and a failing `fetch(...)`
+all report their error this way. `stack` is omitted when the thrown value has
+none. Firefox drops the rejection value of a multi-statement script whose
+completion value is a Promise, so that case reports a generic message.
+
 A string result is always returned in full. Firefox inlines only the first
 ~1000 characters of a long string and hands back a `longString` grip for the
 rest; ff-rdp fetches the remainder before printing (iter-161), so
@@ -1169,7 +1177,24 @@ single very long source URL can't blow the table out to thousands of columns.")]
     #[command(
         long_about = "Dump structured page snapshot for LLM consumption: DOM tree with semantic roles, key attributes, interactive elements, and text content.
 
-Output: {\"results\": {\"tag\": \"HTML\", \"children\": [...], ...}, \"total\": 1, \"meta\": {...}}"
+--depth limits the tree that is printed, not what gets a ref. A node folded at
+the depth limit (`truncated: \"N children not shown\"`) lists every visible
+interactive element beneath it under `refs_below` ([{\"ref\", \"tag\", \"text\",
+\"href\"}]), so `click --ref` works at any depth. `meta.truncated` is true when
+the depth limit or --max-chars cut anything, `meta.depth_truncated` names the
+depth case, and `meta.hint` says which flag recovers it.
+
+--query searches the whole document (--depth does not apply) and keeps the
+matching nodes plus their ancestors.
+
+--max-chars bounds the bytes of the printed JSON tree. Entries it drops are
+counted in `children_omitted` / `refs_omitted`.
+
+Refs look like `e417003`: each document numbers its refs from a random base,
+so a ref taken before a navigation matches nothing afterwards and fails with
+`error_type: \"stale_ref\"` straight away instead of acting on another element.
+
+Output: {\"results\": {\"tag\": \"html\", \"children\": [...], ...}, \"total\": 1, \"meta\": {\"depth\": 6, \"max_chars\": 50000, \"truncated\": bool, \"text_truncated\": bool, \"depth_truncated\": bool, \"hint\": \"...\"}}"
     )]
     Snapshot(SnapshotArgs),
     /// Get element geometry: bounding rects, position, z-index, visibility, overflow,
@@ -2430,8 +2455,10 @@ pub struct SnapshotArgs {
     /// Maximum tree depth to traverse (default: 6). Alias: --max-depth.
     ///
     /// Every node marked `interactive: true` carries a `ref` handle usable with
-    /// `click --ref` / `type --ref` (iter-210). Refs are stamped on the
-    /// elements (`data-ffrdp-ref`) and die when the page navigates. For a much smaller orientation view — headings, landmarks and
+    /// `click --ref` / `type --ref` (iter-210), and so does every entry under
+    /// a folded node's `refs_below`. Refs are stamped on the elements
+    /// (`data-ffrdp-ref`); after a navigation a ref fails with `stale_ref`.
+    /// For a much smaller orientation view — headings, landmarks and
     /// interactive elements only, also ref-carrying — use `a11y summary`.
     #[arg(long, default_value_t = 6)]
     pub depth: u32,
@@ -2439,14 +2466,15 @@ pub struct SnapshotArgs {
     /// Mutually exclusive with --depth. Must be ≥ 1.
     #[arg(long, value_name = "N", conflicts_with = "depth")]
     pub max_depth: Option<u32>,
-    /// Maximum size, in bytes of serialized JSON, of the whole output tree
+    /// Maximum size, in bytes of the printed JSON, of the whole output tree
     /// (tags, attributes, and structure — not just leaf text content;
     /// default: 50000). `meta.truncated` reports whether anything was cut.
     #[arg(long, default_value_t = 50000)]
     pub max_chars: u32,
     /// Keep only the nodes whose text or attribute values match, plus their
     /// ancestors; everything else is pruned (iter-211 Theme A). The root
-    /// stays `html`, so the path to each hit is still visible.
+    /// stays `html`, so the path to each hit is still visible. The search
+    /// covers the whole document; --depth does not limit it.
     #[command(flatten)]
     pub query: QueryArgs,
 }
