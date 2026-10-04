@@ -153,6 +153,15 @@ struct NativeCmpEntry {
     selector: &'static str,
 }
 
+impl NativeCmpEntry {
+    /// Whether an ambiguous evaluation of this entry counts as a pre-action
+    /// miss: true for an any-host entry (empty `host_url_substrings`), whose
+    /// probe runs on every page whether or not the CMP is there.
+    fn ambiguity_is_miss(&self) -> bool {
+        self.host_url_substrings.is_empty()
+    }
+}
+
 /// Native CMP table. BBC's own cookie banner (`kb/iterations/
 /// iteration-144-session-hygiene-followup.md` Theme C) sits in the top
 /// document at `#bbccookies-continue-button` rather than in an iframe.
@@ -368,9 +377,15 @@ fn try_native_cmp(
                     action: Some("accepted"),
                 }));
             }
+            // An any-host probe runs on pages that never had this CMP, so an
+            // ambiguous result there (a dead document mid-navigation, say) is
+            // far likelier a failed probe than a partial click; treating it as
+            // terminal would report a CMP the site does not use and skip the
+            // real iframe CMP.
+            AcceptAttempt::Unconfirmed if entry.ambiguity_is_miss() => {}
             // An exception may occur after a partial action. Never try another
-            // entry or an iframe after an ambiguous native action, including
-            // an unexpected result.
+            // entry or an iframe after an ambiguous host-matched action,
+            // including an unexpected result.
             AcceptAttempt::Unconfirmed => {
                 return Ok(Some(ConsentResult {
                     cmp: Some(entry.name),
@@ -590,6 +605,21 @@ mod tests {
     #[test]
     fn match_native_cmp_is_case_insensitive() {
         assert_eq!(native_names("HTTPS://WWW.BBC.COM/NEWS")[0], "bbc");
+    }
+
+    /// Only the any-host entry treats an ambiguous evaluation as a miss; the
+    /// host-matched BBC entry keeps the stop-after-ambiguity rule (PR #312
+    /// review).
+    #[test]
+    fn only_any_host_entries_treat_ambiguity_as_miss() {
+        for entry in NATIVE_CMP_TABLE {
+            assert_eq!(
+                entry.ambiguity_is_miss(),
+                entry.name == "consentmanager",
+                "{}",
+                entry.name
+            );
+        }
     }
 
     /// dogfooding-session-64 #23: consentmanager.net is multi-tenant, so it is
