@@ -623,6 +623,9 @@ pub(crate) fn wait_for_doc_complete_retaining_status(
     mut retained: Option<&mut FallbackStatusEvidence>,
 ) -> Result<CommitInfo, AppError> {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    // Wall-clock time of the dispatch, in the epoch milliseconds Firefox
+    // stamps on `document-event`s — see `is_stale_lifecycle_event`.
+    let dispatched_at_ms = epoch_ms_at(nav_start);
 
     // Use a short socket read timeout so we can check the deadline
     // even when the server is quiet.
@@ -693,19 +696,31 @@ pub(crate) fn wait_for_doc_complete_retaining_status(
                 // how iteration 174's `reload` defect was localised.
                 tracing::debug!(event = name, %url, "navigate: document-event observed");
 
+                if commit_url.is_none() && is_stale_lifecycle_event(name, v, dispatched_at_ms) {
+                    // The watcher replays the outgoing document's lifecycle
+                    // events when the subscription starts. Leaving a page that
+                    // was still loading (measured: a GitHub page at
+                    // `interactive`, right after a navigating `click`), its
+                    // replayed `dom-interactive` set the commit URL and its
+                    // `dom-complete` ended the wait — `navigate` reported the
+                    // page it left as `committed_url`.
+                    tracing::debug!(
+                        event = name,
+                        "navigate: pre-dispatch lifecycle event ignored"
+                    );
+                    continue;
+                }
+
                 match name {
                     "dom-loading" => {
                         // Always detect neterror early — Firefox loads about:neterror
                         // as a document and we will see dom-loading with the
                         // neterror URL before dom-complete fires.
                         if is_neterror_url(&url) {
-                            let nav_cause = classify_neterror(&url).map_or(
-                                NavCause::Unknown("unknown".to_owned()),
-                                NavCause::from_e_param,
-                            );
                             return Err(AppError::Navigation {
-                                cause: nav_cause,
+                                cause: error_page_cause(&url),
                                 url,
+                                firefox_error: None,
                             });
                         }
                         commit_url = Some(url.clone());
@@ -1196,17 +1211,87 @@ pub(crate) fn wait_for_doc_complete_retaining_status(
 /// Returns the raw `e=` value so the caller can pass it to
 /// [`NavCause::from_e_param`] for typed classification.
 pub(crate) fn classify_neterror(url: &str) -> Option<&str> {
-    // about:neterror?e=dnsNotFound&...
-    let query = url.strip_prefix("about:neterror?")?;
+    // about:neterror?e=dnsNotFound&... / about:certerror?e=nssBadCert&...
+    let query = url
+        .strip_prefix("about:neterror?")
+        .or_else(|| url.strip_prefix("about:certerror?"))?;
     query
         .split('&')
         .find(|seg| seg.starts_with("e="))?
         .strip_prefix("e=")
 }
 
-/// Returns `true` when `url` begins with `about:neterror`.
+/// Returns `true` when `url` is one of Firefox's load-failure pages:
+/// `about:neterror` (DNS, refused, reset, …) or `about:certerror` (an
+/// untrusted, expired or mismatched TLS certificate — dogfooding session 64
+/// #1, where `navigate https://expired.badssl.com/` reported success).
 pub(crate) fn is_neterror_url(url: &str) -> bool {
-    url.starts_with("about:neterror")
+    url.starts_with("about:neterror") || url.starts_with("about:certerror")
+}
+
+/// Wall-clock epoch milliseconds at `instant` (a moment in the past).
+pub(crate) fn epoch_ms_at(instant: Instant) -> f64 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    now.saturating_sub(instant.elapsed()).as_secs_f64() * 1000.0
+}
+
+/// Tolerance for comparing Firefox's event timestamps with ff-rdp's own clock
+/// reading (same machine, but each side rounds independently).
+const STALE_EVENT_SLACK_MS: f64 = 50.0;
+
+/// Whether a `dom-interactive`/`dom-complete` event, arriving before any
+/// `dom-loading` of this wait, describes a document lifecycle that happened
+/// before this command dispatched its navigation — i.e. the watcher's replay
+/// of the outgoing document's existing events, not the load the wait is for.
+///
+/// Firefox stamps these events with an epoch-millisecond `time`. An absent or
+/// zero `time` (Firefox sends `0` for some subframe and cached documents)
+/// proves nothing, so such events are kept. `dom-loading` is never judged by
+/// its timestamp: it is what starts tracking a load, and once one has been
+/// seen the events that follow belong to it (the caller only asks before
+/// then).
+pub(crate) fn is_stale_lifecycle_event(name: &str, event: &Value, dispatched_at_ms: f64) -> bool {
+    if !matches!(name, "dom-interactive" | "dom-complete") {
+        return false;
+    }
+    let time = event.get("time").and_then(Value::as_f64).unwrap_or(0.0);
+    time > 0.0 && time + STALE_EVENT_SLACK_MS < dispatched_at_ms
+}
+
+/// The typed cause for an error-page URL accepted by [`is_neterror_url`].
+///
+/// `about:certerror` is a certificate failure whatever its `e=` says (Firefox
+/// uses `nssBadCert` for expired, self-signed and wrong-host alike); an
+/// `about:neterror` is classified by its `e=` parameter.
+pub(crate) fn error_page_cause(url: &str) -> NavCause {
+    if url.starts_with("about:certerror") {
+        return NavCause::CertError;
+    }
+    classify_neterror(url).map_or(
+        NavCause::Unknown("unknown".to_owned()),
+        NavCause::from_e_param,
+    )
+}
+
+/// Firefox's own error code for the certificate failure the tab is showing
+/// (e.g. `SEC_ERROR_EXPIRED_CERTIFICATE`, `MOZILLA_PKIX_ERROR_SELF_SIGNED_CERT`,
+/// `SSL_ERROR_BAD_CERT_DOMAIN`), read from the `about:certerror` document via
+/// `document.getFailedCertSecurityInfo()`. `None` when the page is not a
+/// certificate error page or the call is unavailable.
+pub(crate) fn eval_cert_error_code(
+    transport: &mut RdpTransport,
+    console_actor: &ff_rdp_core::ActorId,
+) -> Option<String> {
+    const JS: &str = "(() => { try { return document.getFailedCertSecurityInfo().errorCodeString || null; } catch (e) { return null; } })()";
+    match ff_rdp_core::WebConsoleActor::evaluate_js_async(transport, console_actor, JS) {
+        Ok(result) if result.exception.is_none() => match result.result {
+            Grip::Value(Value::String(s)) if !s.is_empty() => Some(s),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Returns `true` when the navigation captured by `current_nav_start` is fresh
@@ -1683,13 +1768,20 @@ pub(crate) fn check_real_tab_url_for_neterror(
         return None;
     }
 
-    let nav_cause = classify_neterror(&tab_url).map_or(
-        NavCause::Unknown("unknown".to_owned()),
-        NavCause::from_e_param,
-    );
+    let cause = error_page_cause(&tab_url);
+    let firefox_error = if matches!(cause, NavCause::CertError) {
+        // The cached console actor may still be the pre-navigation one; the
+        // error page is its own document.
+        ctx.refresh_target();
+        let console_actor = ctx.target().console_actor.clone();
+        eval_cert_error_code(ctx.transport_mut(), &console_actor)
+    } else {
+        None
+    };
     Some(AppError::Navigation {
-        cause: nav_cause,
+        cause,
         url: requested_url.to_owned(),
+        firefox_error,
     })
 }
 

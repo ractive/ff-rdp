@@ -42,8 +42,8 @@ product work that needs design. Keep items to one line — if an item needs more
 
 ## From dogfooding session 64 (2026-10-04)
 
-- [ ] **lie** `navigate https://expired.badssl.com/` reports success (`ready_state:"complete"`, rc 0) while the tab is on about:certerror; return a `nav_cert_error` ([[dogfooding-session-64]] #1)
-- [ ] **lie** `navigate --throttle slow-3g` reports `ready_state:"complete"` at ~480 ms while the document is still interactive, and strands in-flight requests after exit (2/2 repros; two agents) ([[dogfooding-session-64]] #2)
+- [x] **lie** `navigate https://expired.badssl.com/` reports success (`ready_state:"complete"`, rc 0) while the tab is on about:certerror; return a `nav_cert_error` ([[dogfooding-session-64]] #1) (fix/navigate-truthfulness)
+- [x] **lie** `navigate --throttle slow-3g` reports `ready_state:"complete"` at ~480 ms while the document is still interactive, and strands in-flight requests after exit (2/2 repros; two agents) ([[dogfooding-session-64]] #2) (fix/navigate-truthfulness: cause was an iframe's `dom-complete` taken for the page's; the "stranded" page was the throttled load still finishing at the throttled pace after the early exit)
 - [ ] **lie** `eval 'Promise.reject(new Error("boom"))'` returns `{"results":null}` with rc 0 instead of the error envelope a sync throw gets ([[dogfooding-session-64]] #3)
 - [ ] **lie** `snapshot` at default depth returns 0 refs on HN and react.dev with `meta.truncated:false` and no depth hint ([[dogfooding-session-64]] #4)
 - [ ] **lie** refs restart at `e1` on every document, so a stale `click --ref e4` silently clicks a different element on the next page; add a per-document epoch ([[dogfooding-session-64]] #5)
@@ -53,7 +53,7 @@ product work that needs design. Keep items to one line — if an item needs more
 - [ ] **wrong** `a11y contrast` default samples only nav items, `--selector` does not include descendants, and transparent backgrounds give fg = bg ratio 1 ([[dogfooding-session-64]] #9)
 - [ ] **wrong** `responsive h1 --widths 320,768,1024` on comparis reports width 820 at every width while claiming the geometry is accurate ([[dogfooding-session-64]] #10)
 - [ ] **wrong** `perf vitals` says Firefox lacks LCP although FF157 supports `largest-contentful-paint` (buffered observer got 71 ms), and pairs `lcp_ms:null` with `lcp_approximate:true` ([[dogfooding-session-64]] #11)
-- [ ] **wrong** `run`: a `wait`/`assert_url` step after a navigating `click` polls the pre-navigation document and times out ([[dogfooding-session-64]] #12)
+- [x] **wrong** `run`: a `wait`/`assert_url` step after a navigating `click` polls the pre-navigation document and times out ([[dogfooding-session-64]] #12) (fix/navigate-truthfulness)
 - [ ] **wrong** throttled `navigate --with-network` returns after 3.2 s with 44 of ~67 requests and `timeout_reached:false`, not flagged incomplete ([[dogfooding-session-64]] #13)
 - [ ] **wrong** `console` labels Firefox warnings (entryTypes, cookie, Referrer-Policy, preload) as `level:"error"` ([[dogfooding-session-64]] #14)
 - [ ] **wrong** `scroll text 'Further reading'` scrolls to the first TreeWalker hit (sidebar TOC) instead of the heading, with no match count ([[dogfooding-session-64]] #15)
@@ -69,7 +69,7 @@ product work that needs design. Keep items to one line — if an item needs more
 - [ ] **gap** `navigate --block` leaves no `blocked` marker or count on blocked requests, and `--block ''` is silently dropped ([[dogfooding-session-64]] #25)
 - [ ] **gap** `cookies` ignores `--fields`, `--limit` and `--sort` and accepts unknown fields with exit 0 ([[dogfooding-session-64]] #26)
 - [ ] **gap** unknown or stale `--ref` fails as a ~3 s generic selector timeout (exit 124) leaking `[data-ffrdp-ref=…]` instead of an immediate ref-specific error ([[dogfooding-session-64]] #27)
-- [ ] **gap** a plain `click` on a link returns before navigation commits with no signal that one is pending ([[dogfooding-session-64]] #28)
+- [x] **gap** a plain `click` on a link returns before navigation commits with no signal that one is pending ([[dogfooding-session-64]] #28) (fix/navigate-truthfulness)
 - [ ] **gap** `click --ref` on a visually hidden custom radio times out instead of falling back to its `<label>` ([[dogfooding-session-64]] #29)
 - [ ] **gap** `inspect` shows getter/setter descriptors but no values for accessor properties (`window.location.href`) ([[dogfooding-session-64]] #30)
 - [ ] **gap** `snapshot --query` searches only the depth-limited tree and gives no hint when depth caused the miss ([[dogfooding-session-64]] #31)

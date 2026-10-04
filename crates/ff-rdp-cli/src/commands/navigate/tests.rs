@@ -222,6 +222,84 @@ fn is_neterror_url_detects_about_neterror() {
     assert!(!is_neterror_url("about:blank"));
 }
 
+/// Dogfooding session 64 #1: the tab URL `listTabs` reported for
+/// `navigate https://expired.badssl.com/` — `about:certerror`, not
+/// `about:neterror` — must be recognised and classified as a certificate
+/// error whatever its `e=` says.
+#[test]
+fn certerror_page_is_a_cert_error() {
+    let url = "about:certerror?e=nssBadCert&u=https%3A//expired.badssl.com/&c=UTF-8&d=%20&a=";
+    assert!(is_neterror_url(url));
+    assert_eq!(classify_neterror(url), Some("nssBadCert"));
+    assert_eq!(error_page_cause(url), NavCause::CertError);
+    assert_eq!(
+        error_page_cause("about:neterror?e=dnsNotFound&u=x"),
+        NavCause::DnsFail
+    );
+    assert_eq!(
+        error_page_cause("about:neterror?e=nssFailure2&u=x"),
+        NavCause::CertError
+    );
+}
+
+/// The watcher replays the outgoing document's lifecycle events when the
+/// subscription starts; those predate the dispatch and must not resolve the
+/// wait. Events with no usable timestamp are kept.
+#[test]
+fn lifecycle_events_before_dispatch_are_stale() {
+    let dispatched = 1_791_126_342_945.0;
+    let ev = |t: f64| json!({"name": "dom-interactive", "time": t});
+    assert!(is_stale_lifecycle_event(
+        "dom-interactive",
+        &ev(1_791_126_342_621.0),
+        dispatched
+    ));
+    assert!(!is_stale_lifecycle_event(
+        "dom-interactive",
+        &ev(1_791_126_342_963.0),
+        dispatched
+    ));
+    // `dom-loading` starts tracking a load and is never judged by its clock
+    // (recorded fixtures carry 2023 timestamps).
+    assert!(!is_stale_lifecycle_event(
+        "dom-loading",
+        &ev(1_700_000_000_000.0),
+        dispatched
+    ));
+    // Within the slack: rounding on either side is not staleness.
+    assert!(!is_stale_lifecycle_event(
+        "dom-complete",
+        &ev(dispatched - 10.0),
+        dispatched
+    ));
+    // Firefox sends `time: 0` for some documents — unknown, keep it.
+    assert!(!is_stale_lifecycle_event(
+        "dom-complete",
+        &ev(0.0),
+        dispatched
+    ));
+    assert!(!is_stale_lifecycle_event(
+        "dom-complete",
+        &json!({"name": "dom-complete"}),
+        dispatched
+    ));
+    // `will-navigate` carries the new navigation's own time; never filtered.
+    assert!(!is_stale_lifecycle_event(
+        "will-navigate",
+        &ev(1.0),
+        dispatched
+    ));
+}
+
+#[test]
+fn epoch_ms_at_is_in_the_past() {
+    let earlier = Instant::now();
+    std::thread::sleep(Duration::from_millis(20));
+    let now_ms = epoch_ms_at(Instant::now());
+    let then_ms = epoch_ms_at(earlier);
+    assert!(now_ms - then_ms >= 15.0, "{now_ms} - {then_ms}");
+}
+
 /// iter-83 Theme C: assert the default `WaitStrategy` is `Both` so the
 /// CLI's documented default (events first, readystate fallback) is exercised
 /// when callers omit `--wait-strategy`.

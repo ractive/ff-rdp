@@ -958,7 +958,20 @@ read `matched` instead.
 Ceiling: events remain isTrusted: false and e.clientX/e.clientY remain 0. The hit
 test decides WHETHER to dispatch; it does not give the events real coordinates.
 
-Output: {\"results\": {\"clicked\": true, \"matched\": true, \"reachable\": true, \"obscured_by\": null, \"tag\": \"...\", \"text\": \"...\", \"frame_url\": null}, \"total\": 1, \"meta\": {\"frame_url\": null, ...}}
+Navigation: a click that starts a top-level navigation (a link, a form submit,
+a handler assigning location) waits for the new document to commit and parse —
+within the auto-wait budget — before returning, so the next command reads the
+destination. `results.navigated` reports it:
+  {\"url\": \"...\", \"status\": 200, \"ready_state\": \"interactive\", \"committed\": true, \"elapsed_ms\": N}
+`committed: false` means the load started but did not land within the budget.
+`navigated` is null when no navigation was announced within ~150 ms of the click
+(a navigation scheduled later by script is not waited for). A destination that is
+Firefox's certificate or network error page fails like `navigate` does
+(error_type \"nav_cert_error\", \"nav_dns_fail\", ...). --no-wait skips this. With
+--with-page the page view does the settling (readiness in meta.page_ready) and
+`navigated` carries only url and committed.
+
+Output: {\"results\": {\"clicked\": true, \"matched\": true, \"reachable\": true, \"obscured_by\": null, \"tag\": \"...\", \"text\": \"...\", \"frame_url\": null, \"navigated\": null}, \"total\": 1, \"meta\": {\"frame_url\": null, ...}}
 `frame_url` is always present (never omitted) — null when the click landed on
 the top-level document, the frame's URL string when it landed inside a frame.
 With --wait-for-network: adds {\"network\": {\"url\": \"...\", \"method\": \"...\", \"status\": N, ...}} to results.
@@ -2500,7 +2513,10 @@ pub enum ThrottleProfileArg {
 #[derive(clap::Args, Clone, Default)]
 pub struct NetworkConditionsArgs {
     /// Throttle the network for this load: slow-3g (~400 kbit/s, 400 ms) or
-    /// fast-3g (~1.6 Mbit/s, 150 ms). Ends when the command exits.
+    /// fast-3g (~1.6 Mbit/s, 150 ms). The command waits for the throttled load
+    /// itself (a heavy page can take 20 s+ on slow-3g — raise --timeout), and
+    /// the throttle ends when the command exits; requests still in flight then
+    /// (after a timeout) finish at roughly the throttled pace.
     #[arg(long, value_enum, value_name = "PROFILE")]
     pub throttle: Option<ThrottleProfileArg>,
     /// Block requests whose URL matches PATTERN for this load (repeatable;

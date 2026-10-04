@@ -1,3 +1,6 @@
+use std::time::{Duration, Instant};
+
+use ff_rdp_core::{ActorErrorKind, ActorId, ProtocolError, WebConsoleActor, sanitize_for_terminal};
 use serde_json::json;
 
 use crate::cli::args::Cli;
@@ -6,8 +9,8 @@ use crate::hints::{HintContext, HintSource};
 use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
-use super::connect_tab::connect_and_get_target;
-use super::js_helpers::{escape_selector, poll_js_condition};
+use super::connect_tab::{ConnectedTab, connect_and_get_target};
+use super::js_helpers::{escape_selector, is_truthy};
 
 pub struct WaitOptions<'a> {
     pub selector: Option<&'a str>,
@@ -82,9 +85,9 @@ pub fn run_core(cli: &Cli, opts: &WaitOptions<'_>) -> Result<serde_json::Value, 
 
     let condition = describe_condition(opts);
 
-    let elapsed_ms = poll_js_condition(
+    let elapsed_ms = poll_across_navigation(
         &mut ctx,
-        &console_actor,
+        console_actor,
         &js,
         opts.wait_timeout,
         "wait condition threw an exception",
@@ -140,6 +143,81 @@ fn build_wait_js(opts: &WaitOptions<'_>) -> Result<String, AppError> {
     }
 }
 
+/// Poll interval for [`poll_across_navigation`] (matches `poll_js_condition`).
+const POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Whether an evaluation error means the document the console actor belonged
+/// to is gone — replaced by a navigation — rather than a real failure.
+fn is_document_gone(err: &ProtocolError) -> bool {
+    matches!(
+        err,
+        ProtocolError::EvalNavigatedDuringEval
+            | ProtocolError::EvalTargetDestroyed { .. }
+            | ProtocolError::ActorError {
+                kind: ActorErrorKind::UnknownActor,
+                ..
+            }
+    )
+}
+
+/// [`poll_js_condition`](super::js_helpers::poll_js_condition), but a
+/// navigation that lands while the wait runs does not end it: the condition
+/// moves on to the new document (dogfooding session 64 #12, where a `run`
+/// playbook's `wait` after a navigating click polled the outgoing document
+/// until it timed out).
+///
+/// Two signals move it: Firefox announcing a navigation on this connection,
+/// and an evaluation failing because the console actor's document is gone.
+/// Either way the target is re-resolved before the next poll. Each
+/// evaluation is guarded on the current document's `innerWindowId`, so one
+/// torn down mid-evaluation fails fast instead of holding the reply until
+/// the deadline.
+fn poll_across_navigation(
+    ctx: &mut ConnectedTab,
+    mut console_actor: ActorId,
+    js: &str,
+    timeout_ms: u64,
+    error_context: &str,
+    timeout_context: &str,
+) -> Result<u64, AppError> {
+    let started = Instant::now();
+    let deadline = started + Duration::from_millis(timeout_ms);
+    loop {
+        let outcome = {
+            let inner_window_id = ctx.target().inner_window_id;
+            let mut guarded = ctx.arm_target_guard(inner_window_id);
+            guarded.transport_mut().with_read_deadline(deadline, |t| {
+                WebConsoleActor::evaluate_js_async(t, &console_actor, js)
+            })
+        };
+        let mut refresh = ctx.take_navigation_started().is_some();
+        match outcome {
+            Ok(result) => {
+                if let Some(exc) = result.exception {
+                    let msg = match exc.message.as_deref() {
+                        Some(m) => format!("{error_context}: {m}"),
+                        None => error_context.to_owned(),
+                    };
+                    return Err(AppError::User(sanitize_for_terminal(&msg).into_owned()));
+                }
+                if is_truthy(&result.result) {
+                    return Ok(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
+                }
+            }
+            Err(ProtocolError::Timeout) => {}
+            Err(e) if is_document_gone(&e) => refresh = true,
+            Err(e) => return Err(AppError::from(e)),
+        }
+        if Instant::now() >= deadline {
+            return Err(AppError::Timeout(timeout_context.to_owned()));
+        }
+        if refresh && let Ok(actor) = ctx.refresh_target_until(deadline) {
+            console_actor = actor;
+        }
+        std::thread::sleep(POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())));
+    }
+}
+
 fn describe_condition(opts: &WaitOptions<'_>) -> String {
     if let Some(sel) = opts.selector {
         format!("selector={sel:?}")
@@ -155,6 +233,30 @@ fn describe_condition(opts: &WaitOptions<'_>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A navigation landing mid-wait surfaces as one of these on the old
+    /// console actor; each moves the wait to the new document rather than
+    /// failing it. Anything else is still an error.
+    #[test]
+    fn document_gone_errors_are_recognised() {
+        assert!(is_document_gone(&ProtocolError::EvalNavigatedDuringEval));
+        assert!(is_document_gone(&ProtocolError::EvalTargetDestroyed {
+            inner_window_id: 7
+        }));
+        assert!(is_document_gone(&ProtocolError::ActorError {
+            actor: "conn0/consoleActor2".to_owned(),
+            kind: ActorErrorKind::UnknownActor,
+            error: "noSuchActor".to_owned(),
+            message: String::new(),
+        }));
+        assert!(!is_document_gone(&ProtocolError::ActorError {
+            actor: "conn0/consoleActor2".to_owned(),
+            kind: ActorErrorKind::WrongState,
+            error: "wrongState".to_owned(),
+            message: String::new(),
+        }));
+        assert!(!is_document_gone(&ProtocolError::Timeout));
+    }
 
     #[test]
     fn build_wait_js_selector() {

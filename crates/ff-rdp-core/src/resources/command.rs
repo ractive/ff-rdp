@@ -32,7 +32,7 @@
 //!
 //! Reference: `devtools/shared/commands/resource/resource-command.js:73-79`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 
@@ -103,6 +103,10 @@ pub struct ResourceCommand {
     /// but we can't send it from inside `dispatch_event` (no transport access),
     /// so we defer to the next `gc()` call.
     pending_unwatch: Vec<ResourceType>,
+    /// Target actors announced by `target-available-form` with
+    /// `isTopLevelTarget: false` — i.e. iframes. Their `document-event`
+    /// resources are not delivered; see [`dispatch_event`](Self::dispatch_event).
+    subframe_targets: HashSet<String>,
 }
 
 impl ResourceCommand {
@@ -114,6 +118,26 @@ impl ResourceCommand {
             subscribers: Vec::new(),
             ref_counts: HashMap::new(),
             pending_unwatch: Vec::new(),
+            subframe_targets: HashSet::new(),
+        }
+    }
+
+    /// Record a `target-available-form` / `target-destroyed-form` packet.
+    ///
+    /// Only subframe (`isTopLevelTarget: false`) targets are tracked: their
+    /// actor ids are what [`dispatch_event`](Self::dispatch_event) matches a
+    /// `document-event` packet's `from` against.
+    fn note_target_form(&mut self, msg_type: &str, event: &Value) {
+        let Some(target) = event.get("target") else {
+            return;
+        };
+        let Some(actor) = target.get("actor").and_then(Value::as_str) else {
+            return;
+        };
+        if msg_type == "target-destroyed-form" {
+            self.subframe_targets.remove(actor);
+        } else if target.get("isTopLevelTarget").and_then(Value::as_bool) == Some(false) {
+            self.subframe_targets.insert(actor.to_owned());
         }
     }
 
@@ -246,7 +270,27 @@ impl ResourceCommand {
             .unwrap_or_default();
 
         let resources: Vec<Resource> = match msg_type {
-            "resources-available-array" => Self::parse_available_resources(event),
+            "target-available-form" | "target-destroyed-form" => {
+                self.note_target_form(msg_type, event);
+                return;
+            }
+            "resources-available-array" => {
+                // A `document-event` describes the lifecycle of the document
+                // owned by the target that sent it. With `watchTargets("frame")`
+                // engaged, iframes are targets too, and an iframe's
+                // `about:blank` reaches `dom-complete` long before a slow
+                // top-level page does — measured under `--throttle slow-3g`
+                // on react.dev, where the navigation wait took an iframe's
+                // `dom-complete` for the page's and reported `complete` at
+                // ~0.5 s while the page stayed `interactive`. Every consumer of
+                // document events waits on the top-level document, so the
+                // bus drops subframe ones here rather than at each consumer.
+                let from_subframe = event
+                    .get("from")
+                    .and_then(Value::as_str)
+                    .is_some_and(|from| self.subframe_targets.contains(from));
+                Self::parse_available_resources(event, from_subframe)
+            }
             "resources-updated-array" => parse_network_resource_updates(event)
                 .into_iter()
                 .map(Resource::NetworkUpdate)
@@ -368,7 +412,10 @@ impl ResourceCommand {
     }
 
     /// Parse a `resources-available-array` event into typed [`Resource`] items.
-    fn parse_available_resources(event: &Value) -> Vec<Resource> {
+    ///
+    /// `from_subframe` drops the packet's `document-event` items (see
+    /// [`dispatch_event`](Self::dispatch_event)); every other type is kept.
+    fn parse_available_resources(event: &Value, from_subframe: bool) -> Vec<Resource> {
         let mut out = Vec::new();
 
         let Some(array) = event.get("array").and_then(Value::as_array) else {
@@ -407,7 +454,7 @@ impl ResourceCommand {
                         out.push(Resource::ErrorMessage(r));
                     }
                 }
-                "document-event" => {
+                "document-event" if !from_subframe => {
                     for item in items {
                         out.push(Resource::DocumentEvent(item.clone()));
                     }
@@ -616,6 +663,62 @@ mod tests {
             1,
             "ref-count unchanged with live subscriber"
         );
+    }
+
+    /// An iframe's `document-event`s must not reach subscribers: they describe
+    /// the iframe's document, and the navigation wait would read its
+    /// `dom-complete` as the page's (dogfooding session 64 #2). The top-level
+    /// target's events, and the iframe's other resource types, still flow.
+    #[test]
+    fn subframe_document_events_are_dropped() {
+        let mut bus = ResourceCommand::new(ActorId::from("watcher1"));
+        let (tx, rx) = mpsc::channel();
+        bus.add_subscriber_direct(
+            vec![ResourceType::DocumentEvent, ResourceType::NetworkEvent],
+            tx,
+        );
+        let top = "conn0.process12//windowGlobalTarget2";
+        let frame = "conn0.process12//windowGlobalTarget20";
+        // Shapes as recorded from Firefox 157 (`target-available-form`
+        // carries the form under `target`).
+        bus.dispatch_event(&json!({
+            "from": "watcher1", "type": "target-available-form",
+            "target": {"actor": top, "isTopLevelTarget": true}
+        }));
+        bus.dispatch_event(&json!({
+            "from": "watcher1", "type": "target-available-form",
+            "target": {"actor": frame, "isTopLevelTarget": false}
+        }));
+        let doc_complete = |from: &str| {
+            json!({
+                "from": from, "type": "resources-available-array",
+                "array": [["document-event", [{"name": "dom-complete", "time": 0}]]]
+            })
+        };
+        bus.dispatch_event(&doc_complete(frame));
+        bus.dispatch_event(&json!({
+            "from": frame, "type": "resources-available-array",
+            "array": [["network-event", [{
+                "actor": "conn0/netEvent1", "method": "GET", "url": "https://x/",
+                "isXHR": false, "cause": {"type": "document"},
+                "startedDateTime": "2026-01-01T00:00:00Z", "timeStamp": 1000.0,
+                "resourceId": 7_u64
+            }]]]
+        }));
+        bus.dispatch_event(&doc_complete(top));
+
+        let events: Vec<Arc<Resource>> = rx.try_iter().collect();
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert!(matches!(events[0].as_ref(), Resource::NetworkEvent(_)));
+        assert!(matches!(events[1].as_ref(), Resource::DocumentEvent(_)));
+
+        // Once destroyed, the actor id is forgotten.
+        bus.dispatch_event(&json!({
+            "from": "watcher1", "type": "target-destroyed-form",
+            "target": {"actor": frame}
+        }));
+        bus.dispatch_event(&doc_complete(frame));
+        assert_eq!(rx.try_iter().count(), 1);
     }
 
     /// Theme D AC: `resources-destroyed-array` is dispatched as
