@@ -1,14 +1,18 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use ff_rdp_core::{ActorId, TabActor, WatcherActor};
+use ff_rdp_core::{
+    ActorId, NetworkResource, NetworkResourceUpdate, TabActor, WatcherActor,
+    parse_network_resource_updates, parse_network_resources,
+};
 use serde_json::json;
 
 use crate::cli::args::Cli;
 use crate::commands::connect_tab::connect_and_get_target;
 use crate::commands::network::{attach_headers, attach_security};
 use crate::commands::network_events::{
-    build_network_entries_with_ids, drain_network_events_timed, merge_updates,
+    NETWORK_IDLE_QUIET_PERIOD, build_network_entries_with_ids, drain_network_events_timed,
+    merge_updates,
 };
 use crate::commands::url_validation::validate_content_navigation_url;
 use crate::error::AppError;
@@ -153,6 +157,24 @@ pub(crate) fn run_with_network(
         None
     };
 
+    // dogfooding-session-64 #13: the drain above stops after 2 s of silence,
+    // and under `--throttle` a parser blocked on a slow script is exactly that
+    // silence — the capture returned at 3.2 s with `ready_state:"interactive"`
+    // and two thirds of the requests missing. Keep collecting until the
+    // document is complete or the `--network-timeout` budget runs out.
+    let capture_deadline = nav_start + Duration::from_millis(network_timeout_ms);
+    let document_complete = extend_until_document_complete(
+        &mut ctx,
+        capture_deadline,
+        cli.timeout,
+        &mut all_resources,
+        &mut all_updates,
+    )?;
+    if !document_complete {
+        // The budget, not the page, ended the capture.
+        timeout_reached = true;
+    }
+
     // iter-138 Theme G/A: capture the main document's status candidates before
     // `merge_updates` consumes `all_updates` by value below. Resolution waits
     // until the committed URL has been evaluated (iter-166).
@@ -171,7 +193,7 @@ pub(crate) fn run_with_network(
     // `network-event` (below) or closes — a later `network --headers` has
     // nothing to ask. So the output controls run here, while the actors are
     // alive, and the detail is fetched for the entries that will be shown.
-    let network_entries = {
+    let mut network_entries = {
         let actor_by_resource_id: HashMap<u64, ActorId> = all_resources
             .iter()
             .map(|r| (r.resource_id, r.actor.clone()))
@@ -191,6 +213,11 @@ pub(crate) fn run_with_network(
             },
         )?
     };
+    // `partial`: the document had not finished loading when the capture
+    // ended, so requests it had yet to issue are missing.
+    if let Some(obj) = network_entries.as_object_mut() {
+        obj.insert("partial".to_owned(), json!(!document_complete));
+    }
 
     // Unwatch to clean up server-side resources — unless `--throttle`/`--block`
     // are in force: unwatching `network-event` would tear them down before the
@@ -400,6 +427,7 @@ pub(crate) fn apply_network_controls(
             timeout_reached,
         )
     };
+    cap_slowest(&mut canonical, NAVIGATE_SLOWEST_TOP);
     if detail.security
         && let Some(obj) = canonical.as_object_mut()
     {
@@ -423,11 +451,131 @@ pub(crate) struct NetworkDetail {
     pub(crate) security: bool,
 }
 
+/// Keep draining `network-event`s until `document.readyState` is `complete`
+/// or `deadline` passes. Returns whether the document completed.
+///
+/// The readyState probe runs every [`NETWORK_IDLE_QUIET_PERIOD`] at most, so a
+/// page that completes without issuing another request is noticed promptly
+/// rather than after the whole budget. Once a probe found the document still
+/// loading, a final idle-bounded drain after it completes picks up the
+/// requests the `load` event triggers.
+fn extend_until_document_complete(
+    ctx: &mut crate::commands::connect_tab::ConnectedTab,
+    deadline: Instant,
+    cli_timeout: u64,
+    resources: &mut Vec<NetworkResource>,
+    updates: &mut Vec<NetworkResourceUpdate>,
+) -> Result<bool, AppError> {
+    let mut extended = false;
+    loop {
+        if ready_state_capturing(ctx, resources, updates) == "complete" {
+            break;
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Ok(false);
+        }
+        extended = true;
+        let slice = left.min(NETWORK_IDLE_QUIET_PERIOD);
+        let drained = drain_network_events_timed(ctx.transport_mut(), slice);
+        restore_timeout(ctx.transport_mut(), cli_timeout);
+        let (r, u, _) = drained.map_err(AppError::from)?;
+        resources.extend(r);
+        updates.extend(u);
+    }
+    if extended {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if !left.is_zero() {
+            let drained = drain_network_events_timed(ctx.transport_mut(), left);
+            restore_timeout(ctx.transport_mut(), cli_timeout);
+            let (r, u, _) = drained.map_err(AppError::from)?;
+            resources.extend(r);
+            updates.extend(u);
+        }
+    }
+    Ok(true)
+}
+
+/// Read `document.readyState` on the current document without losing the
+/// `network-event` frames that arrive during the round trip: `recv_reply_from`
+/// hands sibling-actor packets to the event sink, so a temporary sink collects
+/// them and they are folded into `resources`/`updates`.
+fn ready_state_capturing(
+    ctx: &mut crate::commands::connect_tab::ConnectedTab,
+    resources: &mut Vec<NetworkResource>,
+    updates: &mut Vec<NetworkResourceUpdate>,
+) -> String {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let previous_sink = ctx.transport_mut().swap_event_sink(Some(tx));
+    // The navigation replaced the document; the old console actor is gone.
+    refresh_console_actor(ctx);
+    let console_actor = ctx.target().console_actor.clone();
+    let ready_state = eval_document_ready_state(ctx.transport_mut(), &console_actor);
+    ctx.transport_mut().swap_event_sink(previous_sink);
+    for msg in rx.try_iter() {
+        match msg.get("type").and_then(serde_json::Value::as_str) {
+            Some("resources-available-array") => resources.extend(parse_network_resources(&msg)),
+            Some("resources-updated-array") => {
+                updates.extend(parse_network_resource_updates(&msg));
+            }
+            _ => {}
+        }
+    }
+    ready_state
+}
+
+/// How many requests `navigate --with-network`'s `slowest` list keeps.
+///
+/// `network` keeps 20 because `slowest` is its summary view's only list; here
+/// `entries` already carries the capture (the full one in summary mode), so a
+/// 20-slot `slowest` repeated most of it (dogfooding-session-64 #44: ~11 KB
+/// duplicated on a 20-request page). A short top-N is the at-a-glance part.
+const NAVIGATE_SLOWEST_TOP: usize = 5;
+
+/// Keep the first `top` entries of the (already slowest-first) `slowest` list
+/// and recompute `slowest_truncated` against `total_requests`.
+fn cap_slowest(canonical: &mut serde_json::Value, top: usize) {
+    let total_requests = canonical["total_requests"].as_u64().unwrap_or(0);
+    let Some(obj) = canonical.as_object_mut() else {
+        return;
+    };
+    let Some(slowest) = obj.get_mut("slowest").and_then(|v| v.as_array_mut()) else {
+        return;
+    };
+    slowest.truncate(top);
+    let shown = slowest.len() as u64;
+    obj.insert(
+        "slowest_truncated".to_owned(),
+        json!(total_requests > shown),
+    );
+}
+
 /// Remove the internal `_resource_id` join marker from every entry.
 fn strip_resource_ids(entries: &mut [serde_json::Value]) {
     for entry in entries {
         if let Some(obj) = entry.as_object_mut() {
             obj.remove("_resource_id");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cap_slowest_keeps_top_n_and_flags_truncation() {
+        let slowest: Vec<serde_json::Value> =
+            (0..8).map(|i| json!({"url": format!("u{i}")})).collect();
+        let mut canonical =
+            json!({"total_requests": 8, "slowest": slowest, "slowest_truncated": false});
+        cap_slowest(&mut canonical, 5);
+        assert_eq!(canonical["slowest"].as_array().map(Vec::len), Some(5));
+        assert_eq!(canonical["slowest"][0]["url"], "u0");
+        assert_eq!(canonical["slowest_truncated"], true);
+
+        let mut small = json!({"total_requests": 2, "slowest": [{}, {}]});
+        cap_slowest(&mut small, 5);
+        assert_eq!(small["slowest_truncated"], false);
     }
 }

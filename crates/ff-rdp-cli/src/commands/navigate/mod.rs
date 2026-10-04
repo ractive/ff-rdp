@@ -23,7 +23,7 @@ pub(crate) use readiness::{
     check_real_tab_url_for_neterror, eval_location_href, is_neterror_url,
     wait_for_navigation_commit,
 };
-pub(crate) use status::not_observed_status;
+pub(crate) use status::{DocumentStatusTracker, not_observed_status};
 
 use consent::merge_auto_consent;
 use readiness::{
@@ -45,8 +45,7 @@ use readiness::{
 };
 #[cfg(test)]
 use status::{
-    DocumentStatusTracker, MAX_STATUS_GRACE_MS, canonical_doc_url, extract_document_status,
-    status_grace_budget_ms,
+    MAX_STATUS_GRACE_MS, canonical_doc_url, extract_document_status, status_grace_budget_ms,
 };
 #[cfg(test)]
 use std::sync::{Arc, Mutex};

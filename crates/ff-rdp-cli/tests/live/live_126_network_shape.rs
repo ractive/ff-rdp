@@ -62,12 +62,24 @@ fn assert_canonical_network(json: &serde_json::Value) {
         "results.network.total_requests must be numeric, got: {}",
         network["total_requests"]
     );
+    // dogfooding-session-64 #44: a byte count is an integer, and `slowest`
+    // is a short top-N, not a second copy of `entries`.
     assert!(
-        network["total_transfer_bytes"].is_number(),
-        "total_transfer_bytes must be numeric"
+        network["total_transfer_bytes"].is_u64(),
+        "total_transfer_bytes must be an integer, got: {}",
+        network["total_transfer_bytes"]
     );
     assert!(network["by_cause_type"].is_object());
-    assert!(network["slowest"].is_array());
+    assert!(
+        network["slowest"].as_array().is_some_and(|s| s.len() <= 5),
+        "slowest must hold at most 5 requests, got: {}",
+        network["slowest"]
+    );
+    assert!(
+        network["partial"].is_boolean(),
+        "partial must be bool, got: {}",
+        network["partial"]
+    );
 }
 
 /// The canonical key set on `.results.network`, used for key-by-key parity.

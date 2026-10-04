@@ -11,7 +11,12 @@ use super::connect_tab::connect_and_get_target;
 use super::js_helpers::eval_or_bail;
 
 /// Read all keys or a single key from localStorage or sessionStorage.
-pub fn run(cli: &Cli, storage_type: &str, key: Option<&str>) -> Result<(), AppError> {
+pub fn run(
+    cli: &Cli,
+    storage_type: &str,
+    key: Option<&str>,
+    max_value_chars: usize,
+) -> Result<(), AppError> {
     let (storage_obj, canonical_type) = match storage_type {
         "local" | "localStorage" => ("localStorage", "local"),
         "session" | "sessionStorage" => ("sessionStorage", "session"),
@@ -61,7 +66,13 @@ pub fn run(cli: &Cli, storage_type: &str, key: Option<&str>) -> Result<(), AppEr
             }
             grip => {
                 let value = resolve_string_grip(&mut ctx, grip)?;
-                let envelope = output::envelope(&json!({"key": k, "value": value}), 1, &meta);
+                let mut result = json!({"key": k, "value": value});
+                if let Some((capped, length)) = cap_value(&value, max_value_chars) {
+                    result["value"] = json!(capped);
+                    result["truncated"] = json!(true);
+                    result["length"] = json!(length);
+                }
+                let envelope = output::envelope(&result, 1, &meta);
                 let hint_ctx =
                     HintContext::new(HintSource::Storage).with_storage_type(canonical_type);
                 OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
@@ -87,7 +98,7 @@ pub fn run(cli: &Cli, storage_type: &str, key: Option<&str>) -> Result<(), AppEr
 
         // The JS returned JSON.stringify output — parse it back so the
         // envelope contains a real JSON object, not an escaped string.
-        let storage_map: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
+        let mut storage_map: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
             AppError::Internal(anyhow::anyhow!(
                 "storage result was not valid JSON: {e}: {raw}"
             ))
@@ -95,10 +106,48 @@ pub fn run(cli: &Cli, storage_type: &str, key: Option<&str>) -> Result<(), AppEr
 
         let total = storage_map.as_object().map_or(0, serde_json::Map::len);
 
-        let envelope = output::envelope(&storage_map, total, &meta);
+        let truncated_values = cap_map_values(&mut storage_map, max_value_chars);
+
+        let mut envelope = output::envelope(&storage_map, total, &meta);
+        if !truncated_values.is_empty()
+            && let Some(obj) = envelope.as_object_mut()
+        {
+            obj.insert("truncated_values".to_owned(), json!(truncated_values));
+        }
         let hint_ctx = HintContext::new(HintSource::Storage).with_storage_type(canonical_type);
         OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
     }
+}
+
+/// Cut `value` to `max` characters (not bytes, so a multi-byte character is
+/// never split). Returns the prefix and the original character count when the
+/// value was longer than `max`; `None` when it fits or `max` is 0 (no cap).
+fn cap_value(value: &str, max: usize) -> Option<(&str, usize)> {
+    if max == 0 {
+        return None;
+    }
+    let (cut, _) = value.char_indices().nth(max)?;
+    Some((&value[..cut], value.chars().count()))
+}
+
+/// Apply [`cap_value`] to every string value of the all-keys storage map in
+/// place, returning `{key, length}` for each value that was cut
+/// (dogfooding-session-64 #24: one 1 MB `MediaWikiModuleStore` entry made
+/// `storage localStorage` print 1.05 MB on Wikipedia).
+fn cap_map_values(map: &mut serde_json::Value, max: usize) -> Vec<serde_json::Value> {
+    let mut truncated = Vec::new();
+    let Some(obj) = map.as_object_mut() else {
+        return truncated;
+    };
+    for (k, v) in obj.iter_mut() {
+        let Some(s) = v.as_str() else { continue };
+        if let Some((capped, length)) = cap_value(s, max) {
+            let capped = capped.to_owned();
+            *v = json!(capped);
+            truncated.push(json!({"key": k, "length": length}));
+        }
+    }
+    truncated
 }
 
 /// Resolve a [`Grip`] to a `String`.
@@ -180,6 +229,25 @@ mod tests {
         // The encoded form must not appear raw in JavaScript.
         let js = format!("localStorage.getItem({encoded})");
         assert!(!js.contains(r#"getItem("a"b")"#));
+    }
+
+    #[test]
+    fn cap_value_respects_char_boundaries_and_zero() {
+        assert_eq!(super::cap_value("abcdef", 3), Some(("abc", 6)));
+        assert_eq!(super::cap_value("abc", 3), None);
+        assert_eq!(super::cap_value("abcdef", 0), None);
+        // Multi-byte characters count as one and are never split.
+        assert_eq!(super::cap_value("äöüß", 2), Some(("äö", 4)));
+    }
+
+    #[test]
+    fn cap_map_values_reports_each_cut_key() {
+        let mut map = json!({"small": "ok", "big": "x".repeat(10), "n": 5});
+        let cut = super::cap_map_values(&mut map, 4);
+        assert_eq!(map["small"], "ok");
+        assert_eq!(map["big"], "xxxx");
+        assert_eq!(map["n"], 5);
+        assert_eq!(cut, vec![json!({"key": "big", "length": 10})]);
     }
 
     /// Verify all-keys fixture round-trips through JSON correctly.

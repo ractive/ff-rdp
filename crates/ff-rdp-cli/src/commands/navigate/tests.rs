@@ -1683,6 +1683,36 @@ fn unit_166_prefers_the_committed_url_over_the_requested_one() {
     );
 }
 
+/// dogfooding-session-64 #44: Firefox reports `status: "200"` for a `data:`
+/// document's synthetic request; that is not an HTTP response.
+#[test]
+fn data_url_document_has_no_http_status() {
+    let url = "data:text/html,<p>x";
+    let resources = vec![doc_resource(url, 3)];
+    let updates = vec![status_update(3, "200")];
+    assert_eq!(
+        extract_document_status(&resources, &updates).resolve(url, url),
+        (None, Some(StatusUnknown::NoDocumentRequest))
+    );
+}
+
+/// `reload --wait-idle` (dogfooding-session-64 #19) emits the tracker's
+/// resolution through `status_fields`; the pair keeps the
+/// `status_reason == null` iff `status != null` invariant.
+#[test]
+fn status_fields_mirrors_resolve() {
+    let resources = vec![doc_resource("https://example.com/", 7)];
+    let updates = vec![status_update(7, "200")];
+    let tracker = extract_document_status(&resources, &updates);
+    let found = tracker.status_fields("https://example.com/", "");
+    assert_eq!(found["status"], 200);
+    assert!(found["status_reason"].is_null());
+
+    let missing = tracker.status_fields("https://other.example/", "");
+    assert!(missing["status"].is_null());
+    assert_eq!(missing["status_reason"], "no_document_request");
+}
+
 /// `unit_166_status_null_is_distinguishable` — the AC. A `null` status now
 /// always arrives with a `status_reason` naming which of the three
 /// situations produced it, so a caller can tell "the server sent no
