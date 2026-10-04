@@ -1757,11 +1757,14 @@ pub(crate) fn check_real_tab_url_for_neterror(
         return None;
     };
 
-    // Find the selected tab (or any tab — we just launched a single navigate).
+    // The tab this connection drives (`--tab` may name a background one);
+    // the selected tab only when the descriptor is not listed.
+    let own = ctx.target_tab_actor().clone();
     let tab_url = tabs
-        .into_iter()
-        .find(|t| t.selected)
-        .map(|t| t.url)
+        .iter()
+        .find(|t| t.actor == own)
+        .or_else(|| tabs.iter().find(|t| t.selected))
+        .map(|t| t.url.clone())
         .unwrap_or_default();
 
     if !is_neterror_url(&tab_url) {

@@ -70,6 +70,8 @@ product work that needs design. Keep items to one line — if an item needs more
 - [ ] **gap** `cookies` ignores `--fields`, `--limit` and `--sort` and accepts unknown fields with exit 0 ([[dogfooding-session-64]] #26)
 - [x] **gap** unknown or stale `--ref` fails as a ~3 s generic selector timeout (exit 124) leaking `[data-ffrdp-ref=…]` instead of an immediate ref-specific error ([[dogfooding-session-64]] #27) — fixed: `stale_ref` before the auto-wait, < 100 ms
 - [x] **gap** a plain `click` on a link returns before navigation commits with no signal that one is pending ([[dogfooding-session-64]] #28) (fix/navigate-truthfulness)
+- [ ] **wrong** `click --with-page` settles on the transient cross-process `about:blank` (new innerWindowId) and collects the page view from it; `page_view::NavigationOrigin::confirms` lacks the about:blank rule `click`'s own commit check has — share one origin type (#306 review)
+- [ ] **wrong** navigate's stale-lifecycle filter never judges a replayed outgoing `dom-loading` and compares Firefox's clock with the local one (50 ms slack), so a remote `--host` with clock skew or a replay that includes `dom-loading` defeats it (#306 review)
 - [ ] **gap** `click --ref` on a visually hidden custom radio times out instead of falling back to its `<label>` ([[dogfooding-session-64]] #29)
 - [ ] **gap** `inspect` shows getter/setter descriptors but no values for accessor properties (`window.location.href`) ([[dogfooding-session-64]] #30)
 - [x] **gap** `snapshot --query` searches only the depth-limited tree and gives no hint when depth caused the miss ([[dogfooding-session-64]] #31) — fixed: `--query` walks the whole document

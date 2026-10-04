@@ -246,13 +246,14 @@ pub fn run_core(
         let _ =
             WatcherActor::unwatch_resources(ctx.transport_mut(), watcher_actor, &["network-event"]);
         // The network wait above read every packet itself, latching any
-        // navigation announcement on the way; no extra detection window.
+        // navigation announcement on the way; the window covers one that
+        // arrives after the matched request.
         if own_nav_wait {
             navigated = wait_for_click_navigation(
                 &mut ctx,
                 &origin,
                 wait_timeout_ms,
-                Duration::ZERO,
+                NAV_DETECT_WINDOW,
                 selector,
             )?;
         }
@@ -718,8 +719,8 @@ impl ClickOrigin {
 /// latch was last cleared, listening up to `window` for one to arrive.
 ///
 /// Packets read here are discarded: nothing is subscribed on this
-/// connection while it runs (the `--wait-for-network` path passes a zero
-/// window and relies on the latch its own loop already filled).
+/// connection while it runs (the `--wait-for-network` path calls this only
+/// after its own wait has consumed the network events it needed).
 fn detect_navigation_start(ctx: &mut ConnectedTab, window: Duration) -> Option<String> {
     if let Some(url) = ctx.take_navigation_started() {
         return Some(url);
@@ -766,34 +767,58 @@ fn wait_for_click_navigation(
     let deadline = started + Duration::from_millis(budget_ms);
     let elapsed = |since: Instant| u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX);
     tracing::debug!(%destination, selector, "click: navigation announced");
+    let uncommitted = |outcome: &str| {
+        json!({
+            "url": destination,
+            "status": Value::Null,
+            "ready_state": Value::Null,
+            "committed": false,
+            "outcome": outcome,
+            "elapsed_ms": elapsed(started),
+        })
+    };
 
-    // Commit: the tab's target is a different document.
+    // Commit: the tab's target is a different document. The packets each
+    // `getTarget` round-trip reads past are captured so a `tabNavigated`
+    // `stop` is seen: a load that ends without replacing the document (a
+    // download, a 204, a cancelled `beforeunload`) must not spend the budget.
+    let mut stopped = false;
     let committed = loop {
         let attempt = deadline.min(Instant::now() + NAV_TARGET_ATTEMPT);
-        if ctx.refresh_target_until(attempt).is_ok() {
+        let (tx, rx) = std::sync::mpsc::channel::<Value>();
+        let previous_sink = ctx.transport_mut().swap_event_sink(Some(tx));
+        let refreshed = ctx.refresh_target_until(attempt).is_ok();
+        ctx.transport_mut().swap_event_sink(previous_sink);
+        let saw_stop = rx.try_iter().any(|p| is_navigation_stop(&p));
+        if refreshed {
             let target = ctx.target();
-            tracing::debug!(actor = %target.actor, inner = ?target.inner_window_id, url = ?target.url, origin_inner = ?origin.inner_window_id, origin_url = ?origin.url, "click: commit poll");
+            tracing::debug!(actor = %target.actor, inner = ?target.inner_window_id, url = ?target.url, "click: commit poll");
             if origin.replaced_by(
                 (target.inner_window_id, target.url.as_deref()),
                 &destination,
             ) {
                 break true;
             }
+            // Only a stop seen on an earlier poll counts: the stop of a load
+            // that did replace the document can race this poll's reply.
+            if stopped {
+                break false;
+            }
         }
+        stopped |= saw_stop;
         if Instant::now() >= deadline {
             break false;
         }
         std::thread::sleep(NAV_COMMIT_POLL.min(deadline.saturating_duration_since(Instant::now())));
     };
     if !committed {
-        // The click happened and a load started; it just did not land within
-        // the budget. Say so rather than failing an action that did run.
-        return Ok(json!({
-            "url": destination,
-            "status": Value::Null,
-            "ready_state": Value::Null,
-            "committed": false,
-            "elapsed_ms": elapsed(started),
+        // The click happened and a load started; it did not replace the
+        // document — it ended without one, or did not land within the budget.
+        // Say which rather than failing an action that did run.
+        return Ok(uncommitted(if stopped {
+            "ended_without_document"
+        } else {
+            "timeout"
         }));
     }
     if let Some(err) = super::navigate::check_real_tab_url_for_neterror(ctx, &destination) {
@@ -801,37 +826,61 @@ fn wait_for_click_navigation(
     }
 
     // Parse: past `loading`, so a read straight after sees the document body.
-    let console_actor = ctx.target().console_actor.clone();
-    let ready_state = loop {
-        let state = super::navigate::eval_document_ready_state(ctx.transport_mut(), &console_actor);
-        if state == "interactive" || state == "complete" || Instant::now() >= deadline {
-            break state;
+    // Every evaluation is bounded by the deadline and guarded on the new
+    // document, which a second navigation may tear down without replying.
+    let mut snapshot = Value::Null;
+    loop {
+        if let Some(s) = eval_destination_snapshot(ctx, deadline) {
+            let parsed = s["ready_state"] == "interactive" || s["ready_state"] == "complete";
+            snapshot = s;
+            if parsed {
+                break;
+            }
+        }
+        if Instant::now() >= deadline {
+            break;
         }
         std::thread::sleep(NAV_COMMIT_POLL.min(deadline.saturating_duration_since(Instant::now())));
-    };
-    let href = super::navigate::eval_location_href(ctx.transport_mut(), &console_actor);
-    let status = eval_navigation_status(ctx, &console_actor);
+    }
+    let href = snapshot["href"].as_str().filter(|h| !h.is_empty());
     Ok(json!({
-        "url": if href.is_empty() { destination } else { href },
-        "status": status,
-        "ready_state": if ready_state.is_empty() { Value::Null } else { json!(ready_state) },
+        "url": href.unwrap_or(&destination),
+        "status": snapshot["status"].as_u64().filter(|s| *s != 0),
+        "ready_state": snapshot["ready_state"].as_str(),
         "committed": true,
         "elapsed_ms": elapsed(started),
     }))
 }
 
-/// The committed document's HTTP status, from its `PerformanceNavigationTiming`
-/// entry. `null` when unavailable (`responseStatus` is `0` for documents with
-/// no HTTP response, such as `data:` URLs or a cache-restored page).
-fn eval_navigation_status(ctx: &mut ConnectedTab, console_actor: &ActorId) -> Value {
+/// Whether `packet` is Firefox reporting the end of a top-level load.
+fn is_navigation_stop(packet: &Value) -> bool {
+    packet.get("type").and_then(Value::as_str) == Some("tabNavigated")
+        && packet.get("state").and_then(Value::as_str) == Some("stop")
+}
+
+/// `{ready_state, href, status}` of the current target's document in one
+/// evaluation, bounded by `deadline` and guarded on its `innerWindowId`.
+/// `status` comes from the `PerformanceNavigationTiming` entry (`0` for
+/// documents with no HTTP response). `None` when the evaluation failed.
+fn eval_destination_snapshot(ctx: &mut ConnectedTab, deadline: Instant) -> Option<Value> {
     const JS: &str = "(() => { const n = performance.getEntriesByType('navigation')[0]; \
-                      return n && n.responseStatus ? n.responseStatus : null; })()";
-    match WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, JS) {
-        Ok(r) if r.exception.is_none() => match r.result {
-            Grip::Value(v @ Value::Number(_)) => v,
-            _ => Value::Null,
-        },
-        _ => Value::Null,
+                      return JSON.stringify({ready_state: document.readyState, \
+                      href: location.href, status: n ? n.responseStatus : 0}); })()";
+    let console_actor = ctx.target().console_actor.clone();
+    let inner_window_id = ctx.target().inner_window_id;
+    let mut guarded = ctx.arm_target_guard(inner_window_id);
+    let result = guarded
+        .transport_mut()
+        .with_read_deadline(deadline, |t| {
+            WebConsoleActor::evaluate_js_async(t, &console_actor, JS)
+        })
+        .ok()?;
+    if result.exception.is_some() {
+        return None;
+    }
+    match result.result {
+        Grip::Value(Value::String(s)) => serde_json::from_str(&s).ok(),
+        _ => None,
     }
 }
 

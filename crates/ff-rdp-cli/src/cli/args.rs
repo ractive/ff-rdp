@@ -968,10 +968,13 @@ test decides WHETHER to dispatch; it does not give the events real coordinates.
 
 Navigation: a click that starts a top-level navigation (a link, a form submit,
 a handler assigning location) waits for the new document to commit and parse —
-within the auto-wait budget — before returning, so the next command reads the
+for up to the auto-wait budget again, counted from the click — before
+returning, so the next command reads the
 destination. `results.navigated` reports it:
   {\"url\": \"...\", \"status\": 200, \"ready_state\": \"interactive\", \"committed\": true, \"elapsed_ms\": N}
-`committed: false` means the load started but did not land within the budget.
+`committed: false` means the load started but replaced no document: `outcome`
+is \"ended_without_document\" (a download, a 204, a cancelled unload) or
+\"timeout\" (it did not land within the budget).
 `navigated` is null when no navigation was announced within ~150 ms of the click
 (a navigation scheduled later by script is not waited for). A destination that is
 Firefox's certificate or network error page fails like `navigate` does

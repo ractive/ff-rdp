@@ -20,8 +20,7 @@ mod status;
 
 pub(crate) use network_capture::{NetworkDetail, run_with_network};
 pub(crate) use readiness::{
-    check_real_tab_url_for_neterror, eval_document_ready_state, eval_location_href,
-    wait_for_navigation_commit,
+    check_real_tab_url_for_neterror, eval_location_href, wait_for_navigation_commit,
 };
 pub(crate) use status::not_observed_status;
 
@@ -241,6 +240,11 @@ pub fn run_core(
             nav_start,
         );
         let ci = reclassify_timeout_as_neterror(&mut ctx, url, rs_result)?;
+        // An error page reaches `complete` too: no status is observed on
+        // this route, so check the tab's real URL on success as well.
+        if let Some(nav_err) = check_real_tab_url_for_neterror(&mut ctx, url) {
+            return Err(nav_err);
+        }
         Some(ci)
     } else {
         // Events or Both strategy: subscribe to document-event resources before

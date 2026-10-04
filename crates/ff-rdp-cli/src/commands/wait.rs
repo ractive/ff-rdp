@@ -180,6 +180,18 @@ fn poll_across_navigation(
     error_context: &str,
     timeout_context: &str,
 ) -> Result<u64, AppError> {
+    // A zero budget is the documented single evaluation with no deadline;
+    // a navigation cannot be followed inside it.
+    if timeout_ms == 0 {
+        return super::js_helpers::poll_js_condition(
+            ctx,
+            &console_actor,
+            js,
+            0,
+            error_context,
+            timeout_context,
+        );
+    }
     let started = Instant::now();
     let deadline = started + Duration::from_millis(timeout_ms);
     loop {
@@ -211,10 +223,39 @@ fn poll_across_navigation(
         if Instant::now() >= deadline {
             return Err(AppError::Timeout(timeout_context.to_owned()));
         }
-        if refresh && let Ok(actor) = ctx.refresh_target_until(deadline) {
-            console_actor = actor;
+        if refresh {
+            console_actor = follow_to_new_document(ctx, console_actor, deadline);
         }
         std::thread::sleep(POLL_INTERVAL.min(deadline.saturating_duration_since(Instant::now())));
+    }
+}
+
+/// How long [`follow_to_new_document`] waits for `getTarget` to stop handing
+/// back the outgoing document before polling whatever it has.
+const HANDOVER_BUDGET: Duration = Duration::from_secs(3);
+
+/// Re-resolve the target after a navigation signal, waiting (bounded) for a
+/// document with a different `innerWindowId`: until the new one commits,
+/// `getTarget` keeps returning the outgoing docshell, which may never answer
+/// another evaluation. Returns the console actor to poll next.
+fn follow_to_new_document(ctx: &mut ConnectedTab, current: ActorId, deadline: Instant) -> ActorId {
+    let before = ctx.target().inner_window_id;
+    let until = deadline.min(Instant::now() + HANDOVER_BUDGET);
+    let mut console_actor = current;
+    loop {
+        if let Ok(actor) = ctx.refresh_target_until(until) {
+            console_actor = actor;
+            let now = ctx.target().inner_window_id;
+            if before.is_none() || now.is_none() || now != before {
+                return console_actor;
+            }
+        }
+        if Instant::now() >= until {
+            return console_actor;
+        }
+        std::thread::sleep(
+            Duration::from_millis(50).min(until.saturating_duration_since(Instant::now())),
+        );
     }
 }
 
