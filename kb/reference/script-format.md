@@ -64,10 +64,9 @@ Output is **NDJSON** — one JSON line per step:
 
 ## Recording
 
-The recorder runs at the **CLI level** — no daemon changes required.
-When a recording is active, every successful recordable CLI invocation
-appends a step to the output file.  The file is a valid script that can
-be replayed immediately with `ff-rdp run`.
+The recorder runs at the **CLI level**. When a recording is active, every
+successful recordable CLI invocation appends a step to the output file.  The
+file is a valid script that can be replayed immediately with `ff-rdp run`.
 
 ```sh
 ff-rdp record start session.json     # begin recording to session.json
@@ -108,7 +107,7 @@ inspection commands produce no step in the recording.
 | `type` | `page-text`, `cookies`, `storage` |
 | `wait` | `sources`, `geometry`, `styles`, `computed` |
 | `screenshot` | `responsive`, `a11y` |
-| `eval` | `doctor`, `daemon *` |
+| `eval` | `doctor` |
 | `scroll` | `launch`, `record *`, `inspect` |
 | `reload` | |
 | `back` | |
@@ -149,8 +148,7 @@ Syntax: `{{env.NAME}}`, `{{vars.NAME}}`, `{{steps[N].results.FIELD}}`
 Variables matching `*password*`, `*token*`, `*secret*`, `*key*`, `*passwd*`,
 `*pwd*` are redacted in step output unless `--show-secrets` is passed.
 The `--vars-file PATH` flag loads a dotenv-style `KEY=VALUE` file; values go
-to `{{vars.KEY}}` (not the process environment).  `--env-file` is a deprecated
-alias for `--vars-file`.
+to `{{vars.KEY}}` (not the process environment).
 
 `--dry-run` validates all variable references and reports missing ones
 before executing anything.

@@ -379,60 +379,26 @@ fn screenshot_module_load_failure_in_two_step_protocol_surfaces_clean_message() 
 }
 
 // ---------------------------------------------------------------------------
-// iter-43: --full-page / --viewport-height
+// --viewport-height was removed: it had been refused at runtime since
+// iter-61v, while README and --help still advertised it (dogfooding 64 #32).
 // ---------------------------------------------------------------------------
 
 #[test]
-fn screenshot_full_page_and_viewport_height_conflict() {
-    // Providing both flags is a user error — clap rejects it before connecting.
+fn screenshot_viewport_height_flag_is_gone() {
     let output = std::process::Command::new(ff_rdp_bin())
-        .args(["screenshot", "--full-page", "--viewport-height", "1000"])
+        .args(["screenshot", "--viewport-height", "1000"])
         .output()
         .expect("failed to spawn ff-rdp");
 
     assert!(
         !output.status.success(),
-        "expected failure when both --full-page and --viewport-height are given"
+        "--viewport-height must be rejected as an unknown flag"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("full-page")
-            || stderr.contains("viewport-height")
-            || stderr.contains("cannot be used with"),
-        "expected conflict error, got: {stderr} ({})",
+        stderr.contains("unexpected argument"),
+        "expected clap's unknown-argument error, got: {stderr} ({})",
         support::output_note(&output)
-    );
-}
-
-#[test]
-fn screenshot_viewport_height_flag_returns_error() {
-    // --viewport-height is no longer supported by the snapshot-actor path.
-    // The flag is accepted by clap but returns an error before connecting.
-    let output = std::process::Command::new(ff_rdp_bin())
-        .args([
-            "--host",
-            "127.0.0.1",
-            "--port",
-            "1",
-            "screenshot",
-            "--viewport-height",
-            "2500",
-        ])
-        .output()
-        .expect("failed to spawn ff-rdp");
-
-    assert!(
-        !output.status.success(),
-        "expected failure when --viewport-height is used"
-    );
-    // The unsupported-flag error is emitted as the JSON error envelope on
-    // stdout (iter-98 Theme D removed the duplicate human `error:` stderr line).
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let combined = format!("{stderr}{stdout}");
-    assert!(
-        combined.contains("viewport-height") || combined.contains("not supported"),
-        "expected unsupported error, got: stderr={stderr:?} stdout={stdout:?}"
     );
 }
 

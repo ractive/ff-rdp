@@ -8,41 +8,6 @@ use ff_rdp_core::{
 };
 use serde_json::{Value, json};
 
-/// Drain `resources-available-array` and `resources-updated-array` events from
-/// the transport until a [`ProtocolError::Timeout`] occurs, then return the
-/// collected resources and update entries.
-///
-/// This is the common event-drain used by both the `network` command and the
-/// `navigate --with-network` command.
-pub(crate) fn drain_network_events(
-    transport: &mut RdpTransport,
-) -> Result<(Vec<NetworkResource>, Vec<NetworkResourceUpdate>), ProtocolError> {
-    let mut all_resources = Vec::new();
-    let mut all_updates = Vec::new();
-
-    loop {
-        match transport.recv() {
-            Ok(msg) => {
-                let msg_type = msg.get("type").and_then(Value::as_str).unwrap_or_default();
-
-                match msg_type {
-                    "resources-available-array" => {
-                        all_resources.extend(parse_network_resources(&msg));
-                    }
-                    "resources-updated-array" => {
-                        all_updates.extend(parse_network_resource_updates(&msg));
-                    }
-                    _ => {}
-                }
-            }
-            Err(ProtocolError::Timeout) => break,
-            Err(e) => return Err(e),
-        }
-    }
-
-    Ok((all_resources, all_updates))
-}
-
 /// How long the resource stream must stay silent before
 /// [`drain_network_events_timed`] concludes the page has finished loading.
 ///
@@ -51,7 +16,7 @@ pub(crate) fn drain_network_events(
 /// (fonts, XHR fired from `DOMContentLoaded`) follow the same pattern — and
 /// short enough that a quiet page returns in a couple of seconds rather than
 /// burning the whole `--timeout`.
-const NETWORK_IDLE_QUIET_PERIOD: Duration = Duration::from_secs(2);
+pub(crate) const NETWORK_IDLE_QUIET_PERIOD: Duration = Duration::from_secs(2);
 
 /// Drain network events until the stream goes idle, bounded by `total_timeout`.
 ///
@@ -74,6 +39,31 @@ pub(crate) fn drain_network_events_timed(
     transport: &mut RdpTransport,
     total_timeout: Duration,
 ) -> Result<(Vec<NetworkResource>, Vec<NetworkResourceUpdate>, bool), ProtocolError> {
+    let drain = drain_network_events_until(transport, total_timeout, NETWORK_IDLE_QUIET_PERIOD)?;
+    Ok((drain.resources, drain.updates, drain.last_recv_was_event))
+}
+
+/// What [`drain_network_events_until`] collected, and how the stream looked
+/// when it stopped.
+pub(crate) struct NetworkDrain {
+    pub(crate) resources: Vec<NetworkResource>,
+    pub(crate) updates: Vec<NetworkResourceUpdate>,
+    /// Whether the final read returned a network frame (the legacy
+    /// `timeout_reached` of [`drain_network_events_timed`]).
+    pub(crate) last_recv_was_event: bool,
+    /// How long the stream had been silent when the drain returned; `None`
+    /// when no network frame arrived at all.
+    pub(crate) quiet_for: Option<Duration>,
+}
+
+/// [`drain_network_events_timed`] with a caller-chosen idle cutoff, reporting
+/// how long the stream had been quiet when it stopped — so a caller can tell a
+/// wall clock that cut off a busy stream from an idle stop.
+pub(crate) fn drain_network_events_until(
+    transport: &mut RdpTransport,
+    total_timeout: Duration,
+    idle_cutoff: Duration,
+) -> Result<NetworkDrain, ProtocolError> {
     let start = Instant::now();
     // Poll faster than the quiet period so the idle cutoff has resolution.
     let poll_interval = Duration::from_millis(250);
@@ -100,7 +90,7 @@ pub(crate) fn drain_network_events_timed(
         // is done.  Before the first event there is nothing to be idle about —
         // a slow-to-respond origin must keep the full budget.
         if let Some(last) = last_event_at
-            && last.elapsed() >= NETWORK_IDLE_QUIET_PERIOD
+            && last.elapsed() >= idle_cutoff
         {
             last_recv_was_event = false;
             break;
@@ -132,7 +122,12 @@ pub(crate) fn drain_network_events_timed(
         }
     }
 
-    Ok((all_resources, all_updates, last_recv_was_event))
+    Ok(NetworkDrain {
+        resources: all_resources,
+        updates: all_updates,
+        last_recv_was_event,
+        quiet_for: last_event_at.map(|t| t.elapsed()),
+    })
 }
 
 /// Merge a list of [`NetworkResourceUpdate`] entries by `resource_id`, folding
