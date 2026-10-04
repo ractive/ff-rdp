@@ -20,16 +20,16 @@ mod status;
 
 pub(crate) use network_capture::{NetworkDetail, run_with_network};
 pub(crate) use readiness::{
-    check_real_tab_url_for_neterror, eval_location_href, is_neterror_url,
+    check_real_tab_url_for_neterror, eval_location_href, is_neterror_url, refresh_console_actor,
     wait_for_navigation_commit,
 };
-pub(crate) use status::not_observed_status;
+pub(crate) use status::{DocumentStatusTracker, not_observed_status};
 
 use consent::merge_auto_consent;
 use readiness::{
     ReadinessCheck, ReadyStateProbe, capture_pre_nav_epoch, get_navigation_watcher,
-    reclassify_timeout_as_neterror, refresh_console_actor, run_wait_for_predicates,
-    split_wait_budget, wait_for_doc_complete_retaining_status, wait_for_readystate_complete,
+    reclassify_timeout_as_neterror, run_wait_for_predicates, split_wait_budget,
+    wait_for_doc_complete_retaining_status, wait_for_readystate_complete,
 };
 use status::{FallbackStatusEvidence, StatusUnknown};
 
@@ -45,8 +45,7 @@ use readiness::{
 };
 #[cfg(test)]
 use status::{
-    DocumentStatusTracker, MAX_STATUS_GRACE_MS, canonical_doc_url, extract_document_status,
-    status_grace_budget_ms,
+    MAX_STATUS_GRACE_MS, canonical_doc_url, extract_document_status, status_grace_budget_ms,
 };
 #[cfg(test)]
 use std::sync::{Arc, Mutex};

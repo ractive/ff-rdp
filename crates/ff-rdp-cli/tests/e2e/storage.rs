@@ -60,6 +60,42 @@ fn storage_all_keys_returns_parsed_object() {
     assert_eq!(json["results"]["token"], "abc");
     assert_eq!(json["results"]["theme"], "dark");
     assert_eq!(json["meta"]["storage_type"], "local");
+    assert!(
+        json.get("truncated_values").is_none(),
+        "short values are not capped: {json}"
+    );
+}
+
+/// dogfooding-session-64 #24: `--max-value-chars` caps each value and lists
+/// the cut keys with their original length.
+#[test]
+fn storage_all_keys_caps_long_values() {
+    let server = storage_server("eval_result_storage.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(["storage", "local", "--max-value-chars", "3"].map(str::to_owned));
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        support::output_note(&output)
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+    assert_eq!(json["results"]["token"], "abc");
+    assert_eq!(json["results"]["theme"], "dar");
+    assert_eq!(
+        json["truncated_values"],
+        serde_json::json!([{"key": "theme", "length": 4}])
+    );
 }
 
 #[test]
@@ -127,6 +163,44 @@ fn storage_specific_key_returns_value() {
     assert_eq!(json["total"], 1);
     assert_eq!(json["results"]["key"], "token");
     assert_eq!(json["results"]["value"], "abc123");
+    assert!(json["results"].get("truncated").is_none());
+}
+
+#[test]
+fn storage_specific_key_caps_long_value() {
+    let server = storage_server("eval_result_storage_key.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend(
+        [
+            "storage",
+            "local",
+            "--key",
+            "token",
+            "--max-value-chars",
+            "2",
+        ]
+        .map(str::to_owned),
+    );
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        support::output_note(&output)
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+    assert_eq!(json["results"]["value"], "ab");
+    assert_eq!(json["results"]["truncated"], true);
+    assert_eq!(json["results"]["length"], 6);
 }
 
 #[test]

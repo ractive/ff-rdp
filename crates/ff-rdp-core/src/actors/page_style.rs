@@ -454,13 +454,23 @@ fn parse_box_model_layout(response: &Value) -> Result<BoxModelLayout, ProtocolEr
     })
 }
 
-/// Parse a field that Firefox may send as either a JSON number or a numeric string.
+/// Parse a field that Firefox may send as a JSON number, a numeric string, or
+/// a CSS pixel length.
+///
+/// `getLayout` copies `getComputedStyle(..).getPropertyValue(prop)` verbatim,
+/// so box sides arrive as `"7.03906px"` (`devtools/server/actors/page-style.js`).
+/// A bare `str::parse::<f64>` rejected the unit and every side read as 0.
 fn parse_f64_field(response: &Value, key: &str) -> Option<f64> {
     let v = response.get(key)?;
     if let Some(n) = v.as_f64() {
         return Some(n);
     }
-    v.as_str().and_then(|s| s.parse::<f64>().ok())
+    let s = v.as_str()?.trim();
+    s.strip_suffix("px")
+        .unwrap_or(s)
+        .trim_end()
+        .parse::<f64>()
+        .ok()
 }
 
 #[cfg(test)]
@@ -767,6 +777,36 @@ mod tests {
         let v = json!({"margin-top": "8"});
         let result = parse_f64_field(&v, "margin-top").unwrap();
         assert!((result - 8.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn parse_f64_field_accepts_css_px_length() {
+        let v = json!({"margin-left": "14.0781px", "auto": "auto"});
+        let result = parse_f64_field(&v, "margin-left").unwrap();
+        assert!((result - 14.0781).abs() < 1e-9);
+        assert_eq!(parse_f64_field(&v, "auto"), None);
+    }
+
+    /// Shape recorded from Firefox 157 (`styles .infobox --layout` on
+    /// en.wikipedia.org/wiki/Firefox): every side carries a `px` unit.
+    #[test]
+    fn parse_box_model_layout_px_suffixed_sides() {
+        let response = json!({
+            "width": 309.717, "height": 1386.12, "position": "static",
+            "margin-top": "7.03906px", "margin-right": "0px",
+            "margin-bottom": "7.03906px", "margin-left": "14.0781px",
+            "padding-top": "2.81562px", "padding-right": "2.81562px",
+            "padding-bottom": "2.81562px", "padding-left": "2.81562px",
+            "border-top-width": "1px", "border-right-width": "1px",
+            "border-bottom-width": "1px", "border-left-width": "1px",
+            "box-sizing": "border-box", "display": "table", "autoMargins": {}
+        });
+        let layout = parse_box_model_layout(&response).unwrap();
+        assert!((layout.margin.left - 14.0781).abs() < 1e-9);
+        assert!((layout.margin.top - 7.03906).abs() < 1e-9);
+        assert!((layout.border.top - 1.0).abs() < f64::EPSILON);
+        assert!((layout.padding.top - 2.81562).abs() < 1e-9);
+        assert_eq!(layout.display, "table");
     }
 
     #[test]

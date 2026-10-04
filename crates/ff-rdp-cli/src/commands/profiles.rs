@@ -241,11 +241,15 @@ pub(crate) struct PruneOutcome {
     pub(crate) would_remove: Vec<String>,
     /// Basenames actually removed. Empty on a dry run.
     pub(crate) removed: Vec<String>,
-    /// iter-97 Theme C: basenames removed (or, on a dry run, that *would* be
-    /// removed) despite carrying a live owner-PID marker. Only ever populated
-    /// on the `--all` path — its documented sharp edge — so an operator can
-    /// see which still-running sessions `--all` reclaimed out from under.
+    /// iter-97 Theme C: basenames removed despite carrying a live owner-PID
+    /// marker. Only ever populated on a real `--all` run — its documented
+    /// sharp edge — so an operator can see which still-running sessions
+    /// `--all` reclaimed out from under. Empty on a dry run, which removes
+    /// nothing (dogfooding-session-64 #46: it used to be filled there).
     pub(crate) removed_live: Vec<String>,
+    /// The dry-run counterpart of `removed_live`: live-owner basenames a real
+    /// run would remove. Empty on a real run.
+    pub(crate) would_remove_live: Vec<String>,
     /// iter-242 Theme A: `basename -> owner-liveness label` for every
     /// directory this prune selected, sorted by basename. Populated on both
     /// the dry-run and the real path, and on both the age-gated and `--all`
@@ -307,7 +311,7 @@ pub(crate) fn prune_profiles(
     let owner_liveness = owner_liveness_report(&targets);
 
     if dry_run {
-        let removed_live = targets
+        let would_remove_live = targets
             .iter()
             .filter(|e| e.live_owner)
             .map(|e| e.basename.clone())
@@ -315,7 +319,8 @@ pub(crate) fn prune_profiles(
         return PruneOutcome {
             would_remove: targets.into_iter().map(|e| e.basename).collect(),
             removed: Vec::new(),
-            removed_live,
+            removed_live: Vec::new(),
+            would_remove_live,
             owner_liveness,
             // A dry run removes nothing, so nothing can fail to be removed.
             failed: Vec::new(),
@@ -371,6 +376,7 @@ pub(crate) fn prune_profiles(
         would_remove: Vec::new(),
         removed,
         removed_live,
+        would_remove_live: Vec::new(),
         owner_liveness,
         failed,
     }
@@ -458,10 +464,11 @@ pub fn run_prune(cli: &Cli, older_than: &str, all: bool, dry_run: bool) -> Resul
         "path": root.display().to_string(),
         "would_remove": outcome.would_remove,
         "removed": outcome.removed,
-        // iter-97 Theme C: basenames reclaimed (or, on a dry run, that would
-        // be) despite a live owner-PID marker. Only ever non-empty under
-        // `--all` — the documented no-age-gate escape hatch.
+        // iter-97 Theme C: basenames reclaimed despite a live owner-PID
+        // marker; `would_remove_live` is the dry-run form. Only ever
+        // non-empty under `--all` — the documented no-age-gate escape hatch.
         "removed_live": outcome.removed_live,
+        "would_remove_live": outcome.would_remove_live,
         // iter-242 Theme A: per-selected-directory owner grading
         // ("live" | "unverified" | "unreadable" | "dead" | "unmarked"), so a
         // `removed_live` entry that is unexpectedly absent says *why* in the
@@ -721,6 +728,26 @@ mod tests {
             "only the live-owner dir belongs in removed_live"
         );
         assert!(!live.exists() && !plain.exists(), "both dirs removed");
+    }
+
+    /// dogfooding-session-64 #46: `--all --dry-run` removes nothing, so the
+    /// live-owner dir belongs in `would_remove_live`, never `removed_live`.
+    #[test]
+    fn prune_all_dry_run_reports_would_remove_live() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let live = seed_profile(root.path(), &"c".repeat(16), 0, Duration::from_secs(1));
+        std::fs::write(
+            live.join(crate::util::profile_dir::OWNER_PID_MARKER),
+            format!("{}\n", std::process::id()),
+        )
+        .expect("write live owner marker");
+
+        let outcome = prune_profiles(root.path(), None, true);
+
+        let live_basename = live.file_name().unwrap().to_str().unwrap().to_owned();
+        assert_eq!(outcome.would_remove_live, vec![live_basename]);
+        assert!(outcome.removed_live.is_empty(), "a dry run removes nothing");
+        assert!(live.exists(), "a dry run leaves the dir in place");
     }
 
     /// AC (iter-242 Part A): the transient case pinned end to end — an owner

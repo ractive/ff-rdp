@@ -13,9 +13,10 @@ pub(crate) enum StatusUnknown {
     /// This route never correlated the committed document's request, so no
     /// HTTP status could have been reported no matter what the server sent:
     /// `--no-wait` (returns before any resource can arrive), the
-    /// pure-`readystate` wait strategy (never subscribes to `network-event`),
-    /// and `reload --wait-idle` (streams network events but only counts them,
-    /// against a quiescence deadline rather than a document).
+    /// and the pure-`readystate` wait strategy (never subscribes to
+    /// `network-event`). `reload --wait-idle` was on this list until it began
+    /// feeding its drained events through [`DocumentStatusTracker`]
+    /// (dogfooding-session-64 #19).
     ///
     /// iter-169 removed `back`/`forward`/`reload` from this list — their
     /// commit-wait path now subscribes to `network-event` like `navigate` and
@@ -55,11 +56,19 @@ impl StatusUnknown {
 /// a quiescence deadline — say so with `not_observed` rather than staying
 /// silent.
 pub(crate) fn not_observed_status() -> serde_json::Map<String, Value> {
+    status_fields(None, Some(StatusUnknown::NotObserved))
+}
+
+/// The envelope's `{status, status_reason}` pair from a resolved status.
+fn status_fields(
+    status: Option<u16>,
+    reason: Option<StatusUnknown>,
+) -> serde_json::Map<String, Value> {
     let mut map = serde_json::Map::new();
-    map.insert("status".to_owned(), Value::Null);
+    map.insert("status".to_owned(), status.map_or(Value::Null, Value::from));
     map.insert(
         "status_reason".to_owned(),
-        Value::String(StatusUnknown::NotObserved.as_str().to_owned()),
+        reason.map_or(Value::Null, |r| Value::String(r.as_str().to_owned())),
     );
     map
 }
@@ -90,6 +99,18 @@ pub(crate) fn canonical_doc_url(u: &str) -> String {
             parsed.into()
         },
     )
+}
+
+/// Whether `url` is fetched over HTTP, so a status Firefox reports for it is a
+/// real server response.
+///
+/// Firefox emits a `cause_type == "document"` `network-event` for `data:`
+/// (and `blob:`/`file:`) documents too, with a synthesised `status: "200"`.
+/// Reporting that as the page's HTTP status invented a response nobody sent
+/// (dogfooding-session-64 #44); such documents now resolve to
+/// `no_document_request`, which the help already promises for `data:` URLs.
+fn is_http_url(url: &str) -> bool {
+    url::Url::parse(url).is_ok_and(|u| matches!(u.scheme(), "http" | "https"))
 }
 
 /// Correlates the main document's `network-event` resource with the HTTP status
@@ -132,7 +153,7 @@ impl DocumentStatusTracker {
             url = %res.url,
             "navigate: network-event resource observed"
         );
-        if res.cause_type == "document" {
+        if res.cause_type == "document" && is_http_url(&res.url) {
             self.docs
                 .push((res.resource_id, canonical_doc_url(&res.url)));
         }
@@ -182,6 +203,16 @@ impl DocumentStatusTracker {
             }
         }
         None
+    }
+
+    /// [`Self::resolve`] as the envelope's `{status, status_reason}` pair.
+    pub(crate) fn status_fields(
+        &self,
+        requested_url: &str,
+        committed_url: &str,
+    ) -> serde_json::Map<String, Value> {
+        let (status, reason) = self.resolve(requested_url, committed_url);
+        status_fields(status, reason)
     }
 
     /// The main document's HTTP status, or the reason there isn't one.
@@ -267,6 +298,7 @@ impl FallbackStatusEvidence {
                 }
                 if let (Some(id), Some(url)) =
                     (resource["resourceId"].as_u64(), resource["url"].as_str())
+                    && is_http_url(url)
                 {
                     self.requests.push((id, canonical_doc_url(url)));
                 }

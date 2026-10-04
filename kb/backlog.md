@@ -33,6 +33,7 @@ product work that needs design. Keep items to one line — if an item needs more
 - [x] Per-test `FF_RDP_HOME`/profile dirs leaked under `$TMPDIR` (1,157 in two days); now removed on drop, including after panics (#302)
 - [ ] Firefox leaves `remote-settings-startup-bundle-<n>` in the system temp dir when killed during its startup download; tests confine `TMPDIR`, which Gecko ignores on macOS — needs a launch pref or policy that skips the startup bundle (#302)
 - [ ] `kb/dogfooding/*` session logs still mention `--wait-timeout`; historical, leave or annotate (#291)
+- [ ] `live_record_fixtures::live_page_style_get_layout` fails on FF157 (walker `querySelector h1` returns no node after the reconnect), so `page_style_get_layout_response.json` still holds the old unit-less shape; Firefox now sends `"margin-top": "7.03906px"` — re-record once the recorder works (fix/easy-batch-2)
 
 ## Global skills (edit by hand in `~/.claude/skills/`, shared with other repos)
 
@@ -48,26 +49,26 @@ product work that needs design. Keep items to one line — if an item needs more
 - [x] **lie** `snapshot` at default depth returns 0 refs on HN and react.dev with `meta.truncated:false` and no depth hint ([[dogfooding-session-64]] #4) — fixed: folded nodes list `refs_below`; `truncated`/`depth_truncated` + hint
 - [x] **lie** refs restart at `e1` on every document, so a stale `click --ref e4` silently clicks a different element on the next page; add a per-document epoch ([[dogfooding-session-64]] #5) — fixed: refs numbered from a random per-document base; stale ref → `stale_ref`
 - [x] **lie** one-shot `network` on comparis hangs past `--timeout 3000` (30 s+, 3/3) because beacon traffic never goes quiet ([[dogfooding-session-64]] #6)
-- [ ] **wrong** `styles --layout` reports margin/border/padding all 0 where `getComputedStyle` gives 14px/1px/2.8px ([[dogfooding-session-64]] #7)
+- [x] **wrong** `styles --layout` reports margin/border/padding all 0 where `getComputedStyle` gives 14px/1px/2.8px ([[dogfooding-session-64]] #7) (fix/easy-batch-2: `getLayout` sends `"7.03906px"`; the parser rejected the unit)
 - [ ] **wrong** `cascade` puts the winning declared value (`var(...)`, `22em`) in `computed`, has `stylesheet:null`/`line:1` on every rule, and lists no UA rules ([[dogfooding-session-64]] #8)
 - [ ] **wrong** `a11y contrast` default samples only nav items, `--selector` does not include descendants, and transparent backgrounds give fg = bg ratio 1 ([[dogfooding-session-64]] #9)
 - [ ] **wrong** `responsive h1 --widths 320,768,1024` on comparis reports width 820 at every width while claiming the geometry is accurate ([[dogfooding-session-64]] #10)
 - [x] **wrong** `perf vitals` says Firefox lacks LCP although FF157 supports `largest-contentful-paint` (buffered observer got 71 ms), and pairs `lcp_ms:null` with `lcp_approximate:true` ([[dogfooding-session-64]] #11) (fix/easy-batch-1) — cause: the buffered observer's callback runs on a later task, after the one-shot eval returned; entries are now read with `takeRecords()`, `lcp_source` added, DOM approximation only where `supportedEntryTypes` lacks LCP
 - [x] **wrong** `run`: a `wait`/`assert_url` step after a navigating `click` polls the pre-navigation document and times out ([[dogfooding-session-64]] #12) (fix/navigate-truthfulness)
-- [ ] **wrong** throttled `navigate --with-network` returns after 3.2 s with 44 of ~67 requests and `timeout_reached:false`, not flagged incomplete ([[dogfooding-session-64]] #13)
+- [x] **wrong** throttled `navigate --with-network` returns after 3.2 s with 44 of ~67 requests and `timeout_reached:false`, not flagged incomplete ([[dogfooding-session-64]] #13) (fix/easy-batch-2: capture continues until readyState complete within `--network-timeout`; otherwise `partial:true` + `timeout_reached:true`)
 - [x] **wrong** `console` labels Firefox warnings (entryTypes, cookie, Referrer-Policy, preload) as `level:"error"` ([[dogfooding-session-64]] #14) (fix/easy-batch-1) — pageError `warning`/`info` flags now map to `warn`/`info` (Referrer-Policy "ignoring less restricted" is flagged `info` by Firefox)
 - [ ] **wrong** `scroll text 'Further reading'` scrolls to the first TreeWalker hit (sidebar TOC) instead of the heading, with no match count ([[dogfooding-session-64]] #15)
 - [ ] **wrong** `a11y summary` lists 43 `banner` landmarks on comparis where ARIA scoping allows 2 ([[dogfooding-session-64]] #16)
 - [ ] **wrong** `network --follow` response events lack `status`/`duration_ms`/`transfer_size` for 54 of 168 responses, including the funnel's key POST ([[dogfooding-session-64]] #17)
 - [ ] **wrong** `sources` `actor` ids are per-connection (`conn29` → `conn30`), so no later command can use them ([[dogfooding-session-64]] #18)
-- [ ] **wrong** `reload --wait-idle` reports `status_reason:"not_observed"` alongside `requests_observed:293` ([[dogfooding-session-64]] #19)
+- [x] **wrong** `reload --wait-idle` reports `status_reason:"not_observed"` alongside `requests_observed:293` ([[dogfooding-session-64]] #19) (fix/easy-batch-2: drain feeds the document-status tracker; updates no longer double-count)
 - [ ] **wrong** `--with-page` collects before SPA work settles and, on non-readerable pages, fills its cap with nav links while dropping all form controls ([[dogfooding-session-64]] #20)
 - [x] **wrong** `snapshot` `max_chars` counts compact bytes while stdout is pretty-printed (50 KB budget → 352 KB output) ([[dogfooding-session-64]] #21) — fixed: budget measured on the printed JSON
 - [ ] **wrong** `click` on a disabled control's label returns `clicked:true` with no warning ([[dogfooding-session-64]] #22)
 - [x] **gap** `navigate --auto-consent` / `consent accept` do not handle consentmanager.net (`#cmpbox`, `a.cmpboxbtnyes`) used by comparis ([[dogfooding-session-64]] #23) (fix/easy-batch-1) — any-host native CMP entry `consentmanager`
-- [ ] **gap** `storage localStorage` has no per-value cap and printed 1.05 MB on Wikipedia ([[dogfooding-session-64]] #24)
+- [x] **gap** `storage localStorage` has no per-value cap and printed 1.05 MB on Wikipedia ([[dogfooding-session-64]] #24) (fix/easy-batch-2: `--max-value-chars`, default 2048, `truncated_values`)
 - [ ] **gap** `navigate --block` leaves no `blocked` marker or count on blocked requests, and `--block ''` is silently dropped ([[dogfooding-session-64]] #25)
-- [ ] **gap** `cookies` ignores `--fields`, `--limit` and `--sort` and accepts unknown fields with exit 0 ([[dogfooding-session-64]] #26)
+- [x] **gap** `cookies` ignores `--fields`, `--limit` and `--sort` and accepts unknown fields with exit 0 ([[dogfooding-session-64]] #26) (fix/easy-batch-2)
 - [x] **gap** unknown or stale `--ref` fails as a ~3 s generic selector timeout (exit 124) leaking `[data-ffrdp-ref=…]` instead of an immediate ref-specific error ([[dogfooding-session-64]] #27) — fixed: `stale_ref` before the auto-wait, < 100 ms
 - [x] **gap** a plain `click` on a link returns before navigation commits with no signal that one is pending ([[dogfooding-session-64]] #28) (fix/navigate-truthfulness)
 - [ ] **wrong** `click --with-page` settles on the transient cross-process `about:blank` (new innerWindowId) and collects the page view from it; `page_view::NavigationOrigin::confirms` lacks the about:blank rule `click`'s own commit check has — share one origin type (#306 review)
@@ -87,16 +88,16 @@ product work that needs design. Keep items to one line — if an item needs more
 - [x] **polish** `snapshot --format text` omits `e<N>` refs ([[dogfooding-session-64]] #41) — fixed: `ref=e…` and `refs_below` lines in text mode
 - [ ] **polish** `scroll until` brute-forces an element already in the DOM (79 scrolls, 16 s) and says "not found" on timeout ([[dogfooding-session-64]] #42)
 - [ ] **polish** `page-text --query` joins match windows with no gap marker ([[dogfooding-session-64]] #43)
-- [ ] **polish** `navigate --with-network` duplicates `entries` in `slowest`, emits `total_transfer_bytes` as a float, and reports `status:200` for `data:` URLs ([[dogfooding-session-64]] #44)
+- [x] **polish** `navigate --with-network` duplicates `entries` in `slowest`, emits `total_transfer_bytes` as a float, and reports `status:200` for `data:` URLs ([[dogfooding-session-64]] #44) (fix/easy-batch-2: `slowest` top 5, integer bytes, `data:` → `no_document_request`)
 - [x] **polish** home view says "version unknown" while `doctor` reports FF157, and doctor's tested range 120–150 is stale ([[dogfooding-session-64]] #45) (fix/easy-batch-1) — home uses the device-actor fallback; range now 120–157 (the nightly live sweep's Firefox)
-- [ ] **polish** `profiles prune --all --dry-run` fills `removed_live` instead of a `would_remove` field ([[dogfooding-session-64]] #46)
+- [x] **polish** `profiles prune --all --dry-run` fills `removed_live` instead of a `would_remove` field ([[dogfooding-session-64]] #46) (fix/easy-batch-2: `would_remove_live`)
 - [x] **polish** `--version` still prints 0.3.0; bump before tagging ([[dogfooding-session-64]] #47)
 - [ ] **polish** `click`'s obscured error always suggests `consent accept`, even for fixed FABs or the target's own label svg ([[dogfooding-session-64]] #48)
-- [ ] **polish** `type --ref eN V` rejects positional text without pointing to `--text` ([[dogfooding-session-64]] #49)
+- [x] **polish** `type --ref eN V` rejects positional text without pointing to `--text` ([[dogfooding-session-64]] #49) (fix/easy-batch-2)
 - [ ] **bug** `run` playbook `click` flaked 1/15 with `committed:false, outcome:"timeout"` after 10 s although the page had navigated (session 64 verification N3)
 - [ ] **polish** `run --jq` is ignored when a script executes; it applies only with `--dry-run` (session 64 verification N5)
 - [ ] **polish** `run` has no `page_text` verb ("unknown variant") (session 64 verification N5)
-- [ ] **polish** a never-settling Promise (`eval --timeout 4000 'new Promise(()=>{})'`) exits rc 5, which `eval --help` does not list (session 64 verification N5)
+- [x] **polish** a never-settling Promise (`eval --timeout 4000 'new Promise(()=>{})'`) exits rc 5, which `eval --help` does not list (session 64 verification N5) (fix/easy-batch-2: documented in `eval --help`; no README exit-code table exists)
 - [ ] **polish** `--with-page` on Firefox's error page (`click body --with-page` on `about:certerror`) spends the whole `--timeout` collecting, then reports `page_ready:false` (found in #308)
 
 ## Done

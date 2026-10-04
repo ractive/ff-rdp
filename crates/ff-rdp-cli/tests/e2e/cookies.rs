@@ -201,3 +201,73 @@ fn cookies_filter_by_name_no_match_returns_empty() {
     assert!(results.is_empty(), "expected zero cookies after filter");
     assert_eq!(json["total"], 0);
 }
+
+// ---------------------------------------------------------------------------
+// Output controls: --sort / --limit / --fields (dogfooding-session-64 #26)
+// ---------------------------------------------------------------------------
+
+fn run_cookies(extra: &[&str]) -> std::process::Output {
+    let server = cookies_server("get_store_objects_cookies_response.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.push("cookies".to_owned());
+    args.extend(extra.iter().map(|s| (*s).to_owned()));
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+    handle.join().unwrap();
+    output
+}
+
+#[test]
+fn cookies_honours_sort_limit_and_fields() {
+    let output = run_cookies(&[
+        "--sort",
+        "name",
+        "--desc",
+        "--limit",
+        "1",
+        "--fields",
+        "name,host",
+    ]);
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        support::output_note(&output)
+    );
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+    let results = json["results"].as_array().expect("results array");
+    assert_eq!(results.len(), 1, "--limit 1 keeps one cookie: {json}");
+    // "theme" sorts after "session_id", so it leads in descending order.
+    assert_eq!(results[0]["name"], "theme");
+    let keys: Vec<&str> = results[0]
+        .as_object()
+        .expect("object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(keys, ["name", "host"], "--fields projects: {json}");
+    assert_eq!(json["total"], 2);
+    assert_eq!(json["truncated"], true);
+}
+
+#[test]
+fn cookies_rejects_unknown_field() {
+    let output = run_cookies(&["--fields", "name,bogus"]);
+    assert!(
+        !output.status.success(),
+        "--fields bogus must fail, stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(all.contains("bogus"), "error names the field: {all}");
+}

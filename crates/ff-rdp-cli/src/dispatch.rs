@@ -64,6 +64,23 @@ fn resolve_selector_or_ref(
     }
 }
 
+/// The error for `type --ref <id> <positional>`: --ref replaces the selector,
+/// so the positional is either the text (point at `--text`) or a selector
+/// given twice.
+fn type_ref_positional_error(id: &str, positional: &str, has_text: bool) -> String {
+    if has_text {
+        format!(
+            "--ref {id} already names the element, so the positional {positional:?} is a second \
+             target; drop it: ff-rdp type --ref {id} --text '<text>'"
+        )
+    } else {
+        format!(
+            "with --ref the text goes in --text, not positionally: \
+             ff-rdp type --ref {id} --text {positional:?}"
+        )
+    }
+}
+
 /// The CSS selector for ref `id` (`e<N>`).
 ///
 /// Refs live in the page, not in ff-rdp: the command that hands one out sets
@@ -690,6 +707,13 @@ fn dispatch_inner(
             submit,
             page,
         }) => {
+            if let (Some(id), Some(pos)) = (ref_id.as_deref(), selector_pos.as_deref()) {
+                return Err(AppError::User(type_ref_positional_error(
+                    id,
+                    pos,
+                    text_pos.is_some() || text_flag.is_some(),
+                )));
+            }
             let selector = resolve_selector_or_ref(
                 selector_pos.as_deref(),
                 selector_flag.as_deref(),
@@ -808,9 +832,11 @@ fn dispatch_inner(
             // but is a no-op now that the behavior is the default.
             commands::cookies::run(cli, name.as_deref(), !storage_only)
         }
-        Command::Storage(StorageArgs { storage_type, key }) => {
-            commands::storage::run(cli, storage_type, key.as_deref())
-        }
+        Command::Storage(StorageArgs {
+            storage_type,
+            key,
+            max_value_chars,
+        }) => commands::storage::run(cli, storage_type, key.as_deref(), *max_value_chars),
         Command::Inspect(InspectArgs { expression, depth }) => {
             commands::inspect::run(cli, expression, *depth)
         }

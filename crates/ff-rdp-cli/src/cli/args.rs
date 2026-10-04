@@ -521,7 +521,7 @@ follow-up 'network' call. 'status' is always present, and `null` when there is n
 HTTP status to report — in which case 'status_reason' (also always present, and
 `null` exactly when 'status' is not) says which kind of `null` it is:
   not_observed        this route never subscribed to network events, so no status
-                      could have been seen: --no-wait, or `back`/`forward`/`reload`
+                      could have been seen: --no-wait
   no_document_request the document committed without issuing a request of its own —
                       about:blank, a bfcache restore, a same-document navigation
   no_status_reported  the document's request was identified but Firefox never
@@ -585,8 +585,13 @@ Sourcepoint-gated sites.
 Output: {\"results\": {\"navigated\": \"...\", \"status\": 200|null, \"status_reason\": null|\"not_observed\"|\"no_document_request\"|\"no_status_reported\", \"committed_url\": \"...\", \"ready_state\": \"...\", \"elapsed_ms\": N}, \"total\": 1, \"meta\": {...}}
 
 --with-network output: results.network is ONE canonical object on every path (quiet or busy page, --detail/--jq or default, --all or capped); 'committed_url'/'ready_state'/'status' are also present alongside it (iter-138 — previously dropped, forcing a choice between truthful navigation info and network data):
-  {\"navigated\": \"...\", \"network\": {\"entries\": [...], \"shown\": N, \"total\": N, \"truncated\": bool, \"total_requests\": N, \"total_transfer_bytes\": N, \"by_cause_type\": {...}, \"slowest\": [...], \"timeout_reached\": false}, \"committed_url\": \"...\", \"ready_state\": \"...\", \"status\": 200|null, \"status_reason\": null|\"not_observed\"|\"no_document_request\"|\"no_status_reported\"}
+  {\"navigated\": \"...\", \"network\": {\"entries\": [...], \"shown\": N, \"total\": N, \"truncated\": bool, \"total_requests\": N, \"total_transfer_bytes\": N, \"by_cause_type\": {...}, \"slowest\": [...], \"slowest_truncated\": bool, \"timeout_reached\": false, \"partial\": false}, \"committed_url\": \"...\", \"ready_state\": \"...\", \"status\": 200|null, \"status_reason\": null|\"not_observed\"|\"no_document_request\"|\"no_status_reported\"}
   entries is capped at 20 by default (use --all to expand); summary fields always reflect the FULL capture.
+  slowest holds the 5 longest requests (url/duration_ms/status/transfer_size); total_transfer_bytes is an integer.
+  Capture runs until the document's readyState is 'complete' (then until the network is quiet), bounded by
+  --network-timeout. partial: true means the document was still loading when the budget ran out (requests it
+  had yet to issue are missing); timeout_reached is then true as well.
+  status is null with status_reason \"no_document_request\" for data:/blob:/file: documents — no HTTP response exists.
   --headers adds {\"headers\": {\"request\": [{\"name\": \"...\", \"value\": \"...\"}], \"response\": [...]}} to each shown entry and
   --security adds a per-entry \"security\" object plus network.insecure_requests — the same shapes as `network --headers`/`--security`.
   Both imply the detail view and are fetched before this command's connection closes: Firefox drops a request's headers with
@@ -690,6 +695,9 @@ adds \"promise_rejected\": true. `eval 'Promise.reject(new Error(\"boom\"))'`,
 all report their error this way. `stack` is omitted when the thrown value has
 none. Firefox drops the rejection value of a multi-statement script whose
 completion value is a Promise, so that case reports a generic message.
+A Promise that never settles (or a script that runs past --timeout) exits 5 with
+{\"error\": \"operation timed out after <N>ms (phase: recv)\", \"error_type\": \"Timeout\"}:
+`eval --timeout 2000 'new Promise(()=>{})'` returns after 2 s with exit 5.
 
 A string result is always returned in full. Firefox inlines only the first
 ~1000 characters of a long string and hands back a `longString` grip for the
@@ -1062,14 +1070,22 @@ Output: {\"results\": {\"matched\": true, \"elapsed_ms\": N, \"condition\": \"se
     #[command(
         long_about = "List cookies via the Firefox StorageActor (includes httpOnly, secure, sameSite, etc.).
 
-Output: {\"results\": [{\"name\": \"...\", \"value\": \"...\", \"domain\": \"...\", \"path\": \"...\", \"secure\": true, \"httpOnly\": true}], \"total\": N, \"meta\": {...}}"
+Honours the global --sort, --fields and --limit; an unknown --fields or --sort
+name is an error that lists the available keys.
+
+Output: {\"results\": [{\"name\": \"...\", \"value\": \"...\", \"host\": \"...\", \"path\": \"...\", \"expires\": N|\"Session\", \"size\": N, \"isSecure\": true, \"isHttpOnly\": true, \"sameSite\": \"Lax\", \"hostOnly\": false}], \"total\": N, \"meta\": {...}}"
     )]
     Cookies(CookiesArgs),
     /// Read web storage (localStorage or sessionStorage)
     #[command(long_about = "Read web storage (localStorage or sessionStorage).
 
-Output: {\"results\": [{\"key\": \"...\", \"value\": \"...\"}], \"total\": N, \"meta\": {...}}
-With --key: {\"results\": {\"key\": \"...\", \"value\": \"...\"}, \"total\": 1, \"meta\": {...}}")]
+Values longer than --max-value-chars (default 2048, 0 = no cap) are cut to that
+many characters, so one large cache entry cannot flood the output.
+
+Output: {\"results\": {\"<key>\": \"<value>\", ...}, \"total\": N, \"meta\": {...}}
+  plus \"truncated_values\": [{\"key\": \"...\", \"length\": N}] when any value was capped
+With --key: {\"results\": {\"key\": \"...\", \"value\": \"...\"}, \"total\": 1, \"meta\": {...}}
+  plus \"truncated\": true, \"length\": N in results when the value was capped")]
     Storage(StorageArgs),
     /// Inspect accessibility tree and check WCAG compliance
     #[command(long_about = "Inspect accessibility tree and check WCAG compliance.
@@ -1092,8 +1108,8 @@ where the page landed and what the server said.
 
 `status` is the main document's HTTP status; it is null exactly when
 `status_reason` is not, and `status_reason` names which case it was:
-`not_observed` (--no-wait, or --wait-idle, neither of which correlates a
-document request), `no_document_request` (nothing was fetched — a BFCache
+`not_observed` (--no-wait, which returns before any request is seen),
+`no_document_request` (nothing was fetched — a BFCache
 restore, a data:/about: URL, a same-document navigation), or
 `no_status_reported` (the request was identified but Firefox never reported a
 status for it).
@@ -1101,7 +1117,9 @@ status for it).
 With --wait-idle, the command instead blocks until network activity has been
 idle for --idle-ms (default 500) or the --reload-timeout expires (default
 10000) — a different envelope (`reloaded`/`idle_at_ms`/`requests_observed`)
-geared at network-quiescence rather than commit timing.
+geared at network-quiescence rather than commit timing. `requests_observed`
+counts distinct requests seen during the wait; `status`/`status_reason` follow
+the same rules as above, matched against the reloaded URL.
 
 Pass --hard for a cache-bypassing reload (Firefox `options.force`, the
 protocol equivalent of Cmd-Shift-R / `LoadFlags::BYPASS_CACHE`).  Default
@@ -1125,7 +1143,7 @@ Examples:
 
 Output (plain):    {\"results\": {\"action\": \"reload\", \"committed_url\": \"...\", \"ready_state\": \"complete\", \"elapsed_ms\": N, \"status\": 200|null, \"status_reason\": null|\"not_observed\"|\"no_document_request\"|\"no_status_reported\"[, \"force\": true]}, \"total\": 1, \"meta\": {...}}
 Output (--no-wait): {\"results\": {\"action\": \"reload\", \"status\": null, \"status_reason\": \"not_observed\"[, \"force\": true]}, \"total\": 1, \"meta\": {...}}
-Output (wait-idle): {\"results\": {\"reloaded\": true, \"idle_at_ms\": N, \"requests_observed\": M, \"status\": null, \"status_reason\": \"not_observed\"[, \"force\": true]}, \"total\": 1, \"meta\": {...}}")]
+Output (wait-idle): {\"results\": {\"reloaded\": true, \"idle_at_ms\": N, \"requests_observed\": M, \"status\": 200|null, \"status_reason\": null|\"no_document_request\"|\"no_status_reported\"[, \"force\": true]}, \"total\": 1, \"meta\": {...}}")]
     Reload(ReloadArgs),
     /// Go back in history
     #[command(long_about = "Navigate back in browser history.
@@ -1689,7 +1707,8 @@ pub struct NavigateArgs {
     #[arg(long)]
     pub with_network: bool,
     /// Total time limit for network event collection in milliseconds (--with-network only).
-    /// Collection runs for this duration then returns all captured events.
+    /// Collection ends once the document is complete and the network is quiet, or
+    /// at this limit — then `network.partial` / `network.timeout_reached` are true.
     #[arg(long, default_value_t = 10000)]
     pub network_timeout: u64,
     /// With --with-network: add `headers: {request, response}` (the `network
@@ -2225,10 +2244,13 @@ pub struct ClickArgs {
 }
 
 #[derive(clap::Args)]
-#[command(group(ArgGroup::new("type_target").required(false).multiple(false).args(["selector_pos", "selector_flag", "ref_id"])))]
+#[command(group(ArgGroup::new("type_target").required(false).multiple(false).args(["selector_flag", "ref_id"])))]
 pub struct TypeArgs {
-    /// CSS selector of the input element (positional, or use --selector)
-    #[arg(group = "type_target")]
+    /// CSS selector of the input element (positional, or use --selector).
+    /// Not in the `type_target` group: with --ref, a lone positional is the
+    /// text the caller meant, and dispatch names `--text` instead of clap's
+    /// bare "cannot be used with" (dogfooding-session-64 #49).
+    #[arg(conflicts_with = "selector_flag")]
     pub selector_pos: Option<String>,
     /// Text to type into the element (positional, or use --text)
     pub text_pos: Option<String>,
@@ -2360,6 +2382,11 @@ pub struct StorageArgs {
     /// Get a specific key only
     #[arg(long)]
     pub key: Option<String>,
+    /// Cap each value at this many characters (0 = no cap). A capped value is
+    /// listed in `truncated_values` (all keys) or carries `truncated: true` and
+    /// its original `length` (--key)
+    #[arg(long, value_name = "N", default_value_t = 2048)]
+    pub max_value_chars: usize,
 }
 
 #[derive(clap::Args)]
@@ -3165,7 +3192,8 @@ never removed, regardless of age.
 Pass --all to remove every managed entry regardless of age (mutually exclusive with
 --older-than). --all bypasses the age gate but NOT quietly: a profile whose owner Firefox is
 still alive is still removed (--all is the explicit escape hatch), but each such removal is
-logged as a warning and its basename is listed under `removed_live` in the output. Do not run
+logged as a warning and its basename is listed under `removed_live` in the output
+(`would_remove_live` with --dry-run, which removes nothing). Do not run
 --all while a Firefox launched by ff-rdp is still using one of these profiles.
 `failed` reports, per selected directory, any removal that did NOT happen, with the OS
 error — `{}` when everything selected was removed. This matters most under --all against a
@@ -3197,7 +3225,7 @@ Examples:
   ff-rdp profiles prune --older-than 24h
   ff-rdp profiles prune --all
 
-Output: {\"results\": {\"path\": \"...\", \"would_remove\": [...], \"removed\": [...], \"removed_live\": [...], \"owner_liveness\": {\"<basename>\": \"live|unverified|unreadable|dead|unmarked\"}, \"failed\": {\"<basename>\": \"<os error>\"}, \"dry_run\": bool}, \"total\": N, \"meta\": {...}}"
+Output: {\"results\": {\"path\": \"...\", \"would_remove\": [...], \"removed\": [...], \"removed_live\": [...], \"would_remove_live\": [...], \"owner_liveness\": {\"<basename>\": \"live|unverified|unreadable|dead|unmarked\"}, \"failed\": {\"<basename>\": \"<os error>\"}, \"dry_run\": bool}, \"total\": N, \"meta\": {...}}"
     )]
     Prune {
         /// Only remove entries whose mtime is at least this old. Accepts <N>d, <N>h, <N>m, <N>s,

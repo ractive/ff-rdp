@@ -314,3 +314,26 @@ fn type_text_element_not_found_exits_nonzero() {
         "envelope error should mention element not found: {json}"
     );
 }
+
+/// dogfooding-session-64 #49: `type --ref eN V` names `--text` instead of
+/// clap's bare "cannot be used with". Fails before any connection.
+#[test]
+fn type_ref_with_positional_text_points_at_text_flag() {
+    // Port 9 (discard): nothing should ever connect.
+    let mut args = base_args(9);
+    args.extend(["type", "--ref", "e3", "hello"].map(str::to_owned));
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+    assert!(!output.status.success());
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        all.contains("--text") && all.contains("hello"),
+        "error must point at --text: {all}"
+    );
+}

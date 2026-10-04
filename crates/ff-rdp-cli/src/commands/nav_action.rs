@@ -1,6 +1,8 @@
 use std::time::{Duration, Instant};
 
-use ff_rdp_core::{ProtocolError, TabActor, WatcherActor};
+use ff_rdp_core::{
+    ProtocolError, TabActor, WatcherActor, parse_network_resource_updates, parse_network_resources,
+};
 use serde_json::json;
 
 use crate::cli::args::Cli;
@@ -10,7 +12,9 @@ use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::connect_and_get_target;
-use super::navigate::{eval_location_href, wait_for_navigation_commit};
+use super::navigate::{
+    DocumentStatusTracker, eval_location_href, refresh_console_actor, wait_for_navigation_commit,
+};
 
 /// Which navigation action to perform.
 #[derive(Clone, Copy)]
@@ -191,6 +195,11 @@ pub fn run_reload_wait_idle(
     let mut ctx = connect_and_get_target(cli)?;
     let target_actor = ctx.target().actor.clone();
     let tab_actor = ctx.target_tab_actor().clone();
+    // The URL being reloaded, so the drained `network-event`s can be matched
+    // to the document's own request (dogfooding-session-64 #19). Read before
+    // subscribing: the eval's reply loop would otherwise swallow early events.
+    let console_actor = ctx.target().console_actor.clone();
+    let requested_url = eval_location_href(ctx.transport_mut(), &console_actor);
     let watcher_actor =
         TabActor::get_watcher(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;
 
@@ -204,8 +213,22 @@ pub fn run_reload_wait_idle(
     let reload_packet = build_reload_packet(&target_actor, force);
     send_reload_tolerant(ctx.transport_mut(), &reload_packet)?;
 
-    let (requests_observed, idle_at_ms) =
-        drain_idle_events(ctx.transport_mut(), idle_ms, timeout_ms, cli.timeout)?;
+    let mut tracker = DocumentStatusTracker::observing();
+    let (requests_observed, idle_at_ms) = drain_idle_events(
+        ctx.transport_mut(),
+        idle_ms,
+        timeout_ms,
+        cli.timeout,
+        &mut tracker,
+    )?;
+    // The reload replaces the target, killing the pre-reload console actor:
+    // re-resolve it so a redirect on reload matches the landing document. An
+    // unreadable href still comes back "" and `pick_document` then matches on
+    // the requested URL alone.
+    refresh_console_actor(&mut ctx);
+    let console_actor = ctx.target().console_actor.clone();
+    let committed_url = eval_location_href(ctx.transport_mut(), &console_actor);
+    let status = tracker.status_fields(&requested_url, &committed_url);
 
     // Unwatch to clean up server-side state — unless `--throttle`/`--block`
     // are in force (unwatching tears them down before `--with-page`).
@@ -217,12 +240,27 @@ pub fn run_reload_wait_idle(
         );
     }
 
+    let mut result = json!({
+        "reloaded": true,
+        "idle_at_ms": idle_at_ms,
+        "requests_observed": requests_observed,
+    });
+    if let Some(obj) = result.as_object_mut() {
+        if force {
+            obj.insert("force".to_owned(), json!(true));
+        }
+        // dogfooding-session-64 #19: `--wait-idle` used to emit `not_observed`
+        // here although it had subscribed and counted hundreds of events. The
+        // drain now feeds a `DocumentStatusTracker`, so the pair is the real
+        // document status or a reason (`no_document_request` /
+        // `no_status_reported`) that is true of what was observed.
+        obj.extend(status);
+    }
+
     emit_reload_result(
         &mut ctx,
         cli,
-        requests_observed,
-        idle_at_ms,
-        force,
+        result,
         conditions_applied.as_ref(),
         page_args,
     )
@@ -289,11 +327,18 @@ fn build_reload_packet(target_actor: &ff_rdp_core::ActorId, force: bool) -> serd
 /// Drain network events from `transport` until idle or timeout.
 ///
 /// Returns `(requests_observed, idle_at_ms)`.
+///
+/// `requests_observed` counts resources from `resources-available-array` only:
+/// every request also produces one or more `resources-updated-array` entries,
+/// and counting those too roughly doubled the figure (dogfooding-session-64
+/// #19: 293 on a 148-request page). Both kinds still reset the idle timer and
+/// feed `tracker`, which correlates the document's status.
 fn drain_idle_events(
     transport: &mut ff_rdp_core::RdpTransport,
     idle_ms: u64,
     timeout_ms: u64,
     cli_timeout: u64,
+    tracker: &mut DocumentStatusTracker,
 ) -> Result<(u64, u64), AppError> {
     let poll_interval = Duration::from_millis(100);
     transport
@@ -324,9 +369,16 @@ fn drain_idle_events(
                     .get("type")
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or_default();
-                if msg_type == "resources-available-array" || msg_type == "resources-updated-array"
-                {
+                if msg_type == "resources-available-array" {
                     requests_observed += count_network_events(&msg);
+                    for res in parse_network_resources(&msg) {
+                        tracker.note_resource(&res);
+                    }
+                    last_event_at = Some(Instant::now());
+                } else if msg_type == "resources-updated-array" {
+                    for upd in parse_network_resource_updates(&msg) {
+                        tracker.note_update(&upd);
+                    }
                     last_event_at = Some(Instant::now());
                 }
             }
@@ -366,34 +418,10 @@ fn count_network_events(msg: &serde_json::Value) -> u64 {
 fn emit_reload_result(
     ctx: &mut super::connect_tab::ConnectedTab,
     cli: &Cli,
-    requests_observed: u64,
-    idle_at_ms: u64,
-    force: bool,
+    mut result: serde_json::Value,
     conditions_applied: Option<&super::network_conditions::Applied>,
     page_args: &crate::cli::args::PageViewArgs,
 ) -> Result<(), AppError> {
-    let mut result = if force {
-        json!({
-            "reloaded": true,
-            "idle_at_ms": idle_at_ms,
-            "requests_observed": requests_observed,
-            "force": true,
-        })
-    } else {
-        json!({
-            "reloaded": true,
-            "idle_at_ms": idle_at_ms,
-            "requests_observed": requests_observed,
-        })
-    };
-    // iter-169 Theme B: `--wait-idle` streams network events but only *counts*
-    // them, against a quiescence deadline rather than against the committed
-    // document — so it genuinely cannot report the main document's status.
-    // Say that with `not_observed` instead of leaving the keys off, so
-    // `--jq '.results.status'` behaves the same on every `reload` invocation.
-    if let Some(obj) = result.as_object_mut() {
-        obj.extend(super::navigate::not_observed_status());
-    }
     super::network_conditions::insert_echo(&mut result, conditions_applied);
     // iter-210 Theme A: `--with-page`, collected last (after the idle drain)
     // so `reload --wait-idle --with-page` describes the settled document, not

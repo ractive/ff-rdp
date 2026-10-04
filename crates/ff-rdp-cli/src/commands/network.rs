@@ -911,19 +911,16 @@ pub fn build_network_summary(
 ) -> serde_json::Value {
     let total_requests = entries.len();
 
+    // A byte count is an integer (dogfooding-session-64 #44: it used to
+    // serialise as `1234.0`). `transfer_size` may arrive as a float, so sum
+    // as f64 and round once; negative or non-finite sizes count as 0.
     let total_transfer_bytes: f64 = entries
         .iter()
         .filter_map(|e| e["transfer_size"].as_f64())
+        .filter(|n| n.is_finite() && *n > 0.0)
         .sum();
-
-    // Normalise -0.0 → 0.0: IEEE 754 defines -0.0 == 0.0, so this is safe.
-    // An empty (or all-null) entries slice sums to 0.0 but floating-point
-    // addition can produce negative zero in some edge cases.
-    let total_transfer_bytes = if total_transfer_bytes == 0.0 {
-        0.0_f64
-    } else {
-        total_transfer_bytes
-    };
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let total_transfer_bytes = total_transfer_bytes.round() as u64;
 
     let mut by_cause_type: std::collections::BTreeMap<String, usize> =
         std::collections::BTreeMap::new();
@@ -1531,7 +1528,7 @@ mod tests {
     fn build_network_summary_empty() {
         let s = build_network_summary(&[], false);
         assert_eq!(s["total_requests"], 0);
-        assert_eq!(s["total_transfer_bytes"], 0.0);
+        assert_eq!(s["total_transfer_bytes"], 0);
         assert!(s["slowest"].as_array().unwrap().is_empty());
         assert_eq!(s["timeout_reached"], false);
         // iter-128 Theme A: `hint` is always present (null when nothing to
@@ -1587,7 +1584,8 @@ mod tests {
         ];
         let s = build_network_summary(&entries, false);
         assert_eq!(s["total_requests"], 3);
-        assert_eq!(s["total_transfer_bytes"], 1600.0);
+        assert_eq!(s["total_transfer_bytes"], 1600);
+        assert!(s["total_transfer_bytes"].is_u64(), "bytes are an integer");
         assert_eq!(s["by_cause_type"]["script"], 2);
         assert_eq!(s["by_cause_type"]["img"], 1);
         // Slowest first: c (200ms), a (100ms), b (50ms)
@@ -1809,7 +1807,7 @@ mod tests {
         assert_eq!(obj["truncated"], false);
         // Summary keys ride alongside.
         assert_eq!(obj["total_requests"], 3);
-        assert_eq!(obj["total_transfer_bytes"], 300.0);
+        assert_eq!(obj["total_transfer_bytes"], 300);
         assert!(obj["by_cause_type"].is_object());
         assert!(obj["slowest"].is_array());
         assert_eq!(obj["timeout_reached"], false);
@@ -1827,7 +1825,7 @@ mod tests {
         assert_eq!(obj["total"], 0);
         assert_eq!(obj["truncated"], false);
         assert_eq!(obj["total_requests"], 0);
-        assert_eq!(obj["total_transfer_bytes"], 0.0);
+        assert_eq!(obj["total_transfer_bytes"], 0);
     }
 
     #[test]
@@ -1842,7 +1840,7 @@ mod tests {
         assert_eq!(obj["truncated"], true);
         // total_requests reflects the full capture, never the truncated view.
         assert_eq!(obj["total_requests"], 5);
-        assert_eq!(obj["total_transfer_bytes"], 500.0);
+        assert_eq!(obj["total_transfer_bytes"], 500);
         let hint = obj["hint"].as_str().expect("truncation hint present");
         assert!(hint.contains("--all"), "hint should mention --all: {hint}");
     }

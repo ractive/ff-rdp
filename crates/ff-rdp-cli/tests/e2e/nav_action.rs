@@ -287,7 +287,18 @@ fn reload_wait_idle_observes_network_events() {
         ]
     });
 
-    let server = reload_wait_idle_server(vec![network_event]);
+    // An update for one of the two requests: it must reset the idle timer but
+    // not count as a third request (dogfooding-session-64 #19 — counting
+    // updates roughly doubled `requests_observed`).
+    let update = json!({
+        "type": "resources-updated-array",
+        "from": "server1.conn0.watcher4",
+        "array": [["network-event", [
+            {"resourceId": 1, "resourceUpdates": {"status": "200"}}
+        ]]]
+    });
+
+    let server = reload_wait_idle_server(vec![network_event, update]);
     let port = server.port();
     let handle = std::thread::spawn(move || server.serve_one());
 
@@ -329,8 +340,12 @@ fn reload_wait_idle_observes_network_events() {
     // Should have observed 2 network resources from the batch.
     assert_eq!(
         json["results"]["requests_observed"], 2,
-        "should count 2 network events from the batch"
+        "should count 2 network events from the batch, not the update"
     );
+    // The drain observed traffic, but none of it was a document request, so
+    // `not_observed` (never subscribed) would be false.
+    assert_eq!(json["results"]["status"], serde_json::Value::Null);
+    assert_eq!(json["results"]["status_reason"], "no_document_request");
     // idle_at_ms is present (may be 0 if connection closed immediately)
     assert!(
         !json["results"]["idle_at_ms"].is_null(),

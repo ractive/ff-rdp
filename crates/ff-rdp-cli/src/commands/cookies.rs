@@ -5,6 +5,7 @@ use crate::cli::args::Cli;
 use crate::error::AppError;
 use crate::hints::{HintContext, HintSource};
 use crate::output;
+use crate::output_controls::{OutputControls, SortDir};
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::{ConnectedTab, connect_and_get_target};
@@ -92,8 +93,15 @@ pub fn run(cli: &Cli, name: Option<&str>, include_document_cookie: bool) -> Resu
         results.retain(|c| c.get("name").and_then(Value::as_str) == Some(filter_name));
     }
 
-    let total = results.len();
-    let result_json = json!(results);
+    // --sort / --fields / --limit, validated against the full set before the
+    // cap, as `tabs`/`dom` do (dogfooding-session-64 #26: all three were
+    // silently ignored and `--fields bogus` exited 0).
+    let controls = OutputControls::from_cli(cli, SortDir::Asc);
+    controls.apply_sort(&mut results)?;
+    controls.validate_fields(&results)?;
+    let (limited, total, truncated) = controls.apply_limit(results, None);
+    let shown = limited.len();
+    let result_json = json!(controls.apply_fields(limited));
 
     // If no cookies found, check for a consent banner that may be suppressing them.
     let mut meta = json!({});
@@ -111,7 +119,8 @@ pub fn run(cli: &Cli, name: Option<&str>, include_document_cookie: bool) -> Resu
         m.insert("note".to_string(), json!(note));
     }
 
-    let mut envelope = output::envelope(&result_json, total, &meta);
+    let mut envelope =
+        output::envelope_with_truncation(&result_json, shown, total, truncated, &meta);
     if total == 0
         && let Some(obj) = envelope.as_object_mut()
     {
