@@ -20,7 +20,8 @@ mod status;
 
 pub(crate) use network_capture::{NetworkDetail, run_with_network};
 pub(crate) use readiness::{
-    check_real_tab_url_for_neterror, eval_location_href, wait_for_navigation_commit,
+    check_real_tab_url_for_neterror, eval_location_href, is_neterror_url,
+    wait_for_navigation_commit,
 };
 pub(crate) use status::not_observed_status;
 
@@ -39,8 +40,8 @@ use ff_rdp_core::{NavCause, Resource, ResourceCommand};
 #[cfg(test)]
 use readiness::{
     READINESS_SAMPLE, classify_neterror, epoch_ms_at, error_page_cause, error_page_failed_url,
-    is_neterror_url, is_readystate_fresh, is_stale_lifecycle_event, must_reresolve_href,
-    needs_href_fallback, probe_same_document_commit, scripted_readiness, wait_for_doc_complete,
+    is_readystate_fresh, is_stale_lifecycle_event, must_reresolve_href, needs_href_fallback,
+    probe_same_document_commit, scripted_readiness, wait_for_doc_complete,
 };
 #[cfg(test)]
 use status::{

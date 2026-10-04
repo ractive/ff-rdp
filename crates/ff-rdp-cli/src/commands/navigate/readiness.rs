@@ -1663,11 +1663,17 @@ pub(crate) fn wait_for_navigation_commit(
     };
     // Dogfooding session 64 N2: `back`/`forward`/`reload` landing on an
     // error page (`about:certerror`, `about:neterror`) fail the way `navigate`
-    // does. A timeout is reclassified when the tab shows an error page; a
-    // commit with no observed HTTP status gets the same `listTabs` check
-    // `navigate` runs, because `location.href` and the document-events report
-    // the failed URL, never the error page's own.
-    let commit_info = reclassify_timeout_as_neterror(ctx, requested_url, commit_info)?;
+    // does. A commit with no observed HTTP status gets the same `listTabs`
+    // check `navigate` runs, because `location.href` and the document-events
+    // report the failed URL, never the error page's own. A `reload` timeout
+    // is reclassified when the tab shows an error page; a `back`/`forward`
+    // timeout is not — with no history entry to go to, the tab may simply
+    // still show the error page it started on.
+    let commit_info = if requested_url.is_empty() {
+        commit_info?
+    } else {
+        reclassify_timeout_as_neterror(ctx, requested_url, commit_info)?
+    };
     if commit_info.http_status.is_none() {
         let failed_url = if commit_info.committed_url.is_empty() {
             requested_url
@@ -1814,12 +1820,45 @@ pub(crate) fn check_real_tab_url_for_neterror(
 
 /// The failed URL an `about:neterror` / `about:certerror` page carries in its
 /// `u=` query parameter, percent-decoded.
+///
+/// Not form-decoded: Firefox escapes `u=` path-style, so a literal `+` stays
+/// a `+`, and an unescaped `&` inside it belongs to the URL. The value runs
+/// to the next parameter Firefox appends after it (`&c=`, `&d=`, `&f=`), or
+/// to the end.
 pub(crate) fn error_page_failed_url(error_page_url: &str) -> Option<String> {
-    let parsed = url::Url::parse(error_page_url).ok()?;
-    parsed
-        .query_pairs()
-        .find(|(k, _)| k == "u")
-        .map(|(_, v)| v.into_owned())
+    let query = error_page_url.split_once('?')?.1;
+    let start = if let Some(rest) = query.strip_prefix("u=") {
+        rest
+    } else {
+        query.split_once("&u=")?.1
+    };
+    let end = ["&c=", "&d=", "&f="]
+        .iter()
+        .filter_map(|p| start.find(p))
+        .min()
+        .unwrap_or(start.len());
+    Some(percent_decode(&start[..end]))
+}
+
+/// Decode `%XX` escapes (a malformed escape is kept verbatim); `+` is literal.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && let Some(hex) = s.get(i + 1..i + 3)
+            && hex.bytes().all(|c| c.is_ascii_hexdigit())
+            && let Ok(b) = u8::from_str_radix(hex, 16)
+        {
+            out.push(b);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Map a commit-wait [`AppError::Timeout`] to a neterror-shaped

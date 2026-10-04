@@ -317,6 +317,22 @@ fn live_df64_cert_error_fails_with_page_and_history() {
 
     assert_cert_error(&run(port, &["back"]), bad, "back onto the error page");
     assert_cert_error(&run(port, &["reload"]), bad, "reload on the error page");
+    // A click on the error page that was already showing is not a failed
+    // navigation. A short --timeout: the page view on an error page waits
+    // for a readiness it never reports (backlog), and the click is what
+    // this asserts.
+    let out = Command::new(ff_rdp_bin())
+        .args(["--host", "127.0.0.1", "--port", &port.to_string()])
+        .args(["--timeout", "3000", "click", "body", "--with-page"])
+        .output()
+        .expect("ff-rdp command");
+    assert!(
+        out.status.success(),
+        "click on the error page: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let on_error_page = stdout_json(&out, "click on the error page");
+    assert_eq!(on_error_page["results"]["clicked"], true, "{on_error_page}");
     let ok = run_json(port, &["back"]);
     assert!(
         ok["results"]["committed_url"]

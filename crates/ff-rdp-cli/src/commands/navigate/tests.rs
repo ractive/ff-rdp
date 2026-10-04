@@ -238,6 +238,19 @@ fn error_page_failed_url_decodes_u_param() {
         Some("https://bad.invalid/")
     );
     assert_eq!(error_page_failed_url("about:neterror?e=dnsNotFound"), None);
+    // Path-style escaping: `+` is literal and an unescaped `&` inside the
+    // failed URL belongs to it, up to the next parameter Firefox appends.
+    assert_eq!(
+        error_page_failed_url(
+            "about:certerror?e=nssBadCert&u=https%3A//x.test/?q=a+b&k=1&c=UTF-8&d=%20"
+        )
+        .as_deref(),
+        Some("https://x.test/?q=a+b&k=1")
+    );
+    assert_eq!(
+        error_page_failed_url("about:neterror?u=https%3A//x.test/%zz").as_deref(),
+        Some("https://x.test/%zz")
+    );
 }
 
 /// Dogfooding session 64 #1: the tab URL `listTabs` reported for

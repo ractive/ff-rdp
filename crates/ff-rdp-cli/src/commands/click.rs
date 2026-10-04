@@ -283,13 +283,13 @@ pub fn run_core(
     // a click that navigates must report the DESTINATION page, not the one it
     // left, which is the whole reason the flag exists (see `page_view`).
     if opts.page.with_page {
-        super::page_view::attach(
+        let attached = super::page_view::attach(
             cli,
             &mut ctx,
             &mut result,
             Some(wait_timeout_ms),
             &opts.page,
-        )?;
+        );
         // Dogfooding session 64 N1: a click onto Firefox's certificate or
         // network error page fails like the plain click and `navigate` do.
         // The page view above is where this path settles the navigation, so
@@ -300,11 +300,22 @@ pub fn run_core(
         // for an error document — so it reads the tab's real URL every time
         // (one `listTabs`). The failed URL comes from the error page itself:
         // the settled target can still report a transient `about:blank`.
+        // A click on an error page that was already showing (its "Advanced…"
+        // button) is not a failed navigation: the same document, still
+        // naming the URL the tab was on, is left alone. The check also runs
+        // when collecting failed: an error page explains a page view that
+        // never answered better than the collection timeout does.
         if own_frame_nav_check
             && let Some(err) = super::navigate::check_real_tab_url_for_neterror(&mut ctx, "")
         {
-            return Err(err);
+            let target = ctx.target();
+            let same_document =
+                !origin.replaced_by((target.inner_window_id, target.url.as_deref()), "");
+            if !(same_document && origin.showed_error_for(&err)) {
+                return Err(err);
+            }
         }
+        attached?;
         // The page view settled on whatever document the click produced; if
         // that is a new one, say so (its readiness is `meta.page_ready`).
         let target = ctx.target();
@@ -706,6 +717,18 @@ struct ClickOrigin {
 }
 
 impl ClickOrigin {
+    /// Whether the clicked document was already the error page `err`
+    /// reports: on an error page the target URL is the URL that failed.
+    fn showed_error_for(&self, err: &AppError) -> bool {
+        match err {
+            AppError::Navigation { url, .. } => self
+                .url
+                .as_deref()
+                .is_some_and(|u| u == url || super::navigate::is_neterror_url(u)),
+            _ => false,
+        }
+    }
+
     fn capture(ctx: &ConnectedTab) -> Self {
         Self {
             inner_window_id: ctx.target().inner_window_id,
