@@ -220,3 +220,26 @@ If protection is (re)configured, pick required contexts from the jobs in
 `.github/workflows/ci.yml` that run on `pull_request` — `fmt`, `clippy`, `test`, `discipline`, … —
 never `live-tests`, which no longer runs per PR. Verify with
 `gh api repos/ractive/ff-rdp/branches/main/protection`.
+
+## Releasing
+
+The pipeline is the shared reusable workflow `ractive/release-workflows` (pinned in
+`.github/workflows/release.yml`); fixes to the pipeline itself land in that repo, not here.
+It runs on a **published GitHub release** tagged `vX.Y.Z` and does, in order: version check
+(tag vs `ff-rdp-cli`'s version) → `cargo audit`/`cargo deny` → builds for 7 targets → assets +
+`SHA256SUMS` + attestation → crates.io (`ff-rdp-core` first, then `ff-rdp-cli`) → Homebrew tap →
+Scoop → winget → deb/rpm to Cloudsmith → AUR (`ff-rdp-bin`, `continue-on-error`: read its job
+log explicitly).
+
+1. Make sure `main` is green (`gh run list --limit 3`) and the last nightly live run passed
+   (`gh run list --workflow=live.yml --limit 1`).
+2. Bump the workspace `version` in `Cargo.toml` (and the `ff-rdp-core` dependency requirement
+   in `crates/ff-rdp-cli/Cargo.toml`), `cargo build`, check `ff-rdp --version`; land it as a PR.
+3. Write release notes from `gh pr list --state merged --search "merged:>YYYY-MM-DD"`,
+   grouped Added / Changed / Removed (breaking first). Pre-1.0, removed flags bump the minor.
+4. `gh release create vX.Y.Z --title vX.Y.Z --notes-file notes.md` — this is the trigger.
+5. Watch `gh run list --workflow=release.yml --limit 1` to the end; on a red job read its log
+   before retrying. Then `cargo install --path crates/ff-rdp-cli` and run a short dogfood.
+
+Secrets the pipeline expects are repository secrets: `CARGO_TOKEN`, `HOMEBREW_TAP_TOKEN`,
+`SCOOP_BUCKET_TOKEN`, `WINGET_TOKEN`, `CLOUDSMITH_API_KEY`, `AUR_SSH_PRIVATE_KEY`.
