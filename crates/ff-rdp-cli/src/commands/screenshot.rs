@@ -36,9 +36,6 @@ pub(crate) struct ScreenshotOpts<'a> {
     /// PNG).  The bulk path is a fast path reserved for future use
     /// when Firefox's screenshot actor gains native bulk-frame support.
     pub(crate) bulk: bool,
-    /// `--viewport-height` is accepted for CLI compatibility but is not
-    /// supported by the snapshot-actor path.  Passing it returns an error.
-    pub(crate) viewport_height: Option<u32>,
     /// When set, the resolved output path must be a descendant of this root.
     pub(crate) output_root: Option<&'a std::path::Path>,
     /// `--window-size WxH` (iter-133 Theme B): switch to the batch-capture
@@ -191,19 +188,6 @@ pub fn run_core(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<serde_json::Valu
     }
     if let Some(window_size) = opts.window_size {
         return run_batch_window_size(cli, opts, window_size);
-    }
-
-    if opts.full_page && opts.viewport_height.is_some() {
-        return Err(AppError::User(
-            "screenshot: --full-page and --viewport-height are mutually exclusive".to_owned(),
-        ));
-    }
-    if opts.viewport_height.is_some() {
-        return Err(AppError::User(
-            "screenshot: --viewport-height is not supported; use --full-page or omit the flag \
-             to capture the visible viewport"
-                .to_owned(),
-        ));
     }
 
     let mut ctx = connect_and_get_target(cli)?;

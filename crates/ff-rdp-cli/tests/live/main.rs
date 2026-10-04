@@ -121,6 +121,7 @@ mod live_navigate_default_fast;
 mod live_navigate_readiness;
 mod live_navigate_real_site;
 mod live_network_headers;
+mod live_network_timeout_wall;
 mod live_oneway;
 mod live_perf_audit_lcp_unavailable;
 mod live_perf_vitals_headless;

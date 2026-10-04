@@ -120,7 +120,7 @@ COMMAND REFERENCE:
     ff-rdp storage local|session [--key KEY]
 
   Screenshot & debug:
-    ff-rdp screenshot [-o PATH | --base64] [--full-page | --viewport-height PX]
+    ff-rdp screenshot [-o PATH | --base64] [--full-page | --window-size WxH]
     ff-rdp inspect <JS_EXPRESSION> [--depth N]
     ff-rdp sources [--filter URL | --pattern REGEX]
 
@@ -777,9 +777,13 @@ Output: {\"results\": [{\"level\": \"...\", \"message\": \"...\", \"source\": \"
 
 Every ff-rdp command opens its own connection, and Firefox's watcher reports
 the requests made while that connection is subscribed. A one-shot `network`
-therefore arms a watcher, collects for a short window and reports what it saw —
-requests that finished before it connected are not in it. Pick the capture mode
-that matches the question:
+therefore arms a watcher, collects until the traffic has gone quiet for 2 s
+(half of --timeout, if that is shorter) after the first request or --timeout
+runs out, whichever comes first, and reports what it saw — requests
+that finished before it connected are not in it. --timeout is a hard wall for
+the whole command: on a page that never goes quiet (analytics beacons) the
+result carries what arrived in time and `timeout_reached: true`. Pick the
+capture mode that matches the question:
 
   1. A page load:      ff-rdp navigate <url> --with-network
                        subscribes before navigating; results.network has every
@@ -855,9 +859,10 @@ Output: {\"results\": [{\"url\": \"...\", \"duration_ms\": N, \"transfer_size\":
 
 By default the screenshot is captured at the current viewport size over the
 live RDP session. Use --full-page to capture the entire scrollable document
-(up to document.scrollingElement.scrollHeight) or --viewport-height N for an
-explicit override. NOTE: headless `window.resizeTo()` is a silent no-op —
-it does not change what a plain `screenshot` captures.
+(up to document.scrollingElement.scrollHeight). There is no flag to resize the
+live viewport — no RDP actor sizes it, and headless `window.resizeTo()` is a
+silent no-op; set the window size at `launch --window-size`, or use
+--window-size below.
 
 --window-size WxH (iter-133) switches to a different capture mode entirely:
 a one-shot `firefox --headless --window-size --screenshot` subprocess in a
@@ -868,7 +873,7 @@ re-navigates the current tab's URL from scratch: cookies/localStorage/session
 state from the live tab are NOT carried over. No density knob here —
 `layout.css.devPixelsPerPx` was tested against this exact capture path and
 found to have zero effect on the output raster (Firefox 153.0.3). Mutually
-exclusive with --full-page/--viewport-height.
+exclusive with --full-page.
 
 --color-scheme dark|light simulates `prefers-color-scheme`, and --media print
 simulates the print medium (`@media print` rules apply; --media screen is the
@@ -2064,11 +2069,8 @@ pub struct ScreenshotArgs {
     #[arg(long, conflicts_with = "output")]
     pub base64: bool,
     /// Capture the entire scrollable page (document.scrollingElement.scrollHeight)
-    #[arg(long, conflicts_with = "viewport_height")]
+    #[arg(long)]
     pub full_page: bool,
-    /// Capture at this explicit height (pixels) instead of the viewport height
-    #[arg(long, value_name = "PX", conflicts_with = "full_page")]
-    pub viewport_height: Option<u32>,
     /// Restrict output to paths under this directory (rejects path traversal)
     #[arg(long, value_name = "DIR")]
     pub output_root: Option<std::path::PathBuf>,
@@ -2091,7 +2093,7 @@ pub struct ScreenshotArgs {
     /// session state from the live tab are NOT carried over. No density knob:
     /// `layout.css.devPixelsPerPx` was tested against this exact capture path
     /// and found to have zero effect on the output raster (Firefox 153.0.3).
-    #[arg(long, value_name = "WxH", conflicts_with_all = ["full_page", "viewport_height"])]
+    #[arg(long, value_name = "WxH", conflicts_with = "full_page")]
     pub window_size: Option<String>,
     /// Simulate `prefers-color-scheme` for this capture only (ends when the
     /// command exits).

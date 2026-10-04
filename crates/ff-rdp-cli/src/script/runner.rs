@@ -1299,7 +1299,6 @@ fn execute_screenshot(step: &ScreenshotStep, cli: &Cli) -> Result<Value, AppErro
         base64_mode: step.base64,
         full_page: step.full_page,
         bulk: false,
-        viewport_height: None,
         output_root: None,
         window_size: None,
         color_scheme: None,
