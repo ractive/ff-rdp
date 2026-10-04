@@ -27,6 +27,8 @@ investigate a historical flake.
 
 ## Log
 
+- 2026-10-04 (night): **v0.4.0 released** from `fc6330b1` — https://github.com/ractive/ff-rdp/releases/tag/v0.4.0, pipeline https://github.com/ractive/ff-rdp/actions/runs/37229772393. crates.io, Homebrew, Scoop, Cloudsmith and AUR (first push) succeeded; `winget` failed: `gh repo sync ractive/winget-pkgs` needs the `workflow` scope on `WINGET_TOKEN` (upstream commits touch workflows) — regenerate the token, then `gh run rerun 37229772393 --failed`. Installed 0.4.0 smoke (launch/navigate/page-text/screenshot/network --follow) green.
+
 - 2026-10-04 (evening): verification gaps closed (#308); easy batches #312 (console levels, perf probes/LCP, EPIPE, doctor/home, `--replace` hint, consentmanager CMP) and #313 (`styles --layout` px parsing, cookies/storage controls, reload idle, network shape, throttled capture `partial`, prune dry-run, type hint, eval rc 5). Agents: `rust-developer`/`rust-release-engineer` replaced by `ff-rdp-implementer` + `/release` skill (#309–#311). Backlog 49 → 35 open. `main` 5c1ed2fb is the v0.4.0 candidate; next: `/release`.
 
 - 2026-10-04: dogfooding session 64 ([[dogfooding-session-64]], 3 agents, 49 issues, PR #303) → pre-release fix round: #304 snapshot refs past depth cut / per-document ref blocks + `stale_ref` / eval rejected promises; #305 `network --timeout` hard wall, `--viewport-height` removed, six nonexistent skill flags fixed, version 0.4.0; #306 `nav_cert_error` for about:certerror, `--throttle` readiness no longer taken from iframe targets, `click` waits for the navigation it starts and reports `navigated{}`. Independent re-check of the seven items pending; release v0.4.0 after it.
