@@ -109,9 +109,14 @@ pub enum AppError {
     /// - `Timeout`       → 10
     /// - `ContentBlocked`→ 11
     /// - `Unknown`       → 12
+    ///
+    /// `firefox_error` is Firefox's own code for the failure when the error
+    /// page exposes one (e.g. `SEC_ERROR_EXPIRED_CERTIFICATE` from
+    /// `about:certerror`); it lands in the envelope as `firefox_error`.
     Navigation {
         cause: ff_rdp_core::NavCause,
         url: String,
+        firefox_error: Option<String>,
     },
     /// Bulk-frame announcement exceeded the configured `--max-frame-mb` cap —
     /// exit 78 (`EX_CONFIG` in BSD sysexits, "configuration error" — the
@@ -306,6 +311,20 @@ impl AppError {
             })
         };
 
+        // A failed navigation names the URL it failed on, and Firefox's own
+        // error code when the error page exposed one, as fields a script can
+        // branch on without parsing `error`.
+        if let Self::Navigation {
+            url, firefox_error, ..
+        } = self
+            && let Some(obj) = json.as_object_mut()
+        {
+            obj.insert("url".to_owned(), serde_json::json!(url));
+            if let Some(code) = firefox_error {
+                obj.insert("firefox_error".to_owned(), serde_json::json!(code));
+            }
+        }
+
         // iter-160 Theme A: merge `Unsupported`'s structured details in flat,
         // never overwriting `error`/`error_type`/`context`.
         if let Self::Unsupported {
@@ -389,11 +408,22 @@ impl fmt::Display for AppError {
                      hint: retry the command; ff-rdp will reconnect to the new target."
                 )
             }
-            Self::Navigation { cause, url } => {
+            Self::Navigation {
+                cause,
+                url,
+                firefox_error,
+            } => {
+                let code = firefox_error
+                    .as_deref()
+                    .map_or_else(String::new, |c| format!(" ({c})"));
+                let hint = if matches!(cause, ff_rdp_core::NavCause::CertError) {
+                    "the tab is showing Firefox's certificate error page, not the site"
+                } else {
+                    "check the URL, DNS, or network connectivity"
+                };
                 write!(
                     f,
-                    "navigate: navigation to '{url}' failed: {cause}\n\
-                     hint: check the URL, DNS, or network connectivity"
+                    "navigate: navigation to '{url}' failed: {cause}{code}\nhint: {hint}"
                 )
             }
             Self::RdpBulkOversize { announced, max } => {
@@ -443,7 +473,11 @@ impl From<ff_rdp_core::RdpError> for AppError {
             ff_rdp_core::RdpError::ActorDestroyed { actor } => Self::RdpActorDestroyed {
                 actor: actor.to_string(),
             },
-            ff_rdp_core::RdpError::Navigation { cause, url } => Self::Navigation { cause, url },
+            ff_rdp_core::RdpError::Navigation { cause, url } => Self::Navigation {
+                cause,
+                url,
+                firefox_error: None,
+            },
             ff_rdp_core::RdpError::Spec { reason } => {
                 Self::User(format!("spec violation: {reason}"))
             }
@@ -576,6 +610,34 @@ impl From<ff_rdp_core::ProtocolError> for AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Dogfooding session 64 #1: a certificate failure names the URL and
+    /// Firefox's own code as fields, and says what the tab is showing.
+    #[test]
+    fn navigation_error_envelope_names_url_and_firefox_code() {
+        let err = AppError::Navigation {
+            cause: ff_rdp_core::NavCause::CertError,
+            url: "https://expired.badssl.com/".to_owned(),
+            firefox_error: Some("SEC_ERROR_EXPIRED_CERTIFICATE".to_owned()),
+        };
+        let json = err.to_error_json();
+        assert_eq!(json["error_type"], "nav_cert_error");
+        assert_eq!(json["url"], "https://expired.badssl.com/");
+        assert_eq!(json["firefox_error"], "SEC_ERROR_EXPIRED_CERTIFICATE");
+        let msg = json["error"].as_str().unwrap_or_default();
+        assert!(msg.contains("(SEC_ERROR_EXPIRED_CERTIFICATE)"), "{msg}");
+        assert!(msg.contains("certificate error page"), "{msg}");
+        assert_eq!(err.exit_code(), 8);
+
+        let dns = AppError::Navigation {
+            cause: ff_rdp_core::NavCause::DnsFail,
+            url: "https://x.invalid/".to_owned(),
+            firefox_error: None,
+        }
+        .to_error_json();
+        assert_eq!(dns["url"], "https://x.invalid/");
+        assert!(dns.get("firefox_error").is_none(), "{dns}");
+    }
 
     // ── with_timeout_hint (iter-220 Theme C) ────────────────────────────────
 
@@ -891,6 +953,7 @@ mod tests {
                 AppError::Navigation {
                     cause: NavCause::DnsFail,
                     url: "u".to_owned(),
+                    firefox_error: None,
                 },
                 7,
                 "nav_dns_fail",
@@ -899,6 +962,7 @@ mod tests {
                 AppError::Navigation {
                     cause: NavCause::CertError,
                     url: "u".to_owned(),
+                    firefox_error: None,
                 },
                 8,
                 "nav_cert_error",
@@ -907,6 +971,7 @@ mod tests {
                 AppError::Navigation {
                     cause: NavCause::ConnReset,
                     url: "u".to_owned(),
+                    firefox_error: None,
                 },
                 9,
                 "nav_conn_reset",
@@ -915,6 +980,7 @@ mod tests {
                 AppError::Navigation {
                     cause: NavCause::Timeout,
                     url: "u".to_owned(),
+                    firefox_error: None,
                 },
                 10,
                 "nav_timeout",
@@ -923,6 +989,7 @@ mod tests {
                 AppError::Navigation {
                     cause: NavCause::ContentBlocked,
                     url: "u".to_owned(),
+                    firefox_error: None,
                 },
                 11,
                 "nav_content_blocked",
@@ -931,6 +998,7 @@ mod tests {
                 AppError::Navigation {
                     cause: NavCause::Unknown("x".to_owned()),
                     url: "u".to_owned(),
+                    firefox_error: None,
                 },
                 12,
                 "nav_unknown",

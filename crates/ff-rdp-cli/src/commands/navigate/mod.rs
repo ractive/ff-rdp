@@ -19,15 +19,16 @@ mod readiness;
 mod status;
 
 pub(crate) use network_capture::{NetworkDetail, run_with_network};
-pub(crate) use readiness::{eval_location_href, wait_for_navigation_commit};
+pub(crate) use readiness::{
+    check_real_tab_url_for_neterror, eval_location_href, wait_for_navigation_commit,
+};
 pub(crate) use status::not_observed_status;
 
 use consent::merge_auto_consent;
 use readiness::{
-    ReadinessCheck, ReadyStateProbe, capture_pre_nav_epoch, check_real_tab_url_for_neterror,
-    get_navigation_watcher, reclassify_timeout_as_neterror, refresh_console_actor,
-    run_wait_for_predicates, split_wait_budget, wait_for_doc_complete_retaining_status,
-    wait_for_readystate_complete,
+    ReadinessCheck, ReadyStateProbe, capture_pre_nav_epoch, get_navigation_watcher,
+    reclassify_timeout_as_neterror, refresh_console_actor, run_wait_for_predicates,
+    split_wait_budget, wait_for_doc_complete_retaining_status, wait_for_readystate_complete,
 };
 use status::{FallbackStatusEvidence, StatusUnknown};
 
@@ -37,8 +38,9 @@ use status::{FallbackStatusEvidence, StatusUnknown};
 use ff_rdp_core::{NavCause, Resource, ResourceCommand};
 #[cfg(test)]
 use readiness::{
-    READINESS_SAMPLE, classify_neterror, is_neterror_url, is_readystate_fresh, must_reresolve_href,
-    needs_href_fallback, probe_same_document_commit, scripted_readiness, wait_for_doc_complete,
+    READINESS_SAMPLE, classify_neterror, epoch_ms_at, error_page_cause, is_neterror_url,
+    is_readystate_fresh, is_stale_lifecycle_event, must_reresolve_href, needs_href_fallback,
+    probe_same_document_commit, scripted_readiness, wait_for_doc_complete,
 };
 #[cfg(test)]
 use status::{
@@ -238,6 +240,11 @@ pub fn run_core(
             nav_start,
         );
         let ci = reclassify_timeout_as_neterror(&mut ctx, url, rs_result)?;
+        // An error page reaches `complete` too: no status is observed on
+        // this route, so check the tab's real URL on success as well.
+        if let Some(nav_err) = check_real_tab_url_for_neterror(&mut ctx, url) {
+            return Err(nav_err);
+        }
         Some(ci)
     } else {
         // Events or Both strategy: subscribe to document-event resources before

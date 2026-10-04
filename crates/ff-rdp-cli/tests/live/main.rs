@@ -112,6 +112,7 @@ mod live_console_printf;
 mod live_cookies;
 mod live_cookies_set_cookie_header;
 mod live_cross_actor;
+mod live_df64_navigation_truth;
 mod live_dom_include_style;
 mod live_dom_stats_perf_audit_parity;
 mod live_emulation;

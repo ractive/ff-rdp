@@ -45,7 +45,7 @@ use std::path::{Path, PathBuf};
 /// Hosts the live suite is allowed to depend on, each with what is asserted
 /// about it. Adding a host here is a deliberate act: it accepts that a sweep
 /// can now be reddened by someone else's outage.
-const DECLARED_HOSTS: [(&str, &str); 7] = [
+const DECLARED_HOSTS: [(&str, &str); 8] = [
     (
         "news.ycombinator.com",
         "live_61r_eval: strict-CSP page for `eval`; asserts document.title exactly, \
@@ -77,6 +77,11 @@ const DECLARED_HOSTS: [(&str, &str); 7] = [
     (
         "www.bbc.com",
         "live_144: a real page for session-hygiene assertions; no content assertions",
+    ),
+    (
+        "expired.badssl.com",
+        "live_df64_navigation_truth: an expired certificate; asserts the `nav_cert_error` \
+         envelope and `SEC_ERROR_EXPIRED_CERTIFICATE` (sites-gated)",
     ),
 ];
 

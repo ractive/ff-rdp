@@ -159,6 +159,11 @@ pub fn run_core(
         }
     }
 
+    // The document the click runs against, and a cleared navigation latch, so
+    // only an announcement that arrives from here on counts as this click's.
+    let origin = ClickOrigin::capture(&ctx);
+    let _ = ctx.take_navigation_started();
+
     // Perform the click using the chosen dispatch mode. `frame_url` is
     // `None` when the click landed on the top-level document, `Some(url)`
     // when it landed inside a frame (either via `--frame` or the
@@ -181,6 +186,28 @@ pub fn run_core(
     // top-frame path, never omitted, so `--jq '.results.frame_url'` never
     // throws regardless of which path served the click.
     click_json["frame_url"] = json!(frame_url);
+
+    // Dogfooding session 64 #28/#12: a click that starts a top-level
+    // navigation waits for the new document before returning, so the next
+    // command reads the destination instead of the page it left. With
+    // `--wait-for-network` the network wait below reads the wire itself, so
+    // this runs after it, from the latch alone.
+    let mut console_actor = console_actor;
+    // `--with-page` settles a navigation itself (iter-220: commit, then a
+    // readiness check reported as `page_ready`) and needs the latch this
+    // would consume, so it keeps that path; `navigated` is filled in after.
+    let own_nav_wait = !opts.no_wait && frame_url.is_none() && !opts.page.with_page;
+    let mut navigated = Value::Null;
+    if own_nav_wait && wait_for_network.is_none() {
+        navigated = wait_for_click_navigation(
+            &mut ctx,
+            &origin,
+            wait_timeout_ms,
+            NAV_DETECT_WINDOW,
+            selector,
+        )?;
+        console_actor = ctx.target().console_actor.clone();
+    }
 
     // C2: --settle (network + DOM idle).
     let settle_method = if opts.settle {
@@ -218,10 +245,23 @@ pub fn run_core(
     if let Some(ref watcher_actor) = watcher_sub {
         let _ =
             WatcherActor::unwatch_resources(ctx.transport_mut(), watcher_actor, &["network-event"]);
+        // The network wait above read every packet itself, latching any
+        // navigation announcement on the way; the window covers one that
+        // arrives after the matched request.
+        if own_nav_wait {
+            navigated = wait_for_click_navigation(
+                &mut ctx,
+                &origin,
+                wait_timeout_ms,
+                NAV_DETECT_WINDOW,
+                selector,
+            )?;
+        }
     }
 
     // Build the output.
     let mut result = click_json;
+    result["navigated"] = navigated;
     if let Some(net) = network_result {
         result["network"] = net;
     }
@@ -249,6 +289,18 @@ pub fn run_core(
             Some(wait_timeout_ms),
             &opts.page,
         )?;
+        // The page view settled on whatever document the click produced; if
+        // that is a new one, say so (its readiness is `meta.page_ready`).
+        let target = ctx.target();
+        if origin.replaced_by((target.inner_window_id, target.url.as_deref()), "") {
+            result["navigated"] = json!({
+                "url": target.url,
+                "status": Value::Null,
+                "ready_state": Value::Null,
+                "committed": true,
+                "elapsed_ms": Value::Null,
+            });
+        }
     }
 
     Ok(result)
@@ -614,6 +666,224 @@ fn click_in_scanned_frame(
     )))
 }
 
+/// How long a plain `click` listens for a navigation announcement once the
+/// click itself has returned. A link's default action, a form submission and
+/// a synchronous `location` assignment in a handler all start the load inside
+/// the click's own event dispatch, and Firefox announces it
+/// (`tabNavigated`/`willNavigate`) within milliseconds — usually before the
+/// click's eval reply, so this window is rarely spent. A navigation a script
+/// schedules later (a `setTimeout`) is not covered.
+const NAV_DETECT_WINDOW: Duration = Duration::from_millis(150);
+
+/// Poll interval while waiting for the destination document to replace the
+/// one the click ran against.
+const NAV_COMMIT_POLL: Duration = Duration::from_millis(50);
+
+/// Upper bound on a single `getTarget` round-trip inside the commit wait, so
+/// one unanswered request cannot spend the whole budget.
+const NAV_TARGET_ATTEMPT: Duration = Duration::from_secs(2);
+
+/// Identity of the document a click ran against.
+struct ClickOrigin {
+    inner_window_id: Option<u64>,
+    url: Option<String>,
+}
+
+impl ClickOrigin {
+    fn capture(ctx: &ConnectedTab) -> Self {
+        Self {
+            inner_window_id: ctx.target().inner_window_id,
+            url: ctx.target().url.clone(),
+        }
+    }
+
+    /// Whether `current` (the freshly resolved target) is a different
+    /// document from this origin: a new `innerWindowId`, or — when Firefox
+    /// omits the id — the announced destination URL replacing the old one.
+    fn replaced_by(&self, current: (Option<u64>, Option<&str>), destination: &str) -> bool {
+        let (inner_window_id, url) = current;
+        // A cross-process load passes through a transient `about:blank`
+        // document of its own (measured on an HN → HN item click): a new
+        // `innerWindowId`, but not the destination.
+        if url == Some("about:blank") && destination != "about:blank" {
+            return false;
+        }
+        matches!((self.inner_window_id, inner_window_id), (Some(old), Some(new)) if old != new)
+            || (!destination.is_empty()
+                && self.url.as_deref() != Some(destination)
+                && url == Some(destination))
+    }
+}
+
+/// Return the destination of a top-level navigation announced since the
+/// latch was last cleared, listening up to `window` for one to arrive.
+///
+/// Packets read here are discarded: nothing is subscribed on this
+/// connection while it runs (the `--wait-for-network` path calls this only
+/// after its own wait has consumed the network events it needed).
+fn detect_navigation_start(ctx: &mut ConnectedTab, window: Duration) -> Option<String> {
+    if let Some(url) = ctx.take_navigation_started() {
+        return Some(url);
+    }
+    if window.is_zero() {
+        return None;
+    }
+    let deadline = Instant::now() + window;
+    ctx.transport_mut()
+        .with_read_deadline(deadline, |t| {
+            loop {
+                match t.recv() {
+                    Ok(_) => {
+                        if let Some(url) = t.take_navigation_started() {
+                            return Ok(Some(url));
+                        }
+                    }
+                    Err(_) => return Ok(None),
+                }
+            }
+        })
+        .ok()
+        .flatten()
+}
+
+/// After a top-level click: when the click started a navigation, wait (within
+/// `budget_ms`) for the destination document to commit and parse, and report
+/// it as `{url, status, ready_state, committed, elapsed_ms}`. `null` when no
+/// navigation was announced.
+///
+/// A destination that turns out to be Firefox's certificate or network error
+/// page is an error, as it is for `navigate`.
+fn wait_for_click_navigation(
+    ctx: &mut ConnectedTab,
+    origin: &ClickOrigin,
+    budget_ms: u64,
+    detect_window: Duration,
+    selector: &str,
+) -> Result<Value, AppError> {
+    let started = Instant::now();
+    let Some(destination) = detect_navigation_start(ctx, detect_window) else {
+        return Ok(Value::Null);
+    };
+    let deadline = started + Duration::from_millis(budget_ms);
+    let elapsed = |since: Instant| u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX);
+    tracing::debug!(%destination, selector, "click: navigation announced");
+    let uncommitted = |outcome: &str| {
+        json!({
+            "url": destination,
+            "status": Value::Null,
+            "ready_state": Value::Null,
+            "committed": false,
+            "outcome": outcome,
+            "elapsed_ms": elapsed(started),
+        })
+    };
+
+    // Commit: the tab's target is a different document. The packets each
+    // `getTarget` round-trip reads past are captured so a `tabNavigated`
+    // `stop` is seen: a load that ends without replacing the document (a
+    // download, a 204, a cancelled `beforeunload`) must not spend the budget.
+    let mut stopped = false;
+    let committed = loop {
+        let attempt = deadline.min(Instant::now() + NAV_TARGET_ATTEMPT);
+        let (tx, rx) = std::sync::mpsc::channel::<Value>();
+        let previous_sink = ctx.transport_mut().swap_event_sink(Some(tx));
+        let refreshed = ctx.refresh_target_until(attempt).is_ok();
+        ctx.transport_mut().swap_event_sink(previous_sink);
+        let saw_stop = rx.try_iter().any(|p| is_navigation_stop(&p));
+        if refreshed {
+            let target = ctx.target();
+            tracing::debug!(actor = %target.actor, inner = ?target.inner_window_id, url = ?target.url, "click: commit poll");
+            if origin.replaced_by(
+                (target.inner_window_id, target.url.as_deref()),
+                &destination,
+            ) {
+                break true;
+            }
+            // Only a stop seen on an earlier poll counts: the stop of a load
+            // that did replace the document can race this poll's reply.
+            if stopped {
+                break false;
+            }
+        }
+        stopped |= saw_stop;
+        if Instant::now() >= deadline {
+            break false;
+        }
+        std::thread::sleep(NAV_COMMIT_POLL.min(deadline.saturating_duration_since(Instant::now())));
+    };
+    if !committed {
+        // The click happened and a load started; it did not replace the
+        // document — it ended without one, or did not land within the budget.
+        // Say which rather than failing an action that did run.
+        return Ok(uncommitted(if stopped {
+            "ended_without_document"
+        } else {
+            "timeout"
+        }));
+    }
+    if let Some(err) = super::navigate::check_real_tab_url_for_neterror(ctx, &destination) {
+        return Err(err);
+    }
+
+    // Parse: past `loading`, so a read straight after sees the document body.
+    // Every evaluation is bounded by the deadline and guarded on the new
+    // document, which a second navigation may tear down without replying.
+    let mut snapshot = Value::Null;
+    loop {
+        if let Some(s) = eval_destination_snapshot(ctx, deadline) {
+            let parsed = s["ready_state"] == "interactive" || s["ready_state"] == "complete";
+            snapshot = s;
+            if parsed {
+                break;
+            }
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(NAV_COMMIT_POLL.min(deadline.saturating_duration_since(Instant::now())));
+    }
+    let href = snapshot["href"].as_str().filter(|h| !h.is_empty());
+    Ok(json!({
+        "url": href.unwrap_or(&destination),
+        "status": snapshot["status"].as_u64().filter(|s| *s != 0),
+        "ready_state": snapshot["ready_state"].as_str(),
+        "committed": true,
+        "elapsed_ms": elapsed(started),
+    }))
+}
+
+/// Whether `packet` is Firefox reporting the end of a top-level load.
+fn is_navigation_stop(packet: &Value) -> bool {
+    packet.get("type").and_then(Value::as_str) == Some("tabNavigated")
+        && packet.get("state").and_then(Value::as_str) == Some("stop")
+}
+
+/// `{ready_state, href, status}` of the current target's document in one
+/// evaluation, bounded by `deadline` and guarded on its `innerWindowId`.
+/// `status` comes from the `PerformanceNavigationTiming` entry (`0` for
+/// documents with no HTTP response). `None` when the evaluation failed.
+fn eval_destination_snapshot(ctx: &mut ConnectedTab, deadline: Instant) -> Option<Value> {
+    const JS: &str = "(() => { const n = performance.getEntriesByType('navigation')[0]; \
+                      return JSON.stringify({ready_state: document.readyState, \
+                      href: location.href, status: n ? n.responseStatus : 0}); })()";
+    let console_actor = ctx.target().console_actor.clone();
+    let inner_window_id = ctx.target().inner_window_id;
+    let mut guarded = ctx.arm_target_guard(inner_window_id);
+    let result = guarded
+        .transport_mut()
+        .with_read_deadline(deadline, |t| {
+            WebConsoleActor::evaluate_js_async(t, &console_actor, JS)
+        })
+        .ok()?;
+    if result.exception.is_some() {
+        return None;
+    }
+    match result.result {
+        Grip::Value(Value::String(s)) => serde_json::from_str(&s).ok(),
+        _ => None,
+    }
+}
+
 /// Wait for a resolved network request matching `pattern`.
 ///
 /// The watcher subscription was set up before the click. We read the event
@@ -921,6 +1191,42 @@ mod tests {
     fn unit_160_reachable_click_produces_no_error() {
         let result = json!({"clicked": true, "matched": true, "reachable": true});
         assert!(unreachable_click_error("#t", &result).is_none());
+    }
+
+    // ── dogfooding session 64 #28: a navigating click waits for its commit ──
+
+    fn origin(inner: Option<u64>, url: &str) -> ClickOrigin {
+        ClickOrigin {
+            inner_window_id: inner,
+            url: Some(url.to_owned()),
+        }
+    }
+
+    /// Measured on an HN → HN item click: `getTarget` keeps handing back the
+    /// outgoing document (same `innerWindowId`) for a few polls, then a
+    /// transient `about:blank` with a new id, then the destination.
+    #[test]
+    fn commit_is_a_new_document_that_is_not_the_transient_blank() {
+        let from = origin(Some(1), "https://news.ycombinator.com/");
+        let dest = "https://news.ycombinator.com/item?id=1";
+        assert!(!from.replaced_by((Some(1), Some("https://news.ycombinator.com/")), dest));
+        assert!(!from.replaced_by((Some(160), Some("about:blank")), dest));
+        assert!(from.replaced_by((Some(2), Some(dest)), dest));
+        // A new document at an unannounced URL (a redirect) still counts.
+        assert!(from.replaced_by((Some(3), Some("https://example.com/")), dest));
+    }
+
+    /// Without an `innerWindowId` the destination URL is the only proof.
+    #[test]
+    fn commit_without_inner_window_id_needs_the_destination_url() {
+        let from = origin(None, "https://a.test/");
+        assert!(!from.replaced_by((None, Some("https://a.test/")), "https://a.test/b"));
+        assert!(from.replaced_by((None, Some("https://a.test/b")), "https://a.test/b"));
+        // A reload to the same URL cannot be proven by URL alone.
+        assert!(!from.replaced_by((None, Some("https://a.test/")), "https://a.test/"));
+        // An explicit navigation to about:blank is not mistaken for the
+        // transient one.
+        assert!(from.replaced_by((Some(9), Some("about:blank")), "about:blank"));
     }
 
     #[test]
