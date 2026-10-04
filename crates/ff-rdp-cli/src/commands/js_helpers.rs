@@ -107,7 +107,8 @@ pub(crate) fn escape_selector(selector: &str) -> String {
 /// `--ref e<N>` resolves to `[data-ffrdp-ref="e<N>"]`
 /// (`crate::dispatch::ref_selector`), so a ref is usable from any later
 /// connection for as long as the document lives. A navigation replaces the
-/// document and every ref with it.
+/// document and every ref with it; [`check_ref_alive`] then reports the ref
+/// as `stale_ref`.
 pub(crate) const REF_ATTR: &str = "data-ffrdp-ref";
 
 /// Source of a JS function `__ffrdpStampRef(el)` that returns `el`'s ref,
@@ -119,6 +120,15 @@ pub(crate) const REF_ATTR: &str = "data-ffrdp-ref";
 /// missing (a fresh document, or an evaluation realm that does not share the
 /// page's expandos) it restarts above the highest ref already in the document,
 /// so two calls can never hand out the same ref for different elements.
+///
+/// A document's first ref starts at a random block of 1000
+/// (`e<k>001` with `k` in 100..=999), not at `e1`. Refs used to restart at
+/// `e1` on every document, so a ref taken before a navigation matched a
+/// *different* element on the next page and `click --ref` clicked it
+/// silently (dogfooding session 64 #5). With a per-document base a stale ref
+/// matches nothing (a collision needs the same block: about 1 in 900), and
+/// [`check_ref_alive`] reports it as `stale_ref` at once. The base is read
+/// back from the refs already in the page, so no process state is needed.
 ///
 /// A page that clones a stamped node (carousels, list templating) copies the
 /// attribute too; the first element an enumeration meets keeps the ref and any
@@ -145,6 +155,10 @@ pub(crate) const STAMP_REF_JS_FN: &str = r"
         var v = parseInt(String(prior[i].getAttribute(ATTR)).slice(1), 10);
         if (v > n) n = v;
       }
+      if (n === 0) {
+        n = (100 + Math.floor(Math.random() * 900)) * 1000;
+        try { window.__ffrdp_ref_base = n; } catch (e) { /* the DOM scan in ref_status_js covers it */ }
+      }
     }
     n += 1;
     try { window.__ffrdp_refs = n; } catch (e) { /* frozen window: the scan above covers it */ }
@@ -154,6 +168,133 @@ pub(crate) const STAMP_REF_JS_FN: &str = r"
     return id;
   }
 ";
+
+/// The ref id (`e<N>`) inside a selector built by
+/// `crate::dispatch::ref_selector`, or `None` for any other selector.
+pub(crate) fn ref_id_in_selector(selector: &str) -> Option<&str> {
+    let id = selector
+        .strip_prefix('[')?
+        .strip_prefix(REF_ATTR)?
+        .strip_prefix("=\"")?
+        .strip_suffix("\"]")?;
+    let digits = id.strip_prefix('e')?;
+    (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())).then_some(id)
+}
+
+/// Why a ref matched nothing, as far as the page can tell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StaleRef {
+    /// The ref's number was never handed out in this document: the page
+    /// navigated (or the ref came from another tab).
+    Navigated,
+    /// The ref belongs to this document but its element is gone: the page
+    /// re-rendered or removed it.
+    Removed,
+    /// No evidence either way (the check could not run).
+    Unknown,
+}
+
+/// The `stale_ref` error for ref `id` — exit 1, `error_type: "stale_ref"`,
+/// with `ref` and `reason` in the envelope.
+pub(crate) fn stale_ref_error(id: &str, why: StaleRef) -> AppError {
+    let (reason, message) = match why {
+        StaleRef::Navigated => (
+            "navigated",
+            format!(
+                "ref {id} is not on this page: the page navigated since this ref was taken; \
+                 run snapshot again"
+            ),
+        ),
+        StaleRef::Removed => (
+            "removed",
+            format!(
+                "ref {id} is gone: the page re-rendered or removed its element since this ref \
+                 was taken; run snapshot again"
+            ),
+        ),
+        StaleRef::Unknown => (
+            "unknown",
+            format!(
+                "ref {id} matches no element: the page navigated or re-rendered since this ref \
+                 was taken; run snapshot again"
+            ),
+        ),
+    };
+    AppError::Unsupported {
+        error_type: "stale_ref",
+        message,
+        details: Some(serde_json::json!({ "ref": id, "reason": reason })),
+    }
+}
+
+/// JS that returns `null` when ref `id` is on the page, else `"navigated"` or
+/// `"removed"` (see [`StaleRef`]). `id` must already be validated as `e<N>`.
+///
+/// The document's issued range comes from the window expandos the stamping
+/// function keeps (`__ffrdp_ref_base`, `__ffrdp_refs`), so a removed element
+/// with the highest ref is still "removed"; when the expandos are not visible
+/// in this realm it falls back to the range of refs still in the DOM.
+fn ref_status_js(id: &str) -> String {
+    format!(
+        r#"(function() {{
+  if (document.querySelector('[{REF_ATTR}="{id}"]')) return null;
+  var num = parseInt('{id}'.slice(1), 10);
+  var base = window.__ffrdp_ref_base, issued = window.__ffrdp_refs;
+  if (typeof base === 'number' && typeof issued === 'number') {{
+    return num > base && num <= issued ? 'removed' : 'navigated';
+  }}
+  var all = document.querySelectorAll('[{REF_ATTR}]');
+  var lo = Infinity, hi = 0;
+  for (var i = 0; i < all.length; i++) {{
+    var v = parseInt(String(all[i].getAttribute('{REF_ATTR}')).slice(1), 10);
+    if (v < lo) lo = v;
+    if (v > hi) hi = v;
+  }}
+  if (all.length === 0 || num > hi || num < Math.floor(lo / 1000) * 1000) return 'navigated';
+  return 'removed';
+}})()"#
+    )
+}
+
+/// Fail fast with `stale_ref` when `selector` is a ref selector whose ref is
+/// not on the page. Any other selector, a live ref, or a check that cannot run
+/// returns `Ok(())` and leaves the decision to the normal auto-wait.
+///
+/// A ref is never minted *later* for an element — it exists from the moment a
+/// `snapshot`/`dom`/`--with-page` call stamped it — so waiting for a missing
+/// one can only end in a timeout (it used to: ~3 s and exit 124, dogfooding
+/// session 64 #27).
+pub(crate) fn check_ref_alive(
+    ctx: &mut ConnectedTab,
+    console_actor: &ActorId,
+    selector: &str,
+    deadline: Instant,
+) -> Result<(), AppError> {
+    let Some(id) = ref_id_in_selector(selector) else {
+        return Ok(());
+    };
+    let js = ref_status_js(id);
+    let Ok(eval) = ctx
+        .transport_mut()
+        .with_read_deadline(deadline, |transport| {
+            WebConsoleActor::evaluate_js_async(transport, console_actor, &js)
+        })
+    else {
+        return Ok(());
+    };
+    if eval.exception.is_some() {
+        return Ok(());
+    }
+    match &eval.result {
+        Grip::Value(Value::String(s)) if s == "navigated" => {
+            Err(stale_ref_error(id, StaleRef::Navigated))
+        }
+        Grip::Value(Value::String(s)) if s == "removed" => {
+            Err(stale_ref_error(id, StaleRef::Removed))
+        }
+        _ => Ok(()),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Unique-selector generation (iter-140 Theme A/F)
@@ -517,6 +658,9 @@ pub(crate) fn autowait_element(
     // own — only running out of the caller's whole budget does.
     let budget = AutowaitBudget::new(started, timeout_ms);
     let deadline = budget.deadline();
+    // A `--ref` that is not on the page will never appear: say so now
+    // instead of polling the whole budget for it.
+    check_ref_alive(ctx, console_actor, selector, deadline)?;
     let mut observed: Option<(String, SelectorFinding)> = None;
     // iter-237 Part B: state for the "page is idle and the selector still
     // matches nothing" short-circuit. Starts `Uninstalled` — nothing is
@@ -1677,9 +1821,55 @@ pub(crate) fn is_truthy(grip: &Grip) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use serde_json::json;
 
-    use super::*;
+    #[test]
+    fn ref_id_in_selector_only_reads_ref_selectors() {
+        assert_eq!(
+            ref_id_in_selector("[data-ffrdp-ref=\"e417003\"]"),
+            Some("e417003")
+        );
+        assert_eq!(ref_id_in_selector("button"), None);
+        assert_eq!(ref_id_in_selector("[data-ffrdp-ref=\"x\"]"), None);
+        assert_eq!(ref_id_in_selector("[data-ffrdp-ref=\"e\"]"), None);
+    }
+
+    #[test]
+    fn stale_ref_error_is_typed_and_names_the_ref() {
+        for (why, reason) in [
+            (StaleRef::Navigated, "navigated"),
+            (StaleRef::Removed, "removed"),
+            (StaleRef::Unknown, "unknown"),
+        ] {
+            let err = stale_ref_error("e417003", why);
+            assert_eq!(err.error_type(), "stale_ref");
+            assert_eq!(err.exit_code(), 1);
+            let json = err.to_error_json();
+            assert_eq!(json["ref"], "e417003");
+            assert_eq!(json["reason"], reason);
+            assert!(err.to_string().contains("run snapshot again"), "{err}");
+        }
+    }
+
+    #[test]
+    fn ref_status_js_checks_the_ref_and_the_document_block() {
+        let js = ref_status_js("e417003");
+        assert!(js.contains(r#"[data-ffrdp-ref="e417003"]"#), "{js}");
+        assert!(
+            js.contains("'navigated'") && js.contains("'removed'"),
+            "{js}"
+        );
+    }
+
+    /// Refs start at a random per-document block, not at `e1`.
+    #[test]
+    fn stamp_ref_starts_at_a_random_block() {
+        assert!(
+            STAMP_REF_JS_FN.contains("(100 + Math.floor(Math.random() * 900)) * 1000"),
+            "{STAMP_REF_JS_FN}"
+        );
+    }
 
     // ── iter-160 Theme G: the real exception survives the diagnostic ───────
 
