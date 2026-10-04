@@ -705,6 +705,9 @@ to wrap the value in JSON.stringify() and get the real data back.
 scripts and top-level `await`: `eval --stringify 'const o = {a:1}; o'` returns
 {\"a\":1} (iter-161 — this used to fail with \"expected expression, got keyword
 'const'\"). The same last-statement rule as above decides what is returned.
+A Promise value is awaited before it is stringified, as bare eval awaits it:
+`eval --stringify 'Promise.resolve({a:1})'` returns {\"a\":1}, and a rejected
+Promise fails with the same error envelope (exit 1).
 
 Pass --unwrap when the expression itself already returns a JSON-encoded string
 (e.g. `localStorage.getItem('user')` or a server endpoint that returns text):
@@ -983,9 +986,10 @@ is \"ended_without_document\" (a download, a 204, a cancelled unload) or
 `navigated` is null when no navigation was announced within ~150 ms of the click
 (a navigation scheduled later by script is not waited for). A destination that is
 Firefox's certificate or network error page fails like `navigate` does
-(error_type \"nav_cert_error\", \"nav_dns_fail\", ...). --no-wait skips this. With
---with-page the page view does the settling (readiness in meta.page_ready) and
-`navigated` carries only url and committed.
+(error_type \"nav_cert_error\", \"nav_dns_fail\", ...), with or without
+--with-page. --no-wait skips this. With --with-page the page view does the
+settling (readiness in meta.page_ready) and `navigated` carries only url and
+committed.
 
 Output: {\"results\": {\"clicked\": true, \"matched\": true, \"reachable\": true, \"obscured_by\": null, \"tag\": \"...\", \"text\": \"...\", \"frame_url\": null, \"navigated\": null}, \"total\": 1, \"meta\": {\"frame_url\": null, ...}}
 `frame_url` is always present (never omitted) — null when the click landed on

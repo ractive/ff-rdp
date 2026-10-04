@@ -55,6 +55,23 @@ pub(crate) fn load_script(
     Ok(buf)
 }
 
+/// The `--stringify` helper: if the value is already a string, return it
+/// as-is; otherwise `JSON.stringify` it. This prevents double-encoding when
+/// the JS expression already evaluates to a string (e.g. `document.title`).
+/// Circular references throw a `TypeError` from `JSON.stringify`; that case
+/// returns a marker JSON object so the eval still succeeds. All other thrown
+/// values (including BigInt's and Symbol's `TypeError`) propagate up as eval
+/// exceptions.
+///
+/// Dogfooding session 64 N4: a real Promise (`[object Promise]`) is awaited
+/// first, inside a native `async` function, and its value stringified —
+/// `JSON.stringify` of a Promise is `{}`, so `--stringify
+/// 'Promise.resolve({a:1})'` used to print `{}`. The helper then returns a
+/// Promise, which `evaluateJSAsync` awaits; a rejection propagates to
+/// [`capture_rejection`] and is reported like plain `eval`'s. Anything else
+/// is stringified synchronously, so a synchronous throw stays one.
+const STRINGIFY_HELPER: &str = r#"(function(v){var s=function(v){if(typeof v==="string")return v;try{return JSON.stringify(v);}catch(e){if(e instanceof TypeError&&e.message.includes("circular"))return "{\"error\":\"circular reference detected\"}";throw e;}};var p=false;try{p=Object.prototype.toString.call(v)==="[object Promise]";}catch(_){}return p?(async function(){return s(await v);})():s(v);})"#;
+
 /// Build the final JS source from the user's script plus the `--stringify` and
 /// `--no-isolate` flags.
 ///
@@ -166,15 +183,6 @@ pub(crate) fn load_script(
 /// became `{"type":"undefined"}` instead of its real value. See
 /// [`top_level_statement_boundaries`] and [`wrap_top_level_await`].
 pub(crate) fn build_script(user_script: &str, stringify: bool, isolate: bool) -> String {
-    // The stringify helper: if the value is already a string, return it as-is;
-    // otherwise JSON.stringify it. This prevents double-encoding when the JS
-    // expression already evaluates to a string (e.g. `document.title`).
-    // Circular references throw a TypeError from JSON.stringify; we catch
-    // that specific case and return a marker JSON object so the eval still
-    // succeeds. All other thrown values (including BigInt's TypeError and
-    // Symbol's TypeError) propagate up as eval exceptions.
-    const STRINGIFY_HELPER: &str = "(function(v){if(typeof v===\"string\")return v;try{return JSON.stringify(v);}catch(e){if(e instanceof TypeError&&e.message.includes(\"circular\"))return \"{\\\"error\\\":\\\"circular reference detected\\\"}\";throw e;}})";
-
     let has_await = contains_await_keyword(user_script);
 
     // Stringify wraps the user's value as the sole argument of a call
@@ -2389,13 +2397,7 @@ mod tests {
     /// `main` produced before this iteration, byte for byte: no extra IIFE.
     #[test]
     fn unit_161_stringify_single_expression_shape_unchanged() {
-        let expected = concat!(
-            "(function(){return ",
-            "(function(v){if(typeof v===\"string\")return v;try{return JSON.stringify(v);}",
-            "catch(e){if(e instanceof TypeError&&e.message.includes(\"circular\"))",
-            "return \"{\\\"error\\\":\\\"circular reference detected\\\"}\";throw e;}})",
-            "(document.title);})()"
-        );
+        let expected = format!("(function(){{return {STRINGIFY_HELPER}(document.title);}})()");
         assert_eq!(build_script("document.title", true, false), expected);
     }
 

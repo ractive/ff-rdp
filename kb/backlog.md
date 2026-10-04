@@ -93,6 +93,11 @@ product work that needs design. Keep items to one line — if an item needs more
 - [x] **polish** `--version` still prints 0.3.0; bump before tagging ([[dogfooding-session-64]] #47)
 - [ ] **polish** `click`'s obscured error always suggests `consent accept`, even for fixed FABs or the target's own label svg ([[dogfooding-session-64]] #48)
 - [ ] **polish** `type --ref eN V` rejects positional text without pointing to `--text` ([[dogfooding-session-64]] #49)
+- [ ] **bug** `run` playbook `click` flaked 1/15 with `committed:false, outcome:"timeout"` after 10 s although the page had navigated (session 64 verification N3)
+- [ ] **polish** `run --jq` is ignored when a script executes; it applies only with `--dry-run` (session 64 verification N5)
+- [ ] **polish** `run` has no `page_text` verb ("unknown variant") (session 64 verification N5)
+- [ ] **polish** a never-settling Promise (`eval --timeout 4000 'new Promise(()=>{})'`) exits rc 5, which `eval --help` does not list (session 64 verification N5)
+- [ ] **polish** `--with-page` on Firefox's error page (`click body --with-page` on `about:certerror`) spends the whole `--timeout` collecting, then reports `page_ready:false` (found in #308)
 
 ## Done
 

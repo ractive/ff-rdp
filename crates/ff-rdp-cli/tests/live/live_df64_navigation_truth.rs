@@ -261,3 +261,84 @@ fn live_df64_click_waits_for_its_navigation() {
         "summary must be ok: {stdout}"
     );
 }
+
+/// Asserts `out` is the `nav_cert_error` envelope for `bad`, exit 8.
+fn assert_cert_error(out: &Output, bad: &str, what: &str) {
+    let err = stdout_json(out, what);
+    assert_eq!(out.status.code(), Some(8), "{what} must exit 8: {err}");
+    assert_eq!(err["error_type"], "nav_cert_error", "{what}: {err}");
+    assert_eq!(err["url"], bad, "{what}: {err}");
+    assert_eq!(
+        err["firefox_error"], "SEC_ERROR_EXPIRED_CERTIFICATE",
+        "{what}: {err}"
+    );
+}
+
+/// N1/N2 of the session-64 verification: `click --with-page`, `back`,
+/// `forward` and `reload` landing on the certificate error page fail the way
+/// `navigate` does, instead of reporting the badssl URL as committed.
+#[test]
+#[ignore = "requires Firefox + badssl.com — set FF_RDP_LIVE_TESTS=1 FF_RDP_LIVE_NETWORK_TESTS=1 FF_RDP_LIVE_SITES_TESTS=1"]
+fn live_df64_cert_error_fails_with_page_and_history() {
+    if !live_sites_tests_enabled() {
+        eprintln!(
+            "live_df64_cert_error_fails_with_page_and_history: set FF_RDP_LIVE_TESTS=1 \
+             FF_RDP_LIVE_NETWORK_TESTS=1 FF_RDP_LIVE_SITES_TESTS=1"
+        );
+        return;
+    }
+    let ff = LiveFirefox::headless_on_random_port();
+    let port = ff.port();
+    let bad = "https://expired.badssl.com/";
+
+    // N1: the same link click as #1, with `--with-page`.
+    run_json(
+        port,
+        &[
+            "navigate",
+            "--allow-unsafe-urls",
+            &format!("data:text/html,<a id=bad href=\"{bad}\">x</a>"),
+        ],
+    );
+    let out = run(port, &["click", "#bad", "--with-page"]);
+    assert_cert_error(&out, bad, "click --with-page");
+
+    // N2: history and reload across the error page.
+    let mut routes = HashMap::new();
+    routes.insert(
+        "/".to_owned(),
+        FixtureRoute::html("<!doctype html><title>df64-ok</title><p>ok</p>"),
+    );
+    let server = FixtureServer::start(routes).expect("fixture server");
+    let good = server.base_url();
+    run_json(port, &["navigate", &good]);
+    assert_cert_error(&run(port, &["navigate", bad]), bad, "navigate");
+    run_json(port, &["navigate", &format!("{good}/?again=1")]);
+
+    assert_cert_error(&run(port, &["back"]), bad, "back onto the error page");
+    assert_cert_error(&run(port, &["reload"]), bad, "reload on the error page");
+    // A click on the error page that was already showing is not a failed
+    // navigation. A short --timeout: the page view on an error page waits
+    // for a readiness it never reports (backlog), and the click is what
+    // this asserts.
+    let out = Command::new(ff_rdp_bin())
+        .args(["--host", "127.0.0.1", "--port", &port.to_string()])
+        .args(["--timeout", "3000", "click", "body", "--with-page"])
+        .output()
+        .expect("ff-rdp command");
+    assert!(
+        out.status.success(),
+        "click on the error page: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let on_error_page = stdout_json(&out, "click on the error page");
+    assert_eq!(on_error_page["results"]["clicked"], true, "{on_error_page}");
+    let ok = run_json(port, &["back"]);
+    assert!(
+        ok["results"]["committed_url"]
+            .as_str()
+            .is_some_and(|u| u.starts_with(&good)),
+        "back off the error page must succeed: {ok}"
+    );
+    assert_cert_error(&run(port, &["forward"]), bad, "forward onto the error page");
+}
