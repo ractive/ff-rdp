@@ -223,6 +223,9 @@ never `live-tests`, which no longer runs per PR. Verify with
 
 ## Releasing
 
+The `/release` skill (`.claude/skills/release/SKILL.md`) drives this end to end with a hard stop
+before publishing; the steps below are its short form.
+
 The pipeline is the shared reusable workflow `ractive/release-workflows` (pinned in
 `.github/workflows/release.yml`); fixes to the pipeline itself land in that repo, not here.
 It runs on a **published GitHub release** tagged `vX.Y.Z` and does, in order: version check
