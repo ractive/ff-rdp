@@ -1491,10 +1491,22 @@ pub fn run(
         None => ctx.target().console_actor.clone(),
     };
 
+    // `capture_rejection`'s wrap is text, not a parse. Before running it,
+    // check that it parses: the probe only defines a function holding the
+    // wrapped script and never calls it, so nothing of the user's script
+    // runs. If the wrap does not parse, send the bare script instead.
+    let final_script = if final_script != built
+        && wrap_fails_to_parse(&mut ctx, &console_actor, &final_script, scope.as_ref())
+    {
+        built
+    } else {
+        final_script
+    };
+
     // Evaluate via the DevTools console actor.  Firefox routes this through
     // Debugger.evalInGlobal (eval-with-debugger.js:119-247), which bypasses
     // page CSP — no fallback to a chrome context is needed.
-    let mut eval_result = match WebConsoleActor::evaluate_js_async_scoped(
+    let eval_result = match WebConsoleActor::evaluate_js_async_scoped(
         ctx.transport_mut(),
         &console_actor,
         &final_script,
@@ -1517,26 +1529,6 @@ pub fn run(
         }
         Err(e) => return Err(AppError::from(e)),
     };
-
-    // `capture_rejection`'s wrap is text, not a parse: if it made a script
-    // that the bare form would have parsed fail to parse, run the bare form.
-    // A parse error runs nothing, so this cannot repeat a side effect; a
-    // SyntaxError the script *threw* at run time (`JSON.parse('x')`) carries
-    // a stack and is reported as is.
-    if final_script != built
-        && eval_result
-            .exception
-            .as_ref()
-            .is_some_and(|exc| exc.name.as_deref() == Some("SyntaxError") && exc.stack.is_none())
-    {
-        eval_result = WebConsoleActor::evaluate_js_async_scoped(
-            ctx.transport_mut(),
-            &console_actor,
-            &built,
-            scope.as_ref(),
-        )
-        .map_err(AppError::from)?;
-    }
 
     // If an exception occurred, route it through the standard JSON error
     // envelope (iter-141 Theme E) rather than printing bare text to stderr.
@@ -1707,13 +1699,28 @@ fn capture_rejection(script: String) -> String {
     format!(
         "(function(v){{\
 try{{if(Object.prototype.toString.call(v)!=='[object Promise]')return v;}}catch(_){{return v;}}\
-return v.then(null,function(e){{var o={{name:null,message:'',stack:null}};\
+return (async function(){{try{{return await v;}}catch(e){{var o={{name:null,message:'',stack:null}};\
 try{{if(e&&typeof e==='object'){{o.name=e.name?String(e.name):null;\
 o.message=e.message!==undefined?String(e.message):String(e);o.stack=e.stack?String(e.stack):null;}}\
 else{{o.message=String(e);}}}}catch(_){{o.message='promise rejected';}}\
-return '{REJECTION_SENTINEL}'+JSON.stringify(o);}});\
-}})((\n{body}\n))"
+return '{REJECTION_SENTINEL}'+JSON.stringify(o);}}}})();\
+}})(({body}\n))"
     )
+}
+
+/// Whether `script` fails to parse, checked without running it: the probe
+/// defines a function whose body returns `script` and never calls it.
+/// Any failure to get an answer counts as "parses" — the real evaluation then
+/// reports whatever is wrong.
+fn wrap_fails_to_parse(
+    ctx: &mut super::connect_tab::ConnectedTab,
+    console_actor: &ActorId,
+    script: &str,
+    scope: Option<&ff_rdp_core::EvaluateScope>,
+) -> bool {
+    let probe = format!("void function(){{return {script}\n}}");
+    WebConsoleActor::evaluate_js_async_scoped(ctx.transport_mut(), console_actor, &probe, scope)
+        .is_ok_and(|eval| eval.exception.is_some())
 }
 
 /// The error for a result produced by [`capture_rejection`]'s rejection
@@ -1788,9 +1795,9 @@ mod tests {
     fn capture_rejection_wraps_a_single_expression_in_parens() {
         let s = capture_rejection("Promise.reject(1);".to_owned());
         assert!(s.contains("[object Promise]"), "{s}");
-        assert!(s.ends_with("((\nPromise.reject(1)\n))"), "{s}");
+        assert!(s.ends_with("((Promise.reject(1)\n))"), "{s}");
         // A comma expression keeps its completion value (`2`), not its first operand.
-        assert!(capture_rejection("1, 2".to_owned()).ends_with("((\n1, 2\n))"));
+        assert!(capture_rejection("1, 2".to_owned()).ends_with("((1, 2\n))"));
     }
 
     #[test]

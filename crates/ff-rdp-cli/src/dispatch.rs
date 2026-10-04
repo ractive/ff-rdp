@@ -125,12 +125,14 @@ fn with_stale_ref_hint(err: AppError, selector: Option<&str>) -> AppError {
 /// Whether an error message reports that a selector matched no element.
 fn says_nothing_matched(msg: &str) -> bool {
     let lower = msg.to_ascii_lowercase();
+    // Only phrasings that mean "the selector matched no element" — not, say,
+    // `scroll until`'s "not found in viewport", where the element exists.
     [
         "0 elements matched",
         "matched in 0 of",
-        "no element",
-        "not found",
-        "no match",
+        "no element matching",
+        "no element matches",
+        "no element found",
     ]
     .iter()
     .any(|needle| lower.contains(needle))
@@ -1272,6 +1274,13 @@ mod tests {
         // A plain selector is left alone.
         let plain = with_stale_ref_hint(AppError::User("no element matching 'a'".into()), None);
         assert_eq!(plain.error_type(), "User");
+
+        // An element that exists but was not reached is not stale.
+        let unreached = with_stale_ref_hint(
+            AppError::Timeout(format!("{sel} not found in viewport after 5000ms")),
+            None,
+        );
+        assert_eq!(unreached.error_type(), "Timeout");
     }
 }
 

@@ -30,8 +30,6 @@ pub struct EvalException {
     pub message: Option<String>,
     /// The thrown Error's `stack` from its grip preview, when it has one.
     pub stack: Option<String>,
-    /// The thrown Error's `name` (`"SyntaxError"`, …) from its grip preview.
-    pub name: Option<String>,
 }
 
 /// Optional scoping for [`WebConsoleActor::evaluate_js_async_scoped`].
@@ -259,16 +257,10 @@ impl WebConsoleActor {
                     .and_then(Value::as_str)
                     .filter(|s| !s.is_empty())
                     .map(String::from);
-                let name = exc
-                    .get("preview")
-                    .and_then(|p| p.get("name"))
-                    .and_then(Value::as_str)
-                    .map(String::from);
                 Some(EvalException {
                     value: grip,
                     message,
                     stack,
-                    name,
                 })
             }
             _ => None,
@@ -572,7 +564,6 @@ mod tests {
         let exc = result.exception.as_ref().unwrap();
         assert_eq!(exc.message.as_deref(), Some("test error"));
         assert_eq!(exc.stack.as_deref(), Some("@debugger eval code:1:7\n"));
-        assert_eq!(exc.name.as_deref(), Some("Error"));
         assert!(!result.top_level_await_rejected);
         match &exc.value {
             Grip::Object { class, .. } => assert_eq!(class, "Error"),

@@ -155,7 +155,10 @@ pub(crate) const STAMP_REF_JS_FN: &str = r"
         var v = parseInt(String(prior[i].getAttribute(ATTR)).slice(1), 10);
         if (v > n) n = v;
       }
-      if (n === 0) n = (100 + Math.floor(Math.random() * 900)) * 1000;
+      if (n === 0) {
+        n = (100 + Math.floor(Math.random() * 900)) * 1000;
+        try { window.__ffrdp_ref_base = n; } catch (e) { /* the DOM scan in ref_status_js covers it */ }
+      }
     }
     n += 1;
     try { window.__ffrdp_refs = n; } catch (e) { /* frozen window: the scan above covers it */ }
@@ -226,11 +229,20 @@ pub(crate) fn stale_ref_error(id: &str, why: StaleRef) -> AppError {
 
 /// JS that returns `null` when ref `id` is on the page, else `"navigated"` or
 /// `"removed"` (see [`StaleRef`]). `id` must already be validated as `e<N>`.
+///
+/// The document's issued range comes from the window expandos the stamping
+/// function keeps (`__ffrdp_ref_base`, `__ffrdp_refs`), so a removed element
+/// with the highest ref is still "removed"; when the expandos are not visible
+/// in this realm it falls back to the range of refs still in the DOM.
 fn ref_status_js(id: &str) -> String {
     format!(
         r#"(function() {{
   if (document.querySelector('[{REF_ATTR}="{id}"]')) return null;
   var num = parseInt('{id}'.slice(1), 10);
+  var base = window.__ffrdp_ref_base, issued = window.__ffrdp_refs;
+  if (typeof base === 'number' && typeof issued === 'number') {{
+    return num > base && num <= issued ? 'removed' : 'navigated';
+  }}
   var all = document.querySelectorAll('[{REF_ATTR}]');
   var lo = Infinity, hi = 0;
   for (var i = 0; i < all.length; i++) {{

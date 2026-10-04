@@ -172,7 +172,10 @@ pub fn run(cli: &Cli, depth: u32, max_chars: u32, query: &QueryFilter) -> Result
     // The budget is the size of the JSON actually printed (pretty, inside the
     // envelope), not of compact JSON: indentation made a 50 KB budget print
     // 351 KB on HN at `--depth 20` (dogfooding session 64 #21).
-    let results = bound_to_printed_size(results, max_chars);
+    // `--jq` prints compact JSON and `--format text` its own lines, so only
+    // the default output is measured pretty.
+    let pretty = cli.jq.is_none() && cli.format != "text";
+    let results = bound_to_printed_size(results, max_chars, pretty);
 
     // iter-141 Theme C: surface truncation in `meta`. Previously the only
     // signal was a `truncated: true` marker buried inside `results` at
@@ -278,10 +281,14 @@ fn truncation_hint(
     }
 }
 
-/// Bytes the default output spends on `tree`: pretty JSON, indented one level
-/// as the envelope's `results` value.
-fn printed_len(tree: &Value) -> usize {
-    serde_json::to_string_pretty(&json!({ "results": tree })).map_or(0, |s| s.len())
+/// Bytes the output spends on `tree`: pretty JSON indented one level as the
+/// envelope's `results` value (`pretty`), or compact JSON.
+fn printed_len(tree: &Value, pretty: bool) -> usize {
+    if pretty {
+        serde_json::to_string_pretty(&json!({ "results": tree })).map_or(0, |s| s.len())
+    } else {
+        serde_json::to_string(tree).map_or(0, |s| s.len())
+    }
 }
 
 /// Bound `tree` so its printed form ([`printed_len`]) fits `max_chars`.
@@ -289,15 +296,15 @@ fn printed_len(tree: &Value) -> usize {
 /// [`bound_snapshot_output`] budgets compact JSON, which pretty-printing
 /// inflates by a factor that depends on nesting depth, so the compact budget
 /// is shrunk until the printed size fits (a few rounds at most).
-fn bound_to_printed_size(tree: Value, max_chars: u32) -> Value {
+fn bound_to_printed_size(tree: Value, max_chars: u32, pretty: bool) -> Value {
     let target = max_chars as usize;
-    if tree.is_null() || printed_len(&tree) <= target {
+    if tree.is_null() || printed_len(&tree, pretty) <= target {
         return tree;
     }
     let mut budget = max_chars;
     let mut bounded = bound_snapshot_output(tree.clone(), budget);
     for _ in 0..8 {
-        let len = printed_len(&bounded);
+        let len = printed_len(&bounded, pretty);
         if len <= target || budget <= 64 {
             break;
         }
@@ -1038,19 +1045,27 @@ mod tests {
     fn bound_to_printed_size_bounds_the_pretty_output() {
         let tree = deep_wide_tree();
         assert!(
-            printed_len(&tree) > 100_000,
+            printed_len(&tree, true) > 100_000,
             "fixture must be far over budget"
         );
-        let bounded = bound_to_printed_size(tree, 20_000);
-        let len = printed_len(&bounded);
+        let bounded = bound_to_printed_size(tree.clone(), 20_000, true);
+        let len = printed_len(&bounded, true);
         assert!(len <= 20_000, "printed {len} bytes for a 20000 budget");
         assert_eq!(bounded.get("truncated"), Some(&json!(true)));
+
+        // Compact output (`--jq`) is budgeted compact, so it keeps more.
+        let compact = bound_to_printed_size(tree, 20_000, false);
+        let compact_len = printed_len(&compact, false);
+        assert!(
+            compact_len <= 20_000 && compact_len > len / 2,
+            "{compact_len} vs {len}"
+        );
     }
 
     #[test]
     fn bound_to_printed_size_passes_a_small_tree_through() {
         let tree = wide_tree(2);
-        assert_eq!(bound_to_printed_size(tree.clone(), 50_000), tree);
+        assert_eq!(bound_to_printed_size(tree.clone(), 50_000, true), tree);
     }
 
     #[test]
