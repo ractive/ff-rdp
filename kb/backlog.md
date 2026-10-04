@@ -25,7 +25,7 @@ product work that needs design. Keep items to one line — if an item needs more
 
 ## Tests and tooling
 
-- [ ] `WINGET_TOKEN` lacks the `workflow` scope, so the release pipeline's `gh repo sync ractive/winget-pkgs` fails whenever upstream has touched `.github/workflows` since the last sync (v0.4.0 run 37229772393). Either regenerate the token with `workflow`, or make the sync in `release-workflows` not push the fork's default branch. Workaround until then: `gh repo sync ractive/winget-pkgs` locally, then `gh run rerun <id> --failed` (release v0.4.0)
+- [ ] `WINGET_TOKEN` lacks the `workflow` scope, so the release pipeline's `gh repo sync ractive/winget-pkgs` fails whenever upstream has touched `.github/workflows` since the last sync (v0.4.0 run 37229772393). Either regenerate the token with `workflow`, or make the sync in `release-workflows` not push the fork's default branch. `WINGET_TOKEN` was reset on 2026-10-04 20:55 UTC; the winget job is skipped on dry runs, so tick this once the next release's winget job passes without a manual sync. Workaround if it fails again: `gh repo sync ractive/winget-pkgs` locally, then `gh run rerun <id> --failed` (release v0.4.0)
 - [x] Remaining wall-clock bounds in live tests measure the laptop, not the product: live_113, 129, 145, 158, 174, 237, 272, `live_bulk_cap`, `live_navigate_default_fast` — delete the bounds, keep the functional assertions (#290)
 - [ ] Live-sweep post-phase leak check was deleted with the real-root scan; leaked test Firefoxes are now only caught on the watchdog path — run `managed_firefox_pids()` after every phase (#291)
 - [ ] `clippy::assert_is_empty` is allowed in the lint tables rather than fixed at ~30 test sites (#286)
