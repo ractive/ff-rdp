@@ -770,7 +770,8 @@ Output: {\"results\": [{\"level\": \"...\", \"message\": \"...\", \"source\": \"
 Every ff-rdp command opens its own connection, and Firefox's watcher reports
 the requests made while that connection is subscribed. A one-shot `network`
 therefore arms a watcher, collects until the traffic has gone quiet for 2 s
-after the first request or --timeout runs out, whichever comes first, and reports what it saw — requests
+(half of --timeout, if that is shorter) after the first request or --timeout
+runs out, whichever comes first, and reports what it saw — requests
 that finished before it connected are not in it. --timeout is a hard wall for
 the whole command: on a page that never goes quiet (analytics beacons) the
 result carries what arrived in time and `timeout_reached: true`. Pick the

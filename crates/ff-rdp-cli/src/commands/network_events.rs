@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 /// (fonts, XHR fired from `DOMContentLoaded`) follow the same pattern — and
 /// short enough that a quiet page returns in a couple of seconds rather than
 /// burning the whole `--timeout`.
-const NETWORK_IDLE_QUIET_PERIOD: Duration = Duration::from_secs(2);
+pub(crate) const NETWORK_IDLE_QUIET_PERIOD: Duration = Duration::from_secs(2);
 
 /// Drain network events until the stream goes idle, bounded by `total_timeout`.
 ///
@@ -39,7 +39,7 @@ pub(crate) fn drain_network_events_timed(
     transport: &mut RdpTransport,
     total_timeout: Duration,
 ) -> Result<(Vec<NetworkResource>, Vec<NetworkResourceUpdate>, bool), ProtocolError> {
-    let drain = drain_network_events_until(transport, total_timeout)?;
+    let drain = drain_network_events_until(transport, total_timeout, NETWORK_IDLE_QUIET_PERIOD)?;
     Ok((drain.resources, drain.updates, drain.last_recv_was_event))
 }
 
@@ -56,13 +56,13 @@ pub(crate) struct NetworkDrain {
     pub(crate) quiet_for: Option<Duration>,
 }
 
-/// [`drain_network_events_timed`], reporting how long the stream had been
-/// quiet when it stopped — so a caller can tell a wall clock that cut off a
-/// busy stream from one that merely outlasted a stream that had already gone
-/// quiet, even when that budget is shorter than the idle cutoff.
+/// [`drain_network_events_timed`] with a caller-chosen idle cutoff, reporting
+/// how long the stream had been quiet when it stopped — so a caller can tell a
+/// wall clock that cut off a busy stream from an idle stop.
 pub(crate) fn drain_network_events_until(
     transport: &mut RdpTransport,
     total_timeout: Duration,
+    idle_cutoff: Duration,
 ) -> Result<NetworkDrain, ProtocolError> {
     let start = Instant::now();
     // Poll faster than the quiet period so the idle cutoff has resolution.
@@ -90,7 +90,7 @@ pub(crate) fn drain_network_events_until(
         // is done.  Before the first event there is nothing to be idle about —
         // a slow-to-respond origin must keep the full budget.
         if let Some(last) = last_event_at
-            && last.elapsed() >= NETWORK_IDLE_QUIET_PERIOD
+            && last.elapsed() >= idle_cutoff
         {
             last_recv_was_event = false;
             break;
