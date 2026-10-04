@@ -1660,7 +1660,24 @@ pub(crate) fn wait_for_navigation_commit(
             }
         }
         Err(e) => Err(e),
-    }?;
+    };
+    // Dogfooding session 64 N2: `back`/`forward`/`reload` landing on an
+    // error page (`about:certerror`, `about:neterror`) fail the way `navigate`
+    // does. A timeout is reclassified when the tab shows an error page; a
+    // commit with no observed HTTP status gets the same `listTabs` check
+    // `navigate` runs, because `location.href` and the document-events report
+    // the failed URL, never the error page's own.
+    let commit_info = reclassify_timeout_as_neterror(ctx, requested_url, commit_info)?;
+    if commit_info.http_status.is_none() {
+        let failed_url = if commit_info.committed_url.is_empty() {
+            requested_url
+        } else {
+            commit_info.committed_url.as_str()
+        };
+        if let Some(nav_err) = check_real_tab_url_for_neterror(ctx, failed_url) {
+            return Err(nav_err);
+        }
+    }
 
     refresh_console_actor(ctx);
 
@@ -1781,11 +1798,28 @@ pub(crate) fn check_real_tab_url_for_neterror(
     } else {
         None
     };
+    // `back`/`forward` cannot know their landing URL up front; the error
+    // page names the one that failed in its `u=` parameter.
+    let url = if requested_url.is_empty() {
+        error_page_failed_url(&tab_url).unwrap_or_default()
+    } else {
+        requested_url.to_owned()
+    };
     Some(AppError::Navigation {
         cause,
-        url: requested_url.to_owned(),
+        url,
         firefox_error,
     })
+}
+
+/// The failed URL an `about:neterror` / `about:certerror` page carries in its
+/// `u=` query parameter, percent-decoded.
+pub(crate) fn error_page_failed_url(error_page_url: &str) -> Option<String> {
+    let parsed = url::Url::parse(error_page_url).ok()?;
+    parsed
+        .query_pairs()
+        .find(|(k, _)| k == "u")
+        .map(|(_, v)| v.into_owned())
 }
 
 /// Map a commit-wait [`AppError::Timeout`] to a neterror-shaped

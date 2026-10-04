@@ -334,3 +334,76 @@ fn live_304_eval_rejected_promise_reports_error() {
     let ok = run_json(port, &["eval", "Promise.resolve(42)"]);
     assert_eq!(ok["results"], 42, "{ok}");
 }
+
+/// Dogfooding session 64 N4: `--stringify` awaits a Promise before
+/// stringifying it, as bare `eval` does. A resolved Promise yields its value
+/// (it used to print `{}`); a rejected one fails with bare eval's envelope
+/// (it used to print `{}` with exit 0). Non-Promise values and synchronous
+/// throws are unchanged.
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_304_eval_stringify_awaits_promises() {
+    if !live_tests_enabled() {
+        eprintln!("live_304_eval_stringify_awaits_promises: set FF_RDP_LIVE_TESTS=1");
+        return;
+    }
+    let ff = LiveFirefox::headless_on_random_port();
+    let port = ff.port();
+
+    let resolved = run_json(port, &["eval", "--stringify", "Promise.resolve({a:1})"]);
+    assert_eq!(
+        resolved["results"],
+        serde_json::json!({"a": 1}),
+        "{resolved}"
+    );
+
+    let delayed = run_json(
+        port,
+        &[
+            "eval",
+            "--stringify",
+            "new Promise(r => setTimeout(() => r([1, 2]), 200))",
+        ],
+    );
+    assert_eq!(delayed["results"], serde_json::json!([1, 2]), "{delayed}");
+
+    let awaited = run_json(
+        port,
+        &["eval", "--stringify", "const p = Promise.resolve({b:2}); p"],
+    );
+    assert_eq!(awaited["results"], serde_json::json!({"b": 2}), "{awaited}");
+
+    let bare = run(port, &["eval", "Promise.reject(new Error(\"x\"))"]);
+    let bare_err = error_envelope(&bare);
+    for script in [
+        "Promise.reject(new Error(\"x\"))",
+        "await Promise.reject(new Error(\"x\"))",
+    ] {
+        let out = run(port, &["eval", "--stringify", script]);
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "{script}: {}",
+            crate::common::output_note(&out)
+        );
+        let err = error_envelope(&out);
+        assert_eq!(err["error"], "x", "{script}: {err}");
+        assert_eq!(err["error_type"], bare_err["error_type"], "{script}: {err}");
+        assert_eq!(err["promise_rejected"], true, "{script}: {err}");
+    }
+
+    // A synchronous throw stays a synchronous throw.
+    let sync = run(port, &["eval", "--stringify", "JSON.parse(\"x\")"]);
+    assert_eq!(
+        sync.status.code(),
+        Some(1),
+        "{}",
+        crate::common::output_note(&sync)
+    );
+    let sync_err = error_envelope(&sync);
+    assert!(sync_err.get("promise_rejected").is_none(), "{sync_err}");
+
+    // Plain values are unchanged.
+    let plain = run_json(port, &["eval", "--stringify", "({c:3})"]);
+    assert_eq!(plain["results"], serde_json::json!({"c": 3}), "{plain}");
+}

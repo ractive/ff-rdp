@@ -222,6 +222,24 @@ fn is_neterror_url_detects_about_neterror() {
     assert!(!is_neterror_url("about:blank"));
 }
 
+/// Dogfooding session 64 N2: `back`/`forward` do not know their landing URL,
+/// so the error envelope's `url` comes from the error page's `u=` parameter.
+#[test]
+fn error_page_failed_url_decodes_u_param() {
+    assert_eq!(
+        error_page_failed_url(
+            "about:certerror?e=nssBadCert&u=https%3A//expired.badssl.com/&c=UTF-8&d=%20&a="
+        )
+        .as_deref(),
+        Some("https://expired.badssl.com/")
+    );
+    assert_eq!(
+        error_page_failed_url("about:neterror?e=dnsNotFound&u=https%3A//bad.invalid/").as_deref(),
+        Some("https://bad.invalid/")
+    );
+    assert_eq!(error_page_failed_url("about:neterror?e=dnsNotFound"), None);
+}
+
 /// Dogfooding session 64 #1: the tab URL `listTabs` reported for
 /// `navigate https://expired.badssl.com/` — `about:certerror`, not
 /// `about:neterror` — must be recognised and classified as a certificate

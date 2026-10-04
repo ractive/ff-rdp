@@ -196,7 +196,8 @@ pub fn run_core(
     // `--with-page` settles a navigation itself (iter-220: commit, then a
     // readiness check reported as `page_ready`) and needs the latch this
     // would consume, so it keeps that path; `navigated` is filled in after.
-    let own_nav_wait = !opts.no_wait && frame_url.is_none() && !opts.page.with_page;
+    let own_frame_nav_check = !opts.no_wait && frame_url.is_none();
+    let own_nav_wait = own_frame_nav_check && !opts.page.with_page;
     let mut navigated = Value::Null;
     if own_nav_wait && wait_for_network.is_none() {
         navigated = wait_for_click_navigation(
@@ -289,6 +290,21 @@ pub fn run_core(
             Some(wait_timeout_ms),
             &opts.page,
         )?;
+        // Dogfooding session 64 N1: a click onto Firefox's certificate or
+        // network error page fails like the plain click and `navigate` do.
+        // The page view above is where this path settles the navigation, so
+        // the tab is checked once it has: before that, a cert failure that
+        // has not landed yet still shows the page the click left. Unlike the
+        // plain path this cannot gate on a detected commit — the settle loop
+        // consumed the announcement, and `replaced_by` below is not reliable
+        // for an error document — so it reads the tab's real URL every time
+        // (one `listTabs`). The failed URL comes from the error page itself:
+        // the settled target can still report a transient `about:blank`.
+        if own_frame_nav_check
+            && let Some(err) = super::navigate::check_real_tab_url_for_neterror(&mut ctx, "")
+        {
+            return Err(err);
+        }
         // The page view settled on whatever document the click produced; if
         // that is a new one, say so (its readiness is `meta.page_ready`).
         let target = ctx.target();

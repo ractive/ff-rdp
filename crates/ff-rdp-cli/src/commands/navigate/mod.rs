@@ -38,9 +38,9 @@ use status::{FallbackStatusEvidence, StatusUnknown};
 use ff_rdp_core::{NavCause, Resource, ResourceCommand};
 #[cfg(test)]
 use readiness::{
-    READINESS_SAMPLE, classify_neterror, epoch_ms_at, error_page_cause, is_neterror_url,
-    is_readystate_fresh, is_stale_lifecycle_event, must_reresolve_href, needs_href_fallback,
-    probe_same_document_commit, scripted_readiness, wait_for_doc_complete,
+    READINESS_SAMPLE, classify_neterror, epoch_ms_at, error_page_cause, error_page_failed_url,
+    is_neterror_url, is_readystate_fresh, is_stale_lifecycle_event, must_reresolve_href,
+    needs_href_fallback, probe_same_document_commit, scripted_readiness, wait_for_doc_complete,
 };
 #[cfg(test)]
 use status::{
