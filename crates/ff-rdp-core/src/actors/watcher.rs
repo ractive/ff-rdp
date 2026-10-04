@@ -846,7 +846,7 @@ fn parse_single_console_resource(item: &Value) -> Option<ConsoleResource> {
 
     // Try error-message format: item has a "pageError" sub-object.
     if let Some(err) = item.get("pageError") {
-        let level = "error".to_owned();
+        let level = super::console::page_error_level(err).to_owned();
 
         let message = err
             .get("errorMessage")

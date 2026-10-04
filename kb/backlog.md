@@ -52,10 +52,10 @@ product work that needs design. Keep items to one line — if an item needs more
 - [ ] **wrong** `cascade` puts the winning declared value (`var(...)`, `22em`) in `computed`, has `stylesheet:null`/`line:1` on every rule, and lists no UA rules ([[dogfooding-session-64]] #8)
 - [ ] **wrong** `a11y contrast` default samples only nav items, `--selector` does not include descendants, and transparent backgrounds give fg = bg ratio 1 ([[dogfooding-session-64]] #9)
 - [ ] **wrong** `responsive h1 --widths 320,768,1024` on comparis reports width 820 at every width while claiming the geometry is accurate ([[dogfooding-session-64]] #10)
-- [ ] **wrong** `perf vitals` says Firefox lacks LCP although FF157 supports `largest-contentful-paint` (buffered observer got 71 ms), and pairs `lcp_ms:null` with `lcp_approximate:true` ([[dogfooding-session-64]] #11)
+- [x] **wrong** `perf vitals` says Firefox lacks LCP although FF157 supports `largest-contentful-paint` (buffered observer got 71 ms), and pairs `lcp_ms:null` with `lcp_approximate:true` ([[dogfooding-session-64]] #11) (fix/easy-batch-1) — cause: the buffered observer's callback runs on a later task, after the one-shot eval returned; entries are now read with `takeRecords()`, `lcp_source` added, DOM approximation only where `supportedEntryTypes` lacks LCP
 - [x] **wrong** `run`: a `wait`/`assert_url` step after a navigating `click` polls the pre-navigation document and times out ([[dogfooding-session-64]] #12) (fix/navigate-truthfulness)
 - [ ] **wrong** throttled `navigate --with-network` returns after 3.2 s with 44 of ~67 requests and `timeout_reached:false`, not flagged incomplete ([[dogfooding-session-64]] #13)
-- [ ] **wrong** `console` labels Firefox warnings (entryTypes, cookie, Referrer-Policy, preload) as `level:"error"` ([[dogfooding-session-64]] #14)
+- [x] **wrong** `console` labels Firefox warnings (entryTypes, cookie, Referrer-Policy, preload) as `level:"error"` ([[dogfooding-session-64]] #14) (fix/easy-batch-1) — pageError `warning`/`info` flags now map to `warn`/`info` (Referrer-Policy "ignoring less restricted" is flagged `info` by Firefox)
 - [ ] **wrong** `scroll text 'Further reading'` scrolls to the first TreeWalker hit (sidebar TOC) instead of the heading, with no match count ([[dogfooding-session-64]] #15)
 - [ ] **wrong** `a11y summary` lists 43 `banner` landmarks on comparis where ARIA scoping allows 2 ([[dogfooding-session-64]] #16)
 - [ ] **wrong** `network --follow` response events lack `status`/`duration_ms`/`transfer_size` for 54 of 168 responses, including the funnel's key POST ([[dogfooding-session-64]] #17)
@@ -64,7 +64,7 @@ product work that needs design. Keep items to one line — if an item needs more
 - [ ] **wrong** `--with-page` collects before SPA work settles and, on non-readerable pages, fills its cap with nav links while dropping all form controls ([[dogfooding-session-64]] #20)
 - [x] **wrong** `snapshot` `max_chars` counts compact bytes while stdout is pretty-printed (50 KB budget → 352 KB output) ([[dogfooding-session-64]] #21) — fixed: budget measured on the printed JSON
 - [ ] **wrong** `click` on a disabled control's label returns `clicked:true` with no warning ([[dogfooding-session-64]] #22)
-- [ ] **gap** `navigate --auto-consent` / `consent accept` do not handle consentmanager.net (`#cmpbox`, `a.cmpboxbtnyes`) used by comparis ([[dogfooding-session-64]] #23)
+- [x] **gap** `navigate --auto-consent` / `consent accept` do not handle consentmanager.net (`#cmpbox`, `a.cmpboxbtnyes`) used by comparis ([[dogfooding-session-64]] #23) (fix/easy-batch-1) — any-host native CMP entry `consentmanager`
 - [ ] **gap** `storage localStorage` has no per-value cap and printed 1.05 MB on Wikipedia ([[dogfooding-session-64]] #24)
 - [ ] **gap** `navigate --block` leaves no `blocked` marker or count on blocked requests, and `--block ''` is silently dropped ([[dogfooding-session-64]] #25)
 - [ ] **gap** `cookies` ignores `--fields`, `--limit` and `--sort` and accepts unknown fields with exit 0 ([[dogfooding-session-64]] #26)
@@ -79,16 +79,16 @@ product work that needs design. Keep items to one line — if an item needs more
 - [x] **docs** shipped `ff-rdp-debug` playbooks K0/C2 (and `evals/fixtures/K0/bug.json`) use nonexistent `network --status`, `snapshot --interactive-only` and `snapshot --filter` ([[dogfooding-session-64]] #33)
 - [x] **docs** `kb/reference/script-format.md` still mentions the daemon and documents the removed `--env-file` ([[dogfooding-session-64]] #34)
 - [ ] **docs** `--help` contradicts behaviour for `styles`/`a11y summary`/`dom --count` output shapes, `navigate` wait and `--network-timeout`, ref lifetime, `network`, `a11y contrast` and `snapshot --query` ([[dogfooding-session-64]] #35)
-- [ ] **docs** `launch` occupied-port error suggests `--replace` even when the port owner is foreign, which `--replace` refuses ([[dogfooding-session-64]] #36)
-- [ ] **polish** console messages and page text come out German; pin the locale prefs in the launch profile ([[dogfooding-session-64]] #37)
-- [ ] **polish** `perf vitals`/`audit` log two unsupported-entryTypes console errors per call, polluting `console --level error` ([[dogfooding-session-64]] #38)
-- [ ] **polish** writing to a closed pipe (`snapshot … | head -1`) panics with "failed printing to stdout: Broken pipe" ([[dogfooding-session-64]] #39)
+- [x] **docs** `launch` occupied-port error suggests `--replace` even when the port owner is foreign, which `--replace` refuses ([[dogfooding-session-64]] #36) (fix/easy-batch-1)
+- [ ] **polish** console messages and page text come out German; pin the locale prefs in the launch profile ([[dogfooding-session-64]] #37) — investigated in fix/easy-batch-1: the prefs ARE pinned (`intl.locale.requested=en-US`, `intl.accept_languages=en-US, en` in user.js and prefs.js); the cause is that this machine's Firefox is a German build (`de.lproj`, no en-US resources), so en-US falls back to de. `launch --english-language-pack <en-US.xpi> --restart-after-language-pack-install` with archive.mozilla.org's `157.0/mac/xpi/en-US.xpi` gives English console text ("Ignoring unsupported entryTypes: longtask."). Default fix needs an automatic pack download — a design decision (network fetch at launch), not an easy fix
+- [x] **polish** `perf vitals`/`audit` log two unsupported-entryTypes console errors per call, polluting `console --level error` ([[dogfooding-session-64]] #38) (fix/easy-batch-1) — types missing from `supportedEntryTypes` are no longer observed
+- [x] **polish** writing to a closed pipe (`snapshot … | head -1`) panics with "failed printing to stdout: Broken pipe" ([[dogfooding-session-64]] #39) (fix/easy-batch-1) — panic hook exits 141 quietly on a closed stdout
 - [ ] **polish** invalid selectors in `click` classify as `Timeout`/124 while `dom` says `User`, timeouts exit 124 or 5 by command, and `error_type` casing is mixed ([[dogfooding-session-64]] #40)
 - [x] **polish** `snapshot --format text` omits `e<N>` refs ([[dogfooding-session-64]] #41) — fixed: `ref=e…` and `refs_below` lines in text mode
 - [ ] **polish** `scroll until` brute-forces an element already in the DOM (79 scrolls, 16 s) and says "not found" on timeout ([[dogfooding-session-64]] #42)
 - [ ] **polish** `page-text --query` joins match windows with no gap marker ([[dogfooding-session-64]] #43)
 - [ ] **polish** `navigate --with-network` duplicates `entries` in `slowest`, emits `total_transfer_bytes` as a float, and reports `status:200` for `data:` URLs ([[dogfooding-session-64]] #44)
-- [ ] **polish** home view says "version unknown" while `doctor` reports FF157, and doctor's tested range 120–150 is stale ([[dogfooding-session-64]] #45)
+- [x] **polish** home view says "version unknown" while `doctor` reports FF157, and doctor's tested range 120–150 is stale ([[dogfooding-session-64]] #45) (fix/easy-batch-1) — home uses the device-actor fallback; range now 120–157 (the nightly live sweep's Firefox)
 - [ ] **polish** `profiles prune --all --dry-run` fills `removed_live` instead of a `would_remove` field ([[dogfooding-session-64]] #46)
 - [x] **polish** `--version` still prints 0.3.0; bump before tagging ([[dogfooding-session-64]] #47)
 - [ ] **polish** `click`'s obscured error always suggests `consent accept`, even for fixed FABs or the target's own label svg ([[dogfooding-session-64]] #48)

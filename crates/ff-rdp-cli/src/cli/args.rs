@@ -571,7 +571,7 @@ Examples:
 
 --auto-consent (iter-129): after the document commits, run the same
 CMP-detection-and-accept flow as `ff-rdp consent accept` and add
-`results.consent = {\"cmp\": \"sourcepoint\"|\"bbc\"|null, \"action\": \"accepted\"|null,
+`results.consent = {\"cmp\": \"sourcepoint\"|\"bbc\"|\"consentmanager\"|null, \"action\": \"accepted\"|null,
 \"status\": \"accepted\"|\"detected_not_actioned\"|\"no_cmp_detected\"}` (all three keys
 always present, never omitted; `status` added in iter-160). Combinable with
 --with-network since iter-159, and the same three keys appear there.
@@ -1636,15 +1636,16 @@ Complements `ff-rdp launch --auto-consent` (which installs the Consent-O-Matic
 extension): Consent-O-Matic does not reliably record consent for the
 Sourcepoint CMP in headless mode (dogfooding-session-62 finding 1). This
 command is the CLI-native fallback — it first tries a table of known
-same-origin (non-iframe) CMPs (e.g. BBC's own `#bbccookies-continue-button`,
-iter-144), then enumerates the tab's frame targets (including cross-origin
+same-origin (non-iframe) CMPs (BBC's own `#bbccookies-continue-button`,
+iter-144; consentmanager.net's `#cmpbox a.cmpboxbtnyes` on any host, as on
+comparis.ch), then enumerates the tab's frame targets (including cross-origin
 iframes) and recognises a known iframe-hosted CMP by matching a frame's URL,
 clicking that frame's \"accept all\" control directly.
 
 Subcommands:
   consent accept   Detect a known CMP on the current tab and accept it
 
-Output: {\"results\": {\"cmp\": \"sourcepoint\"|\"bbc\"|null, \"action\": \"accepted\"|null, \"status\": \"accepted\"|\"detected_not_actioned\"|\"no_cmp_detected\"}, \"total\": 1, \"meta\": {...}}
+Output: {\"results\": {\"cmp\": \"sourcepoint\"|\"bbc\"|\"consentmanager\"|null, \"action\": \"accepted\"|null, \"status\": \"accepted\"|\"detected_not_actioned\"|\"no_cmp_detected\"}, \"total\": 1, \"meta\": {...}}
 All three keys are always present — cmp/action are null/null when no known CMP was
 found on the page, and `status` (iter-160) names which of the three outcomes it was.
 `consent accept` exits 1 for the two non-accepting outcomes; see `consent accept --help`.
@@ -2841,7 +2842,7 @@ alongside `error`/`error_type` so nothing is lost. The command deliberately does
 NOT print a results envelope and then fail — two JSON documents on stdout is the
 double-envelope bug iter-153 removed from `launch --replace`.
 
-Output: {\"results\": {\"cmp\": \"sourcepoint\"|null, \"action\": \"accepted\"|null, \"status\": \"accepted\"|\"detected_not_actioned\"|\"no_cmp_detected\"}, \"total\": 1, \"meta\": {...}}"
+Output: {\"results\": {\"cmp\": \"sourcepoint\"|\"bbc\"|\"consentmanager\"|null, \"action\": \"accepted\"|null, \"status\": \"accepted\"|\"detected_not_actioned\"|\"no_cmp_detected\"}, \"total\": 1, \"meta\": {...}}"
     )]
     Accept {
         /// Exit 0 instead of 1 when no known CMP was found on the page.
@@ -2883,9 +2884,13 @@ pub enum PerfCommand {
     Summary,
     /// Full page performance audit: vitals, navigation timing, resource breakdown, DOM stats
     ///
-    /// LCP: Firefox doesn't implement the Chromium LCP PerformanceObserver entry. ff-rdp
-    /// reports a best-effort approximation (largest visible image). For canonical LCP,
-    /// use Lighthouse against Chromium.
+    /// LCP comes from a buffered `largest-contentful-paint` PerformanceObserver
+    /// (`lcp_source: "performance_observer"`). Only on a Firefox whose
+    /// `PerformanceObserver.supportedEntryTypes` lacks that type does ff-rdp fall back
+    /// to a best-effort estimate (largest visible image, `lcp_source:
+    /// "dom_approximation"`, `lcp_approximate: true`). CLS and TBT need entry types
+    /// Firefox does not ship (`layout-shift`, `longtask`) and are reported unavailable;
+    /// for those, use Lighthouse against Chromium.
     Audit,
     /// Compare performance across multiple URLs: navigate each, collect vitals + timing
     Compare {

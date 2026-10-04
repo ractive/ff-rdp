@@ -243,10 +243,10 @@ fn connect_once(cli: &Cli) -> (Value, Vec<Value>, Option<TabListing>) {
     };
 
     match connect_and_list_tabs(cli) {
-        Ok(listing) => {
+        Ok(mut listing) => {
             let tabs = normalize_tabs(listing.tabs());
             (
-                browser(true, listing.greeting_version(), None),
+                browser(true, listing.firefox_version(), None),
                 tabs,
                 Some(listing),
             )

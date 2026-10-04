@@ -11,8 +11,13 @@ use crate::transport::RdpTransport;
 /// emitted on each command.  Firefox publishes a new major version roughly
 /// every four weeks and the RDP surface rarely breaks across releases, so
 /// shouting on every invocation produces more noise than signal.
+///
+/// `MAX` tracks the Firefox the nightly live sweep (`.github/workflows/live.yml`,
+/// `setup-firefox` = latest release) last ran: 157.0 on 2026-10-04.  Bump it
+/// when that log shows a newer major.  `MIN` doubles as the "minimum supported"
+/// floor `screenshot` names in its version-mismatch errors.
 pub const COMPATIBLE_FIREFOX_MIN: u32 = 120;
-pub const COMPATIBLE_FIREFOX_MAX: u32 = 150;
+pub const COMPATIBLE_FIREFOX_MAX: u32 = 157;
 
 /// High-level connection to a Firefox RDP server.
 ///

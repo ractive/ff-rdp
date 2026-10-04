@@ -813,8 +813,17 @@ fn emit_already_running(
 /// The message names the occupying process and PID so the user can act on it.
 /// Contrast the post-spawn deadline path, which must never suggest a port
 /// conflict — see [`PortWaitOutcome::into_error`].
+///
+/// `--replace` is suggested only when the owner passes the same ownership
+/// proof `--replace` itself requires before it signals anything
+/// ([`replace::stop_prior_instance`]); for a foreign owner it would just be
+/// refused, so the hint said something that cannot work
+/// (dogfooding-session-64 #36).
 fn reject_if_port_occupied(port: u16, hooks: &LaunchHooks) -> Result<(), AppError> {
     let owner = (hooks.find_listener)(port);
+    let replaceable = owner
+        .as_ref()
+        .is_some_and(|o| (hooks.pid_is_ff_rdp_spawned)(o.pid));
     // Suggest a nearby port that always differs from the conflicting one,
     // even at the u16 upper bound where +10 would overflow.
     let suggested = port
@@ -827,10 +836,14 @@ fn reject_if_port_occupied(port: u16, hooks: &LaunchHooks) -> Result<(), AppErro
         Some(o) => format!("by PID {}", o.pid),
         None => "by another process".to_owned(),
     };
+    let replace_hint = if replaceable {
+        "pass --replace to stop the existing instance, "
+    } else {
+        "stop that process yourself (--replace only stops a Firefox ff-rdp launched), "
+    };
     Err(AppError::User(format!(
         "port {port} is already in use {detail} — pass --debug-port {suggested} to pick another, \
-         pass --replace to stop the existing instance, \
-         or run `ff-rdp doctor` for a full report."
+         {replace_hint}or run `ff-rdp doctor` for a full report."
     )))
 }
 
@@ -1684,11 +1697,55 @@ mod tests {
             msg.contains("port 7107 is already in use by nc (PID 51234)"),
             "message must name the occupying process and PID: {msg:?}"
         );
+        assert!(
+            !msg.contains("pass --replace"),
+            "a foreign owner must not be offered --replace, which refuses it: {msg:?}"
+        );
         assert_eq!(
             SPAWNS.load(Ordering::SeqCst),
             0,
             "Firefox must not be spawned when the port is already occupied"
         );
+    }
+
+    /// dogfooding-session-64 #36: `--replace` is offered exactly when the
+    /// occupant passes the ownership proof `--replace` requires.
+    #[test]
+    fn occupied_port_hint_offers_replace_only_for_owned_instance() {
+        let owned = LaunchHooks {
+            find_listener: |_port| {
+                Some(port_owner::PortOwner {
+                    pid: 4242,
+                    process_name: "firefox".to_owned(),
+                    uptime_s: None,
+                })
+            },
+            pid_is_ff_rdp_spawned: |pid| pid == 4242,
+            ..LaunchHooks::none_running()
+        };
+        let Err(AppError::User(msg)) = reject_if_port_occupied(7108, &owned) else {
+            panic!("an occupied port must be a user error");
+        };
+        assert!(msg.contains("pass --replace"), "{msg:?}");
+
+        let foreign = LaunchHooks {
+            pid_is_ff_rdp_spawned: |_pid| false,
+            ..owned
+        };
+        let Err(AppError::User(msg)) = reject_if_port_occupied(7108, &foreign) else {
+            panic!("an occupied port must be a user error");
+        };
+        assert!(!msg.contains("pass --replace"), "{msg:?}");
+        assert!(msg.contains("--debug-port 7118"), "{msg:?}");
+
+        let unknown = LaunchHooks {
+            find_listener: |_port| None,
+            ..LaunchHooks::none_running()
+        };
+        let Err(AppError::User(msg)) = reject_if_port_occupied(7108, &unknown) else {
+            panic!("an occupied port must be a user error");
+        };
+        assert!(!msg.contains("pass --replace"), "{msg:?}");
     }
 
     /// AC `live_158_launch_creates_missing_profile_dir` (unit half): the
