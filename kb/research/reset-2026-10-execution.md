@@ -27,6 +27,8 @@ investigate a historical flake.
 
 ## Log
 
+- 2026-10-04: dogfooding session 64 ([[dogfooding-session-64]], 3 agents, 49 issues, PR #303) → pre-release fix round: #304 snapshot refs past depth cut / per-document ref blocks + `stale_ref` / eval rejected promises; #305 `network --timeout` hard wall, `--viewport-height` removed, six nonexistent skill flags fixed, version 0.4.0; #306 `nav_cert_error` for about:certerror, `--throttle` readiness no longer taken from iframe targets, `click` waits for the navigation it starts and reports `navigated{}`. Independent re-check of the seven items pending; release v0.4.0 after it.
+
 - 2026-10-03: deleted 13 stale remote branches (SHAs recorded for recovery via GitHub's reflog-less dangling-commit window; 4 were merged, 9 belonged to done/obsolete daemon-era plans):
 - `iter-259/reply-ownership-after271` cee57bf4
 - `iter-259/rpc-slot-handover-strands-an-in-flight-reply` cc44e873
