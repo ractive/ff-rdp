@@ -12,7 +12,9 @@ use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
 use super::connect_tab::connect_and_get_target;
-use super::navigate::{DocumentStatusTracker, eval_location_href, wait_for_navigation_commit};
+use super::navigate::{
+    DocumentStatusTracker, eval_location_href, refresh_console_actor, wait_for_navigation_commit,
+};
 
 /// Which navigation action to perform.
 #[derive(Clone, Copy)]
@@ -219,9 +221,12 @@ pub fn run_reload_wait_idle(
         cli.timeout,
         &mut tracker,
     )?;
-    // The reload may have replaced the target, killing this console actor; an
-    // unreadable href comes back "" and `pick_document` then matches on the
-    // requested URL alone.
+    // The reload replaces the target, killing the pre-reload console actor:
+    // re-resolve it so a redirect on reload matches the landing document. An
+    // unreadable href still comes back "" and `pick_document` then matches on
+    // the requested URL alone.
+    refresh_console_actor(&mut ctx);
+    let console_actor = ctx.target().console_actor.clone();
     let committed_url = eval_location_href(ctx.transport_mut(), &console_actor);
     let status = tracker.status_fields(&requested_url, &committed_url);
 

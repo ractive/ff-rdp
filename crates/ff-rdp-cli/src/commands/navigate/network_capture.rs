@@ -457,8 +457,8 @@ pub(crate) struct NetworkDetail {
 /// The readyState probe runs every [`NETWORK_IDLE_QUIET_PERIOD`] at most, so a
 /// page that completes without issuing another request is noticed promptly
 /// rather than after the whole budget. Once a probe found the document still
-/// loading, a final idle-bounded drain after it completes picks up the
-/// requests the `load` event triggers.
+/// loading, final drains after it completes pick up the requests the `load`
+/// event triggers, stopping at the first quiet period with none.
 fn extend_until_document_complete(
     ctx: &mut crate::commands::connect_tab::ConnectedTab,
     deadline: Instant,
@@ -484,11 +484,24 @@ fn extend_until_document_complete(
         updates.extend(u);
     }
     if extended {
-        let left = deadline.saturating_duration_since(Instant::now());
-        if !left.is_zero() {
-            let drained = drain_network_events_timed(ctx.transport_mut(), left);
+        // Drain in quiet-period slices and stop at the first slice that saw
+        // nothing: `drain_network_events_timed` only applies its idle cutoff
+        // after a first event, so one drain over the whole remaining budget
+        // would sit out all of it when `load` triggers no request.
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            let drained = drain_network_events_timed(
+                ctx.transport_mut(),
+                left.min(NETWORK_IDLE_QUIET_PERIOD),
+            );
             restore_timeout(ctx.transport_mut(), cli_timeout);
             let (r, u, _) = drained.map_err(AppError::from)?;
+            if r.is_empty() && u.is_empty() {
+                break;
+            }
             resources.extend(r);
             updates.extend(u);
         }
