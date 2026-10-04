@@ -1473,7 +1473,8 @@ pub fn run(
     // `const`/`let`/`class` never leak into the next `eval`; `--no-isolate`
     // sends it to the shared global lexical environment instead. See
     // [`build_script`]'s doc comment.
-    let final_script = build_script(&script, stringify, !no_isolate);
+    let built = build_script(&script, stringify, !no_isolate);
+    let final_script = capture_rejection(built.clone());
 
     let mut ctx = connect_and_get_target(cli)?;
 
@@ -1482,7 +1483,7 @@ pub fn run(
     // target enumerated on this same connection. The retry path below
     // re-fetches the top-level target if the actor turns out to be stale
     // (noSuchActor / unknownActor); a frame target is not retried.
-    let console_actor = match cli_scope.frame_url {
+    let mut console_actor = match cli_scope.frame_url {
         Some(filter) => {
             let targets = crate::commands::frame_targets::fetch_frame_targets(&mut ctx)?;
             frame_console_actor(&targets, filter)?
@@ -1493,7 +1494,7 @@ pub fn run(
     // Evaluate via the DevTools console actor.  Firefox routes this through
     // Debugger.evalInGlobal (eval-with-debugger.js:119-247), which bypasses
     // page CSP — no fallback to a chrome context is needed.
-    let eval_result = match WebConsoleActor::evaluate_js_async_scoped(
+    let mut eval_result = match WebConsoleActor::evaluate_js_async_scoped(
         ctx.transport_mut(),
         &console_actor,
         &final_script,
@@ -1505,10 +1506,10 @@ pub fn run(
             ..
         }) if cli_scope.frame_url.is_none() => {
             // Actor is stale — re-resolve and retry once.
-            let fresh_console = ctx.refresh_target_result()?;
+            console_actor = ctx.refresh_target_result()?;
             WebConsoleActor::evaluate_js_async_scoped(
                 ctx.transport_mut(),
-                &fresh_console,
+                &console_actor,
                 &final_script,
                 scope.as_ref(),
             )
@@ -1516,6 +1517,26 @@ pub fn run(
         }
         Err(e) => return Err(AppError::from(e)),
     };
+
+    // `capture_rejection`'s wrap is text, not a parse: if it made a script
+    // that the bare form would have parsed fail to parse, run the bare form.
+    // A parse error runs nothing, so this cannot repeat a side effect; a
+    // SyntaxError the script *threw* at run time (`JSON.parse('x')`) carries
+    // a stack and is reported as is.
+    if final_script != built
+        && eval_result
+            .exception
+            .as_ref()
+            .is_some_and(|exc| exc.name.as_deref() == Some("SyntaxError") && exc.stack.is_none())
+    {
+        eval_result = WebConsoleActor::evaluate_js_async_scoped(
+            ctx.transport_mut(),
+            &console_actor,
+            &built,
+            scope.as_ref(),
+        )
+        .map_err(AppError::from)?;
+    }
 
     // If an exception occurred, route it through the standard JSON error
     // envelope (iter-141 Theme E) rather than printing bare text to stderr.
@@ -1533,7 +1554,17 @@ pub fn run(
             .message
             .as_deref()
             .unwrap_or("evaluation threw an exception");
-        return Err(AppError::User(sanitize_for_terminal(msg).into_owned()));
+        return Err(eval_error(msg, exc.stack.as_deref(), false));
+    }
+    // A rejected completion Promise that `capture_rejection` could not wrap
+    // (a multi-statement script): Firefox reports only that it rejected.
+    if eval_result.top_level_await_rejected {
+        return Err(eval_error(
+            "the script's Promise rejected (Firefox does not report the rejection value for a \
+             multi-statement script; make the Promise the script's only expression to see it)",
+            None,
+            true,
+        ));
     }
 
     let mut result_json = eval_result.result.to_json();
@@ -1556,6 +1587,10 @@ pub fn run(
         let full = LongStringActor::full_string(ctx.transport_mut(), actor.as_ref(), length)
             .map_err(AppError::from)?;
         result_json = serde_json::Value::String(full);
+    }
+
+    if let Some(err) = rejection_error(&result_json) {
+        return Err(err);
     }
 
     // For object grips, enrich the output with the list of own property names.
@@ -1638,6 +1673,88 @@ pub fn run(
     pipeline.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 
+/// Prefix of the string a captured Promise rejection resolves to; the rest is
+/// `{"name","message","stack"}` as JSON. See [`capture_rejection`].
+const REJECTION_SENTINEL: &str = "__ffrdp_promise_rejected__:";
+
+/// Make a rejected completion Promise report its reason.
+///
+/// Firefox awaits a Promise completion value (`mapped.await`) but, when it
+/// rejects, drops the reason and sets only `topLevelAwaitRejected`
+/// (`webconsole.js` `_maybeWaitForResponseResult`), so `eval
+/// 'Promise.reject(new Error("boom"))'` used to print `{"results": null}`
+/// with exit 0 (dogfooding session 64 #3). A single-expression script — which
+/// every `await` script, `--stringify` script and isolated declaring script
+/// already is after [`build_script`] — is passed through a function that, for
+/// a real Promise only (`[object Promise]`, so cross-realm Promises count and
+/// other thenables keep their old behaviour), turns a rejection into a
+/// resolved [`REJECTION_SENTINEL`] string that [`rejection_error`] reads back.
+/// Any other value is returned unchanged, and a synchronous throw still
+/// propagates as an exception. A multi-statement script is sent as is; its
+/// rejection still fails, through `topLevelAwaitRejected`, just without the
+/// reason.
+fn capture_rejection(script: String) -> String {
+    if !looks_like_single_expression(&script) {
+        return script;
+    }
+    let trimmed = script.trim();
+    let body = trimmed.strip_suffix(';').unwrap_or(trimmed).trim_end();
+    // `async function f(){}` passes the expression check but is a
+    // declaration at top level; as an argument it would stop declaring `f`.
+    if body_starts_with_keyword(trim_leading_trivia(body), "async function") {
+        return script;
+    }
+    format!(
+        "(function(v){{\
+try{{if(Object.prototype.toString.call(v)!=='[object Promise]')return v;}}catch(_){{return v;}}\
+return v.then(null,function(e){{var o={{name:null,message:'',stack:null}};\
+try{{if(e&&typeof e==='object'){{o.name=e.name?String(e.name):null;\
+o.message=e.message!==undefined?String(e.message):String(e);o.stack=e.stack?String(e.stack):null;}}\
+else{{o.message=String(e);}}}}catch(_){{o.message='promise rejected';}}\
+return '{REJECTION_SENTINEL}'+JSON.stringify(o);}});\
+}})((\n{body}\n))"
+    )
+}
+
+/// The error for a result produced by [`capture_rejection`]'s rejection
+/// branch, or `None` for any other result.
+fn rejection_error(result: &serde_json::Value) -> Option<AppError> {
+    let payload = result.as_str()?.strip_prefix(REJECTION_SENTINEL)?;
+    let parsed: serde_json::Value = serde_json::from_str(payload).unwrap_or_default();
+    let message = parsed
+        .get("message")
+        .and_then(serde_json::Value::as_str)
+        .filter(|m| !m.is_empty())
+        .unwrap_or("promise rejected");
+    let stack = parsed.get("stack").and_then(serde_json::Value::as_str);
+    Some(eval_error(message, stack, true))
+}
+
+/// The error envelope for a script that threw or whose Promise rejected:
+/// `error_type: "User"`, exit 1, the message, plus `stack` when known and
+/// `promise_rejected: true` for a rejection.
+fn eval_error(message: &str, stack: Option<&str>, promise_rejected: bool) -> AppError {
+    let message = sanitize_for_terminal(message).into_owned();
+    if stack.is_none() && !promise_rejected {
+        return AppError::User(message);
+    }
+    let mut details = serde_json::Map::new();
+    if let Some(stack) = stack {
+        details.insert(
+            "stack".to_owned(),
+            json!(sanitize_for_terminal(stack).into_owned()),
+        );
+    }
+    if promise_rejected {
+        details.insert("promise_rejected".to_owned(), json!(true));
+    }
+    AppError::Unsupported {
+        error_type: "User",
+        message,
+        details: Some(serde_json::Value::Object(details)),
+    }
+}
+
 /// `--unwrap` helper: if `value` is a string whose contents parse as a JSON
 /// object or array, replace `value` with the parsed structure and return
 /// `true`.  Returns `false` and leaves `value` untouched otherwise (including
@@ -1664,6 +1781,67 @@ fn try_unwrap_json_string(value: &mut serde_json::Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── dogfooding session 64 #3: rejected Promises ────────────────────────
+
+    #[test]
+    fn capture_rejection_wraps_a_single_expression_in_parens() {
+        let s = capture_rejection("Promise.reject(1);".to_owned());
+        assert!(s.contains("[object Promise]"), "{s}");
+        assert!(s.ends_with("((\nPromise.reject(1)\n))"), "{s}");
+        // A comma expression keeps its completion value (`2`), not its first operand.
+        assert!(capture_rejection("1, 2".to_owned()).ends_with("((\n1, 2\n))"));
+    }
+
+    #[test]
+    fn capture_rejection_leaves_statements_and_declarations_alone() {
+        for script in [
+            "x = 1; Promise.reject(2)",
+            "throw new Error('boom')",
+            "async function f() {}",
+            "{ a: 1 }",
+            "const p = 1",
+        ] {
+            assert_eq!(capture_rejection(script.to_owned()), script, "{script}");
+        }
+    }
+
+    /// `build_script` output for an `await` script is a single call
+    /// expression, so the rejection wrap applies to it.
+    #[test]
+    fn capture_rejection_covers_await_scripts() {
+        let built = build_script("await Promise.reject(new Error('boom'))", false, true);
+        assert_ne!(capture_rejection(built.clone()), built);
+    }
+
+    #[test]
+    fn rejection_error_reads_the_sentinel() {
+        let value = json!(format!(
+            "{REJECTION_SENTINEL}{}",
+            json!({"name": "Error", "message": "boom", "stack": "@x:1:1\n"})
+        ));
+        let err = rejection_error(&value).expect("sentinel is a rejection");
+        assert_eq!(err.error_type(), "User");
+        assert_eq!(err.exit_code(), 1);
+        let env = err.to_error_json();
+        assert_eq!(env["error"], "boom");
+        assert_eq!(env["stack"], "@x:1:1\n");
+        assert_eq!(env["promise_rejected"], true);
+
+        assert!(rejection_error(&json!("plain string")).is_none());
+        assert!(rejection_error(&json!(42)).is_none());
+    }
+
+    #[test]
+    fn eval_error_matches_the_sync_throw_envelope() {
+        let sync = eval_error("boom", None, false);
+        assert!(matches!(sync, AppError::User(_)));
+        let with_stack = eval_error("boom", Some("@x:1:1"), false);
+        assert_eq!(with_stack.error_type(), sync.error_type());
+        assert_eq!(with_stack.exit_code(), sync.exit_code());
+        assert_eq!(with_stack.to_error_json()["stack"], "@x:1:1");
+        assert!(with_stack.to_error_json().get("promise_rejected").is_none());
+    }
 
     fn target(url: &str, top: bool, console: &str) -> TargetEvent {
         TargetEvent {

@@ -14,6 +14,11 @@ pub struct EvalResult {
     pub exception: Option<EvalException>,
     /// Server-assigned timestamp for the evaluation.
     pub timestamp: Option<u64>,
+    /// `topLevelAwaitRejected`: the completion value was a Promise that
+    /// rejected. Firefox drops the rejection value in that case
+    /// (`webconsole.js` `_maybeWaitForResponseResult`), so `result` carries
+    /// nothing and `exception` is `None`.
+    pub top_level_await_rejected: bool,
 }
 
 /// Information about a JS evaluation exception.
@@ -23,6 +28,10 @@ pub struct EvalException {
     pub value: Grip,
     /// Human-readable error message extracted from the exception preview.
     pub message: Option<String>,
+    /// The thrown Error's `stack` from its grip preview, when it has one.
+    pub stack: Option<String>,
+    /// The thrown Error's `name` (`"SyntaxError"`, …) from its grip preview.
+    pub name: Option<String>,
 }
 
 /// Optional scoping for [`WebConsoleActor::evaluate_js_async_scoped`].
@@ -244,9 +253,22 @@ impl WebConsoleActor {
             Some(exc) if !exc.is_null() => {
                 let grip = Grip::from_result_value(exc);
                 let message = Self::extract_exception_message(exc);
+                let stack = exc
+                    .get("preview")
+                    .and_then(|p| p.get("stack"))
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                    .map(String::from);
+                let name = exc
+                    .get("preview")
+                    .and_then(|p| p.get("name"))
+                    .and_then(Value::as_str)
+                    .map(String::from);
                 Some(EvalException {
                     value: grip,
                     message,
+                    stack,
+                    name,
                 })
             }
             _ => None,
@@ -256,10 +278,16 @@ impl WebConsoleActor {
         let result_value = msg.get("result").unwrap_or(&Value::Null);
         let result = Grip::from_result_value(result_value);
 
+        let top_level_await_rejected = msg
+            .get("topLevelAwaitRejected")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+
         EvalResult {
             result,
             exception,
             timestamp,
+            top_level_await_rejected,
         }
     }
 
@@ -543,10 +571,31 @@ mod tests {
         let result = WebConsoleActor::parse_eval_result(&msg);
         let exc = result.exception.as_ref().unwrap();
         assert_eq!(exc.message.as_deref(), Some("test error"));
+        assert_eq!(exc.stack.as_deref(), Some("@debugger eval code:1:7\n"));
+        assert_eq!(exc.name.as_deref(), Some("Error"));
+        assert!(!result.top_level_await_rejected);
         match &exc.value {
             Grip::Object { class, .. } => assert_eq!(class, "Error"),
             other => panic!("expected Grip::Object, got {other:?}"),
         }
+    }
+
+    /// A rejected completion Promise: Firefox drops `awaitResult`, sets
+    /// `topLevelAwaitRejected` and reports no exception
+    /// (`webconsole.js` `_maybeWaitForResponseResult`).
+    #[test]
+    fn parse_eval_result_top_level_await_rejected() {
+        let msg = json!({
+            "from": "server1.conn0.child2/consoleActor3",
+            "hasException": false,
+            "input": "Promise.reject(new Error('boom'))",
+            "resultID": "1775437183988.612-5",
+            "topLevelAwaitRejected": true,
+            "type": "evaluationResult"
+        });
+        let result = WebConsoleActor::parse_eval_result(&msg);
+        assert!(result.top_level_await_rejected);
+        assert!(result.exception.is_none());
     }
 
     #[test]
