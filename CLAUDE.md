@@ -1,5 +1,7 @@
 # Agents
-Delegate the work to agents whenever possible to avoid automatic context compaction.
+Delegate the work to agents whenever possible to avoid automatic context compaction. For any
+bounded code change use the `ff-rdp-implementer` agent (`.claude/agents/`): it carries the landing
+protocol, so the prompt only needs the finish line, file ownership and the proofs required.
 
 # Documentation
 Docs live in `./kb` as `*.md` with YAML frontmatter — see `.claude/CLAUDE.md` for the layout and
