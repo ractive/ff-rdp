@@ -566,6 +566,7 @@ Examples:
   ff-rdp navigate https://example.com --wait-text \"Welcome\"
   ff-rdp navigate https://example.com --wait-for selector:.athing
   ff-rdp navigate https://example.com --no-wait
+  ff-rdp navigate https://example.com --wait-idle --idle-ms 500 --timeout-ms 10000
   ff-rdp navigate https://example.com --user-agent 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)'
   ff-rdp navigate https://www.theguardian.com --auto-consent
 
@@ -1730,7 +1731,7 @@ pub struct NavigateArgs {
     /// After navigating, wait for this CSS selector to match an element in the DOM. Runs after the navigation load event completes.
     #[arg(long, conflicts_with = "wait_text")]
     pub wait_selector: Option<String>,
-    /// Timeout for the --wait-text/--wait-selector condition in milliseconds. If the condition is not met within this time, the command fails with an error showing the elapsed time.
+    /// Timeout for the --wait-text/--wait-selector condition, and the whole budget for --wait-idle, in milliseconds. If the condition is not met within this time, the command fails with an error showing the elapsed time.
     #[arg(long = "timeout-ms", default_value_t = 5000)]
     pub wait_timeout: u64,
     /// Skip waiting for the new document to commit; return immediately after the navigate request is acknowledged (pre-61g fire-and-forget behaviour).
@@ -1753,6 +1754,23 @@ pub struct NavigateArgs {
     /// `readystate`: poll `document.readyState == "complete"` until timeout.
     #[arg(long, value_name = "STRATEGY", default_value = "both", value_enum)]
     pub wait_strategy: crate::commands::navigate::WaitStrategy,
+    /// After the readiness wait (--wait / --wait-strategy) and before
+    /// --wait-text/--wait-selector/--wait-for, wait until no request has
+    /// started or progressed for --idle-ms and every `document.images` entry
+    /// is `complete` — except `loading="lazy"` images outside the viewport,
+    /// which Firefox does not fetch until scrolled to. Both share the
+    /// --timeout-ms budget; running out of it is a timeout error, not a
+    /// partial result. Adds `results.idle = {"idle_at_ms": N,
+    /// "requests_observed": N, "images_complete": true,
+    /// "lazy_images_deferred": N}`.
+    #[arg(long, conflicts_with_all = ["no_wait", "with_network"])]
+    pub wait_idle: bool,
+    /// Milliseconds without network activity that count as idle (--wait-idle
+    /// only). Values below 200 are raised to 200: Firefox delivers network
+    /// events in 100 ms batches, so a shorter window cannot tell a busy page
+    /// from a quiet one.
+    #[arg(long, value_name = "MS", default_value_t = 500, requires = "wait_idle")]
+    pub idle_ms: u64,
     /// After the document commits, detect and accept a known cookie-consent
     /// overlay (see `ff-rdp consent accept`). Best-effort: a detection
     /// failure is reported as a warning, not a navigate failure. Adds

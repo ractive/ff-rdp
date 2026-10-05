@@ -380,6 +380,7 @@ fn crawl_page(
         // reproduced even against zero-network data: URLs); Both adds the
         // readystate fallback that plain `ff-rdp navigate` already defaults to.
         wait_strategy: crate::commands::navigate::WaitStrategy::Both,
+        wait_idle: None,
     };
     // `index` crawls pages for its own extraction; the page view would be
     // collected and thrown away.

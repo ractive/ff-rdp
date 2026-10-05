@@ -14,10 +14,12 @@ use super::js_helpers::{escape_selector, poll_js_condition};
 use super::url_validation::validate_content_navigation_url;
 
 mod consent;
+mod idle;
 mod network_capture;
 mod readiness;
 mod status;
 
+pub(crate) use idle::{drain_until_idle, is_conn_closed_kind};
 pub(crate) use network_capture::{NetworkDetail, run_with_network};
 pub(crate) use readiness::{
     check_real_tab_url_for_neterror, eval_location_href, is_neterror_url, refresh_console_actor,
@@ -121,6 +123,11 @@ pub struct WaitAfterNav<'a> {
     pub wait_level: WaitLevel,
     /// Strategy for waiting for navigation readiness (default: `Both`).
     pub wait_strategy: WaitStrategy,
+    /// `--wait-idle --idle-ms N`: after the readiness wait and before the
+    /// `wait_text`/`wait_selector`/`wait_for` predicates, wait for `N` ms of
+    /// network quiet and then for `document.images` to complete, inside the
+    /// `wait_timeout` budget (iter-295). `None` skips it.
+    pub wait_idle: Option<u64>,
 }
 
 impl WaitAfterNav<'_> {
@@ -215,6 +222,9 @@ pub fn run_core(
     };
     tracing::debug!(requested_url = url, pre_href = %pre_nav_href, pre_epoch = ?pre_nav_epoch, target = ?ctx.target(), "navigate: baseline captured");
 
+    // iter-295: `--wait-idle` keeps `network-event` watched from before
+    // `navigateTo` until its drain ends — see `idle::IdleWatch`.
+    let mut idle_watch: Option<idle::IdleWatch> = None;
     let commit_info = if wait_opts.no_wait {
         // --no-wait: send navigateTo via the standard actor_request (response
         // is the navigateTo ack) and return immediately, no bus needed.
@@ -225,6 +235,11 @@ pub fn run_core(
         // --wait-strategy readystate: skip the document-event bus entirely.
         // Sending navigateTo + immediately polling document.readyState avoids
         // the full event-wait timeout cost that the default Events path pays.
+        if wait_opts.wait_idle.is_some() {
+            WatcherActor::watch_resources(ctx.transport_mut(), &watcher_actor, &["network-event"])
+                .map_err(AppError::from)?;
+            idle_watch = Some(idle::IdleWatch::Raw(watcher_actor.clone()));
+        }
         let nav_start = Instant::now();
         WindowGlobalTarget::navigate_to(ctx.transport_mut(), &target_actor, url)
             .map_err(AppError::from)?;
@@ -282,6 +297,12 @@ pub fn run_core(
                 &[ResourceType::DocumentEvent, ResourceType::NetworkEvent],
             )
             .map_err(|e| AppError::from(anyhow::anyhow!("document-event subscribe: {e:#}")))?;
+        if wait_opts.wait_idle.is_some() {
+            idle_watch = Some(idle::IdleWatch::subscribe_bus(
+                ctx.transport_mut(),
+                &bus_arc,
+            )?);
+        }
 
         // Record the wall-clock instant before sending navigateTo so we can
         // compute the remaining budget for the Both readystate fallback.
@@ -489,6 +510,20 @@ pub fn run_core(
         refresh_console_actor(&mut ctx);
     }
 
+    // iter-295: `--wait-idle` runs after the readiness wait above and before
+    // every predicate below. Clap rejects it with `--no-wait`, so a commit
+    // exists here and `idle_watch` was set up before `navigateTo`.
+    let idle_result = match (wait_opts.wait_idle, idle_watch) {
+        (Some(idle_ms), Some(watch)) => Some(idle::wait_for_idle(
+            &mut ctx,
+            watch,
+            idle_ms,
+            wait_opts.wait_timeout,
+            cli.timeout,
+        )?),
+        _ => None,
+    };
+
     let wait_result = wait_after_navigate(&mut ctx, wait_opts)?;
 
     // Parse and run --wait-for predicates after commit.
@@ -516,6 +551,11 @@ pub fn run_core(
             "status_reason".to_string(),
             json!(ci.status_reason.map(StatusUnknown::as_str)),
         );
+    }
+    if let Some(idle) = idle_result
+        && let Some(obj) = result.as_object_mut()
+    {
+        obj.insert("idle".to_string(), idle);
     }
     if let Some(w) = wait_result
         && let Some(obj) = result.as_object_mut()
