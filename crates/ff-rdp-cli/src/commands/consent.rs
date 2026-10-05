@@ -302,7 +302,7 @@ fn status_of(result: &Value) -> ConsentStatus {
 ///    (Sourcepoint's `us_pm` notice: `location.pathname` contains `/us_pm/`
 ///    or `location.search` contains `is_usnat_notice=true`), a visible
 ///    close control (`title`, `aria-label` or text equal to `Closer` or
-///    `Close`). That notice has no
+///    `Close`). The Guardian's close-only variant of that notice has no
 ///    accept control at all: under the US opt-out regime consent is the
 ///    default state, the only choice offered is "Do not sell or share my
 ///    personal information", and closing the notice keeps the default — so
