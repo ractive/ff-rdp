@@ -1,5 +1,4 @@
 use std::cell::Cell;
-use std::time::Duration;
 
 use anyhow::Context;
 use ff_rdp_core::{Grip, LongStringActor, WebConsoleActor};
@@ -17,9 +16,6 @@ use super::perf::{
     is_lcp_approximate, lcp_missing_note, lcp_source, round2,
 };
 use super::url_validation::validate_content_navigation_url;
-
-/// Pause after the commit so `PerformanceObserver` entries settle.
-const SETTLE_MS: u64 = 200;
 
 /// Validate that the number of labels matches the number of URLs.
 ///
@@ -51,9 +47,11 @@ enum Step {
     /// Connecting to the tab (and `--cold`'s cache bypass), before the first
     /// URL is loaded.
     Connect,
-    /// The `navigateTo` request.
+    /// Everything up to and including sending `navigateTo` (the commit
+    /// wait's watcher and resource subscriptions, then the request).
     Navigate,
-    /// The `document.readyState === 'complete'` poll.
+    /// After `navigateTo` was sent: waiting for the new document to commit
+    /// and reach `readyState === 'complete'`.
     ReadyState,
     /// The metrics collection eval.
     Collect,
@@ -119,29 +117,30 @@ fn step_error(err: impl Into<AppError>, url: &str, step: Step, timeout_ms: u64) 
 fn navigate_and_wait(ctx: &mut ConnectedTab, url: &str, timeout_ms: u64) -> Result<(), AppError> {
     let target_actor = ctx.target().actor.clone();
     let packet = json!({"to": target_actor.as_ref(), "type": "navigateTo", "url": url});
-    let dispatch_failed = Cell::new(false);
+    // Set once `navigateTo` is on the wire: an error before that (watcher
+    // setup, the send itself) is step `navigate`, one after it `readystate`.
+    let dispatched = Cell::new(false);
     super::navigate::wait_for_navigation_commit(
         ctx,
         timeout_ms,
         url,
         &NetworkConditionsArgs::default(),
         |transport| {
-            transport.send(&packet).map_err(|e| {
-                dispatch_failed.set(true);
-                AppError::from(e)
-            })
+            transport.send(&packet).map_err(AppError::from)?;
+            dispatched.set(true);
+            Ok(())
         },
     )
     .map_err(|e| {
-        let step = if dispatch_failed.get() {
-            Step::Navigate
-        } else {
+        let step = if dispatched.get() {
             Step::ReadyState
+        } else {
+            Step::Navigate
         };
         step_error(e, url, step, timeout_ms)
     })?;
 
-    std::thread::sleep(Duration::from_millis(SETTLE_MS));
+    super::perf::settle_observers();
     Ok(())
 }
 

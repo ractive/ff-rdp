@@ -55,7 +55,18 @@ fn cold_reload(cli: &Cli, ctx: &mut ConnectedTab) -> Result<(), AppError> {
         move |transport| transport.send(&reload).map_err(AppError::from),
     )
     .map_err(|e| e.with_timeout_hint("perf --cold: waiting for the cache-bypassing reload"))?;
+    settle_observers();
     Ok(())
+}
+
+/// Pause after a load this command triggered reaches `complete`, so the
+/// buffered `paint` / `largest-contentful-paint` entries recorded just after
+/// `load` are there when the collection script reads them.
+const SETTLE_MS: u64 = 200;
+
+/// Sleep [`SETTLE_MS`]; shared by `--cold`'s reload and `perf compare`.
+pub(crate) fn settle_observers() {
+    std::thread::sleep(std::time::Duration::from_millis(SETTLE_MS));
 }
 
 /// Record `--cold` in the envelope's `meta`.
