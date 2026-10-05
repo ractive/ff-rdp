@@ -339,11 +339,14 @@ fn live_144_bbc_cmp_dismissed() {
             ])
             .output()
             .expect("run wait");
-        let banner = bbc_banner_after_failure(
-            &outcome,
-            wait.status.code(),
-            &String::from_utf8_lossy(&wait.stderr),
+        // The CLI prints its JSON error envelope on stdout (main.rs); stderr
+        // is included only so a stray human line cannot hide the message.
+        let wait_output = format!(
+            "{}\n{}",
+            String::from_utf8_lossy(&wait.stdout),
+            String::from_utf8_lossy(&wait.stderr)
         );
+        let banner = bbc_banner_after_failure(&outcome, wait.status.code(), &wait_output);
         if banner == BbcBannerAfterFailure::Absent {
             let us_evidence = if bbc_sourcepoint_accepted(&outcome, &json) {
                 " `consent accept` accepted a Sourcepoint notice, consistent with the US variant."
@@ -418,7 +421,7 @@ enum BbcBannerAfterFailure {
 fn bbc_banner_after_failure(
     outcome: &BbcConsentOutcome,
     wait_exit: Option<i32>,
-    wait_stderr: &str,
+    wait_output: &str,
 ) -> BbcBannerAfterFailure {
     // `consent accept` itself saw BBC's banner: never skip.
     if *outcome == BbcConsentOutcome::NativeNotActioned {
@@ -429,7 +432,7 @@ fn bbc_banner_after_failure(
         // AppError::Timeout exits 124; the selector-specific message
         // distinguishes "never appeared" from an unresponsive tab.
         Some(124)
-            if wait_stderr.contains(&format!("selector '{BBC_NATIVE_BUTTON}' not found after")) =>
+            if wait_output.contains(&format!("selector '{BBC_NATIVE_BUTTON}' not found after")) =>
         {
             BbcBannerAfterFailure::Absent
         }
@@ -527,10 +530,14 @@ fn bbc_consent_requires_native_accepted_action() {
 #[test]
 fn bbc_geo_skip_only_when_wait_times_out_on_the_selector() {
     use serde_json::json;
-    // Shape of a real `wait` selector timeout's stderr (exit 124).
-    let timeout = format!(
+    // A real `wait` selector timeout (exit 124): the JSON envelope on stdout,
+    // stderr empty (live run 37323155727 and a local capture), combined as
+    // the caller combines them.
+    let envelope = format!(
         r#"{{"error":"selector '{BBC_NATIVE_BUTTON}' not found after 5000ms on tab 'server1.conn3.tabDescriptor1' — the element may not exist","error_type":"Timeout"}}"#
     );
+    // println!'d stdout, the caller's separator, empty stderr.
+    let timeout = format!("{envelope}\n\n");
     let other = BbcConsentOutcome::OtherCmp;
     assert_eq!(
         bbc_banner_after_failure(&other, Some(124), &timeout),
@@ -548,7 +555,7 @@ fn bbc_geo_skip_only_when_wait_times_out_on_the_selector() {
         bbc_banner_after_failure(&BbcConsentOutcome::NativeNotActioned, Some(124), &timeout),
         BbcBannerAfterFailure::Present
     );
-    for (exit, stderr) in [
+    for (exit, output) in [
         (
             Some(124),
             "error: tab 'conn0.tab1' did not respond within 5000ms",
@@ -557,9 +564,9 @@ fn bbc_geo_skip_only_when_wait_times_out_on_the_selector() {
         (None, timeout.as_str()),
     ] {
         assert_eq!(
-            bbc_banner_after_failure(&other, exit, stderr),
+            bbc_banner_after_failure(&other, exit, output),
             BbcBannerAfterFailure::Inconclusive,
-            "{exit:?} {stderr}"
+            "{exit:?} {output}"
         );
     }
 

@@ -295,7 +295,9 @@ fn status_of(result: &Value) -> ConsentStatus {
 ///
 /// Two tiers:
 /// 1. A known accept-all label (`Accept all`, `I agree`, ...) in any frame —
-///    the GDPR/TCF variants.
+///    the GDPR/TCF variants — plus `Accept and Continue`, the only button on
+///    BBC's US `us_pm` notice (consent-probe run 37326616943). It is an
+///    explicit accept label, so it lives here rather than in the close tier.
 /// 2. Only when the frame's own document is a US opt-out privacy notice
 ///    (Sourcepoint's `us_pm` notice: `location.pathname` contains `/us_pm/`
 ///    or `location.search` contains `is_usnat_notice=true`), a visible
@@ -314,7 +316,7 @@ fn status_of(result: &Value) -> ConsentStatus {
 ///    which must not be reported as `accepted`.
 fn accept_all_js() -> String {
     r#"(function() {
-  var re = /^(accept all|accept all cookies|accept all and continue|accept all and close|accept all and subscribe|i accept|i agree|allow all)$/i;
+  var re = /^(accept all|accept all cookies|accept all and continue|accept all and close|accept all and subscribe|accept and continue|i accept|i agree|allow all)$/i;
   var candidates = Array.prototype.slice.call(document.querySelectorAll('button, [role="button"], a'));
   var target = null;
   for (var i = 0; i < candidates.length; i++) {
@@ -633,6 +635,10 @@ mod tests {
         let lower = re_line.to_ascii_lowercase();
         assert!(lower.contains("i agree"), "{re_line}");
         assert!(lower.contains("accept all"), "{re_line}");
+        assert!(
+            lower.contains("|accept and continue|"),
+            "BBC's US us_pm notice label must be a tier-1 accept label: {re_line}"
+        );
         assert!(
             !lower.contains("closer"),
             "close labels must not be in the first tier: {re_line}"
