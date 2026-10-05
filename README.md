@@ -75,7 +75,7 @@ five `-> ff-rdp …` commands that make sense from that state — and exits 0 ev
 when nothing is running, because a missing browser is state, not an error:
 
 ```text
-ff-rdp 0.4.0 — drive a live Firefox from the shell — inspect, act on, and measure the page …
+ff-rdp 0.4.1 — drive a live Firefox from the shell — inspect, act on, and measure the page …
 bin: ~/.cargo/bin/ff-rdp
 browser: reachable at localhost:6000 (Firefox 143)
 
@@ -783,7 +783,7 @@ On a published release the shared pipeline builds every target, publishes `ff-rd
 Every release binary is signed via Sigstore-backed [build provenance attestations](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations/using-artifact-attestations-to-establish-provenance-for-builds). To verify a downloaded artifact:
 
 ```sh
-gh attestation verify ff-rdp-v0.4.0-aarch64-apple-darwin.tar.gz --owner ractive
+gh attestation verify ff-rdp-v0.4.1-aarch64-apple-darwin.tar.gz --owner ractive
 ```
 
 Each native target also ships a CycloneDX SBOM for both `ff-rdp-cli` and `ff-rdp-core` (the `*.cdx.json` files on the release).
