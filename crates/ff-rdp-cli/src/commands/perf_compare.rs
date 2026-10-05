@@ -1,10 +1,11 @@
-use std::time::{Duration, Instant};
+use std::cell::Cell;
+use std::time::Duration;
 
 use anyhow::Context;
-use ff_rdp_core::{ActorId, Grip, LongStringActor, WebConsoleActor, WindowGlobalTarget};
+use ff_rdp_core::{Grip, LongStringActor, WebConsoleActor};
 use serde_json::{Value, json};
 
-use crate::cli::args::Cli;
+use crate::cli::args::{Cli, NetworkConditionsArgs};
 use crate::error::AppError;
 use crate::hints::{HintContext, HintSource};
 use crate::output;
@@ -17,7 +18,8 @@ use super::perf::{
 };
 use super::url_validation::validate_content_navigation_url;
 
-const POLL_INTERVAL_MS: u64 = 100;
+/// Pause after the commit so `PerformanceObserver` entries settle.
+const SETTLE_MS: u64 = 200;
 
 /// Validate that the number of labels matches the number of URLs.
 ///
@@ -43,58 +45,103 @@ fn label_for(urls: &[String], labels: Option<&[String]>, i: usize) -> String {
         .unwrap_or_else(|| urls[i].clone())
 }
 
-/// Navigate to `url`, wait for `document.readyState === 'complete'`, then sleep
-/// 200 ms to let `PerformanceObserver` entries settle.
-fn navigate_and_wait(
-    ctx: &mut ConnectedTab,
-    target_actor: &ActorId,
-    url: &str,
-    timeout_ms: u64,
-) -> Result<(), AppError> {
-    WindowGlobalTarget::navigate_to(ctx.transport_mut(), target_actor, url)
-        .map_err(AppError::from)?;
+/// One step of a URL's measurement in `perf compare`, named in its errors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Step {
+    /// Connecting to the tab (and `--cold`'s cache bypass), before the first
+    /// URL is loaded.
+    Connect,
+    /// The `navigateTo` request.
+    Navigate,
+    /// The `document.readyState === 'complete'` poll.
+    ReadyState,
+    /// The metrics collection eval.
+    Collect,
+}
 
-    // Poll readyState until complete.
-    let console_actor = ctx.target().console_actor.clone();
-    let timeout = Duration::from_millis(timeout_ms);
-    let poll = Duration::from_millis(POLL_INTERVAL_MS);
-    let started = Instant::now();
-
-    loop {
-        let eval_result = WebConsoleActor::evaluate_js_async(
-            ctx.transport_mut(),
-            &console_actor,
-            "document.readyState",
-        )
-        .map_err(AppError::from)?;
-
-        if let Some(ref exc) = eval_result.exception {
-            let msg = exc.message.as_deref().unwrap_or("evaluation error");
-            return Err(AppError::User(format!(
-                "perf compare: readyState check failed for {url}: {msg}"
-            )));
+impl Step {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Connect => "connect",
+            Self::Navigate => "navigate",
+            Self::ReadyState => "readystate",
+            Self::Collect => "collect",
         }
-
-        let ready = matches!(
-            &eval_result.result,
-            Grip::Value(Value::String(s)) if s == "complete"
-        );
-
-        if ready {
-            break;
-        }
-
-        if started.elapsed() >= timeout {
-            return Err(AppError::User(format!(
-                "perf compare: page did not reach readyState=complete within {timeout_ms}ms for {url}"
-            )));
-        }
-
-        std::thread::sleep(poll);
     }
+}
 
-    // Give PerformanceObserver entries a moment to settle.
-    std::thread::sleep(Duration::from_millis(200));
+/// The context attached to an error from `step` while measuring `url`: which
+/// URL and step it was, and that `--timeout` bounds each step, not the run.
+fn step_context(url: &str, step: Step, timeout_ms: u64) -> String {
+    format!(
+        "perf compare: step `{}` for {url} did not finish (--timeout {timeout_ms}ms bounds \
+         each step of each URL, not the whole run)",
+        step.as_str()
+    )
+}
+
+/// Map an error from `step` on `url` into one that names both.
+///
+/// A timeout (`RdpTimeout` / `Timeout`) keeps its type and exit code and gets
+/// [`step_context`] as its hint; a `User` or `Connection` error keeps its type
+/// and gets the URL and step prefixed. Other variants (protocol errors, a
+/// destroyed actor, navigation failures) pass through unchanged: their
+/// structured fields are what callers branch on, and a navigation error
+/// already names the URL.
+fn step_error(err: impl Into<AppError>, url: &str, step: Step, timeout_ms: u64) -> AppError {
+    match err.into() {
+        err @ (AppError::RdpTimeout { .. } | AppError::Timeout(_)) => {
+            err.with_timeout_hint(step_context(url, step, timeout_ms))
+        }
+        AppError::User(msg) => AppError::User(format!(
+            "perf compare: step `{}` failed for {url}: {msg}",
+            step.as_str()
+        )),
+        AppError::Connection(msg) => AppError::Connection(format!(
+            "perf compare: step `{}` failed for {url}: {msg}",
+            step.as_str()
+        )),
+        other => other,
+    }
+}
+
+/// Navigate to `url` and wait until the new document has committed and
+/// reached `readyState === 'complete'`, then pause to let
+/// `PerformanceObserver` entries settle.
+///
+/// This goes through the same commit wait as `navigate`/`reload`
+/// ([`super::navigate::wait_for_navigation_commit`]), which re-resolves the
+/// console actor for the new document. The former `navigateTo` +
+/// `document.readyState` poll answered from the *outgoing* document (already
+/// `complete`) and then sent the collection eval to its console actor, which
+/// died with that document: the reply never came and the command failed with
+/// a bare `RdpTimeout { phase: "recv" }` (feedback 2026-10-05).
+fn navigate_and_wait(ctx: &mut ConnectedTab, url: &str, timeout_ms: u64) -> Result<(), AppError> {
+    let target_actor = ctx.target().actor.clone();
+    let packet = json!({"to": target_actor.as_ref(), "type": "navigateTo", "url": url});
+    let dispatch_failed = Cell::new(false);
+    super::navigate::wait_for_navigation_commit(
+        ctx,
+        timeout_ms,
+        url,
+        &NetworkConditionsArgs::default(),
+        |transport| {
+            transport.send(&packet).map_err(|e| {
+                dispatch_failed.set(true);
+                AppError::from(e)
+            })
+        },
+    )
+    .map_err(|e| {
+        let step = if dispatch_failed.get() {
+            Step::Navigate
+        } else {
+            Step::ReadyState
+        };
+        step_error(e, url, step, timeout_ms)
+    })?;
+
+    std::thread::sleep(Duration::from_millis(SETTLE_MS));
     Ok(())
 }
 
@@ -349,7 +396,12 @@ fn collect_page_perf(ctx: &mut ConnectedTab, label: &str) -> Result<Value, AppEr
 }
 
 /// Run `ff-rdp perf compare <url1> <url2> [...]`.
-pub fn run(cli: &Cli, urls: &[String], labels: Option<&[String]>) -> Result<(), AppError> {
+pub fn run(
+    cli: &Cli,
+    urls: &[String],
+    labels: Option<&[String]>,
+    cold: bool,
+) -> Result<(), AppError> {
     validate_labels(urls, labels)?;
 
     // Validate the entire list before connecting or navigating to even its
@@ -359,17 +411,28 @@ pub fn run(cli: &Cli, urls: &[String], labels: Option<&[String]>) -> Result<(), 
         validate_content_navigation_url(url, cli.allow_file_urls, cli.allow_unsafe_urls)?;
     }
 
-    let mut ctx = connect_and_get_target(cli)?;
-    let target_actor = ctx.target().actor.clone();
+    // `validate_labels`' `required = true, num_args = 2..` contract means
+    // there is always a first URL; name it in a setup failure.
+    let first_url = urls.first().map_or("", String::as_str);
+    let mut ctx = connect_and_get_target(cli)
+        .map_err(|e| step_error(e, first_url, Step::Connect, cli.timeout))?;
+
+    // `--cold`: one `cacheDisabled` for the whole connection covers every URL
+    // this command loads; Firefox restores normal caching on disconnect.
+    if cold {
+        super::perf::bypass_http_cache(&mut ctx)
+            .map_err(|e| step_error(e, first_url, Step::Connect, cli.timeout))?;
+    }
 
     let mut results: Vec<Value> = Vec::with_capacity(urls.len());
 
     for (i, url) in urls.iter().enumerate() {
         let lbl = label_for(urls, labels, i);
 
-        navigate_and_wait(&mut ctx, &target_actor, url, cli.timeout)?;
+        navigate_and_wait(&mut ctx, url, cli.timeout)?;
 
-        let perf_data = collect_page_perf(&mut ctx, &lbl)?;
+        let perf_data = collect_page_perf(&mut ctx, &lbl)
+            .map_err(|e| step_error(e, url, Step::Collect, cli.timeout))?;
 
         results.push(json!({
             "label": lbl,
@@ -389,6 +452,7 @@ pub fn run(cli: &Cli, urls: &[String], labels: Option<&[String]>) -> Result<(), 
         None,
         cli.is_verbose(),
     );
+    super::perf::mark_cache_bypassed(&mut meta, cold);
     let envelope = output::envelope(&Value::Array(results), total, &meta);
 
     let hint_ctx = HintContext::new(HintSource::Perf);
@@ -438,6 +502,73 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains('3'), "expected label count in error: {msg}");
         assert!(msg.contains('1'), "expected url count in error: {msg}");
+    }
+
+    // ── step_error ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn step_error_names_url_and_step_on_rdp_timeout() {
+        let err = step_error(
+            AppError::RdpTimeout {
+                phase: "recv".to_owned(),
+                after_ms: 1,
+                hint: None,
+            },
+            "https://example.com/",
+            Step::Navigate,
+            1,
+        );
+        assert_eq!(err.error_type(), "Timeout");
+        let msg = err.to_string();
+        assert!(msg.contains("https://example.com/"), "{msg}");
+        assert!(msg.contains("step `navigate`"), "{msg}");
+        assert!(msg.contains("not the whole run"), "{msg}");
+    }
+
+    #[test]
+    fn step_error_names_each_step() {
+        for (step, name) in [
+            (Step::Connect, "`connect`"),
+            (Step::Navigate, "`navigate`"),
+            (Step::ReadyState, "`readystate`"),
+            (Step::Collect, "`collect`"),
+        ] {
+            let msg = step_error(
+                AppError::Timeout("timed out".to_owned()),
+                "https://example.org/",
+                step,
+                1000,
+            )
+            .to_string();
+            assert!(msg.contains(name), "{msg}");
+            assert!(msg.contains("https://example.org/"), "{msg}");
+        }
+    }
+
+    #[test]
+    fn step_error_prefixes_user_errors_and_keeps_other_variants() {
+        let msg = step_error(
+            AppError::User("eval threw".to_owned()),
+            "https://a.example/",
+            Step::Collect,
+            1000,
+        )
+        .to_string();
+        assert!(
+            msg.contains("step `collect` failed for https://a.example/"),
+            "{msg}"
+        );
+        assert!(msg.ends_with("eval threw"), "{msg}");
+
+        let err = step_error(
+            AppError::RdpActorDestroyed {
+                actor: "conn0/tab1".to_owned(),
+            },
+            "https://a.example/",
+            Step::Collect,
+            1000,
+        );
+        assert_eq!(err.error_type(), "actor_destroyed");
     }
 
     // ── label_for ─────────────────────────────────────────────────────────────

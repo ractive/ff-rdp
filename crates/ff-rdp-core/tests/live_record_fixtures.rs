@@ -300,7 +300,7 @@ fn live_get_watcher() {
 
 /// Record `getTargetConfigurationActor` and one `updateConfiguration` reply per
 /// setting ff-rdp sends (`screenshot --color-scheme/--media`,
-/// `navigate --user-agent`). Each update runs on its own connection so its
+/// `navigate --user-agent`, `perf --cold`). Each update runs on its own connection so its
 /// echo carries only that setting — Firefox restores the settings when the
 /// connection closes.
 #[test]
@@ -321,6 +321,10 @@ fn live_target_configuration() {
         (
             json!({"customUserAgent": "ff-rdp-fixture-UA/1.0"}),
             "update_configuration_user_agent_response.json",
+        ),
+        (
+            json!({"cacheDisabled": true}),
+            "update_configuration_cache_disabled_response.json",
         ),
     ];
     for (index, (configuration, fixture)) in cases.iter().enumerate() {

@@ -9,7 +9,61 @@ use crate::output;
 use crate::output_controls::{OutputControls, SortDir};
 use crate::output_pipeline::OutputPipeline;
 
-use super::connect_tab::connect_and_get_target;
+use super::connect_tab::{ConnectedTab, connect_and_get_target};
+
+/// `meta.cache` value when `--cold` bypassed the HTTP cache.
+const CACHE_BYPASSED: &str = "bypassed";
+
+/// `--cold`: set `cacheDisabled: true` (the top browsing context's
+/// `defaultLoadFlags = LOAD_BYPASS_CACHE`) on the tab's target-configuration
+/// actor. It lives as long as this command's connection — Firefox restores
+/// `LOAD_NORMAL` when the actor is destroyed on disconnect.
+///
+/// The watcher is requested with server-side target switching on, the
+/// options `wait_for_navigation_commit` needs: a tab descriptor keeps the
+/// options of the first `getWatcher` on a connection.
+pub(crate) fn bypass_http_cache(ctx: &mut ConnectedTab) -> Result<(), AppError> {
+    let tab_actor = ctx.target_tab_actor().clone();
+    let watcher = ff_rdp_core::TabActor::get_watcher_with_options(
+        ctx.transport_mut(),
+        &tab_actor,
+        Some(true),
+    )
+    .map_err(AppError::from)?;
+    let configuration = ff_rdp_core::TargetConfiguration {
+        cache_disabled: Some(true),
+        ..Default::default()
+    };
+    super::emulation::apply(ctx, &watcher, &configuration)
+}
+
+/// `perf vitals|summary|audit --cold`: these measure the page already loaded,
+/// so bypass the HTTP cache and reload it, waiting for the reload to commit
+/// the same way `reload` does (which also re-resolves the console actor for
+/// the new document before the caller evaluates its collection script).
+fn cold_reload(cli: &Cli, ctx: &mut ConnectedTab) -> Result<(), AppError> {
+    bypass_http_cache(ctx)?;
+    let console_actor = ctx.target().console_actor.clone();
+    let requested_url = super::navigate::eval_location_href(ctx.transport_mut(), &console_actor);
+    let target_actor = ctx.target().actor.clone();
+    let reload = json!({"to": target_actor.as_ref(), "type": "reload"});
+    super::navigate::wait_for_navigation_commit(
+        ctx,
+        cli.timeout,
+        &requested_url,
+        &crate::cli::args::NetworkConditionsArgs::default(),
+        move |transport| transport.send(&reload).map_err(AppError::from),
+    )
+    .map_err(|e| e.with_timeout_hint("perf --cold: waiting for the cache-bypassing reload"))?;
+    Ok(())
+}
+
+/// Record `--cold` in the envelope's `meta`.
+pub(crate) fn mark_cache_bypassed(meta: &mut Value, cold: bool) {
+    if cold && let Some(obj) = meta.as_object_mut() {
+        obj.insert("cache".to_owned(), json!(CACHE_BYPASSED));
+    }
+}
 
 /// Observer-backed entry types that cannot be fetched via `getEntriesByType` alone.
 const OBSERVER_TYPES: &[&str] = &[
@@ -498,7 +552,7 @@ pub fn run(cli: &Cli, entry_type: &str, filter: Option<&str>) -> Result<(), AppE
 }
 
 /// Collect all CWV-relevant entry types in a single eval and compute Core Web Vitals.
-pub fn run_vitals(cli: &Cli) -> Result<(), AppError> {
+pub fn run_vitals(cli: &Cli, cold: bool) -> Result<(), AppError> {
     // `buffered: true` + `takeRecords()` reads already-recorded entries
     // synchronously, so we don't need Promises or async/await (which
     // `evaluateJSAsync` doesn't auto-resolve).  The callback itself would only
@@ -583,6 +637,9 @@ pub fn run_vitals(cli: &Cli) -> Result<(), AppError> {
 })()";
 
     let mut ctx = connect_and_get_target(cli)?;
+    if cold {
+        cold_reload(cli, &mut ctx)?;
+    }
     let json_str = eval_to_json_string(&mut ctx, script, "perf vitals")?;
 
     let all: Value = serde_json::from_str(&json_str)
@@ -661,6 +718,7 @@ pub fn run_vitals(cli: &Cli) -> Result<(), AppError> {
         None,
         cli.is_verbose(),
     );
+    mark_cache_bypassed(&mut meta, cold);
     let envelope = output::envelope(&results, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::PerfVitals);
@@ -718,9 +776,12 @@ fn aggregate_by_domain(mapped: &[Value]) -> Vec<Value> {
 }
 
 /// Aggregate resource summary: sizes, request counts by type, slowest resources, domain breakdown.
-pub fn run_summary(cli: &Cli) -> Result<(), AppError> {
+pub fn run_summary(cli: &Cli, cold: bool) -> Result<(), AppError> {
     let script = script_resource_entries_with_pending_signal();
     let mut ctx = connect_and_get_target(cli)?;
+    if cold {
+        cold_reload(cli, &mut ctx)?;
+    }
     let json_str = eval_to_json_string(&mut ctx, &script, "perf summary")?;
 
     let combined: Value = serde_json::from_str(&json_str)
@@ -828,6 +889,7 @@ pub fn run_summary(cli: &Cli) -> Result<(), AppError> {
         None,
         cli.is_verbose(),
     );
+    mark_cache_bypassed(&mut meta, cold);
     let envelope = output::envelope(&results, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::PerfSummary);
@@ -943,7 +1005,7 @@ fn format_transfer_size(size: Option<&Value>) -> String {
 }
 
 /// Collect all performance data into a single structured audit report.
-pub fn run_audit(cli: &Cli) -> Result<(), AppError> {
+pub fn run_audit(cli: &Cli, cold: bool) -> Result<(), AppError> {
     let script = r#"(function() {
   var result = {};
 
@@ -1080,6 +1142,9 @@ pub fn run_audit(cli: &Cli) -> Result<(), AppError> {
     );
 
     let mut ctx = connect_and_get_target(cli)?;
+    if cold {
+        cold_reload(cli, &mut ctx)?;
+    }
     let json_str = eval_to_json_string(&mut ctx, &script, "perf audit")?;
 
     let all: Value = serde_json::from_str(&json_str)
@@ -1360,6 +1425,7 @@ pub fn run_audit(cli: &Cli) -> Result<(), AppError> {
         None,
         cli.is_verbose(),
     );
+    mark_cache_bypassed(&mut meta, cold);
     let envelope = output::envelope(&results, 1, &meta);
 
     let hint_ctx = HintContext::new(HintSource::PerfAudit);

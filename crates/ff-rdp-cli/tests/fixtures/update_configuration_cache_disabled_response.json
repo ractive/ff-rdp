@@ -1,0 +1,6 @@
+{
+  "configuration": {
+    "cacheDisabled": true
+  },
+  "from": "server1.conn0.target-configuration4"
+}
