@@ -9,6 +9,7 @@ fn default_wait_opts<'a>() -> WaitAfterNav<'a> {
         wait_for: &[],
         wait_level: WaitLevel::Complete,
         wait_strategy: WaitStrategy::Events,
+        wait_idle: None,
     }
 }
 

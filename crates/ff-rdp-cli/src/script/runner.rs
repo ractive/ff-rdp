@@ -808,6 +808,7 @@ fn execute_navigate(
         // (dogfooding-session-59 §3); the readystate-poll fallback in `Both`
         // covers those cases without changing behaviour on event-rich pages.
         wait_strategy: crate::commands::navigate::WaitStrategy::Both,
+        wait_idle: None,
     };
     // Script steps have no `--with-page` equivalent in the script format; a
     // step that wants the page view runs an `a11y summary` step instead.

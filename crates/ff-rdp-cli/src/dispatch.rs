@@ -407,6 +407,8 @@ fn dispatch_inner(
             wait_for,
             wait,
             wait_strategy,
+            wait_idle,
+            idle_ms,
             auto_consent,
             user_agent,
             conditions,
@@ -420,6 +422,7 @@ fn dispatch_inner(
                 wait_for,
                 wait_level: *wait,
                 wait_strategy: *wait_strategy,
+                wait_idle: wait_idle.then_some(*idle_ms),
             };
             if *with_network {
                 commands::navigate::run_with_network(

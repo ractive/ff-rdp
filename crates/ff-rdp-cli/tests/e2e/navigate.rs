@@ -1134,3 +1134,38 @@ fn navigate_user_agent_refused_with_no_wait_with_network_and_auto_consent() {
         assert!(note.contains("--user-agent"), "{flag}: {note}");
     }
 }
+
+/// iter-295: `--wait-idle` conflicts with `--no-wait` (nothing to be idle
+/// after) and `--with-network` (which already settles on a network drain),
+/// and `--idle-ms` needs `--wait-idle`. Clap must refuse all three before a
+/// connection is opened: the untouched listener is the sentinel.
+#[test]
+fn e2e_295_wait_idle_conflicts_rejected_before_connect() {
+    use std::net::TcpListener;
+    for extra in [
+        vec!["--wait-idle", "--no-wait"],
+        vec!["--wait-idle", "--with-network"],
+        vec!["--idle-ms", "300"],
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port().to_string();
+        let output = std::process::Command::new(ff_rdp_bin())
+            .args(["--host", "127.0.0.1", "--port", &port, "--timeout", "100"])
+            .args(["navigate", "https://example.com/"])
+            .args(&extra)
+            .output()
+            .expect("run ff-rdp navigate");
+        assert_eq!(output.status.code(), Some(2), "{extra:?}: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("cannot be used with") || stderr.contains("required"),
+            "{extra:?}: {stderr}"
+        );
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "connection attempted: {extra:?}"
+        );
+    }
+}
