@@ -269,6 +269,14 @@ fn live_144_no_consent_o_matic_tab_leak() {
 /// banner at `#bbccookies-continue-button`, and the control is genuinely
 /// gone afterward (zero-size bounding rect), not just blindly clicked.
 ///
+/// Geo-dependent: only the European variant of `www.bbc.com` renders the
+/// native banner. From a US IP (the GitHub runners) BBC serves no
+/// `#bbccookies-continue-button` at all, only Sourcepoint's `us_pm` opt-out
+/// notice, and that one intermittently (consent-probe runs 37313988449 and
+/// 37318475787). The native-dismissal premise cannot hold there, so the test
+/// probes for the button after `navigate` and skips with an explanation when
+/// it is absent. Where the button exists, the assertions are unchanged.
+///
 /// Network-gated: navigates to the real `www.bbc.com`.
 #[test]
 #[ignore = "requires Firefox + FF_RDP_LIVE_TESTS=1 + FF_RDP_LIVE_NETWORK_TESTS=1 + FF_RDP_LIVE_SITES_TESTS=1 (third-party site)"]
@@ -299,6 +307,28 @@ fn live_144_bbc_cmp_dismissed() {
         crate::common::output_note(&nav),
         bbc_failure_context(ff.port())
     );
+
+    let probe = Command::new(ff_rdp_bin())
+        .args(base_args(ff.port()))
+        .args(["dom", "#bbccookies-continue-button"])
+        .output()
+        .expect("run dom");
+    assert!(
+        probe.status.success(),
+        "{TEST}: dom probe for the native banner failed — {}",
+        crate::common::output_note(&probe)
+    );
+    let probe_json = parse_json(&probe, TEST);
+    let native_present = bbc_native_banner_present(&probe_json)
+        .unwrap_or_else(|| panic!("{TEST}: dom results is not an array: {probe_json}"));
+    if !native_present {
+        eprintln!(
+            "{TEST}: www.bbc.com served a variant without the native \
+             `#bbccookies-continue-button` banner (US geo serves only Sourcepoint's \
+             us_pm notice) — the native-dismissal premise does not hold here, skipping"
+        );
+        return;
+    }
 
     let out = Command::new(ff_rdp_bin())
         .args(base_args(ff.port()))
@@ -349,6 +379,14 @@ fn live_144_bbc_cmp_dismissed() {
          page after failure (later observation): {}",
         bbc_failure_context(ff.port())
     );
+}
+
+/// Whether a `dom '#bbccookies-continue-button'` envelope found the native
+/// banner control. `None` when `results` is not an array (malformed output).
+fn bbc_native_banner_present(dom_envelope: &serde_json::Value) -> Option<bool> {
+    dom_envelope["results"]
+        .as_array()
+        .map(|results| !results.is_empty())
 }
 
 // Read only after a failed command: an extra pre-consent round trip could hide
@@ -429,6 +467,23 @@ fn bbc_consent_requires_native_accepted_action() {
         bbc_consent_outcome(false, &no_action),
         BbcConsentOutcome::NativeNotActioned
     );
+}
+
+// allow-ungated-live: pure geo-variant probe controls, not invented RDP/site fixtures.
+#[test]
+fn bbc_native_banner_presence_from_dom_results() {
+    use serde_json::json;
+    assert_eq!(
+        bbc_native_banner_present(&json!({"results": []})),
+        Some(false)
+    );
+    assert_eq!(
+        bbc_native_banner_present(&json!({"results": [{"tag": "button"}]})),
+        Some(true)
+    );
+    assert_eq!(bbc_native_banner_present(&json!({})), None);
+    assert_eq!(bbc_native_banner_present(&json!({"results": null})), None);
+    assert_eq!(bbc_native_banner_present(&json!({"results": "x"})), None);
 }
 
 // allow-ungated-live: pure effect-oracle controls; malformed samples must not prove dismissal.
