@@ -292,6 +292,26 @@ fn status_of(result: &Value) -> ConsentStatus {
 
 /// JS that finds and clicks a known accept-all label in one frame. Only a
 /// known pre-action miss returns false; unexpected exceptions are not caught.
+///
+/// Two tiers:
+/// 1. A known accept-all label (`Accept all`, `I agree`, ...) in any frame —
+///    the GDPR/TCF variants.
+/// 2. Only when the frame's own document is a US opt-out privacy notice
+///    (Sourcepoint's `us_pm` notice: `location.pathname` contains `/us_pm/`
+///    or `location.search` contains `is_usnat_notice=true`), a visible
+///    close control (`title`, `aria-label` or text equal to `Closer` or
+///    `Close`). That notice has no
+///    accept control at all: under the US opt-out regime consent is the
+///    default state, the only choice offered is "Do not sell or share my
+///    personal information", and closing the notice keeps the default — so
+///    a close click is the acceptance a user would perform, and is reported
+///    as `accepted`. `Closer` is Sourcepoint's literal label for the close X,
+///    observed on theguardian.com from a US runner on 2026-10-05
+///    (consent-probe run 37313988449). The tier never runs in a GDPR frame:
+///    closing a GDPR banner is not acceptance. Labels such as `Continue`,
+///    `OK` or `Dismiss` are deliberately excluded: on the privacy-manager
+///    page reached via "Do not sell", such a button confirms an opt-out,
+///    which must not be reported as `accepted`.
 fn accept_all_js() -> String {
     r#"(function() {
   var re = /^(accept all|accept all cookies|accept all and continue|accept all and close|accept all and subscribe|i accept|i agree|allow all)$/i;
@@ -301,6 +321,25 @@ fn accept_all_js() -> String {
     var el = candidates[i];
     var label = (el.getAttribute('aria-label') || el.textContent || '').trim();
     if (re.test(label)) { target = el; break; }
+  }
+  if (!target) {
+    var usNotice = location.pathname.indexOf('/us_pm/') !== -1 || location.search.indexOf('is_usnat_notice=true') !== -1;
+    if (!usNotice) return false;
+    var closeRe = /^(close|closer)$/i;
+    var buttons = Array.prototype.slice.call(document.querySelectorAll('button, [role="button"]'));
+    for (var j = 0; j < buttons.length; j++) {
+      var b = buttons[j];
+      var names = [b.getAttribute('title'), b.getAttribute('aria-label'), b.textContent];
+      var hit = false;
+      for (var k = 0; k < names.length; k++) {
+        if (names[k] && closeRe.test(names[k].trim())) { hit = true; break; }
+      }
+      if (!hit) continue;
+      var r = b.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0) continue;
+      target = b;
+      break;
+    }
   }
   if (!target) return false;
   target.click();
@@ -580,6 +619,54 @@ mod tests {
             re_line.to_ascii_lowercase().contains("i agree"),
             "accept_all_js regex must match the bare \"I agree\" label observed live on BBC: {re_line}"
         );
+    }
+
+    /// The first tier still matches the GDPR labels observed from Europe
+    /// (BBC "I agree", Guardian "Accept all") after the US tier was added.
+    #[test]
+    fn accept_all_js_first_tier_keeps_gdpr_labels() {
+        let js = accept_all_js();
+        let re_line = js
+            .lines()
+            .find(|l| l.contains("var re ="))
+            .expect("accept_all_js must declare `var re`");
+        let lower = re_line.to_ascii_lowercase();
+        assert!(lower.contains("i agree"), "{re_line}");
+        assert!(lower.contains("accept all"), "{re_line}");
+        assert!(
+            !lower.contains("closer"),
+            "close labels must not be in the first tier: {re_line}"
+        );
+    }
+
+    /// Sourcepoint's US opt-out notice (`us_pm`) has no accept control; the
+    /// second tier clicks its close X ("Closer", observed 2026-10-05) — but
+    /// only behind the `us_pm` / `is_usnat_notice` guard, never in a GDPR frame.
+    #[test]
+    fn accept_all_js_us_tier_is_guarded_and_matches_closer() {
+        let js = accept_all_js();
+        assert!(js.contains("'/us_pm/'"), "{js}");
+        assert!(js.contains("'is_usnat_notice=true'"), "{js}");
+        assert!(js.contains("if (!usNotice) return false;"), "{js}");
+        let close_line = js
+            .lines()
+            .find(|l| l.contains("var closeRe ="))
+            .expect("accept_all_js must declare `var closeRe`");
+        assert!(
+            close_line.contains("/^(close|closer)$/i"),
+            "close regex must stay limited to close|closer: {close_line}"
+        );
+        for opt_out_confirm in ["continue", "ok", "dismiss", "got it"] {
+            assert!(
+                !close_line.to_ascii_lowercase().contains(opt_out_confirm),
+                "{opt_out_confirm} could confirm an opt-out: {close_line}"
+            );
+        }
+        assert!(js.contains("getBoundingClientRect()"), "{js}");
+        // The guard precedes the close-label scan.
+        let guard = js.find("if (!usNotice) return false;").expect("guard");
+        let scan = js.find("var closeRe").expect("closeRe");
+        assert!(guard < scan);
     }
 
     // ── native CMP matching (iter-144 Theme C) ──────────────────────────

@@ -40,12 +40,12 @@ jobs:
         run: |
           FF=target/debug/ff-rdp
           $FF launch --headless --port 6000
-          curl -s https://ifconfig.co/country 2>/dev/null || true; echo
+          curl -s https://ipinfo.io/country || true; echo
           JS='JSON.stringify({url: location.href, lang: navigator.language, controls: Array.prototype.slice.call(document.querySelectorAll("button, [role=button], a")).map(function(e){ var r=e.getBoundingClientRect(); return {tag:e.tagName, title:e.getAttribute("title"), aria:e.getAttribute("aria-label"), text:(e.textContent||"").trim().slice(0,80), w:r.width, h:r.height}; })})'
           for url in $URLS; do
             echo "=== $url"
             $FF navigate "$url" --jq '.results | {committed_url, status}'
-            $FF wait --sleep-ms 4000 >/dev/null
+            $FF wait --sleep-ms 8000 >/dev/null
             echo "--- frames (the miss error lists every frame URL):"
             $FF eval --frame "__no_such_frame__" "1" 2>&1 || true
             for sub in privacy-mgmt sourcepoint sp-prod; do
@@ -54,4 +54,8 @@ jobs:
             done
             echo "--- consent accept outcome:"
             $FF consent accept 2>&1 || true
+            echo "--- second consent accept (a follow-up layer, e.g. BBC's native banner):"
+            $FF consent accept 2>&1 || true
+            echo "--- BBC native banner continue button:"
+            $FF dom '#bbccookies-continue-button' 2>&1 || true
           done
