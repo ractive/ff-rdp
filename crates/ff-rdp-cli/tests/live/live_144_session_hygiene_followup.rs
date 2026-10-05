@@ -273,9 +273,12 @@ fn live_144_no_consent_o_matic_tab_leak() {
 /// native banner. From a US IP (the GitHub runners) BBC serves no
 /// `#bbccookies-continue-button` at all, only Sourcepoint's `us_pm` opt-out
 /// notice, and that one intermittently (consent-probe runs 37313988449 and
-/// 37318475787). The native-dismissal premise cannot hold there, so the test
-/// probes for the button after `navigate` and skips with an explanation when
-/// it is absent. Where the button exists, the assertions are unchanged.
+/// 37318475787). The native-dismissal premise cannot hold there. The test
+/// still runs `consent accept` right after `navigate` with no extra round trip,
+/// so a readiness race stays visible. Only when the outcome is not
+/// `NativeAccepted` does it observe the page: it waits up to 5 s for the
+/// button. If the button appears, the page is the European variant and the
+/// failure stands. If it never appears, the test skips with an explanation.
 ///
 /// Network-gated: navigates to the real `www.bbc.com`.
 #[test]
@@ -308,28 +311,6 @@ fn live_144_bbc_cmp_dismissed() {
         bbc_failure_context(ff.port())
     );
 
-    let probe = Command::new(ff_rdp_bin())
-        .args(base_args(ff.port()))
-        .args(["dom", "#bbccookies-continue-button"])
-        .output()
-        .expect("run dom");
-    assert!(
-        probe.status.success(),
-        "{TEST}: dom probe for the native banner failed — {}",
-        crate::common::output_note(&probe)
-    );
-    let probe_json = parse_json(&probe, TEST);
-    let native_present = bbc_native_banner_present(&probe_json)
-        .unwrap_or_else(|| panic!("{TEST}: dom results is not an array: {probe_json}"));
-    if !native_present {
-        eprintln!(
-            "{TEST}: www.bbc.com served a variant without the native \
-             `#bbccookies-continue-button` banner (US geo serves only Sourcepoint's \
-             us_pm notice) — the native-dismissal premise does not hold here, skipping"
-        );
-        return;
-    }
-
     let out = Command::new(ff_rdp_bin())
         .args(base_args(ff.port()))
         .args(["consent", "accept"])
@@ -343,11 +324,50 @@ fn live_144_bbc_cmp_dismissed() {
         )
     });
     let outcome = bbc_consent_outcome(out.status.success(), &json);
+    let mut banner_note = String::new();
+    if outcome != BbcConsentOutcome::NativeAccepted {
+        // Post-failure observation only: decides between a real failure
+        // (European variant, banner present) and a geo skip (no native banner).
+        let wait = Command::new(ff_rdp_bin())
+            .args(base_args(ff.port()))
+            .args([
+                "wait",
+                "--selector",
+                BBC_NATIVE_BUTTON,
+                "--timeout-ms",
+                "5000",
+            ])
+            .output()
+            .expect("run wait");
+        let banner = bbc_banner_after_failure(
+            &outcome,
+            wait.status.code(),
+            &String::from_utf8_lossy(&wait.stderr),
+        );
+        if banner == BbcBannerAfterFailure::Absent {
+            let us_evidence = if bbc_sourcepoint_accepted(&outcome, &json) {
+                " `consent accept` accepted a Sourcepoint notice, consistent with the US variant."
+            } else {
+                ""
+            };
+            eprintln!(
+                "{TEST}: www.bbc.com served a variant without the native \
+                 `{BBC_NATIVE_BUTTON}` banner (US geo serves only Sourcepoint's \
+                 us_pm notice) — the native-dismissal premise does not hold here, \
+                 skipping (consent outcome {outcome:?}).{us_evidence}"
+            );
+            return;
+        }
+        banner_note = format!(
+            "\nbanner after failure: {banner:?} — {}",
+            crate::common::output_note(&wait)
+        );
+    }
     assert_eq!(
         outcome,
         BbcConsentOutcome::NativeAccepted,
         "{TEST}: native BBC dismissal unverified; command outcome {outcome:?} — {}\n\
-         navigate: {}\npage after failure (later observation): {}",
+         navigate: {}{banner_note}\npage after failure (later observation): {}",
         crate::common::output_note(&out),
         crate::common::output_note(&nav),
         bbc_failure_context(ff.port())
@@ -381,12 +401,46 @@ fn live_144_bbc_cmp_dismissed() {
     );
 }
 
-/// Whether a `dom '#bbccookies-continue-button'` envelope found the native
-/// banner control. `None` when `results` is not an array (malformed output).
-fn bbc_native_banner_present(dom_envelope: &serde_json::Value) -> Option<bool> {
-    dom_envelope["results"]
-        .as_array()
-        .map(|results| !results.is_empty())
+const BBC_NATIVE_BUTTON: &str = "#bbccookies-continue-button";
+
+/// What the post-failure `wait --selector` observation says about BBC's
+/// native banner.
+#[derive(Debug, PartialEq)]
+enum BbcBannerAfterFailure {
+    /// The button exists: European variant, the consent failure stands.
+    Present,
+    /// `wait` timed out on the selector: the variant has no native banner.
+    Absent,
+    /// The observation itself failed; never grounds for a skip.
+    Inconclusive,
+}
+
+fn bbc_banner_after_failure(
+    outcome: &BbcConsentOutcome,
+    wait_exit: Option<i32>,
+    wait_stderr: &str,
+) -> BbcBannerAfterFailure {
+    // `consent accept` itself saw BBC's banner: never skip.
+    if *outcome == BbcConsentOutcome::NativeNotActioned {
+        return BbcBannerAfterFailure::Present;
+    }
+    match wait_exit {
+        Some(0) => BbcBannerAfterFailure::Present,
+        // AppError::Timeout exits 124; the selector-specific message
+        // distinguishes "never appeared" from an unresponsive tab.
+        Some(124)
+            if wait_stderr.contains(&format!("selector '{BBC_NATIVE_BUTTON}' not found after")) =>
+        {
+            BbcBannerAfterFailure::Absent
+        }
+        _ => BbcBannerAfterFailure::Inconclusive,
+    }
+}
+
+fn bbc_sourcepoint_accepted(outcome: &BbcConsentOutcome, envelope: &serde_json::Value) -> bool {
+    *outcome == BbcConsentOutcome::OtherCmp
+        && envelope["results"]["cmp"] == "sourcepoint"
+        && envelope["results"]["status"] == "accepted"
 }
 
 // Read only after a failed command: an extra pre-consent round trip could hide
@@ -469,21 +523,55 @@ fn bbc_consent_requires_native_accepted_action() {
     );
 }
 
-// allow-ungated-live: pure geo-variant probe controls, not invented RDP/site fixtures.
+// allow-ungated-live: pure geo-skip decision controls, not invented RDP/site fixtures.
 #[test]
-fn bbc_native_banner_presence_from_dom_results() {
+fn bbc_geo_skip_only_when_wait_times_out_on_the_selector() {
     use serde_json::json;
+    // Shape of a real `wait` selector timeout's stderr (exit 124).
+    let timeout = format!(
+        r#"{{"error":"selector '{BBC_NATIVE_BUTTON}' not found after 5000ms on tab 'server1.conn3.tabDescriptor1' — the element may not exist","error_type":"Timeout"}}"#
+    );
+    let other = BbcConsentOutcome::OtherCmp;
     assert_eq!(
-        bbc_native_banner_present(&json!({"results": []})),
-        Some(false)
+        bbc_banner_after_failure(&other, Some(124), &timeout),
+        BbcBannerAfterFailure::Absent
     );
     assert_eq!(
-        bbc_native_banner_present(&json!({"results": [{"tag": "button"}]})),
-        Some(true)
+        bbc_banner_after_failure(&BbcConsentOutcome::NoCmpReported, Some(124), &timeout),
+        BbcBannerAfterFailure::Absent
     );
-    assert_eq!(bbc_native_banner_present(&json!({})), None);
-    assert_eq!(bbc_native_banner_present(&json!({"results": null})), None);
-    assert_eq!(bbc_native_banner_present(&json!({"results": "x"})), None);
+    assert_eq!(
+        bbc_banner_after_failure(&other, Some(0), ""),
+        BbcBannerAfterFailure::Present
+    );
+    assert_eq!(
+        bbc_banner_after_failure(&BbcConsentOutcome::NativeNotActioned, Some(124), &timeout),
+        BbcBannerAfterFailure::Present
+    );
+    for (exit, stderr) in [
+        (
+            Some(124),
+            "error: tab 'conn0.tab1' did not respond within 5000ms",
+        ),
+        (Some(1), timeout.as_str()),
+        (None, timeout.as_str()),
+    ] {
+        assert_eq!(
+            bbc_banner_after_failure(&other, exit, stderr),
+            BbcBannerAfterFailure::Inconclusive,
+            "{exit:?} {stderr}"
+        );
+    }
+
+    let sp = json!({"results":{"cmp":"sourcepoint","action":"accepted","status":"accepted"}});
+    assert!(bbc_sourcepoint_accepted(&other, &sp));
+    let sp_not =
+        json!({"results":{"cmp":"sourcepoint","action":null,"status":"detected_not_actioned"}});
+    assert!(!bbc_sourcepoint_accepted(&other, &sp_not));
+    assert!(!bbc_sourcepoint_accepted(
+        &BbcConsentOutcome::InvalidOrFailed,
+        &sp
+    ));
 }
 
 // allow-ungated-live: pure effect-oracle controls; malformed samples must not prove dismissal.
