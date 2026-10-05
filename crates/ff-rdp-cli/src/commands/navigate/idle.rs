@@ -186,9 +186,15 @@ const IMAGES_COMPLETE_JS: &str = "[...document.images].every(i => { \
     return !(r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth); \
 })";
 
-/// Once [`IMAGES_COMPLETE_JS`] holds, the images still incomplete are exactly
-/// the deferred off-screen lazy ones; reported as `lazy_images_deferred`.
-const LAZY_DEFERRED_JS: &str = "[...document.images].filter(i => !i.complete).length";
+/// The off-screen lazy images [`IMAGES_COMPLETE_JS`] exempted, reported as
+/// `lazy_images_deferred`. Same predicate rather than "every incomplete
+/// image", so an image the page inserts between the two evals is not
+/// miscounted as deferred.
+const LAZY_DEFERRED_JS: &str = "[...document.images].filter(i => { \
+    if (i.complete || i.loading !== 'lazy') return false; \
+    const r = i.getBoundingClientRect(); \
+    return !(r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth); \
+}).length";
 
 /// The shortest quiet window `navigate --wait-idle` honours.
 ///
@@ -210,11 +216,12 @@ pub(super) enum IdleWatch {
     /// `events`/`both`: a second `NetworkEvent` subscription on the
     /// navigation's resource bus. It holds the type's ref-count above zero
     /// when the commit wait unsubscribes, so the bus does not unwatch it; the
-    /// receiver is kept alive so `gc` does not prune it.
+    /// receiver is kept alive so `gc` does not prune it, and holds the
+    /// requests the bus dispatched during the commit wait.
     Bus {
         bus: Arc<Mutex<ResourceCommand>>,
         id: SubscriptionId,
-        _rx: Receiver<Arc<Resource>>,
+        rx: Receiver<Arc<Resource>>,
     },
 }
 
@@ -233,21 +240,30 @@ impl IdleWatch {
         Ok(Self::Bus {
             bus: Arc::clone(bus),
             id,
-            _rx: rx,
+            rx,
         })
     }
 
     /// Best-effort release; a teardown error must not mask the result.
-    fn release(self, transport: &mut RdpTransport) {
+    ///
+    /// Returns the requests announced before the drain started: what the bus
+    /// dispatched to this subscription during the commit wait. The raw watch
+    /// has no such record (the readystate wait's evals discard events), so it
+    /// returns 0.
+    fn release(self, transport: &mut RdpTransport) -> u64 {
         match self {
             Self::Raw(watcher) => {
                 let _ = WatcherActor::unwatch_resources(transport, &watcher, &["network-event"]);
+                0
             }
-            Self::Bus { bus, id, _rx } => {
+            Self::Bus { bus, id, rx } => {
                 let _ = bus
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .unsubscribe(transport, id);
+                rx.try_iter()
+                    .filter(|r| matches!(**r, Resource::NetworkEvent(_)))
+                    .count() as u64
             }
         }
     }
@@ -258,7 +274,8 @@ impl IdleWatch {
 /// [`IMAGES_COMPLETE_JS`] until it is true — both inside one `budget_ms`
 /// measured from the start of the drain.
 ///
-/// `watch` was set up before `navigateTo` and is released here. A request
+/// `watch` was set up before `navigateTo` and is released here;
+/// `requests_observed` counts the requests announced since then. A request
 /// that sends nothing for longer than the quiet window is not waited for;
 /// the image check covers the images among such requests.
 ///
@@ -284,15 +301,19 @@ pub(super) fn wait_for_idle(
     );
     // Release before the error check, so a timeout does not leave the server
     // streaming events at a connection about to close.
-    watch.release(ctx.transport_mut());
+    let announced_before_drain = watch.release(ctx.transport_mut());
     let drained = drained?;
+    // Like `reload --wait-idle`, count every request this command saw from
+    // `navigateTo` on, not only those after the commit: a page whose load
+    // event fires late has its post-load requests announced during the commit
+    // wait, before the drain starts.
+    let requests_observed = announced_before_drain + drained.requests_observed;
     if !drained.reached_idle {
         return Err(AppError::Timeout(budget_exhausted_message(
             idle_ms,
             budget_ms,
             &format!(
-                "the network never stayed quiet for {idle_ms} ms ({} requests observed)",
-                drained.requests_observed
+                "the network never stayed quiet for {idle_ms} ms ({requests_observed} requests observed)"
             ),
         )));
     }
@@ -337,7 +358,7 @@ pub(super) fn wait_for_idle(
 
     Ok(json!({
         "idle_at_ms": idle_at_ms,
-        "requests_observed": drained.requests_observed,
+        "requests_observed": requests_observed,
         "images_complete": true,
         "lazy_images_deferred": lazy_deferred,
     }))

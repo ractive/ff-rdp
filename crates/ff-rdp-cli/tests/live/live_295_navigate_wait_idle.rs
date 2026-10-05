@@ -140,9 +140,11 @@ fn live_295_navigate_wait_idle_waits_for_fetch_and_image() {
     );
     let idle = json_of(&out)["results"]["idle"].clone();
     assert_eq!(idle["images_complete"], true, "idle: {idle}");
+    // Counted from `navigateTo` on, like `reload --wait-idle`: the document,
+    // the fetch and the image at least (the AC's ">= 2", tightened).
     assert!(
-        idle["requests_observed"].as_u64().unwrap_or(0) >= 2,
-        "the fetch and the image must both be observed: {idle}"
+        idle["requests_observed"].as_u64().unwrap_or(0) >= 3,
+        "the document, the fetch and the image must all be observed: {idle}"
     );
     assert!(idle["idle_at_ms"].as_u64().is_some(), "idle: {idle}");
 
