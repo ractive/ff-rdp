@@ -7,6 +7,7 @@ tags:
 - target-configuration
 - emulate
 date: 2026-07-09
+updated: 2026-10-05
 firefox_files:
 - devtools/shared/specs/target-configuration.js
 - devtools/server/actors/target-configuration.js
@@ -20,7 +21,7 @@ title: TargetConfigurationActor
 `crates/ff-rdp-core/src/actors/target_configuration.rs` has two stateless
 calls: `TargetConfigurationActor::for_watcher` (`getTargetConfigurationActor`
 on the tab watcher) and `update_configuration` (`updateConfiguration`, typed by
-`specs::target_configuration`). They back three CLI flags, each applied on the
+`specs::target_configuration`). They back these CLI flags, each applied on the
 command's own connection:
 
 | Flag | Wire field | Applied |
@@ -28,6 +29,8 @@ command's own connection:
 | `screenshot --color-scheme light\|dark` | `colorSchemeSimulation` | before the capture; the command polls `matchMedia` until it reports the scheme |
 | `screenshot --media print` | `printSimulationEnabled: true` | same; `--media screen` sends nothing |
 | `navigate --user-agent UA` | `customUserAgent` | before `navigateTo`, on the navigation watcher |
+| `perf vitals\|summary\|audit --cold` | `cacheDisabled: true` | then a `reload` of the current page, on the navigation watcher (iter-295) |
+| `perf compare --cold` | `cacheDisabled: true` | once, before the first `navigateTo`; covers every URL the command loads (iter-295) |
 
 Verified live (Firefox 157, 2026-10-03): the dark/print styles are in the
 captured pixels; the UA override reaches the document request's `User-Agent`
@@ -37,6 +40,16 @@ actor's `destroy()` runs `_restoreParentProcessConfiguration` when the
 connection closes. Firefox renders print media with a light colour scheme, so
 `prefers-color-scheme: dark` never matches under `printSimulationEnabled`;
 `screenshot` refuses `--color-scheme dark --media print`.
+
+`cacheDisabled: true` sets the top browsing context's `defaultLoadFlags` to
+`LOAD_BYPASS_CACHE` (`_setCacheDisabled`); child frames inherit it, and
+`_restoreParentProcessConfiguration` puts back `LOAD_NORMAL` on disconnect. It
+bypasses the HTTP cache only — service worker caches and warm TCP/TLS/DNS state
+are untouched, which is why the CLI help says "bypass the HTTP cache" rather
+than "first visit". Verified live (2026-10-05): after two plain loads of a page
+with `max-age` subresources, `perf summary` reports `total_transfer_size: 0`,
+`perf summary --cold` reports the full bytes, and a plain `navigate` + `perf
+summary` on a new connection is back to 0.
 
 `update_configuration` checks the echoed `configuration` for every key it sent
 and fails naming a key that is missing or different, since Firefox drops
@@ -74,31 +87,34 @@ back a future `emulate`-equivalent command.
   target's live configuration. Response echoes the full configuration. Every
   field is nullable, so a call touches only the keys it names.
 
-## Configuration fields (wire names)
+## Configuration fields (wire names) — historical `emulate` mapping
 
-The `emulate` CLI exposes the agent-relevant subset:
+The removed `emulate` command (iter-103, deleted in the 2026-10 reset) exposed
+this subset; the "`emulate` flag" column is what it accepted, not a current
+flag. The current users are listed under *Current use* above.
 
-| Wire field (`SUPPORTED_OPTIONS`) | Type | `emulate` flag | Notes |
+| Wire field (`SUPPORTED_OPTIONS`) | Type | `emulate` flag (removed) | Notes |
 |----------------------------------|------|----------------|-------|
-| `cacheDisabled` | bool | `--cache on\|off` | `--cache off` → `cacheDisabled: true` (inverted) |
-| `colorSchemeSimulation` | string | `--color-scheme light\|dark\|none` | `none` = system default; maps to `prefersColorSchemeOverride` |
-| `customUserAgent` | string | `--user-agent <S>` | empty string restores the original UA |
+| `cacheDisabled` | bool | `--cache on\|off` | `--cache off` sent `cacheDisabled: true` (inverted); now `perf --cold` |
+| `colorSchemeSimulation` | string | `--color-scheme light\|dark\|none` | `none` = system default; maps to `prefersColorSchemeOverride`; now `screenshot --color-scheme` |
+| `customUserAgent` | string | `--user-agent <S>` | empty string restores the original UA; now `navigate --user-agent` |
 | `overrideDPPX` | number | `--dppx <F>` | `0` clears the override |
-| `printSimulationEnabled` | bool | `--print on\|off` | composes with `screenshot` for print audits |
+| `printSimulationEnabled` | bool | `--print on\|off` | composed with `screenshot` for print audits; now `screenshot --media print` |
 | `touchEventsOverride` | string | `--touch on\|off` | enum: `"enabled"` / `"none"` (not a bool) |
-| `javascriptEnabled` | bool | `--js on\|off` | server **reloads the document** when this changes |
+| `javascriptEnabled` | bool | `--js on\|off` | the server **reloads the document** when this changes |
 | `setTabOffline` | bool | `--offline on\|off` | `navigator.onLine` / fetch failures; reload to reflect |
 
-Fields present in the dict but not exposed by `emulate`: `customFormatters`,
+Fields present in the dict that `emulate` never exposed: `customFormatters`,
 `rdmPaneOrientation`, `reloadOnTouchSimulationToggle`, `restoreFocus`,
 `serviceWorkersTestingEnabled`, `isTracerFeatureEnabled`.
 
 ## Lifetime
 
-Configuration lives as long as the RDP connection that set it. Under the
-daemon that means "until the daemon restarts"; a `--no-daemon` one-shot
-process discards the setting on disconnect — the `emulate` envelope then
-carries a `lifetime_warning`.
+Configuration lives as long as the RDP connection that set it. ff-rdp opens
+one connection per command (the daemon is gone since the 2026-10 reset), so
+every setting covers only the command that applied it. Under the old daemon it
+lasted until the daemon restarted, and the `emulate` envelope carried a
+`lifetime_warning` for one-shot `--no-daemon` runs.
 
 ## Dead primitive removed (iter-133)
 

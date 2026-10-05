@@ -1092,7 +1092,7 @@ With --key: {\"results\": {\"key\": \"...\", \"value\": \"...\"}, \"total\": 1, 
     #[command(long_about = "Inspect accessibility tree and check WCAG compliance.
 
 Output: {\"results\": {\"role\": \"...\", \"name\": \"...\", \"children\": [...]}, \"total\": 1, \"meta\": {..., \"source\": \"native\"|\"js-fallback\"}}
-With a11y summary: {\"results\": [{\"role\": \"...\", \"name\": \"...\", \"level\": N}], \"total\": N, \"meta\": {...}}
+With a11y summary: {\"results\": {\"landmarks\": [...], \"headings\": [...], \"interactive\": [...]}, \"total\": 1, \"meta\": {...}}
 With a11y contrast: {\"results\": [{\"selector\": \"...\", \"ratio\": N, \"aa_normal\": bool, ...}], \"total\": N, \"sampled\": M, \"capped\": bool, \"source\": \"js-fallback\", \"meta\": {..., \"source\": \"js-fallback\"}}
   a11y contrast `total` = returned results (AA failures under --fail-only, else all checks); `sampled` = elements examined. Pre-iter-127 `total` reported the sample size.
   `meta.source` (iter-143) is always present on a11y/a11y --critical/a11y contrast: \"native\" means the real Firefox platform accessibility tree (roles like \"document\"/\"paragraph\"); \"js-fallback\" means a DOM-derived approximation (roles like \"generic\"), with `meta.source_reason` naming why. `a11y --native` opts in to the native tree (never the default — DEC-027) by enabling Firefox's accessibility service for the duration of the call.
@@ -2921,12 +2921,32 @@ pub enum RecordCommand {
     Status,
 }
 
+/// `--cold` on the perf subcommands that measure a load.
+#[derive(clap::Args, Clone, Copy, Debug, Default)]
+pub struct PerfColdArgs {
+    /// Bypass the HTTP cache (LOAD_BYPASS_CACHE) for this command's loads; does not touch
+    /// service worker caches or warm TCP/TLS/DNS state
+    ///
+    /// Set on this command's own connection and restored by Firefox when the command
+    /// exits. `perf vitals`/`summary`/`audit` measure the current page, so `--cold`
+    /// reloads it first with the cache bypassed; `perf compare` bypasses it for every
+    /// URL it loads. The envelope then carries `meta.cache: "bypassed"`.
+    #[arg(long)]
+    pub cold: bool,
+}
+
 #[derive(Subcommand)]
 pub enum PerfCommand {
     /// Compute Core Web Vitals summary (LCP, CLS, TBT, FCP, TTFB)
-    Vitals,
+    Vitals {
+        #[command(flatten)]
+        cold: PerfColdArgs,
+    },
     /// Aggregate resource summary: sizes, request counts by type, slowest resources, domain breakdown
-    Summary,
+    Summary {
+        #[command(flatten)]
+        cold: PerfColdArgs,
+    },
     /// Full page performance audit: vitals, navigation timing, resource breakdown, DOM stats
     ///
     /// LCP comes from a buffered `largest-contentful-paint` PerformanceObserver
@@ -2936,8 +2956,17 @@ pub enum PerfCommand {
     /// "dom_approximation"`, `lcp_approximate: true`). CLS and TBT need entry types
     /// Firefox does not ship (`layout-shift`, `longtask`) and are reported unavailable;
     /// for those, use Lighthouse against Chromium.
-    Audit,
+    Audit {
+        #[command(flatten)]
+        cold: PerfColdArgs,
+    },
     /// Compare performance across multiple URLs: navigate each, collect vitals + timing
+    ///
+    /// The global --timeout bounds each step for each URL (the navigate request, the
+    /// wait for the new document to reach readyState=complete, the metrics
+    /// collection), not the whole run: comparing N slow pages can take several times
+    /// --timeout. A failure names the URL and the step (`connect` for the setup before
+    /// the first URL, then `navigate`, `readystate` or `collect`).
     Compare {
         /// URLs to compare
         #[arg(required = true, num_args = 2..)]
@@ -2945,6 +2974,8 @@ pub enum PerfCommand {
         /// Labels for each URL (in order); defaults to the URL itself
         #[arg(long, value_delimiter = ',')]
         label: Option<Vec<String>>,
+        #[command(flatten)]
+        cold: PerfColdArgs,
     },
 }
 

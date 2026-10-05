@@ -1,5 +1,6 @@
 //! The Firefox `TargetConfigurationActor`: per-target page-environment
-//! settings (colour-scheme and print-media simulation, custom user agent).
+//! settings (colour-scheme and print-media simulation, custom user agent,
+//! HTTP-cache bypass).
 //!
 //! The configuration is tied to the watcher that owns the actor, so it lives
 //! exactly as long as the RDP connection that set it: when the connection
@@ -11,7 +12,8 @@
 //!
 //! Only tab (`browser-element`) watchers apply these settings to the page —
 //! they are written to the top-level `BrowsingContext` in the parent process
-//! (`prefersColorSchemeOverride`, `mediumOverride`, `customUserAgent`).
+//! (`prefersColorSchemeOverride`, `mediumOverride`, `customUserAgent`,
+//! `defaultLoadFlags`).
 //!
 //! See `kb/rdp/actors/target-configuration.md`.
 
@@ -107,6 +109,17 @@ mod tests {
             err.to_string().contains("colorSchemeSimulation"),
             "error must name the dropped key: {err}"
         );
+    }
+
+    #[test]
+    fn check_echo_rejects_dropped_cache_disabled() {
+        let cold = TargetConfiguration {
+            cache_disabled: Some(true),
+            ..Default::default()
+        };
+        check_echo(&cold, &json!({"cacheDisabled": true})).unwrap();
+        let err = check_echo(&cold, &json!({"colorSchemeSimulation": "dark"})).unwrap_err();
+        assert!(err.to_string().contains("cacheDisabled"), "{err}");
     }
 
     #[test]
