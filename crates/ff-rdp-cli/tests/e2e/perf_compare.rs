@@ -17,29 +17,58 @@ fn base_args(port: u16) -> Vec<String> {
 
 /// Build the evaluateJSAsync sequence for `n` URLs.
 ///
-/// Each URL requires two `evaluateJSAsync` calls:
-///   1. readyState poll → returns `"complete"`
-///   2. perf collection → returns the full perf-data JSON string
-///
-/// The sequence is: [complete, data, complete, data, ...]
+/// Each URL goes through `wait_for_navigation_commit` (the same commit wait
+/// as `navigate`/`reload`, iter-295) and then the collection eval, so it makes
+/// four `evaluateJSAsync` calls:
+///   1. pre-nav epoch (value unused by any assertion)
+///   2. pre-nav `location.href` baseline (value unused)
+///   3. the `location.href` re-resolution at commit
+///   4. perf collection → the full perf-data JSON string
 fn eval_sequence_for_n_urls(n: usize) -> Vec<(serde_json::Value, Vec<serde_json::Value>)> {
     let immediate = load_fixture("eval_immediate_response.json");
     let ready_state = load_fixture("eval_result_ready_state_complete.json");
+    let href_immediate = load_fixture("eval_immediate_response_location_href.json");
+    let href = load_fixture("eval_result_location_href_example_com.json");
     let perf_data = load_fixture("eval_result_perf_compare_data.json");
 
-    let mut entries = Vec::with_capacity(n * 2);
+    let mut entries = Vec::with_capacity(n * 4);
     for _ in 0..n {
         entries.push((immediate.clone(), vec![ready_state.clone()]));
+        entries.push((immediate.clone(), vec![ready_state.clone()]));
+        entries.push((href_immediate.clone(), vec![href.clone()]));
         entries.push((immediate.clone(), vec![perf_data.clone()]));
     }
     entries
 }
 
+/// Request order per URL: getWatcher → evaluateJSAsync ×2 (pre-nav epoch and
+/// href) → watchTargets → watchResources → navigateTo (with
+/// `dom-loading`/`dom-complete` document-event follow-ups) → evaluateJSAsync
+/// (commit href) → unwatchResources → getTarget (console actor refresh) →
+/// evaluateJSAsync (collection). See `nav_action_commit_server` in
+/// `nav_action.rs` for the commit-wait half.
 fn perf_compare_server(n_urls: usize) -> MockRdpServer {
     MockRdpServer::new()
         .on("listTabs", load_fixture("list_tabs_response.json"))
         .on("getTarget", load_fixture("get_target_response.json"))
-        .on("navigateTo", load_fixture("navigate_response.json"))
+        .on("getWatcher", load_fixture("get_watcher_response.json"))
+        .on("watchTargets", load_fixture("watch_targets_response.json"))
+        .on(
+            "watchResources",
+            load_fixture("watch_resources_response.json"),
+        )
+        .on(
+            "unwatchResources",
+            load_fixture("unwatch_resources_response.json"),
+        )
+        .on_with_followups(
+            "navigateTo",
+            load_fixture("navigate_response.json"),
+            vec![
+                load_fixture("resources_available_document_event_dom_loading.json"),
+                load_fixture("resources_available_document_event_dom_complete.json"),
+            ],
+        )
         .on_sequence("evaluateJSAsync", eval_sequence_for_n_urls(n_urls))
 }
 
@@ -291,4 +320,117 @@ fn perf_compare_single_url_error() {
     );
     // clap exits with code 2 for argument parse errors.
     assert_eq!(output.status.code(), Some(2));
+}
+
+// ---------------------------------------------------------------------------
+// perf compare --cold (iter-295): cacheDisabled on this command's connection
+// ---------------------------------------------------------------------------
+
+/// `perf_compare_server` plus the `--cold` prelude: `getWatcher` →
+/// `getTargetConfigurationActor` → `updateConfiguration` (replying with
+/// `update_fixture`).
+fn cold_server(update_fixture: &str) -> MockRdpServer {
+    perf_compare_server(2)
+        .on(
+            "getTargetConfigurationActor",
+            load_fixture("get_target_configuration_actor_response.json"),
+        )
+        .on("updateConfiguration", load_fixture(update_fixture))
+}
+
+/// Run `perf compare --cold <a> <b>` against `server`, returning the output
+/// and every request the CLI sent.
+fn run_cold(server: MockRdpServer) -> (std::process::Output, Vec<serde_json::Value>) {
+    let port = server.port();
+    let log = server.request_log();
+    let handle = std::thread::spawn(move || server.serve_one());
+    let mut args = base_args(port);
+    args.extend(
+        [
+            "perf",
+            "compare",
+            "--cold",
+            "https://example.com/",
+            "https://example.com/other",
+        ]
+        .map(str::to_owned),
+    );
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+    handle.join().unwrap();
+    let requests = log.lock().unwrap().clone();
+    (output, requests)
+}
+
+#[test]
+fn perf_compare_cold_sends_cache_disabled_before_navigating() {
+    let (output, requests) = run_cold(cold_server(
+        "update_configuration_cache_disabled_response.json",
+    ));
+    assert!(
+        output.status.success(),
+        "expected success: {}",
+        support::output_note(&output)
+    );
+    let sent: Vec<&serde_json::Value> = requests
+        .iter()
+        .filter(|r| r["type"] == "updateConfiguration")
+        .map(|r| &r["configuration"])
+        .collect();
+    assert_eq!(sent, vec![&serde_json::json!({"cacheDisabled": true})]);
+    let types: Vec<&str> = requests.iter().filter_map(|r| r["type"].as_str()).collect();
+    let update = types.iter().position(|t| *t == "updateConfiguration");
+    let navigate = types.iter().position(|t| *t == "navigateTo");
+    assert!(
+        update.is_some() && update < navigate,
+        "cacheDisabled must be set before the first navigation: {types:?}"
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["meta"]["cache"], "bypassed", "{json}");
+}
+
+/// Firefox echoes only the options it applied; an echo without
+/// `cacheDisabled` fails the command instead of measuring a warm cache.
+#[test]
+fn perf_compare_cold_fails_when_firefox_drops_cache_disabled() {
+    let (output, requests) = run_cold(cold_server(
+        "update_configuration_color_scheme_response.json",
+    ));
+    assert!(!output.status.success(), "a dropped setting must fail");
+    let note = support::output_note(&output);
+    assert!(note.contains("cacheDisabled"), "{note}");
+    assert!(
+        !requests.iter().any(|r| r["type"] == "navigateTo"),
+        "nothing may be measured after a dropped setting"
+    );
+}
+
+#[test]
+fn perf_compare_without_cold_sends_no_configuration() {
+    let server = perf_compare_server(2);
+    let port = server.port();
+    let log = server.request_log();
+    let handle = std::thread::spawn(move || server.serve_one());
+    let mut args = base_args(port);
+    args.extend(
+        [
+            "perf",
+            "compare",
+            "https://example.com/",
+            "https://example.com/other",
+        ]
+        .map(str::to_owned),
+    );
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+    handle.join().unwrap();
+    assert!(output.status.success(), "{}", support::output_note(&output));
+    let requests = log.lock().unwrap().clone();
+    assert!(!requests.iter().any(|r| r["type"] == "updateConfiguration"));
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(json["meta"].get("cache").is_none(), "{json}");
 }

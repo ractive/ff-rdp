@@ -627,12 +627,15 @@ fn dispatch_inner(
             filter,
             group_by,
         }) => match perf_command {
-            Some(PerfCommand::Vitals) => commands::perf::run_vitals(cli),
-            Some(PerfCommand::Summary) => commands::perf::run_summary(cli),
-            Some(PerfCommand::Audit) => commands::perf::run_audit(cli),
-            Some(PerfCommand::Compare { urls, label }) => {
-                commands::perf_compare::run(cli, urls, label.as_ref().map(Vec::as_slice))
-            }
+            Some(PerfCommand::Vitals { cold }) => commands::perf::run_vitals(cli, cold.cold),
+            Some(PerfCommand::Summary { cold }) => commands::perf::run_summary(cli, cold.cold),
+            Some(PerfCommand::Audit { cold }) => commands::perf::run_audit(cli, cold.cold),
+            Some(PerfCommand::Compare { urls, label, cold }) => commands::perf_compare::run(
+                cli,
+                urls,
+                label.as_ref().map(Vec::as_slice),
+                cold.cold,
+            ),
             None => {
                 if group_by.as_deref() == Some("domain") {
                     commands::perf::run_group_by_domain(cli, entry_type, filter.as_deref())

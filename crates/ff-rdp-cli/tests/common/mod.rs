@@ -2444,11 +2444,19 @@ fn handle_connection(mut stream: TcpStream, routes: &HashMap<String, FixtureRout
         let mut header = format!(
             "HTTP/1.1 200 OK\r\n\
              Content-Type: {}\r\n\
-             Content-Length: {}\r\n\
-             Cache-Control: no-store\r\n",
+             Content-Length: {}\r\n",
             route.content_type,
             route.body.len()
         );
+        // `no-store` unless the route sets its own `Cache-Control` (iter-295:
+        // `perf --cold` needs a cacheable fixture to prove the bypass).
+        if !route
+            .extra_headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("cache-control"))
+        {
+            header.push_str("Cache-Control: no-store\r\n");
+        }
         for (name, value) in &route.extra_headers {
             header.push_str(name);
             header.push_str(": ");

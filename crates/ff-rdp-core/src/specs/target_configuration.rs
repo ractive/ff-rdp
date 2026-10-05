@@ -1,5 +1,6 @@
 //! Spec for the TargetConfiguration actor (per-target page-environment
-//! settings: colour-scheme and print-media simulation, custom user agent, …).
+//! settings: colour-scheme and print-media simulation, custom user agent,
+//! HTTP-cache bypass, …).
 //!
 //! Mirrors <https://searchfox.org/mozilla-central/source/devtools/shared/specs/target-configuration.js>
 //!
@@ -35,6 +36,11 @@ pub mod request {
         /// header; `""` restores the original.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub custom_user_agent: Option<String>,
+        /// `true` sets the top browsing context's `defaultLoadFlags` to
+        /// `LOAD_BYPASS_CACHE` (HTTP cache only); `false` restores
+        /// `LOAD_NORMAL`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub cache_disabled: Option<bool>,
     }
 
     /// Args for `updateConfiguration`.
@@ -103,6 +109,7 @@ mod tests {
             color_scheme_simulation: Some("light".into()),
             print_simulation_enabled: Some(true),
             custom_user_agent: Some("UA".into()),
+            cache_disabled: Some(true),
         };
         assert_eq!(
             serde_json::to_value(&args).unwrap(),
@@ -110,6 +117,7 @@ mod tests {
                 "colorSchemeSimulation": "light",
                 "printSimulationEnabled": true,
                 "customUserAgent": "UA",
+                "cacheDisabled": true,
             })
         );
     }

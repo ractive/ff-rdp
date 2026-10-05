@@ -142,4 +142,5 @@ mod live_272_autowait_deadline;
 mod live_275_consent_selection;
 
 mod live_286_native_sources;
+mod live_295_perf_cold;
 mod live_304_refs_snapshot_eval;
