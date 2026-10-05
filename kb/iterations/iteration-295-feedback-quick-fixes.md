@@ -2,7 +2,7 @@
 title: "Iteration 295: Session-feedback quick fixes — perf compare errors, --cold, navigate --wait-idle"
 type: iteration
 date: 2026-10-05
-status: planned
+status: done
 branch: iter-295/feedback-quick-fixes
 depends_on: []
 dogfood_path: >-
@@ -28,17 +28,17 @@ plan (design needed) and stays out.
 Work in this order. Item 5 lands last and is dropped back to the backlog if its live test is
 not green after one honest attempt — the other four ship regardless.
 
-- [ ] **perf compare error context.** In `commands/perf_compare.rs`, replace the bare
+- [x] **perf compare error context.** In `commands/perf_compare.rs`, replace the bare
       `.map_err(AppError::from)` on `navigate_to`, `evaluate_js_async` and `collect_page_perf`
       with errors that carry the URL and the step (`navigate`, `readystate`, `collect`), using
       the existing `AppError::with_timeout_hint` so an `RdpTimeout` says what it was waiting
       for. Say in `perf compare --help` that `--timeout` bounds each step, not the whole run.
-- [ ] **`a11y --help` output shape.** Fix the `With a11y summary:` line in the parent `a11y`
+- [x] **`a11y --help` output shape.** Fix the `With a11y summary:` line in the parent `a11y`
       help (`cli/args.rs` ~1094) to the real object shape
       `{"results": {"landmarks": [...], "headings": [...], "interactive": [...]}, "total": 1, ...}`,
       matching the subcommand's own help. Tick the `a11y summary` part of backlog item
       [[dogfooding-session-64]] #35 in its line (the rest of #35 stays open).
-- [ ] **`--cold` on `perf summary` / `perf vitals` / `perf audit` / `perf compare`.** Add
+- [x] **`--cold` on `perf summary` / `perf vitals` / `perf audit` / `perf compare`.** Add
       `cache_disabled: Option<bool>` to `specs::target_configuration::request::Configuration`
       (wire name `cacheDisabled`, in Firefox's `SUPPORTED_OPTIONS`, so no spec-drift marker).
       When `--cold` is set, call `TargetConfigurationActor::update_configuration` with
@@ -47,9 +47,9 @@ not green after one honest attempt — the other four ship regardless.
       flag set, otherwise it has nothing to measure cold. Help says "bypass the HTTP cache
       (`LOAD_BYPASS_CACHE`) for this command's loads" and names what it does not do: service
       worker caches, warm TCP/TLS/DNS state. Envelope `meta.cache: "bypassed"` when set.
-- [ ] **Doc tidy.** In `kb/rdp/actors/target-configuration.md`, move `cacheDisabled` into the
+- [x] **Doc tidy.** In `kb/rdp/actors/target-configuration.md`, move `cacheDisabled` into the
       current-use table and reword the historical `emulate` table into the past tense.
-- [ ] **`navigate --wait-idle [--idle-ms N]`.** Port `run_reload_wait_idle`'s network-quiet
+- [x] **`navigate --wait-idle [--idle-ms N]`.** Port `run_reload_wait_idle`'s network-quiet
       drain (`commands/nav_action.rs`) to navigate: after the document commits, keep draining
       `network-event` resources until none arrive for `--idle-ms` (default 500) or the
       `--timeout-ms` budget ends, then run one eval that returns
@@ -57,37 +57,68 @@ not green after one honest attempt — the other four ship regardless.
       `results.idle = {"idle_at_ms": N, "requests_observed": M, "images_complete": bool}`.
       `--wait-idle` conflicts with `--no-wait` and with `--with-network` (which already
       settles on network drain). It composes with `--wait-for`, which runs after it.
-- [ ] Tests: mock-server test asserting the `cacheDisabled` field is sent and the echo check
+- [x] Tests: mock-server test asserting the `cacheDisabled` field is sent and the echo check
       fails on a dropped key; unit test for the perf compare error text; `--help` snapshot
       update for `a11y`; live tests in a new `tests/live/live_295_feedback_quick_fixes.rs`
       for `--cold` (second load of the fixture page reports `total_transfer_size > 0`) and
       `navigate --wait-idle` (fixture page with a delayed image and a delayed `fetch`
       returns `images_complete: true` and `requests_observed >= 2`).
-- [ ] Tick the five `feedback 2026-10-05` backlog lines that this PR closes (the phone-width
+- [x] Tick the five `feedback 2026-10-05` backlog lines that this PR closes (the phone-width
       line stays open) in the same commit as the code.
 
-## Acceptance Criteria [0/6]
+## Acceptance Criteria [5/6]
 
-- [ ] `ff-rdp --timeout 1 perf compare https://example.com https://example.org` fails with an
+- [x] `ff-rdp --timeout 1 perf compare https://example.com https://example.org` fails with an
       error whose message names the URL it was processing and the step (`navigate`,
       `readystate` or `collect`), never a bare `RdpTimeout { phase: "recv" }`.
-- [ ] `ff-rdp a11y --help` describes `a11y summary` output as an object with `landmarks`,
+- [x] `ff-rdp a11y --help` describes `a11y summary` output as an object with `landmarks`,
       `headings` and `interactive` keys, identical in shape to what `ff-rdp a11y summary`
       prints against the test fixture page.
-- [ ] After `ff-rdp navigate <fixture>` twice, `ff-rdp perf summary --cold` reports
+- [x] After `ff-rdp navigate <fixture>` twice, `ff-rdp perf summary --cold` reports
       `total_transfer_size > 0` and `meta.cache: "bypassed"`, while `ff-rdp perf summary`
       without the flag on the same page reports `total_transfer_size: 0`.
 - [ ] `ff-rdp perf compare --cold <a> <b>` reports `total_transfer_size > 0` for both URLs
       against the mock-server fixtures, and the next `ff-rdp perf summary` on the same tab
       (new connection) is served from cache again, proving the override died with the
       connection.
-- [ ] `ff-rdp navigate <fixture-with-delayed-image-and-fetch> --wait-idle` returns only after
+      — Not ticked: the premise is wrong. `perf summary` reports the last load, so straight
+      after `--cold` it still shows the cold bytes on a new connection. The property itself
+      was proven with a different sequence: `perf compare --cold a b` → 2935 bytes for both,
+      then plain `navigate b` + `perf summary` → 0 (PR #320).
+- [x] `ff-rdp navigate <fixture-with-delayed-image-and-fetch> --wait-idle` returns only after
       both the delayed request and the delayed image have landed, with
       `results.idle.images_complete: true` and `requests_observed >= 2`; the same command with
       `--idle-ms 100 --timeout-ms 200` on a page that polls every 50 ms fails with a timeout
       error naming `--wait-idle`, not a success envelope.
-- [ ] `ff-rdp navigate <url> --wait-idle --no-wait` and `--wait-idle --with-network` are
+- [x] `ff-rdp navigate <url> --wait-idle --no-wait` and `--wait-idle --with-network` are
       rejected by clap with a conflict message before any connection is opened.
+
+## Outcome (2026-10-05)
+
+Landed as two parallel PRs with disjoint file ownership, not one: #320 (perf, a11y help,
+doc; merge 80921e67) and #321 (`navigate --wait-idle`; merge 333b3919). Deviations from the
+plan, each with evidence in the PR body:
+
+- **`perf compare` timeouts were not slow sites.** After `navigateTo` the command checked
+  `readyState` on the old page (already `complete`) and sent the collect eval to that page's
+  dead console actor, so no reply ever came — it failed at the default timeout on a local
+  fixture. Each URL now uses the same commit wait as `navigate`. A fourth step label
+  `connect` was added since `--timeout 1` fails before any URL.
+- **`--idle-ms` has a 200 ms floor.** Firefox batches network events every 100 ms
+  (`RESOURCES_THROTTLING_DELAY`), so a 100 ms quiet window reported idle on a page fetching
+  every 50 ms. The AC's failing case holds only because of the floor.
+- **Off-screen `loading="lazy"` images are not waited for.** The plan assumed Firefox reports
+  a never-requested lazy image as `complete`; it reports `false` (76 of 86 on a Wikipedia
+  article). They are skipped and counted in `results.idle.lazy_images_deferred`; lazy images
+  inside the viewport are still waited for. This is the phone-width plan's territory.
+- `requests_observed` counts from navigation start, like reload; the live test asserts ≥ 3.
+- Test fixture server now sends `Cache-Control: no-store` only when a route sets none, so a
+  page can be cached at all (`tests/common/mod.rs`).
+- Live tests live in `live_295_perf_cold.rs` and `live_295_navigate_wait_idle.rs`, not one file.
+- No mock-RDP test of the `--wait-idle` flow; coverage is the live fixture test, clap e2e and
+  unit tests. Follow-ups filed in [[backlog]]: `reload --wait-idle` lacks the floor; a request
+  silent longer than the quiet window is not waited for; plain `navigate` on MDN sometimes
+  reports an `mdnplay.dev` iframe URL as `committed_url`.
 
 ## Design notes
 
