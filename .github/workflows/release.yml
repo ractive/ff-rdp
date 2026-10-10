@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   release:
-    uses: ractive/release-workflows/.github/workflows/release.yml@v0.2.2
+    uses: ractive/release-workflows/.github/workflows/release.yml@v0.2.4
     secrets: inherit
     with:
       bin-name: ff-rdp
