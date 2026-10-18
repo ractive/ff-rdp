@@ -233,6 +233,10 @@ fn live_screenshot_viewport_composes_with_color_scheme() {
     let (results, image) = shoot(port, &["--viewport", "390x844", "--color-scheme", "dark"]);
     assert_eq!(results["emulation"]["color_scheme"], "dark", "{results}");
     assert_eq!(
+        results["emulation"]["settled"], true,
+        "the settle wait runs before the frame is injected: {results}"
+    );
+    assert_eq!(
         rgb(&image, image.width / 2, 10),
         (255, 0, 255),
         "dark + narrow styles must both apply inside the frame"
