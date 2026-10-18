@@ -47,7 +47,7 @@ The workaround was a separate headless Chrome script with
 - Or `screenshot --window-size` accepting a short script to replay (e.g. a click)
   after its fresh navigation, so state can be rebuilt.
 
-## Partial: #338
+## Partial: #339
 
 `ff-rdp screenshot --viewport 390x844` now captures a phone-width layout on the
 live tab without a second Firefox: the tab's URL is loaded into a 390x844
