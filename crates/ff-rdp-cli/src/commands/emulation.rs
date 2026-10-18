@@ -18,6 +18,28 @@ use super::js_helpers::poll_js_condition;
 /// context and the content process picks it up asynchronously.
 const MEDIA_SETTLE_TIMEOUT_MS: u64 = 3000;
 
+/// How long to wait for the CSS transitions and animations a media change
+/// started to finish before capturing anyway (and reporting `settled: false`).
+const ANIMATIONS_SETTLE_TIMEOUT_MS: u64 = 2000;
+
+/// The JS predicate that is true once no finite CSS transition or animation is
+/// running on the page.
+///
+/// Transitions start on the style flush after the media change, so the
+/// predicate flushes style and layout before reading `getAnimations()` (which
+/// flushes style itself as well). Infinite animations (`iterations ===
+/// Infinity`, e.g. a spinner) never finish and are ignored; paused and
+/// finished ones do not change what the capture paints. Script-driven
+/// `Element.animate()` animations were not started by the media change and are
+/// ignored too.
+const ANIMATIONS_SETTLED_JS: &str = "(() => { \
+    const root = document.documentElement; \
+    getComputedStyle(root).color; root.getBoundingClientRect(); \
+    return !document.getAnimations().some(a => \
+      (a instanceof CSSTransition || a instanceof CSSAnimation) && \
+      a.playState === 'running' && a.effect !== null && \
+      a.effect.getComputedTiming().iterations !== Infinity); })()";
+
 /// Apply `configuration` on `watcher`'s target-configuration actor.
 ///
 /// `watcher` must be the watcher the command already uses (a tab descriptor
@@ -89,6 +111,26 @@ pub(crate) fn wait_for_media(
     Ok(())
 }
 
+/// Wait until the CSS transitions and animations started by the media change
+/// have finished, so the capture shows the settled page. Returns `false` when
+/// they were still running after [`ANIMATIONS_SETTLE_TIMEOUT_MS`]: the caller
+/// captures anyway and reports it, rather than failing the command.
+pub(crate) fn wait_for_animations(ctx: &mut ConnectedTab) -> Result<bool, AppError> {
+    let console_actor = ctx.target().console_actor.clone();
+    match poll_js_condition(
+        ctx,
+        &console_actor,
+        ANIMATIONS_SETTLED_JS,
+        ANIMATIONS_SETTLE_TIMEOUT_MS,
+        "emulation: checking the page's running animations failed",
+        "emulation: CSS transitions still running",
+    ) {
+        Ok(_) => Ok(true),
+        Err(AppError::Timeout(_)) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,5 +163,25 @@ mod tests {
         );
         assert!(js.contains(r#"matchMedia("print").matches"#), "{js}");
         assert!(js.contains(" && "), "{js}");
+    }
+
+    #[test]
+    fn animations_settled_js_ignores_infinite_and_non_css_animations() {
+        let js = ANIMATIONS_SETTLED_JS;
+        assert!(js.starts_with("(() =>") && js.ends_with("})()"), "{js}");
+        // Flush style before reading the animations, or freshly started
+        // transitions are not there yet.
+        let flush = js.find("getComputedStyle(root)").unwrap();
+        assert!(flush < js.find("document.getAnimations()").unwrap(), "{js}");
+        assert!(
+            js.contains("a instanceof CSSTransition || a instanceof CSSAnimation"),
+            "{js}"
+        );
+        assert!(js.contains("a.playState === 'running'"), "{js}");
+        assert!(js.contains("iterations !== Infinity"), "{js}");
+        assert!(
+            js.contains("return !document.getAnimations().some("),
+            "{js}"
+        );
     }
 }

@@ -115,6 +115,54 @@ fn live_screenshot_media_print_paints_print_styles() {
     );
 }
 
+/// A full-viewport button whose fill transitions over 400ms when the scheme
+/// flips (white → black), plus an infinite spinner animation that must not
+/// keep the capture waiting.
+const TRANSITION_PAGE: &str = "data:text/html,<style>:root{--c:%23fff}\
+    @media (prefers-color-scheme: dark){:root{--c:%23000}}\
+    body{margin:0}button{position:fixed;inset:0;border:0;background:var(--c);\
+    transition:background 400ms linear}\
+    i{position:fixed;top:0;left:0;width:4px;height:4px;background:%23f00;\
+    animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(1turn)}}\
+    </style><body><button></button><i></i></body>";
+
+#[test]
+#[ignore = "requires Firefox — set FF_RDP_LIVE_TESTS=1"]
+fn live_screenshot_color_scheme_waits_for_transitions() {
+    if !live_tests_enabled() {
+        return;
+    }
+    let ff = LiveFirefox::headless_on_random_port();
+    let port = ff.port();
+    run(port, &["navigate", TRANSITION_PAGE]);
+    assert_eq!(
+        centre_pixel(port, &[]),
+        (255, 255, 255),
+        "baseline fill is white"
+    );
+
+    let shot = run(port, &["screenshot", "--base64", "--color-scheme", "dark"]);
+    assert_eq!(
+        shot["results"]["emulation"],
+        serde_json::json!({"color_scheme": "dark", "settled": true}),
+        "the infinite spinner must not keep the page from settling: {}",
+        shot["results"]["emulation"]
+    );
+    let png = base64::engine::general_purpose::STANDARD
+        .decode(shot["results"]["base64"].as_str().expect("base64"))
+        .expect("base64");
+    let image = decode_png(&png);
+    let (r, g, b, _) = image
+        .pixel(image.width / 2, image.height / 2)
+        .expect("centre pixel");
+    assert_eq!(
+        (r, g, b),
+        (0, 0, 0),
+        "--color-scheme dark must capture the button after its 400ms transition, \
+         not mid-way"
+    );
+}
+
 const UA: &str = "ff-rdp-live-UA/1.0 (emulation test)";
 
 /// Serve one HTTP request on `listener` with a page that writes

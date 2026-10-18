@@ -1,7 +1,8 @@
 ---
 title: "screenshot --color-scheme: captures while CSS transitions are still running"
 type: bug
-status: open
+status: resolved
+resolved_by: "#336"
 priority: low
 discovered: 2026-10-18
 tags:
