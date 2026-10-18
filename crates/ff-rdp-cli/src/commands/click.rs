@@ -1138,6 +1138,14 @@ mod tests {
                 "mode {mode:?}: below-the-fold is not an obstruction — the element \
                  must be scrolled into view before the verdict: {js}"
             );
+            assert!(
+                js.contains(
+                    "scrollIntoView({block: 'center', inline: 'center', behavior: 'instant'})"
+                ),
+                "mode {mode:?}: the hit-test scroll must be instant — with \
+                 `html {{ scroll-behavior: smooth }}` any other behavior (even 'auto') \
+                 animates and the rect is read mid-scroll: {js}"
+            );
             let hit_at = js.find("elementFromPoint").expect("hit test present");
             if let Some(dispatch_at) = js.find("dispatchEvent") {
                 assert!(

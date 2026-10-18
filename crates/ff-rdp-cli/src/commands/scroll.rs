@@ -42,6 +42,17 @@ fn js_string_literal(s: &str) -> String {
         .unwrap_or_else(|e| unreachable!("serde_json::to_string(&str) is infallible: {e}"))
 }
 
+/// Map `--smooth` to the JS `behavior` value for `scroll to` / `scroll by`.
+/// The paths without a `--smooth` flag hard-code `'instant'` for the same reason.
+///
+/// The non-smooth default is `'instant'`, never `'auto'`: in `scrollIntoView` /
+/// `scrollTo` / `scrollBy`, `'auto'` defers to the page's CSS `scroll-behavior`,
+/// so on a page with `html { scroll-behavior: smooth }` it animates and the
+/// position read on the very next line is a mid-scroll value.
+fn scroll_behavior(smooth: bool) -> &'static str {
+    if smooth { "smooth" } else { "instant" }
+}
+
 /// Emit a scroll command's envelope, optionally with the `--with-page` view
 /// attached (iter-210 Theme A).
 ///
@@ -102,23 +113,8 @@ pub fn run_to(
     let escaped = escape_selector(selector);
     let selector_lit = js_string_literal(selector);
     let block_spec = block.as_spec();
-    let behavior = if smooth { "smooth" } else { "auto" };
-    let js = format!(
-        r"(function() {{
-  var el = document.querySelector('{escaped}');
-  if (!el) throw new Error('Element not found: {escaped} — use ff-rdp dom SELECTOR --count to verify the selector matches');
-  el.scrollIntoView({{block: '{block_spec}', behavior: '{behavior}'}});
-  var r = el.getBoundingClientRect();
-  var atEnd = (window.scrollY + window.innerHeight) >= (document.documentElement.scrollHeight - 1);
-  return '{JSON_SENTINEL}' + JSON.stringify({{
-    scrolled: true,
-    selector: {selector_lit},
-    viewport: {{x: window.scrollX, y: window.scrollY, width: window.innerWidth, height: window.innerHeight}},
-    target: {{selector: {selector_lit}, rect: {{top: r.top, left: r.left, width: r.width, height: r.height, bottom: r.bottom, right: r.right}}}},
-    atEnd: atEnd
-  }});
-}})()"
-    );
+    let behavior = scroll_behavior(smooth);
+    let js = scroll_to_js(&escaped, &selector_lit, block_spec, behavior);
 
     let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, "scroll to failed")?;
     let result_json = resolve_result(&mut ctx, &eval_result.result)?;
@@ -190,7 +186,7 @@ pub fn run_by(cli: &Cli, dx: i64, dy: Option<i64>, opts: ScrollByOptions) -> Res
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target().console_actor.clone();
 
-    let behavior = if smooth { "smooth" } else { "auto" };
+    let behavior = scroll_behavior(smooth);
     let dy_expr = if page_down {
         "window.innerHeight * 0.85".to_owned()
     } else if page_up {
@@ -199,7 +195,38 @@ pub fn run_by(cli: &Cli, dx: i64, dy: Option<i64>, opts: ScrollByOptions) -> Res
         dy.unwrap_or(0).to_string()
     };
 
-    let js = format!(
+    let js = scroll_by_js(dx, &dy_expr, behavior);
+
+    let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, "scroll by failed")?;
+    let result_json = resolve_result(&mut ctx, &eval_result.result)?;
+    finalize_scroll(cli, &mut ctx, result_json, json!({}), &page)
+}
+
+/// JS for [`run_to`]: scroll the matched element into view and report the
+/// resulting viewport and rect.
+fn scroll_to_js(escaped: &str, selector_lit: &str, block_spec: &str, behavior: &str) -> String {
+    format!(
+        r"(function() {{
+  var el = document.querySelector('{escaped}');
+  if (!el) throw new Error('Element not found: {escaped} — use ff-rdp dom SELECTOR --count to verify the selector matches');
+  el.scrollIntoView({{block: '{block_spec}', behavior: '{behavior}'}});
+  var r = el.getBoundingClientRect();
+  var atEnd = (window.scrollY + window.innerHeight) >= (document.documentElement.scrollHeight - 1);
+  return '{JSON_SENTINEL}' + JSON.stringify({{
+    scrolled: true,
+    selector: {selector_lit},
+    viewport: {{x: window.scrollX, y: window.scrollY, width: window.innerWidth, height: window.innerHeight}},
+    target: {{selector: {selector_lit}, rect: {{top: r.top, left: r.left, width: r.width, height: r.height, bottom: r.bottom, right: r.right}}}},
+    atEnd: atEnd
+  }});
+}})()"
+    )
+}
+
+/// JS for [`run_by`]: scroll the window by `(dx, <dy_expr>)` and report where
+/// it landed.
+fn scroll_by_js(dx: i64, dy_expr: &str, behavior: &str) -> String {
+    format!(
         r"(function() {{
   var topVal = {dy_expr};
   window.scrollBy({{left: {dx}, top: topVal, behavior: '{behavior}'}});
@@ -211,11 +238,7 @@ pub fn run_by(cli: &Cli, dx: i64, dy: Option<i64>, opts: ScrollByOptions) -> Res
     atEnd: atEnd
   }});
 }})()"
-    );
-
-    let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, "scroll by failed")?;
-    let result_json = resolve_result(&mut ctx, &eval_result.result)?;
-    finalize_scroll(cli, &mut ctx, result_json, json!({}), &page)
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -243,17 +266,30 @@ fn run_scroll_absolute(
     let mut ctx = connect_and_get_target(cli)?;
     let console_actor = ctx.target().console_actor.clone();
 
+    let js = scroll_absolute_js(y_expr);
+    let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, error_label)?;
+    let result_json = resolve_result(&mut ctx, &eval_result.result)?;
+    finalize_scroll(cli, &mut ctx, result_json, json!({}), page_args)
+}
+
+/// JS for [`run_scroll_absolute`]: jump the window to `(0, <y_expr>)` and
+/// report where it landed.
+fn scroll_absolute_js(y_expr: &str) -> String {
     // iter-129 Theme D: on a page with a CMP/modal overlay that sets
     // `overflow:hidden` on <html>/<body>, `window.scrollTo` silently no-ops —
     // the position doesn't move and `atEnd` reports `true` trivially (0-height
     // scrollable range), masking the real cause. Detect that specific
     // "locked AND didn't move" combination and name the locking element
     // instead of staying silent (dogfooding-session-62 finding 1).
-    let js = format!(
+    //
+    // `behavior: 'instant'`: the two-argument `scrollTo(x, y)` follows CSS
+    // `scroll-behavior`, so on a smooth-scroll page `after` was read
+    // mid-animation.
+    format!(
         r#"(function() {{
   var root = document.scrollingElement || document.documentElement || document.body;
   var before = root.scrollTop;
-  window.scrollTo(0, {y_expr});
+  window.scrollTo({{left: 0, top: {y_expr}, behavior: 'instant'}});
   var after = root.scrollTop;
   var atEnd = (after + window.innerHeight) >= (root.scrollHeight - 1);
   var htmlOverflow = getComputedStyle(document.documentElement).overflow;
@@ -275,16 +311,28 @@ fn run_scroll_absolute(
     warning: warning
   }});
 }})()"#
-    );
-
-    let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, error_label)?;
-    let result_json = resolve_result(&mut ctx, &eval_result.result)?;
-    finalize_scroll(cli, &mut ctx, result_json, json!({}), page_args)
+    )
 }
 
 // ---------------------------------------------------------------------------
 // scroll container <selector> [--dx] [--dy] [--to-end] [--to-start]
 // ---------------------------------------------------------------------------
+
+/// The in-page statement that moves the container `el` for `scroll container`.
+///
+/// Uses `scrollTo` / `scrollBy` with `behavior: 'instant'` rather than
+/// assigning `scrollTop`: an assignment follows the container's CSS
+/// `scroll-behavior`, so on a `scroll-behavior: smooth` container the `after`
+/// position read on the next line would be mid-animation.
+fn container_scroll_logic(dx: i64, dy: i64, to_end: bool, to_start: bool) -> String {
+    if to_end {
+        "el.scrollTo({top: el.scrollHeight, left: el.scrollWidth, behavior: 'instant'});".to_owned()
+    } else if to_start {
+        "el.scrollTo({top: 0, left: 0, behavior: 'instant'});".to_owned()
+    } else {
+        format!("el.scrollBy({{top: {dy}, left: {dx}, behavior: 'instant'}});")
+    }
+}
 
 pub fn run_container(
     cli: &Cli,
@@ -300,13 +348,7 @@ pub fn run_container(
 
     let escaped = escape_selector(selector);
     let selector_lit = js_string_literal(selector);
-    let scroll_logic = if to_end {
-        "el.scrollTop = el.scrollHeight; el.scrollLeft = el.scrollWidth;".to_owned()
-    } else if to_start {
-        "el.scrollTop = 0; el.scrollLeft = 0;".to_owned()
-    } else {
-        format!("el.scrollTop += {dy}; el.scrollLeft += {dx};")
-    };
+    let scroll_logic = container_scroll_logic(dx, dy, to_end, to_start);
 
     let js = format!(
         r"(function() {{
@@ -373,7 +415,7 @@ pub fn run_until(
     // JS to scroll one step
     let scroll_js = format!(
         r"(function() {{
-  window.scrollBy({{top: {sign}(window.innerHeight * 0.8), behavior: 'auto'}});
+  window.scrollBy({{top: {sign}(window.innerHeight * 0.8), behavior: 'instant'}});
   return true;
 }})()"
     );
@@ -493,7 +535,17 @@ pub fn run_text(
     let text_json = serde_json::to_string(text)
         .map_err(|e| AppError::from(anyhow::anyhow!("failed to encode text argument: {e}")))?;
 
-    let js = format!(
+    let js = scroll_text_js(&text_json);
+    let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, "scroll text failed")?;
+    let result_json = resolve_result(&mut ctx, &eval_result.result)?;
+    let meta = json!({"text": text});
+    finalize_scroll(cli, &mut ctx, result_json, meta, page_args)
+}
+
+/// JS for [`run_text`]: find the first text node containing `text_json` (a
+/// JSON-encoded string), centre its parent element and report the settled rect.
+fn scroll_text_js(text_json: &str) -> String {
+    format!(
         r"(function() {{
   var needle = {text_json};
   var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
@@ -506,7 +558,7 @@ pub fn run_text(
   }}
   if (!node) throw new Error('Text not found: ' + needle);
   var el = node.parentElement;
-  el.scrollIntoView({{block: 'center', behavior: 'auto'}});
+  el.scrollIntoView({{block: 'center', behavior: 'instant'}});
   var r = el.getBoundingClientRect();
   return '{JSON_SENTINEL}' + JSON.stringify({{
     scrolled: true,
@@ -515,12 +567,7 @@ pub fn run_text(
     target: {{tag: el.tagName.toLowerCase(), rect: {{top: r.top, left: r.left, width: r.width, height: r.height}}}}
   }});
 }})()"
-    );
-
-    let eval_result = eval_or_bail(&mut ctx, &console_actor, &js, "scroll text failed")?;
-    let result_json = resolve_result(&mut ctx, &eval_result.result)?;
-    let meta = json!({"text": text});
-    finalize_scroll(cli, &mut ctx, result_json, meta, page_args)
+    )
 }
 
 #[cfg(test)]
@@ -646,35 +693,44 @@ mod tests {
 
     #[test]
     fn scroll_text_js_uses_tree_walker() {
-        let text = "Contact Us";
-        let text_json = serde_json::to_string(text).unwrap();
-        let js = format!(
-            r"(function() {{
-  var needle = {text_json};
-  var walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
-  return '{JSON_SENTINEL}' + JSON.stringify({{scrolled: true}});
-}})()"
-        );
+        let text_json = js_string_literal("Contact Us");
+        let js = scroll_text_js(&text_json);
         assert!(js.contains("createTreeWalker"));
         assert!(js.contains("NodeFilter.SHOW_TEXT"));
         assert!(js.contains("Contact Us"));
+        assert!(js.contains(JSON_SENTINEL));
     }
 
     #[test]
-    fn scroll_container_to_end_js() {
-        let selector = ".sidebar";
-        let escaped = escape_selector(selector);
-        let scroll_logic =
-            "el.scrollTop = el.scrollHeight; el.scrollLeft = el.scrollWidth;".to_owned();
-        let js = format!(
-            r"(function() {{
-  var el = document.querySelector('{escaped}');
-  {scroll_logic}
-  return '{JSON_SENTINEL}' + JSON.stringify({{scrolled: true}});
-}})()"
+    fn scroll_text_js_scrolls_instantly() {
+        // `scroll --text` reads the rect right after scrolling; with 'auto' a
+        // page's `scroll-behavior: smooth` makes that a mid-animation rect.
+        let js = scroll_text_js(&js_string_literal("x"));
+        assert!(
+            js.contains("scrollIntoView({block: 'center', behavior: 'instant'})"),
+            "{js}"
         );
-        assert!(js.contains("scrollHeight"));
-        assert!(js.contains("scrollWidth"));
+        assert!(!js.contains("'auto'"), "{js}");
+    }
+
+    #[test]
+    fn scroll_behavior_default_is_instant_not_auto() {
+        assert_eq!(scroll_behavior(false), "instant");
+        assert_eq!(scroll_behavior(true), "smooth");
+    }
+
+    #[test]
+    fn scroll_container_logic_is_instant() {
+        let to_end = container_scroll_logic(0, 0, true, false);
+        assert!(to_end.contains("el.scrollHeight") && to_end.contains("el.scrollWidth"));
+        let to_start = container_scroll_logic(0, 0, false, true);
+        assert!(to_start.contains("top: 0, left: 0"));
+        let by = container_scroll_logic(-20, 300, false, false);
+        assert!(by.contains("top: 300, left: -20"), "{by}");
+        for logic in [to_end, to_start, by] {
+            assert!(logic.contains("behavior: 'instant'"), "{logic}");
+            assert!(!logic.contains("scrollTop ="), "{logic}");
+        }
     }
 
     #[test]
@@ -695,11 +751,28 @@ mod tests {
     }
 
     #[test]
+    fn run_to_and_run_by_js_are_instant_unless_smooth() {
+        let js = scroll_to_js("h1", "\"h1\"", "center", scroll_behavior(false));
+        assert!(
+            js.contains("scrollIntoView({block: 'center', behavior: 'instant'})"),
+            "{js}"
+        );
+        let js = scroll_to_js("h1", "\"h1\"", "start", scroll_behavior(true));
+        assert!(js.contains("behavior: 'smooth'"), "{js}");
+        let js = scroll_by_js(-200, "500", scroll_behavior(false));
+        assert!(
+            js.contains("window.scrollBy({left: -200, top: topVal, behavior: 'instant'})"),
+            "{js}"
+        );
+        assert!(js.contains("var topVal = 500;"), "{js}");
+    }
+
+    #[test]
     fn run_by_negative_dx_produces_negative_js_expr() {
         let dx: i64 = -200;
         let js = format!(
             r"(function() {{
-  window.scrollBy({{left: {dx}, top: 0, behavior: 'auto'}});
+  window.scrollBy({{left: {dx}, top: 0, behavior: 'instant'}});
   return true;
 }})()"
         );
@@ -708,32 +781,24 @@ mod tests {
 
     #[test]
     fn run_top_js_scrolls_to_origin() {
-        // Verify the JS emitted by run_top uses scrollTo(0, 0)
-        let js = format!(
-            r"(function() {{
-  window.scrollTo(0, 0);
-  return '{JSON_SENTINEL}' + JSON.stringify({{scrolled: true}});
-}})()"
+        let js = scroll_absolute_js("0");
+        assert!(
+            js.contains("window.scrollTo({left: 0, top: 0, behavior: 'instant'})"),
+            "{js}"
         );
-        assert!(js.contains("scrollTo(0, 0)"));
         assert!(js.contains(JSON_SENTINEL));
     }
 
     #[test]
     fn run_bottom_js_scrolls_to_scroll_height() {
-        // Verify the JS emitted by run_bottom uses scrollingElement fallback
-        // and scrollTo(0, root.scrollHeight).
-        let js = format!(
-            r"(function() {{
-  var root = document.scrollingElement || document.documentElement || document.body;
-  window.scrollTo(0, root.scrollHeight);
-  return '{JSON_SENTINEL}' + JSON.stringify({{scrolled: true}});
-}})()"
-        );
+        let js = scroll_absolute_js("root.scrollHeight");
         assert!(
             js.contains("document.scrollingElement || document.documentElement || document.body")
         );
-        assert!(js.contains("scrollTo(0, root.scrollHeight)"));
+        assert!(
+            js.contains("window.scrollTo({left: 0, top: root.scrollHeight, behavior: 'instant'})"),
+            "{js}"
+        );
         assert!(js.contains(JSON_SENTINEL));
     }
 }

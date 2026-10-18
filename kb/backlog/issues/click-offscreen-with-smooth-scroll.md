@@ -1,7 +1,7 @@
 ---
 title: "click: false click_offscreen on pages with scroll-behavior: smooth"
 type: bug
-status: open
+status: resolved
 priority: medium
 discovered: 2026-10-18
 tags:
@@ -10,6 +10,7 @@ tags:
   - ai-agent
 reporter: saturnus
 ff_rdp_version: 0.4.1 (main 8abb03c1, reproduced 2026-10-18)
+resolved_by: 337
 ---
 
 # click: false click_offscreen on pages with scroll-behavior: smooth
