@@ -27,13 +27,13 @@ ff-rdp-core = { path = "crates/ff-rdp-core", version = "0.4.1" }
 
 # External dependencies
 anyhow = "1"
-base64 = "0.22"
+base64 = "0.23"
 clap = { version = "4.6", features = ["derive", "env"] }
 clap_complete = "4.6"
 regex = "1"
-jaq-core = "3.0.0"
-jaq-json = { version = "2.0.0", features = ["serde"] }
-jaq-std = "3.0.0"
+jaq-core = "3.1.1"
+jaq-json = { version = "2.0.3", features = ["serde"] }
+jaq-std = "3.0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 # serde_norway (iter-105 Theme D): maintained fork replacing the archived,
@@ -44,9 +44,9 @@ serde_norway = "0.9"
 # sha2 (iter-219 Theme A): `xtask check-vendored-js` recomputes the SHA-256 of
 # the vendored Readability bundle against the hashes pinned in its VERSION
 # manifest. Already a ff-rdp-cli dependency; hoisted here so the two agree.
-sha2 = "0.10"
+sha2 = "0.11"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
-dirs = "6"
+dirs = "7"
 fs2 = "0.4"
 thiserror = "2"
 tracing = "0.1"
@@ -63,7 +63,7 @@ walkdir = "2"
 version = "0.2"
 
 [workspace.dependencies.windows-sys]
-version = "0.59"
+version = "0.61"
 features = [
     "Win32_System_Threading",
     "Win32_Foundation",
