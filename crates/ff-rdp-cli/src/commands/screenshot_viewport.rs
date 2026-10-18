@@ -34,9 +34,6 @@ use crate::error::AppError;
 use super::connect_tab::ConnectedTab;
 use super::js_helpers::eval_or_bail;
 
-/// Attribute marking the injected wrapper; its value is the per-call id.
-const WRAPPER_ATTR: &str = "data-ffrdp-viewport";
-
 /// Largest accepted `--viewport` edge, in CSS px. Beyond this the capture is
 /// a canvas-size failure waiting to happen and no device is that large.
 const MAX_EDGE_PX: u32 = 8192;
@@ -95,6 +92,10 @@ pub(crate) fn capture(
     let result = injected.and_then(|origin| {
         let left = origin.get("left").and_then(Value::as_f64).unwrap_or(0.0);
         let top = origin.get("top").and_then(Value::as_f64).unwrap_or(0.0);
+        let window_clipped = origin
+            .get("window_clipped")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let settled = wait_for_frame(ctx, &id, load_budget)?;
         let rect = CaptureRect {
             left,
@@ -102,7 +103,7 @@ pub(crate) fn capture(
             width: f64::from(width),
             height: f64::from(height),
         };
-        let (png, dppx) = capture_rect(ctx, rect)?;
+        let (png, dppx) = capture_rect(ctx, rect, (width, height))?;
         Ok(ViewportCapture {
             png,
             fields: vec![
@@ -115,6 +116,7 @@ pub(crate) fn capture(
                 ("load_complete", json!(settled.load_complete)),
                 ("images_settled", json!(settled.images_settled)),
                 ("images_pending", json!(settled.images_pending)),
+                ("window_clipped", json!(window_clipped)),
             ],
         })
     });
@@ -124,7 +126,7 @@ pub(crate) fn capture(
     let cleanup = eval_or_bail(
         ctx,
         &console_actor,
-        &build_cleanup_js(),
+        build_cleanup_js(),
         "screenshot --viewport: could not remove the iframe wrapper",
     );
     match (result, cleanup) {
@@ -142,7 +144,8 @@ struct FrameOutcome {
     href: String,
     load_complete: bool,
     images_settled: bool,
-    images_pending: u64,
+    /// `None` when the frame never loaded, so no images were counted.
+    images_pending: Option<u64>,
 }
 
 /// One poll of the injected frame's state (see [`build_poll_js`]).
@@ -152,8 +155,9 @@ struct FrameState {
     phase: String,
     #[serde(default)]
     images_settled: bool,
+    /// First-viewport images still loading; `null` until the frame loaded.
     #[serde(default)]
-    pending: u64,
+    pending: Option<u64>,
     #[serde(default)]
     probed: bool,
     #[serde(default)]
@@ -193,28 +197,34 @@ fn wait_for_frame(
         })
     };
 
+    // A refused frame: give the header probe a moment, then name the cause.
+    let refused = |ctx: &mut ConnectedTab, mut state: FrameState| -> AppError {
+        let probe_deadline = Instant::now() + PROBE_BUDGET;
+        while !state.probed && Instant::now() < probe_deadline {
+            std::thread::sleep(POLL_INTERVAL);
+            match poll(ctx) {
+                Ok(next) => state = next,
+                Err(e) => return e,
+            }
+        }
+        refused_error(&state)
+    };
+    let gone = || {
+        AppError::User(
+            "screenshot --viewport: the iframe wrapper disappeared before the capture (did the \
+             tab navigate?)"
+                .to_owned(),
+        )
+    };
+
     // Phase 1: the frame's `load` event.
     let load_deadline = Instant::now() + load_budget;
     let mut state = loop {
         let state = poll(ctx)?;
         match state.phase.as_str() {
             "loaded" => break state,
-            "refused" => {
-                let probe_deadline = Instant::now() + PROBE_BUDGET;
-                let mut state = state;
-                while !state.probed && Instant::now() < probe_deadline {
-                    std::thread::sleep(POLL_INTERVAL);
-                    state = poll(ctx)?;
-                }
-                return Err(refused_error(&state));
-            }
-            "gone" => {
-                return Err(AppError::User(
-                    "screenshot --viewport: the iframe wrapper disappeared before the capture \
-                     (did the tab navigate?)"
-                        .to_owned(),
-                ));
-            }
+            "refused" => return Err(refused(ctx, state)),
+            "gone" => return Err(gone()),
             _ => {}
         }
         if Instant::now() >= load_deadline {
@@ -228,7 +238,7 @@ fn wait_for_frame(
                     images_settled: false,
                     images_pending: state.pending,
                 }),
-                None => Err(AppError::User(format!(
+                None => Err(AppError::Timeout(format!(
                     "screenshot --viewport: the page did not load in the iframe within {} ms; \
                      raise --timeout, or use `screenshot --window-size WxH` (a separate one-shot \
                      Firefox capture)",
@@ -244,12 +254,12 @@ fn wait_for_frame(
     while !state.images_settled && Instant::now() < image_deadline {
         std::thread::sleep(POLL_INTERVAL);
         state = poll(ctx)?;
-        if state.phase != "loaded" {
-            return Err(AppError::User(
-                "screenshot --viewport: the iframe wrapper disappeared before the capture \
-                 (did the tab navigate?)"
-                    .to_owned(),
-            ));
+        // The frame may navigate again (meta refresh, redirect): a new load
+        // resets the image wait in the page; a cross-origin one refuses.
+        match state.phase.as_str() {
+            "refused" => return Err(refused(ctx, state)),
+            "gone" => return Err(gone()),
+            _ => {}
         }
     }
     Ok(FrameOutcome {
@@ -257,7 +267,7 @@ fn wait_for_frame(
         load_complete: true,
         images_settled: state.images_settled,
         images_pending: if state.images_settled {
-            0
+            Some(0)
         } else {
             state.pending
         },
@@ -306,7 +316,14 @@ fn refused_error(state: &FrameState) -> AppError {
 
 /// Capture `rect` (document CSS px) of the top-level document; returns the
 /// PNG and the device-pixel ratio it was rendered at.
-fn capture_rect(ctx: &mut ConnectedTab, rect: CaptureRect) -> Result<(Vec<u8>, f64), AppError> {
+///
+/// Fails when the PNG is not `size` x dppx: a Firefox that ignores the capture
+/// rect would otherwise hand back the whole window under a `--viewport` label.
+fn capture_rect(
+    ctx: &mut ConnectedTab,
+    rect: CaptureRect,
+    size: (u32, u32),
+) -> Result<(Vec<u8>, f64), AppError> {
     use base64::Engine as _;
 
     let browsing_ctx_id = ctx.target().browsing_context_id.ok_or_else(|| {
@@ -348,7 +365,25 @@ fn capture_rect(ctx: &mut ConnectedTab, rect: CaptureRect) -> Result<(Vec<u8>, f
     let png = base64::engine::general_purpose::STANDARD
         .decode(b64)
         .map_err(|e| AppError::User(format!("screenshot --viewport: bad base64 PNG: {e}")))?;
+    let got = super::screenshot::png_dimensions(&png);
+    if !png_matches(got, size, dppx) {
+        return Err(AppError::User(format!(
+            "screenshot --viewport: Firefox returned a {} image for a {}x{} capture at {dppx} \
+             dppx — this Firefox does not honour the capture rect; use `screenshot \
+             --window-size WxH` instead",
+            got.map_or_else(|| "non-PNG".to_owned(), |(w, h)| format!("{w}x{h}")),
+            size.0,
+            size.1
+        )));
+    }
     Ok((png, dppx))
+}
+
+/// Whether PNG dimensions `got` are `size` CSS px at `dppx` (within a pixel
+/// of rounding).
+fn png_matches(got: Option<(u32, u32)>, size: (u32, u32), dppx: f64) -> bool {
+    let near = |px: u32, css: u32| (f64::from(px) - f64::from(css) * dppx).abs() <= 1.0;
+    got.is_some_and(|(w, h)| near(w, size.0) && near(h, size.1))
 }
 
 /// Evaluate `js` (which returns a JSON string) and parse the result.
@@ -378,129 +413,41 @@ fn call_id() -> String {
     format!("{}-{nanos}", std::process::id())
 }
 
+/// The JS templates, shared with the fixture recorder in
+/// `crates/ff-rdp-core/tests/live_record_fixtures.rs`.
+const INJECT_JS: &str = include_str!("../../js/screenshot_viewport/inject.js");
+const POLL_JS: &str = include_str!("../../js/screenshot_viewport/poll.js");
+const CLEANUP_JS: &str = include_str!("../../js/screenshot_viewport/cleanup.js");
+
 /// JS string literal for `s`.
 fn js_str(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_owned())
 }
 
-/// JS that inserts the wrapper + iframe and returns its document origin as
-/// `{"left": x, "top": y}` (CSS px).
+/// JS that inserts the wrapper + iframe (see `js/screenshot_viewport/inject.js`)
+/// and returns `{"left", "top", "window_clipped"}`.
 ///
 /// The wrapper sits at the top-left of the visible viewport so the frame is
 /// on screen (Firefox throttles off-screen frames and never starts their
-/// lazy images). The frame is sandboxed without `allow-top-navigation`, so a
-/// frame-busting script cannot navigate the live tab. Its state lives on the
-/// wrapper element as `__ffrdp`, read back by [`build_poll_js`].
+/// lazy images), in the top layer when the Popover API exists (above an open
+/// modal `<dialog>`). The frame is sandboxed without `allow-top-navigation`
+/// and `allow-popups`. Its state lives on the wrapper element as `__ffrdp`,
+/// read back by [`build_poll_js`].
 fn build_inject_js(width: u32, height: u32, id: &str) -> String {
-    let id = js_str(id);
-    format!(
-        r"(function() {{
-  var W = {width}, H = {height}, ID = {id};
-  document.querySelectorAll('[{WRAPPER_ATTR}]').forEach(function(e) {{
-    if (e.__ffrdpOnViolation) document.removeEventListener('securitypolicyviolation', e.__ffrdpOnViolation);
-    e.remove();
-  }});
-  var st = {{ phase: 'loading', images_settled: false, pending: 0, probed: false, xfo: null, csp: null,
-    violation: null }};
-  var refuse = function() {{
-    if (st.phase === 'refused') return;
-    st.phase = 'refused';
-    fetch(location.href, {{ credentials: 'include', cache: 'no-store' }}).then(function(r) {{
-      st.xfo = r.headers.get('x-frame-options');
-      st.csp = r.headers.get('content-security-policy');
-      st.probed = true;
-    }}, function() {{ st.probed = true; }});
-  }};
-  // The page's own CSP (frame-src/child-src/default-src) can block the frame
-  // before it loads; no `load` fires then, only this event.
-  var onViolation = function(e) {{
-    var dir = e.effectiveDirective || e.violatedDirective || '';
-    if (/^(frame-src|child-src|default-src)/.test(dir)
-        && String(e.blockedURI || '').indexOf(location.origin) === 0) {{
-      st.violation = dir;
-      refuse();
-    }}
-  }};
-  document.addEventListener('securitypolicyviolation', onViolation);
-  var d = document.createElement('div');
-  d.setAttribute('{WRAPPER_ATTR}', ID);
-  d.style.cssText = 'all: initial; display: block; position: absolute; margin: 0; padding: 0; border: 0;'
-    + ' overflow: hidden; z-index: 2147483647; background: #fff;'
-    + ' left: ' + window.scrollX + 'px; top: ' + window.scrollY + 'px;'
-    + ' width: ' + W + 'px; height: ' + H + 'px;';
-  d.__ffrdp = st;
-  d.__ffrdpOnViolation = onViolation;
-  var f = document.createElement('iframe');
-  f.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups');
-  f.style.cssText = 'all: initial; display: block; margin: 0; padding: 0; border: 0;'
-    + ' width: ' + W + 'px; height: ' + H + 'px;';
-  f.addEventListener('load', function() {{
-    var doc = null, href = null;
-    try {{ doc = f.contentDocument; href = f.contentWindow.location.href; }} catch (e) {{}}
-    if (!doc || !href || href === 'about:blank') {{ refuse(); return; }}
-    st.phase = 'loaded';
-    var imgs = Array.prototype.filter.call(doc.images, function(img) {{
-      var r = img.getBoundingClientRect();
-      return r.bottom > 0 && r.top < H && r.right > 0 && r.left < W;
-    }});
-    imgs.forEach(function(img) {{ if (img.loading === 'lazy') img.loading = 'eager'; }});
-    st.pending = imgs.length;
-    var waits = imgs.map(function(img) {{
-      return new Promise(function(res) {{
-        if (img.complete) return res();
-        img.addEventListener('load', res, {{ once: true }});
-        img.addEventListener('error', res, {{ once: true }});
-      }}).then(function() {{
-        st.pending--;
-        return img.decode ? img.decode().catch(function() {{}}) : null;
-      }});
-    }});
-    if (doc.fonts && doc.fonts.ready) waits.push(doc.fonts.ready.catch(function() {{}}));
-    Promise.all(waits).then(function() {{
-      var w = f.contentWindow;
-      w.requestAnimationFrame(function() {{
-        w.requestAnimationFrame(function() {{ st.images_settled = true; }});
-      }});
-    }});
-  }});
-  f.src = location.href;
-  d.appendChild(f);
-  document.documentElement.appendChild(d);
-  var r = d.getBoundingClientRect();
-  return JSON.stringify({{ left: r.left + window.scrollX, top: r.top + window.scrollY }});
-}})()"
-    )
+    INJECT_JS
+        .replace("__FFRDP_W__", &width.to_string())
+        .replace("__FFRDP_H__", &height.to_string())
+        .replace("__FFRDP_ID__", &js_str(id))
 }
 
 /// JS returning the frame state as JSON (see [`FrameState`]).
 fn build_poll_js(id: &str) -> String {
-    let id = js_str(id);
-    format!(
-        r"(function() {{
-  var d = document.querySelector('[{WRAPPER_ATTR}=' + JSON.stringify({id}) + ']');
-  var st = d && d.__ffrdp;
-  if (!st) return JSON.stringify({{ phase: 'gone' }});
-  var f = d.querySelector('iframe'), ready = null, href = null;
-  try {{ ready = f.contentDocument && f.contentDocument.readyState; href = f.contentWindow.location.href; }} catch (e) {{}}
-  return JSON.stringify({{ phase: st.phase, images_settled: st.images_settled, pending: st.pending,
-    probed: st.probed, xfo: st.xfo, csp: st.csp, violation: st.violation, ready: ready, href: href }});
-}})()"
-    )
+    POLL_JS.replace("__FFRDP_ID__", &js_str(id))
 }
 
 /// JS removing every wrapper (also leftovers of an interrupted run).
-fn build_cleanup_js() -> String {
-    format!(
-        r"(function() {{
-  var n = 0;
-  document.querySelectorAll('[{WRAPPER_ATTR}]').forEach(function(e) {{
-    if (e.__ffrdpOnViolation) document.removeEventListener('securitypolicyviolation', e.__ffrdpOnViolation);
-    e.remove();
-    n++;
-  }});
-  return n;
-}})()"
-    )
+fn build_cleanup_js() -> &'static str {
+    CLEANUP_JS
 }
 
 #[cfg(test)]
@@ -536,19 +483,22 @@ mod tests {
     fn inject_js_sizes_the_frame_and_blocks_top_navigation() {
         let js = build_inject_js(390, 844, "7-1");
         assert!(js.contains("var W = 390, H = 844, ID = \"7-1\""));
+        assert!(!js.contains("__FFRDP_"), "every placeholder substituted");
         assert!(js.contains("f.src = location.href"));
-        assert!(
-            js.contains("'sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups'")
-        );
+        assert!(js.contains("'sandbox', 'allow-scripts allow-same-origin allow-forms'"));
         assert!(!js.contains("allow-top-navigation"));
+        assert!(!js.contains("allow-popups"));
+        assert!(js.contains("showPopover"));
         assert!(js.contains("img.loading = 'eager'"));
-        assert!(js.contains(WRAPPER_ATTR));
+        assert!(js.contains("data-ffrdp-viewport"));
     }
 
     #[test]
     fn poll_and_cleanup_js_target_the_wrapper() {
-        assert!(build_poll_js("a\"b").contains(r#"JSON.stringify("a\"b")"#));
-        assert!(build_cleanup_js().contains(&format!("[{WRAPPER_ATTR}]")));
+        let poll = build_poll_js("a\"b");
+        assert!(poll.contains(r#"var ID = "a\"b";"#), "{poll}");
+        assert!(!poll.contains("__FFRDP_"));
+        assert!(build_cleanup_js().contains("[data-ffrdp-viewport]"));
     }
 
     fn state(json: Value) -> FrameState {
@@ -591,6 +541,15 @@ mod tests {
         let s = state(json!({"phase": "refused", "probed": true, "csp": "default-src *"}));
         let msg = refused_error(&s).to_string();
         assert!(msg.contains("not same-origin"), "{msg}");
+    }
+
+    #[test]
+    fn png_matches_allows_rounding_only() {
+        assert!(png_matches(Some((390, 844)), (390, 844), 1.0));
+        assert!(png_matches(Some((780, 1688)), (390, 844), 2.0));
+        assert!(png_matches(Some((585, 1266)), (390, 844), 1.5));
+        assert!(!png_matches(Some((1366, 683)), (390, 844), 1.0));
+        assert!(!png_matches(None, (390, 844), 1.0));
     }
 
     #[test]

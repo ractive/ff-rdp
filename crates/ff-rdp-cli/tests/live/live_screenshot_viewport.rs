@@ -184,6 +184,41 @@ fn live_screenshot_viewport_lays_out_at_the_requested_width() {
     );
 }
 
+/// An open modal `<dialog>` (and its `::backdrop`) is in the top layer; the
+/// wrapper must go above it, or the live dialog paints over the capture.
+#[test]
+#[ignore = "requires Firefox — set FF_RDP_LIVE_TESTS=1"]
+fn live_screenshot_viewport_sits_above_an_open_modal_dialog() {
+    if !live_tests_enabled() {
+        return;
+    }
+    let ff = LiveFirefox::headless_on_random_port();
+    let port = ff.port();
+    let base = serve();
+    run(port, &["navigate", &format!("{base}/")]);
+    run(
+        port,
+        &[
+            "eval",
+            "document.body.insertAdjacentHTML('beforeend', '<dialog id=dlg style=\"background:#ff0;\
+             width:1000px;height:400px\">dialog</dialog>'); dlg.showModal(); dlg.open",
+        ],
+    );
+
+    let (results, image) = shoot(port, &["--viewport", "390x844"]);
+    let dppx = results["viewport"]["dppx"].as_f64().unwrap_or(1.0);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let centre = rgb(&image, (200.0 * dppx) as u32, (300.0 * dppx) as u32);
+    assert_eq!(
+        centre,
+        (0, 255, 0),
+        "the frame must paint above the live modal dialog and its backdrop"
+    );
+    assert_eq!(wrappers_left(port), 0, "the wrapper must be removed");
+    let open = run(port, &["eval", "dlg.open"]);
+    assert_eq!(open["results"], true, "the live dialog stays open");
+}
+
 #[test]
 #[ignore = "requires Firefox — set FF_RDP_LIVE_TESTS=1"]
 fn live_screenshot_viewport_composes_with_color_scheme() {

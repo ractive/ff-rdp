@@ -959,7 +959,7 @@ fn resolve_output_path(output_path: Option<&str>) -> anyhow::Result<PathBuf> {
 /// PNG structure: 8-byte signature, then chunks. The first chunk is always
 /// IHDR which contains `width` (4 bytes, big-endian) at offset 16 and
 /// `height` (4 bytes, big-endian) at offset 20.
-fn png_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+pub(super) fn png_dimensions(data: &[u8]) -> Option<(u32, u32)> {
     if data.len() < 24 {
         return None;
     }

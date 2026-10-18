@@ -2,9 +2,9 @@
   "type": "evaluationResult",
   "resultID": "0",
   "hasException": false,
-  "input": "(function() {\n  var n = 0;\n  document.querySelectorAll('[data-ffrdp-viewport]').forEach(function(e) { e.remove(); n++; });\n  return n;\n})()",
+  "input": "// `screenshot --viewport`: remove every wrapper (also leftovers of an\n// interrupted run) and its CSP listener. Returns how many were removed.\n(function() {\n  var n = 0;\n  document.querySelectorAll('[data-ffrdp-viewport]').forEach(function(e) {\n    if (e.__ffrdpOnViolation) document.removeEventListener('securitypolicyviolation', e.__ffrdpOnViolation);\n    e.remove();\n    n++;\n  });\n  return n;\n})()\n",
   "result": 1,
-  "startTime": 1792349887550.241,
-  "timestamp": 1792349887551.263,
+  "startTime": 1792351794904.257,
+  "timestamp": 1792351794904.952,
   "from": "server1.conn0.child0/consoleActor3"
 }

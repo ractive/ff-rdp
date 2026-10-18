@@ -23,6 +23,11 @@ const PNG_1X1: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAI
 ///
 /// Flow: `listTabs` → `getTarget` → `prepareCapture` → `getRoot` → `capture`
 fn screenshot_server() -> MockRdpServer {
+    screenshot_server_capturing(PNG_1X1)
+}
+
+/// [`screenshot_server`] whose `capture` replies with `png_data_url`.
+fn screenshot_server_capturing(png_data_url: &str) -> MockRdpServer {
     let prepare_response = serde_json::json!({
         "from": "server1.conn0.child2/screenshotContentActor15",
         "value": {
@@ -41,7 +46,7 @@ fn screenshot_server() -> MockRdpServer {
     let capture_response = serde_json::json!({
         "from": "server1.conn0.screenshotActor7",
         "value": {
-            "data": PNG_1X1,
+            "data": png_data_url,
             "filename": "screenshot.png",
             "messages": []
         }
@@ -708,14 +713,34 @@ fn screenshot_emulation_refuses_impossible_combinations() {
 // --viewport WxH (iframe wrapper on the live tab)
 // ---------------------------------------------------------------------------
 
-/// `screenshot_server` plus the three recorded `evaluateJSAsync` replies of a
-/// `--viewport` capture: inject → poll (loaded, images settled) → cleanup.
+/// A white `width`x`height` PNG as a data URL: the capture reply for a mock
+/// `--viewport` run (the CLI checks the PNG matches the requested size).
+fn png_data_url(width: u32, height: u32) -> String {
+    let mut bytes = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut bytes, width, height);
+        encoder.set_color(png::ColorType::Rgb);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().expect("png header");
+        writer
+            .write_image_data(&vec![255u8; (width * height * 3) as usize])
+            .expect("png data");
+    }
+    format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    )
+}
+
+/// The screenshot flow (its `capture` replying with `png`) plus the three
+/// recorded `evaluateJSAsync` replies of a `--viewport` capture: inject →
+/// poll (loaded, images settled) → cleanup.
 ///
 /// The recorder normalises actor ids to `child0`, while
 /// `get_target_response.json` hands out `child2/consoleActor3`; the mock only
 /// rewrites `from` on replies, not on `evaluationResult` events, so the test
 /// addresses each event to the console actor the client was given.
-fn viewport_server() -> MockRdpServer {
+fn viewport_server(png: &str) -> MockRdpServer {
     let console = load_fixture("get_target_response.json")["frame"]["consoleActor"].clone();
     assert!(
         console.is_string(),
@@ -727,7 +752,7 @@ fn viewport_server() -> MockRdpServer {
         vec![event]
     };
     let immediate = load_fixture("eval_immediate_response_location_href.json");
-    screenshot_server().on_sequence(
+    screenshot_server_capturing(png).on_sequence(
         "evaluateJSAsync",
         vec![
             (
@@ -745,7 +770,10 @@ fn viewport_server() -> MockRdpServer {
 
 #[test]
 fn screenshot_viewport_captures_the_wrapper_rect_and_removes_it() {
-    let (output, requests) = run_emulated(viewport_server(), &["--viewport", "390x844"]);
+    let (output, requests) = run_emulated(
+        viewport_server(&png_data_url(390, 844)),
+        &["--viewport", "390x844"],
+    );
     assert!(output.status.success(), "{}", support::output_note(&output));
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("JSON");
     let results = &json["results"];
@@ -778,6 +806,27 @@ fn screenshot_viewport_captures_the_wrapper_rect_and_removes_it() {
     assert!(evals[1] < capture_at && capture_at < evals[2], "{types:?}");
     let cleanup = requests[evals[2]]["text"].as_str().unwrap_or_default();
     assert!(cleanup.contains("data-ffrdp-viewport"), "{cleanup}");
+}
+
+/// A Firefox that ignores the capture rect returns the whole window; that must
+/// not be labelled a 390x844 capture, and the wrapper is still removed.
+#[test]
+fn screenshot_viewport_refuses_a_capture_of_the_wrong_size() {
+    let (output, requests) = run_emulated(
+        viewport_server(&png_data_url(1366, 683)),
+        &["--viewport", "390x844"],
+    );
+    assert!(!output.status.success(), "must fail");
+    let note = support::output_note(&output);
+    assert!(note.contains("1366x683"), "{note}");
+    assert!(note.contains("does not honour the capture rect"), "{note}");
+    let last_eval = requests
+        .iter()
+        .rev()
+        .find(|r| r["type"] == "evaluateJSAsync")
+        .expect("an eval");
+    let text = last_eval["text"].as_str().unwrap_or_default();
+    assert!(text.contains("e.remove()"), "the cleanup runs last: {text}");
 }
 
 /// Argument errors are reported before any connection (port 1 is unroutable).

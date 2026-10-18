@@ -2160,11 +2160,15 @@ pub struct ScreenshotArgs {
     /// against `W`, images in that first viewport are loaded (lazy ones made
     /// eager) before the capture, and the iframe is removed afterwards. The
     /// PNG is `W`x`H` times the device-pixel ratio. Composes with
-    /// `--color-scheme`/`--media`. The iframe loads the URL afresh, so state
-    /// created by earlier commands (an open dialog, a filled form) is NOT
-    /// captured. Pages that refuse framing (`X-Frame-Options`, CSP
-    /// `frame-ancestors`, or their own CSP `frame-src`) fail with an error
-    /// naming the cause; use `--window-size` for those.
+    /// `--color-scheme`/`--media`. The iframe loads the URL afresh (a second
+    /// page load, with its scripts and requests), so state created by
+    /// earlier commands (an open dialog, a filled form) is NOT captured.
+    /// `window_clipped: true` in the result means the live window is smaller
+    /// than `WxH`; content that a script lazy-loads on scroll into view may
+    /// then stay blank in the clipped strip. Pages that refuse framing
+    /// (`X-Frame-Options`, CSP `frame-ancestors`, or their own CSP
+    /// `frame-src`) fail with an error naming the cause; use `--window-size`
+    /// for those.
     #[arg(
         long,
         value_name = "WxH",
