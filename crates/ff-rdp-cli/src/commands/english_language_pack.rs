@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
 use crate::error::AppError;
 
@@ -225,17 +224,6 @@ fn ordinary_zip_entries(bytes: &[u8]) -> Result<Envelope<'_>> {
     })
 }
 
-/// Lowercase hex SHA-256 (sha2 0.11 digests no longer implement `LowerHex`).
-pub(super) fn sha256_hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    Sha256::digest(bytes)
-        .iter()
-        .fold(String::with_capacity(64), |mut hex, byte| {
-            let _ = write!(hex, "{byte:02x}");
-            hex
-        })
-}
-
 /// The same entry point is used by production and the injected-constructor
 /// control, so rejected metadata cannot reach library allocation in either path.
 fn construct_bounded_zip<'a, T>(
@@ -260,7 +248,7 @@ impl Pack {
             "archive exceeds compressed bound"
         );
         let (mut archive, envelope) = construct_bounded_zip(&bytes, |input, envelope| {
-            let archive = zip::ZipArchive::new(Cursor::new(input))?;
+            let mut archive = zip::ZipArchive::new(Cursor::new(input))?;
             ensure!(
                 archive.len() == envelope.names.len(),
                 "ZIP constructor entry count differs from bounded metadata"
@@ -272,6 +260,9 @@ impl Pack {
                     && archive.central_directory_start() == envelope.directory_start,
                 "ZIP constructor chose a different central directory"
             );
+            // Local headers must agree with their central entries (name,
+            // method, flags), with no duplicate names or overlapping entries.
+            archive.validate_header_consistency()?;
             Ok(archive)
         })?;
         ensure!(
@@ -452,7 +443,7 @@ impl Pack {
                 && version.bytes().all(|b| b.is_ascii_digit() || b == b'.'),
             "unsupported pack version"
         );
-        let sha256 = sha256_hex(&bytes);
+        let sha256 = crate::util::sha256_hex(&bytes);
         Ok(Self {
             bytes,
             version: version.to_owned(),
@@ -629,22 +620,28 @@ mod tests {
                 "accepted {path}"
             );
         }
-        // The zip writer refuses duplicate names, so write a same-length
-        // placeholder and rename it in the local and central headers.
+        // The zip writer refuses a duplicate name, so write a same-length
+        // placeholder and rename it in the bytes (names carry no checksum).
         let mut duplicate = fixture(&valid, &[("manifest.jsoX", b"content")]);
-        Pack::parse(duplicate.clone()).unwrap(); // control: only the rename rejects
-        let mut renamed = 0;
-        while let Some(at) = duplicate.windows(13).position(|w| w == b"manifest.jsoX") {
-            duplicate[at + 12] = b'n';
-            renamed += 1;
+        let at = duplicate
+            .windows(13)
+            .enumerate()
+            .filter(|(_, w)| *w == b"manifest.jsoX")
+            .map(|(i, _)| i)
+            .collect::<Vec<_>>();
+        assert_eq!(at.len(), 2, "local and central header");
+        for i in at {
+            duplicate[i + 12] = b'n';
         }
-        assert_eq!(renamed, 2, "placeholder must appear in both headers");
-        // zip 9 folds exact duplicates into one entry, so the constructor count
-        // check fires before the per-member duplicate guard; either is a pass.
-        let error = format!("{:#}", Pack::parse(duplicate).err().unwrap());
+        assert!(Pack::parse(duplicate).is_err(), "accepted duplicate name");
+        // zip 9 folds exact duplicates itself (the entry-count check fires);
+        // `a` vs `a/` reaches ff-rdp's own trailing-slash duplicate check.
+        let err = Pack::parse(fixture(&valid, &[("a", b"file"), ("a/", b"")]))
+            .err()
+            .expect("accepted a and a/");
         assert!(
-            error.contains("count differs") || error.contains("duplicate"),
-            "duplicate manifest.json rejected for another reason: {error}"
+            format!("{err:#}").contains("duplicate ZIP member"),
+            "{err:#}"
         );
         // Corrupt only metadata in a crate-produced ZIP to exercise encrypted
         // and Unix-symlink rejection without an extraction or native process.
@@ -852,7 +849,7 @@ mod tests {
         );
         // Exact reviewed mode bytes include all original prefs, not a substring.
         assert_eq!(
-            sha256_hex(format!("{base}{PROFILE_ACTIVATION}").as_bytes()),
+            crate::util::sha256_hex(format!("{base}{PROFILE_ACTIVATION}").as_bytes()),
             "8116871929126e8d976ebd4c81af990a72c201ceaa18cef7e61f39bebaf378ba"
         );
     }

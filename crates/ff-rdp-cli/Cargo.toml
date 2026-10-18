@@ -41,8 +41,9 @@ thiserror = { workspace = true }
 sha2 = { workspace = true }
 # Bounded local langpack inspection only; no encryption or non-deflate codecs.
 # Exact pin: english_language_pack.rs reasons about this version's parser (name
-# substitution, footer fallback). flate2 uses its default miniz_oxide backend.
-zip = { version = "=9.0.5", default-features = false, features = ["deflate-flate2"] }
+# substitution, footer fallback, header consistency). zlib-rs is named so the
+# deflate backend does not depend on another crate enabling flate2's default.
+zip = { version = "=9.0.5", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

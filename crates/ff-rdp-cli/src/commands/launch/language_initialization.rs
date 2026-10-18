@@ -64,7 +64,7 @@ fn remaining(deadline: Instant) -> Result<Duration> {
 }
 
 fn digest(bytes: &[u8]) -> String {
-    crate::commands::english_language_pack::sha256_hex(bytes)
+    crate::util::sha256_hex(bytes)
 }
 
 pub(super) struct Runtime {
