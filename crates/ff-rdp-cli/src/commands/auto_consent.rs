@@ -78,19 +78,7 @@ pub(crate) fn install(profile_dir: &Path) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sha2::{Digest, Sha256};
-
-    fn sha256_hex(data: &[u8]) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(data);
-        let digest = hasher.finalize();
-        let mut s = String::with_capacity(64);
-        for b in digest {
-            use std::fmt::Write;
-            let _ = write!(s, "{b:02x}");
-        }
-        s
-    }
+    use crate::util::sha256_hex;
 
     /// XPI files are ZIPs; the magic bytes are `PK\x03\x04`.
     #[test]
