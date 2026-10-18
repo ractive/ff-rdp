@@ -553,7 +553,7 @@ fn screenshot_window_size_invalid_rejected() {
 
 /// `screenshot_server` plus the emulation prelude: `getWatcher` →
 /// `getTargetConfigurationActor` → `updateConfiguration` (replying with
-/// `update_fixture`) → one `evaluateJSAsync` matchMedia check that is true.
+/// `update_fixture`) → `evaluateJSAsync` checks (matchMedia, then animations settled), all true.
 fn emulation_server(update_fixture: &str) -> MockRdpServer {
     screenshot_server()
         .on("getWatcher", load_fixture("get_watcher_response.json"))
@@ -629,7 +629,7 @@ fn screenshot_color_scheme_dark_applies_before_capture() {
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
         json["results"]["emulation"],
-        serde_json::json!({"color_scheme": "dark"})
+        serde_json::json!({"color_scheme": "dark", "settled": true})
     );
 }
 
@@ -651,7 +651,7 @@ fn screenshot_media_print_applies_print_simulation() {
     let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(
         json["results"]["emulation"],
-        serde_json::json!({"media": "print"})
+        serde_json::json!({"media": "print", "settled": true})
     );
 }
 

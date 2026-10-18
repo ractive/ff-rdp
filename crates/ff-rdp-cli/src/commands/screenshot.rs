@@ -76,13 +76,18 @@ impl ScreenshotOpts<'_> {
     }
 
     /// The `results.emulation` echo: the flags passed, or `None` without any.
-    fn emulation_echo(&self) -> Option<serde_json::Value> {
+    /// `settled` is whether the page's CSS transitions and animations had
+    /// finished before the capture (`None` when no simulation was applied).
+    fn emulation_echo(&self, settled: Option<bool>) -> Option<serde_json::Value> {
         let mut echo = serde_json::Map::new();
         if let Some(scheme) = self.color_scheme {
             echo.insert("color_scheme".to_owned(), json!(scheme.as_str()));
         }
         if let Some(media) = self.media {
             echo.insert("media".to_owned(), json!(media.as_str()));
+        }
+        if let Some(settled) = settled {
+            echo.insert("settled".to_owned(), json!(settled));
         }
         (!echo.is_empty()).then_some(serde_json::Value::Object(echo))
     }
@@ -182,7 +187,7 @@ pub fn run_core(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<serde_json::Valu
         ));
     }
     // Emulation lives on the RDP connection, so it cannot reach that process.
-    if opts.window_size.is_some() && opts.emulation_echo().is_some() {
+    if opts.window_size.is_some() && (opts.color_scheme.is_some() || opts.media.is_some()) {
         return Err(AppError::User(
             "screenshot: --color-scheme/--media cannot be combined with --window-size, which \
              captures in a separate Firefox process"
@@ -201,12 +206,17 @@ pub fn run_core(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<serde_json::Valu
 
     // `--color-scheme`/`--media`: set on this connection right before the
     // capture; Firefox restores them when the command disconnects.
+    // Then wait for the transitions the change started, so the capture shows
+    // the settled page instead of a colour halfway through its transition.
+    let mut settled = None;
     if let Some(configuration) = opts.emulation() {
         let tab_actor = ctx.target_tab_actor().clone();
         let watcher =
             TabActor::get_watcher(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;
+        let since = super::emulation::timeline_now(&mut ctx)?;
         super::emulation::apply(&mut ctx, &watcher, &configuration)?;
         super::emulation::wait_for_media(&mut ctx, &configuration)?;
+        settled = Some(super::emulation::wait_for_animations(&mut ctx, since)?);
     }
 
     if let Some(size) = viewport {
@@ -248,7 +258,7 @@ pub fn run_core(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<serde_json::Valu
         .decode(b64)
         .map_err(|e| AppError::from(anyhow::anyhow!("screenshot: base64 decode failed: {e}")))?;
 
-    match opts.emulation_echo() {
+    match opts.emulation_echo(settled) {
         Some(echo) => build_capture_result(opts, &png_bytes, &[("emulation", echo)]),
         None => build_capture_result(opts, &png_bytes, &[]),
     }
@@ -1205,5 +1215,42 @@ mod tests {
     #[test]
     fn freeze_marker_and_style_attrs_are_distinct() {
         assert_ne!(FROZEN_MARKER_ATTR, FROZEN_STYLE_ATTR);
+    }
+
+    fn emulation_opts(
+        color_scheme: Option<ColorSchemeArg>,
+        media: Option<MediaArg>,
+    ) -> ScreenshotOpts<'static> {
+        ScreenshotOpts {
+            output_path: None,
+            base64_mode: true,
+            full_page: false,
+            bulk: false,
+            output_root: None,
+            window_size: None,
+            color_scheme,
+            media,
+        }
+    }
+
+    #[test]
+    fn emulation_echo_reports_whether_the_page_settled() {
+        let dark = emulation_opts(Some(ColorSchemeArg::Dark), None);
+        assert_eq!(
+            dark.emulation_echo(Some(true)),
+            Some(json!({"color_scheme": "dark", "settled": true}))
+        );
+        let print = emulation_opts(None, Some(MediaArg::Print));
+        assert_eq!(
+            print.emulation_echo(Some(false)),
+            Some(json!({"media": "print", "settled": false}))
+        );
+        // `--media screen` applies no simulation, so there is nothing to settle.
+        let screen = emulation_opts(None, Some(MediaArg::Screen));
+        assert_eq!(
+            screen.emulation_echo(None),
+            Some(json!({"media": "screen"}))
+        );
+        assert_eq!(emulation_opts(None, None).emulation_echo(None), None);
     }
 }
