@@ -1436,7 +1436,10 @@ const HIT_TEST_JS: &str = r"  var __r = el.getBoundingClientRect();
   };
   if (!__inView(__cx, __cy)) {
     // Not an obstruction — just not scrolled to yet. A user would scroll.
-    try { el.scrollIntoView({block: 'center', inline: 'center'}); } catch (e) { el.scrollIntoView(); }
+    // `behavior: 'instant'` overrides a page's CSS `scroll-behavior: smooth`;
+    // without it (or with 'auto', which defers to the CSS value) the rect below
+    // is read mid-animation and a reachable element reports `offscreen`.
+    try { el.scrollIntoView({block: 'center', inline: 'center', behavior: 'instant'}); } catch (e) { el.scrollIntoView(); }
     __r = el.getBoundingClientRect();
     __cx = __r.left + __r.width / 2;
     __cy = __r.top + __r.height / 2;
