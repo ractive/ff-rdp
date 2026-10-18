@@ -98,11 +98,10 @@ fn safe_member(name: &str) -> bool {
             .all(|p| !p.is_empty() && p != "." && p != "..")
 }
 
-// zip 0.6.6 read.rs:401–430 allocated its entry Vec/HashMap from footer counts
-// before reading central headers. zip 9.0.5 read/zip_archive.rs:298 caps that
-// allocation by the headers it actually parsed, but this prefilter is kept so the
-// accepted envelope (no ZIP64, no multidisk, bounded counts) does not depend on
-// library internals. Bound the constructor's inputs first.
+// zip 0.6.6 sized its entry Vec/HashMap from footer counts before reading any
+// central header, and zip 9 still pre-sizes from the footer count in places.
+// Bound the constructor's inputs first, so the accepted envelope (no ZIP64, no
+// multidisk, bounded counts) does not depend on library internals.
 // This checks only the ordinary ZIP metadata envelope; the library still owns
 // member decoding, CRC and decompression. ZIP64/multidisk layouts are unsupported.
 fn zip_u16(bytes: &[u8], offset: usize) -> Result<u16> {
@@ -121,14 +120,22 @@ fn zip_u32(bytes: &[u8], offset: usize) -> Result<u32> {
     Ok(u32::from_le_bytes(raw))
 }
 
-fn ordinary_zip_entries(bytes: &[u8]) -> Result<usize> {
+/// Central-directory facts read straight from the bytes, so the library's parse
+/// can be checked against them instead of trusted.
+struct Envelope<'a> {
+    directory_start: u64,
+    /// Raw central-header names in directory order (no extra-field overrides).
+    names: Vec<&'a [u8]>,
+}
+
+fn ordinary_zip_entries(bytes: &[u8]) -> Result<Envelope<'_>> {
     ensure!(
         bytes.len() >= 22 && u64::try_from(bytes.len())? <= MAX_XPI,
         "ZIP input size out of bounds"
     );
-    // Match spec.rs CentralDirectoryEnd::find_and_parse's FIRST backwards
-    // signature, not a more attractive earlier footer. An apparent footer inside
-    // a comment must never let the constructor select different unchecked counts.
+    // Use the FIRST backwards signature (what Firefox reads), not a more
+    // attractive earlier footer. Pack::parse then requires the library to have
+    // used the same central directory, since zip 9 may fall back to earlier ones.
     let lower = bytes.len().saturating_sub(22 + usize::from(u16::MAX));
     let footer = (lower..=bytes.len() - 22)
         .rev()
@@ -170,6 +177,8 @@ fn ordinary_zip_entries(bytes: &[u8]) -> Result<usize> {
         size >= entries * 46,
         "ZIP central directory too small for declared entries"
     );
+    let directory_start = u64::from(offset);
+    let mut names = Vec::with_capacity(entries);
     for _ in 0..entries {
         ensure!(
             cursor.checked_add(46).is_some_and(|end| end <= footer)
@@ -197,6 +206,7 @@ fn ordinary_zip_entries(bytes: &[u8]) -> Result<usize> {
             end <= footer,
             "central directory variable metadata exceeds its extent"
         );
+        names.push(&bytes[cursor + 46..extra_start]);
         let mut extra = extra_start;
         while extra < extra_end {
             ensure!(extra + 4 <= extra_end, "truncated ZIP extra-field header");
@@ -209,17 +219,21 @@ fn ordinary_zip_entries(bytes: &[u8]) -> Result<usize> {
         cursor = end;
     }
     ensure!(cursor == footer, "unaccounted central directory metadata");
-    Ok(entries)
+    Ok(Envelope {
+        directory_start,
+        names,
+    })
 }
 
 /// The same entry point is used by production and the injected-constructor
 /// control, so rejected metadata cannot reach library allocation in either path.
 fn construct_bounded_zip<'a, T>(
     bytes: &'a [u8],
-    construct: impl FnOnce(&'a [u8], usize) -> Result<T>,
-) -> Result<T> {
-    let entries = ordinary_zip_entries(bytes)?;
-    construct(bytes, entries)
+    construct: impl FnOnce(&'a [u8], &Envelope<'a>) -> Result<T>,
+) -> Result<(T, Envelope<'a>)> {
+    let envelope = ordinary_zip_entries(bytes)?;
+    let built = construct(bytes, &envelope)?;
+    Ok((built, envelope))
 }
 
 impl Pack {
@@ -234,11 +248,18 @@ impl Pack {
             u64::try_from(bytes.len())? <= MAX_XPI,
             "archive exceeds compressed bound"
         );
-        let mut archive = construct_bounded_zip(&bytes, |input, entries| {
+        let (mut archive, envelope) = construct_bounded_zip(&bytes, |input, envelope| {
             let archive = zip::ZipArchive::new(Cursor::new(input))?;
             ensure!(
-                archive.len() == entries,
+                archive.len() == envelope.names.len(),
                 "ZIP constructor entry count differs from bounded metadata"
+            );
+            // zip 9 falls back to an earlier end-of-directory record when the
+            // last one fails to parse; insist it used the one checked above.
+            ensure!(
+                archive.offset() == 0
+                    && archive.central_directory_start() == envelope.directory_start,
+                "ZIP constructor chose a different central directory"
             );
             Ok(archive)
         })?;
@@ -255,6 +276,12 @@ impl Pack {
             // by_index rejects encrypted members without a password. Read every
             // member to EOF (including CRC), bounded independently of its sizes.
             let mut entry = archive.by_index(index)?;
+            // zip 9 substitutes an Info-ZIP Unicode Path extra field for the
+            // header name; validate the bytes Firefox will read instead.
+            ensure!(
+                envelope.names.get(index) == Some(&entry.name_raw()),
+                "ZIP member name differs from its central header"
+            );
             let name = std::str::from_utf8(entry.name_raw())?.to_owned();
             ensure!(
                 safe_member(&name) && names.insert(name.trim_end_matches('/').to_owned()),
@@ -601,9 +628,12 @@ mod tests {
             renamed += 1;
         }
         assert_eq!(renamed, 2, "placeholder must appear in both headers");
+        // zip 9 folds exact duplicates into one entry, so the constructor count
+        // check fires before the per-member duplicate guard; either is a pass.
+        let error = format!("{:#}", Pack::parse(duplicate).err().unwrap());
         assert!(
-            Pack::parse(duplicate).is_err(),
-            "accepted duplicate manifest.json"
+            error.contains("count differs") || error.contains("duplicate"),
+            "duplicate manifest.json rejected for another reason: {error}"
         );
         // Corrupt only metadata in a crate-produced ZIP to exercise encrypted
         // and Unix-symlink rejection without an extraction or native process.
@@ -625,6 +655,40 @@ mod tests {
     }
 
     #[test]
+    fn unit_147_unicode_path_extra_field_cannot_mask_header_name() {
+        fn crc32(bytes: &[u8]) -> u32 {
+            let mut crc = !0_u32;
+            for &byte in bytes {
+                crc ^= u32::from(byte);
+                for _ in 0..8 {
+                    crc = (crc >> 1) ^ (0xEDB8_8320 & (crc & 1).wrapping_neg());
+                }
+            }
+            !crc
+        }
+        let raw = "../evil";
+        let mut field = vec![1_u8];
+        field.extend_from_slice(&crc32(raw.as_bytes()).to_le_bytes());
+        field.extend_from_slice(b"zz/evil");
+        let mut options = zip::write::FileOptions::<zip::write::ExtendedFileOptions>::default();
+        options.add_extra_field(0x7075, &field, false).unwrap();
+        let mut writer =
+            zip::ZipWriter::new_append(Cursor::new(fixture(&fixture_manifest(), &[]))).unwrap();
+        writer.start_file(raw, options).unwrap();
+        writer.write_all(b"content").unwrap();
+        let bytes = writer.finish().unwrap().into_inner();
+        // Control: the library really reports the substituted, safe-looking name.
+        let mut archive = zip::ZipArchive::new(Cursor::new(&bytes)).unwrap();
+        let reported = (0..archive.len())
+            .map(|i| archive.by_index(i).unwrap().name_raw().to_vec())
+            .find(|name| name.ends_with(b"evil"))
+            .unwrap();
+        assert_eq!(reported, b"zz/evil");
+        let error = format!("{:#}", Pack::parse(bytes).err().unwrap());
+        assert!(error.contains("differs from its central header"), "{error}");
+    }
+
+    #[test]
     fn unit_147_zip_metadata_rejected_before_constructor_allocation() {
         let valid = fixture(&fixture_manifest(), &[]);
         let footer = valid.len() - 22;
@@ -632,7 +696,9 @@ mod tests {
         // The production boundary admits ordinary metadata, including its true
         // count, before the actual-XPI control exercises the real constructor.
         assert_eq!(
-            construct_bounded_zip(&valid, |_, count| Ok(count)).unwrap(),
+            construct_bounded_zip(&valid, |_, envelope| Ok(envelope.names.len()))
+                .unwrap()
+                .0,
             5
         );
         let mut cases = Vec::new();
