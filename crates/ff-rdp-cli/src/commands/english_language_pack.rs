@@ -98,8 +98,11 @@ fn safe_member(name: &str) -> bool {
             .all(|p| !p.is_empty() && p != "." && p != "..")
 }
 
-// zip0.6.6 read.rs:401–430 allocates its entry Vec/HashMap from footer
-// counts before reading central headers. Bound that constructor's inputs first.
+// zip 0.6.6 read.rs:401–430 allocated its entry Vec/HashMap from footer counts
+// before reading central headers. zip 9.0.5 read/zip_archive.rs:298 caps that
+// allocation by the headers it actually parsed, but this prefilter is kept so the
+// accepted envelope (no ZIP64, no multidisk, bounded counts) does not depend on
+// library internals. Bound the constructor's inputs first.
 // This checks only the ordinary ZIP metadata envelope; the library still owns
 // member decoding, CRC and decompression. ZIP64/multidisk layouts are unsupported.
 fn zip_u16(bytes: &[u8], offset: usize) -> Result<u16> {
@@ -526,8 +529,8 @@ impl Pack {
 #[cfg(test)]
 pub(super) fn fixture(manifest: &Value, extras: &[(&str, &[u8])]) -> Vec<u8> {
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
-    let options =
-        zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
     for (name, bytes) in [
         ("manifest.json", serde_json::to_vec(manifest).unwrap()),
         (DOM, b"test-only provider".to_vec()),
@@ -580,7 +583,6 @@ mod tests {
             "/absolute",
             "a\\b",
             "C:escape",
-            "manifest.json",
             "a//b",
             "a/./b",
         ] {
@@ -589,6 +591,20 @@ mod tests {
                 "accepted {path}"
             );
         }
+        // The zip writer refuses duplicate names, so write a same-length
+        // placeholder and rename it in the local and central headers.
+        let mut duplicate = fixture(&valid, &[("manifest.jsoX", b"content")]);
+        Pack::parse(duplicate.clone()).unwrap(); // control: only the rename rejects
+        let mut renamed = 0;
+        while let Some(at) = duplicate.windows(13).position(|w| w == b"manifest.jsoX") {
+            duplicate[at + 12] = b'n';
+            renamed += 1;
+        }
+        assert_eq!(renamed, 2, "placeholder must appear in both headers");
+        assert!(
+            Pack::parse(duplicate).is_err(),
+            "accepted duplicate manifest.json"
+        );
         // Corrupt only metadata in a crate-produced ZIP to exercise encrypted
         // and Unix-symlink rejection without an extraction or native process.
         let bytes = fixture(&valid, &[]);
