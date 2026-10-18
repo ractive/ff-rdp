@@ -226,7 +226,7 @@ pub fn run_core(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<serde_json::Valu
             Duration::from_millis(cli.timeout),
         )?;
         let mut fields = capture.fields;
-        fields.extend(opts.emulation_echo().map(|echo| ("emulation", echo)));
+        fields.extend(opts.emulation_echo(settled).map(|echo| ("emulation", echo)));
         return build_capture_result(opts, &capture.png, &fields);
     }
 
@@ -1228,6 +1228,7 @@ mod tests {
             bulk: false,
             output_root: None,
             window_size: None,
+            viewport: None,
             color_scheme,
             media,
         }
