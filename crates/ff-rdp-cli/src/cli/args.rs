@@ -3141,7 +3141,7 @@ Output: {\"results\": {\"scrolled\": true, \"viewport\": {...}, \"scrollHeight\"
     },
     /// Scroll to the very top of the page (equivalent to scroll by --dy -99999999)
     #[command(long_about = "Scroll to the very top of the page.
-  Uses window.scrollTo(0, 0) for an instant jump to the top.
+  Jumps instantly, even on pages with CSS `scroll-behavior: smooth`.
   `warning` (iter-129) is always present — null normally, or a string naming the
   locking element (e.g. \"<html> (class=\\\"sp-message-open\\\") has overflow:hidden\")
   when the scroll position didn't move AND <html>/<body> has overflow:hidden —
@@ -3154,7 +3154,7 @@ Output: {\"results\": {\"scrolled\": true, \"viewport\": {...}, \"scrollHeight\"
     },
     /// Scroll to the very bottom of the page (equivalent to scroll by --dy 99999999)
     #[command(long_about = "Scroll to the very bottom of the page.
-  Uses window.scrollTo(0, document.documentElement.scrollHeight) for an instant jump to the bottom.
+  Jumps instantly, even on pages with CSS `scroll-behavior: smooth`.
   `warning` (iter-129) is always present — null normally, or a string naming the
   locking element (e.g. \"<html> (class=\\\"sp-message-open\\\") has overflow:hidden\")
   when the scroll position didn't move AND <html>/<body> has overflow:hidden —
