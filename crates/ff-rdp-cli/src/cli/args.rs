@@ -120,7 +120,7 @@ COMMAND REFERENCE:
     ff-rdp storage local|session [--key KEY]
 
   Screenshot & debug:
-    ff-rdp screenshot [-o PATH | --base64] [--full-page | --window-size WxH]
+    ff-rdp screenshot [-o PATH | --base64] [--full-page | --window-size WxH | --viewport WxH]
     ff-rdp inspect <JS_EXPRESSION> [--depth N]
     ff-rdp sources [--filter URL | --pattern REGEX]
 
@@ -223,6 +223,7 @@ COOKBOOK:
 
   # Screenshot for AI vision
   ff-rdp screenshot --base64
+  ff-rdp screenshot --viewport 390x844 -o phone.png   # phone layout of the live tab's URL
 
   # Install the ff-rdp-debug Claude Code skill
   ff-rdp install-skill --claude
@@ -2155,6 +2156,27 @@ pub struct ScreenshotArgs {
     /// and found to have zero effect on the output raster (Firefox 153.0.3).
     #[arg(long, value_name = "WxH", conflicts_with = "full_page")]
     pub window_size: Option<String>,
+    /// Capture the current tab's URL laid out at exactly `WxH` CSS pixels
+    /// (e.g. `390x844` for a phone), on the live tab: the page is loaded into
+    /// a `WxH` iframe overlaid on the tab, `max-width` media queries evaluate
+    /// against `W`, images in that first viewport are loaded (lazy ones made
+    /// eager) before the capture, and the iframe is removed afterwards. The
+    /// PNG is `W`x`H` times the device-pixel ratio. Composes with
+    /// `--color-scheme`/`--media`. The iframe loads the URL afresh (a second
+    /// page load, with its scripts and requests), so state created by
+    /// earlier commands (an open dialog, a filled form) is NOT captured.
+    /// `window_clipped: true` in the result means the live window is smaller
+    /// than `WxH`; content that a script lazy-loads on scroll into view may
+    /// then stay blank in the clipped strip. Pages that refuse framing
+    /// (`X-Frame-Options`, CSP `frame-ancestors`, or their own CSP
+    /// `frame-src`) fail with an error naming the cause; use `--window-size`
+    /// for those.
+    #[arg(
+        long,
+        value_name = "WxH",
+        conflicts_with_all = ["full_page", "window_size"]
+    )]
+    pub viewport: Option<String>,
     /// Simulate `prefers-color-scheme` for this capture only (ends when the
     /// command exits).
     #[arg(

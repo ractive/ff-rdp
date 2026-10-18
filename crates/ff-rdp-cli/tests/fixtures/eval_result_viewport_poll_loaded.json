@@ -1,0 +1,10 @@
+{
+  "type": "evaluationResult",
+  "resultID": "0",
+  "hasException": false,
+  "input": "// `screenshot --viewport`: read the injected frame's state as JSON.\n// Placeholder: \"rec\"  JSON string literal of the wrapper id.\n(function() {\n  var ID = \"rec\";\n  var d = null;\n  document.querySelectorAll('[data-ffrdp-viewport]').forEach(function(e) {\n    if (e.getAttribute('data-ffrdp-viewport') === ID) d = e;\n  });\n  var st = d && d.__ffrdp;\n  if (!st) return JSON.stringify({ phase: 'gone' });\n  var f = d.querySelector('iframe'), ready = null, href = null;\n  try { ready = f.contentDocument && f.contentDocument.readyState; href = f.contentWindow.location.href; } catch (e) {}\n  return JSON.stringify({ phase: st.phase, images_settled: st.images_settled, pending: st.pending,\n    probed: st.probed, xfo: st.xfo, csp: st.csp, violation: st.violation, ready: ready, href: href });\n})()\n",
+  "result": "{\"phase\":\"loaded\",\"images_settled\":true,\"pending\":0,\"probed\":false,\"xfo\":null,\"csp\":null,\"violation\":null,\"ready\":\"complete\",\"href\":\"https://example.com/\"}",
+  "startTime": 1792351794902.284,
+  "timestamp": 1792351794902.515,
+  "from": "server1.conn0.child0/consoleActor3"
+}

@@ -50,6 +50,9 @@ pub(crate) struct ScreenshotOpts<'a> {
     /// with or without e10s; see `kb/research/viewport-emulation.md`
     /// addendum.
     pub(crate) window_size: Option<&'a str>,
+    /// `--viewport WxH`: capture the live tab's URL at `WxH` CSS px through an
+    /// iframe wrapper — see [`super::screenshot_viewport`].
+    pub(crate) viewport: Option<&'a str>,
     /// `--color-scheme`: simulated `prefers-color-scheme` for this capture.
     pub(crate) color_scheme: Option<ColorSchemeArg>,
     /// `--media`: simulated CSS media type for this capture.
@@ -194,6 +197,10 @@ pub fn run_core(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<serde_json::Valu
     if let Some(window_size) = opts.window_size {
         return run_batch_window_size(cli, opts, window_size);
     }
+    let viewport = opts
+        .viewport
+        .map(super::screenshot_viewport::parse_viewport)
+        .transpose()?;
 
     let mut ctx = connect_and_get_target(cli)?;
 
@@ -210,6 +217,17 @@ pub fn run_core(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<serde_json::Valu
         super::emulation::apply(&mut ctx, &watcher, &configuration)?;
         super::emulation::wait_for_media(&mut ctx, &configuration)?;
         settled = Some(super::emulation::wait_for_animations(&mut ctx, since)?);
+    }
+
+    if let Some(size) = viewport {
+        let capture = super::screenshot_viewport::capture(
+            &mut ctx,
+            size,
+            Duration::from_millis(cli.timeout),
+        )?;
+        let mut fields = capture.fields;
+        fields.extend(opts.emulation_echo(settled).map(|echo| ("emulation", echo)));
+        return build_capture_result(opts, &capture.png, &fields);
     }
 
     let sc_actor = ctx.target().screenshot_content_actor.clone();
@@ -951,7 +969,7 @@ fn resolve_output_path(output_path: Option<&str>) -> anyhow::Result<PathBuf> {
 /// PNG structure: 8-byte signature, then chunks. The first chunk is always
 /// IHDR which contains `width` (4 bytes, big-endian) at offset 16 and
 /// `height` (4 bytes, big-endian) at offset 20.
-fn png_dimensions(data: &[u8]) -> Option<(u32, u32)> {
+pub(super) fn png_dimensions(data: &[u8]) -> Option<(u32, u32)> {
     if data.len() < 24 {
         return None;
     }
@@ -1210,6 +1228,7 @@ mod tests {
             bulk: false,
             output_root: None,
             window_size: None,
+            viewport: None,
             color_scheme,
             media,
         }

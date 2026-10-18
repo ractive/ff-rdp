@@ -476,6 +476,12 @@ ff-rdp screenshot --full-page --output full.png
 ff-rdp screenshot --color-scheme dark --output dark.png
 ff-rdp screenshot --media print --full-page --output print.png
 
+# Phone-width capture on the live tab: the URL is laid out in a 390x844 iframe,
+# so max-width media queries apply and first-viewport images are loaded. The
+# iframe reloads the URL, so state from earlier commands (open dialogs, filled
+# forms) is not captured; pages that refuse framing need --window-size.
+ff-rdp screenshot --viewport 390x844 --output phone.png
+
 # Exact-size capture (e.g. a 390x844 phone) in a separate one-shot Firefox
 ff-rdp screenshot --window-size 390x844 --output phone.png
 

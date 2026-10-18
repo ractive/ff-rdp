@@ -3958,3 +3958,76 @@ fn unit_send_raw_rejects_oneway() {
         reject_oneway_request(&json!({"to": "root", "type": two_way}));
     }
 }
+
+/// Records the three `evaluateJSAsync` replies of `screenshot --viewport`
+/// (inject the iframe wrapper, poll its state, remove it) for the CLI e2e
+/// mock, running the CLI's own JS templates from
+/// `crates/ff-rdp-cli/js/screenshot_viewport/` (placeholders substituted as
+/// `screenshot_viewport.rs` does) against a real same-origin frame on
+/// example.com.
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_screenshot_viewport_evals() {
+    if !should_run_live() {
+        return;
+    }
+    let mut conn = connect();
+    let transport = conn.transport_mut();
+    navigate_to_example_com(transport);
+    let console = get_console_actor(transport);
+
+    let id = "\"rec\"";
+    let inject = include_str!("../../ff-rdp-cli/js/screenshot_viewport/inject.js")
+        .replace("__FFRDP_W__", "390")
+        .replace("__FFRDP_H__", "844")
+        .replace("__FFRDP_ID__", id);
+    let poll =
+        include_str!("../../ff-rdp-cli/js/screenshot_viewport/poll.js").replace("__FFRDP_ID__", id);
+    let cleanup = include_str!("../../ff-rdp-cli/js/screenshot_viewport/cleanup.js");
+
+    let (_, injected) = record_eval(
+        transport,
+        &console,
+        &inject,
+        None,
+        Some("eval_result_viewport_inject.json"),
+    );
+    let origin: Value = serde_json::from_str(
+        injected["result"]
+            .as_str()
+            .expect("inject returns a string"),
+    )
+    .expect("inject returns JSON");
+    assert_eq!(origin["left"], 0, "{origin}");
+
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let (_, polled) = record_eval(transport, &console, &poll, None, None);
+        let state: Value = serde_json::from_str(polled["result"].as_str().expect("poll string"))
+            .expect("poll JSON");
+        if state["phase"] == "loaded" && state["images_settled"] == true {
+            break;
+        }
+        assert!(Instant::now() < deadline, "frame never settled: {state}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let (_, polled) = record_eval(
+        transport,
+        &console,
+        &poll,
+        None,
+        Some("eval_result_viewport_poll_loaded.json"),
+    );
+    let state: Value =
+        serde_json::from_str(polled["result"].as_str().expect("poll string")).expect("poll JSON");
+    assert_eq!(state["href"], "https://example.com/", "{state}");
+
+    let (_, removed) = record_eval(
+        transport,
+        &console,
+        cleanup,
+        None,
+        Some("eval_result_viewport_cleanup.json"),
+    );
+    assert_eq!(removed["result"], 1, "{removed}");
+}
