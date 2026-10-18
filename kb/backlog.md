@@ -46,6 +46,7 @@ product work that needs design. Keep items to one line — if an item needs more
 - [x] Per-test `FF_RDP_HOME`/profile dirs leaked under `$TMPDIR` (1,157 in two days); now removed on drop, including after panics (#302)
 - [ ] Firefox leaves `remote-settings-startup-bundle-<n>` in the system temp dir when killed during its startup download; tests confine `TMPDIR`, which Gecko ignores on macOS — needs a launch pref or policy that skips the startup bundle (#302)
 - [ ] `kb/dogfooding/*` session logs still mention `--wait-timeout`; historical, leave or annotate (#291)
+- [ ] `english_language_pack.rs`'s hand-written ZIP pre-parser (`ordinary_zip_entries` / `construct_bounded_zip`) was written to bound zip 0.6.6's footer-count allocation; zip 9 caps that itself and picks footers differently (skips unparseable ones) — decide whether to drop the pre-parser or align its footer choice (#338)
 - [ ] `live_record_fixtures::live_page_style_get_layout` fails on FF157 (walker `querySelector h1` returns no node after the reconnect), so `page_style_get_layout_response.json` still holds the old unit-less shape; Firefox now sends `"margin-top": "7.03906px"` — re-record once the recorder works (fix/easy-batch-2)
 
 ## Global skills (edit by hand in `~/.claude/skills/`, shared with other repos)
