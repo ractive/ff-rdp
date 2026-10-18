@@ -526,8 +526,8 @@ impl Pack {
 #[cfg(test)]
 pub(super) fn fixture(manifest: &Value, extras: &[(&str, &[u8])]) -> Vec<u8> {
     let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
-    let options =
-        zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
     for (name, bytes) in [
         ("manifest.json", serde_json::to_vec(manifest).unwrap()),
         (DOM, b"test-only provider".to_vec()),
@@ -580,7 +580,6 @@ mod tests {
             "/absolute",
             "a\\b",
             "C:escape",
-            "manifest.json",
             "a//b",
             "a/./b",
         ] {
@@ -589,6 +588,20 @@ mod tests {
                 "accepted {path}"
             );
         }
+        // The zip writer refuses a duplicate name, so write a same-length
+        // placeholder and rename it in the bytes (names carry no checksum).
+        let mut duplicate = fixture(&valid, &[("manifest.jsoX", b"content")]);
+        let at = duplicate
+            .windows(13)
+            .enumerate()
+            .filter(|(_, w)| *w == b"manifest.jsoX")
+            .map(|(i, _)| i)
+            .collect::<Vec<_>>();
+        assert_eq!(at.len(), 2, "local and central header");
+        for i in at {
+            duplicate[i + 12] = b'n';
+        }
+        assert!(Pack::parse(duplicate).is_err(), "accepted duplicate name");
         // Corrupt only metadata in a crate-produced ZIP to exercise encrypted
         // and Unix-symlink rejection without an extraction or native process.
         let bytes = fixture(&valid, &[]);
