@@ -16,3 +16,6 @@ Thumbs.db
 # during packaging verification) — always regenerated, never committed.
 /completions/
 crates/ff-rdp-cli/completions/
+
+# Claude Code per-agent memory — not shared through the repo
+.claude/agent-memory/

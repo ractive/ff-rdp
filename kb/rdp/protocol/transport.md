@@ -109,6 +109,16 @@ whole packet into a String — read length first, then exact bytes.
   on a socket with `SO_SNDTIMEO` can return `TimedOut` having already
   pushed part of the frame; resending appends a second copy after the
   stump. A partial write is unrecoverable — close the connection.
+- **Asserting a socket timeout in a test.** On Windows,
+  `TcpStream::write_timeout()` (and `read_timeout()`) reads back `None`
+  even right after a successful `set_write_timeout(Some(d))` —
+  `getsockopt(SO_SNDTIMEO)` does not round-trip; Linux and macOS do. A
+  test asserting a literal `Some(..)` passes on two platforms and fails
+  on `test (windows-latest)` (PR #243). To prove code left the timeout
+  alone, capture `write_timeout()` on the same socket first and assert
+  the value afterwards equals that baseline. Windows loopback buffers
+  also differ: one large frame can be swallowed whole where macOS/Linux
+  block, so pump until a condition rather than asserting on one write.
 
 ## Relationship to higher layers
 

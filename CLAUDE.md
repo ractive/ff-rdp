@@ -1,7 +1,12 @@
 # Agents
 Delegate the work to agents whenever possible to avoid automatic context compaction. For any
-bounded code change use the `ff-rdp-implementer` agent (`.claude/agents/`): it carries the landing
-protocol, so the prompt only needs the finish line, file ownership and the proofs required.
+bounded code change use the `ff-rdp-implementer` agent (`.claude/agents/`): it carries the
+delegation contract and lands per this file, so the prompt only needs the finish line, file
+ownership and the proofs required.
+
+In a worktree, a guard refuses Bash it cannot prove is not git (`export VAR=$(…)`, loops over
+computed binaries, a heredoc piped into an interpreter, even a literal `eval` argument): write
+scripts with the Write tool and run plain commands, passing env inline.
 
 # Documentation
 Docs live in `./kb` as `*.md` with YAML frontmatter — see `.claude/CLAUDE.md` for the layout and
@@ -18,10 +23,12 @@ refresh its indexes, after changing `*.rs` files.
 Make the code unit testable. Add tests if feasible. Add e2e tests for all commands/subcommands.
 It must be compatible with Windows, Linux and macOS.
 
-Run **once, after the last code change**, in this order, and fix all issues:
+Run `rustup update stable` first. Then run **once, after the last code change**, in this order,
+and fix all issues:
 1. `cargo fmt`
 2. `cargo clippy --workspace --all-targets -- -D warnings`
 3. `cargo test --workspace -q`
+4. If help text changed: `cargo run -p xtask -- gen-skill`, `check-skill-drift`, `check-help-idioms`
 
 Never commit code that fails any of these. Do not re-run them in a later step (PR creation,
 review) when the tree is unchanged since the last green run — `git rev-parse HEAD^{tree}` (or
@@ -59,11 +66,27 @@ BBC, Guardian, HN, Wikipedia, MDN; weekly CI job only).
   `#[ignore = "flaky: issue #N"]` plus a GitHub issue. Never an iteration plan, never an
   "attribution" investigation. A red nightly gets one GitHub issue.
 
+## Working with Firefox
+- **Proof:** every behaviour claim in a PR body is backed by a real-Firefox command and its output.
+- **Isolate:** `FF_RDP_HOME=$(mktemp -d)` and an explicit `--port` (or `FF_RDP_PORT`). A raw Firefox
+  needs a profile `user.js` with `devtools.debugger.remote-enabled=true`,
+  `devtools.debugger.prompt-connection=false`, `devtools.chrome.enabled=true`.
+- **Sandbox:** Firefox launched under the Bash sandbox cannot resolve DNS — run anything that
+  launches Firefox or touches the network with the sandbox disabled.
+- **Tear down** only the Firefox you launched, by the pid `launch` printed. Never `pkill firefox`:
+  the owner's desktop Firefox is running.
+
 ## PR Discipline
 - One iteration = one branch = one PR; branch `iter-N/short-description`
 - Self-review the diff before requesting review — catch fmt, clippy, dead code yourself
 - Plan ticks and `status: done` go in the **same commit** as the code, so the PR triggers one CI run.
-- One review pass; no re-review for style-only fixes.
+- Landing: `gh pr checks <n> --watch` (the required check is `ci`), then one `code-review` skill
+  pass at `medium`; fix real findings, answer the rest in the PR body. At most 3 CI/fix cycles.
+  No re-review for style-only fixes. PR body: cause, fix, proofs, what was skipped and why,
+  anything unconfirmed.
+- Backlog lines and `kb/backlog/issues/` files (`status: resolved`, `resolved_by: <PR>`) are
+  closed in the same commit as the fix.
+- Conflict with a sibling PR: `git merge origin/main`, resolve, run the gates once, push.
 - Commit-message claims (`adds Foo::Bar`) must be backed by the branch diff (review rule).
 - Merge **on GitHub** (`gh pr merge <n> --merge --delete-branch`), never a local `git merge` +
   `git push origin main`. The `main` ruleset requires the `ci` status check (since 2026-10-03),
