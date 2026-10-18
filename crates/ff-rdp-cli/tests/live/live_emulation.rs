@@ -43,6 +43,12 @@ fn run(port: u16, args: &[&str]) -> Value {
 
 /// Capture with `extra` flags and return the RGB of the viewport's centre.
 fn centre_pixel(port: u16, extra: &[&str]) -> (u8, u8, u8) {
+    capture(port, extra).1
+}
+
+/// Capture with `extra` flags; return the `results` object and the RGB of the
+/// viewport's centre.
+fn capture(port: u16, extra: &[&str]) -> (Value, (u8, u8, u8)) {
     let mut args = vec!["screenshot", "--base64"];
     args.extend_from_slice(extra);
     let shot = run(port, &args);
@@ -56,7 +62,7 @@ fn centre_pixel(port: u16, extra: &[&str]) -> (u8, u8, u8) {
     let (r, g, b, _) = image
         .pixel(image.width / 2, image.height / 2)
         .expect("centre pixel");
-    (r, g, b)
+    (shot["results"].clone(), (r, g, b))
 }
 
 fn eval_bool(port: u16, js: &str) -> bool {
@@ -112,6 +118,54 @@ fn live_screenshot_media_print_paints_print_styles() {
     assert!(
         !eval_bool(port, "matchMedia('print').matches"),
         "the simulation must end with the screenshot's connection"
+    );
+}
+
+/// A full-viewport button whose fill transitions over 400ms when the scheme
+/// flips (white → black), plus two animations that must not keep the capture
+/// waiting: an infinite spinner and a 30s finite fade that was already running
+/// before the scheme change.
+const TRANSITION_PAGE: &str = "data:text/html,<style>:root{--c:%23fff}\
+    @media (prefers-color-scheme: dark){:root{--c:%23000}}\
+    body{margin:0}button{position:fixed;inset:0;border:0;background:var(--c);\
+    transition:background 400ms linear}\
+    i,b{position:fixed;top:0;width:4px;height:4px;background:%23f00}\
+    i{left:0;animation:spin 1s linear infinite}@keyframes spin{to{transform:rotate(1turn)}}\
+    b{left:8px;animation:fade 30s linear}@keyframes fade{to{opacity:0}}\
+    </style><body><button></button><i></i><b></b></body>";
+
+#[test]
+#[ignore = "requires Firefox — set FF_RDP_LIVE_TESTS=1"]
+fn live_screenshot_color_scheme_waits_for_transitions() {
+    if !live_tests_enabled() {
+        return;
+    }
+    let ff = LiveFirefox::headless_on_random_port();
+    let port = ff.port();
+    run(port, &["navigate", TRANSITION_PAGE]);
+    assert_eq!(
+        centre_pixel(port, &[]),
+        (255, 255, 255),
+        "baseline fill is white"
+    );
+
+    let started = std::time::Instant::now();
+    let (results, pixel) = capture(port, &["--color-scheme", "dark"]);
+    assert_eq!(
+        results["emulation"],
+        serde_json::json!({"color_scheme": "dark", "settled": true}),
+        "the spinner and the older 30s fade must not keep the page from settling"
+    );
+    assert_eq!(
+        pixel,
+        (0, 0, 0),
+        "--color-scheme dark must capture the button after its 400ms transition, \
+         not mid-way"
+    );
+    assert!(
+        started.elapsed() < Duration::from_millis(1900),
+        "the capture must not have waited out the 2s settle cap: {:?}",
+        started.elapsed()
     );
 }
 
