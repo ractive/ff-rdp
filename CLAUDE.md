@@ -1,7 +1,12 @@
 # Agents
 Delegate the work to agents whenever possible to avoid automatic context compaction. For any
-bounded code change use the `ff-rdp-implementer` agent (`.claude/agents/`): it carries the landing
-protocol, so the prompt only needs the finish line, file ownership and the proofs required.
+bounded code change use the `ff-rdp-implementer` agent (`.claude/agents/`): it carries the
+delegation contract and lands per this file, so the prompt only needs the finish line, file
+ownership and the proofs required.
+
+In a worktree, a guard refuses Bash it cannot prove is not git (`export VAR=$(…)`, loops over
+computed binaries, a heredoc piped into an interpreter, even a literal `eval` argument): write
+scripts with the Write tool and run plain commands, passing env inline.
 
 # Documentation
 Docs live in `./kb` as `*.md` with YAML frontmatter — see `.claude/CLAUDE.md` for the layout and
@@ -18,7 +23,8 @@ refresh its indexes, after changing `*.rs` files.
 Make the code unit testable. Add tests if feasible. Add e2e tests for all commands/subcommands.
 It must be compatible with Windows, Linux and macOS.
 
-Run **once, after the last code change**, in this order, and fix all issues:
+Run `rustup update stable` first. Then run **once, after the last code change**, in this order,
+and fix all issues:
 1. `cargo fmt`
 2. `cargo clippy --workspace --all-targets -- -D warnings`
 3. `cargo test --workspace -q`
