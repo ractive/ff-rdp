@@ -2244,11 +2244,14 @@ impl DecodedImage {
 /// failure naming the decode error, not a silent skip, since a decode
 /// failure here means the screenshot command itself produced a broken PNG.
 pub fn decode_png(bytes: &[u8]) -> DecodedImage {
-    let decoder = png::Decoder::new(bytes);
+    let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     let mut reader = decoder
         .read_info()
         .unwrap_or_else(|e| panic!("decode_png: failed to read PNG header: {e}"));
-    let mut buf = vec![0u8; reader.output_buffer_size()];
+    let size = reader
+        .output_buffer_size()
+        .unwrap_or_else(|| panic!("decode_png: PNG output size overflows usize"));
+    let mut buf = vec![0u8; size];
     let info = reader
         .next_frame(&mut buf)
         .unwrap_or_else(|e| panic!("decode_png: failed to decode PNG frame: {e}"));

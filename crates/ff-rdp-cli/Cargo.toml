@@ -29,7 +29,7 @@ fs2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_norway = { workspace = true }
-toml = { version = "0.9", default-features = false, features = ["parse", "serde", "std"] }
+toml = { version = "1.1", default-features = false, features = ["parse", "serde", "std"] }
 tempfile = { workspace = true }
 url = { workspace = true }
 ureq = { workspace = true }
@@ -76,11 +76,11 @@ serde_json = { workspace = true }
 tempfile = { workspace = true }
 dirs = { workspace = true }
 filetime = { workspace = true }
-jsonschema = "0.27"
+jsonschema = "0.59"
 sha2 = { workspace = true }
 # iter-144 Theme D: live_144_full_page_no_duplicate_header decodes captured
 # PNG pixel rows to detect a repeated header band — test-only, never shipped.
-png = "0.17"
+png = "0.18"
 socket2 = "0.6"
 
 [target.'cfg(unix)'.dev-dependencies]

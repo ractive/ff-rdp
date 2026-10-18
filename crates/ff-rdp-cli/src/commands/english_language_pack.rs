@@ -225,6 +225,17 @@ fn ordinary_zip_entries(bytes: &[u8]) -> Result<Envelope<'_>> {
     })
 }
 
+/// Lowercase hex SHA-256 (sha2 0.11 digests no longer implement `LowerHex`).
+pub(super) fn sha256_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    Sha256::digest(bytes)
+        .iter()
+        .fold(String::with_capacity(64), |mut hex, byte| {
+            let _ = write!(hex, "{byte:02x}");
+            hex
+        })
+}
+
 /// The same entry point is used by production and the injected-constructor
 /// control, so rejected metadata cannot reach library allocation in either path.
 fn construct_bounded_zip<'a, T>(
@@ -441,7 +452,7 @@ impl Pack {
                 && version.bytes().all(|b| b.is_ascii_digit() || b == b'.'),
             "unsupported pack version"
         );
-        let sha256 = format!("{:x}", Sha256::digest(&bytes));
+        let sha256 = sha256_hex(&bytes);
         Ok(Self {
             bytes,
             version: version.to_owned(),
@@ -841,10 +852,7 @@ mod tests {
         );
         // Exact reviewed mode bytes include all original prefs, not a substring.
         assert_eq!(
-            format!(
-                "{:x}",
-                Sha256::digest(format!("{base}{PROFILE_ACTIVATION}"))
-            ),
+            sha256_hex(format!("{base}{PROFILE_ACTIVATION}").as_bytes()),
             "8116871929126e8d976ebd4c81af990a72c201ceaa18cef7e61f39bebaf378ba"
         );
     }

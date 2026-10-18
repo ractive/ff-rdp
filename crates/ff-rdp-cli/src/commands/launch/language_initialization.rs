@@ -18,7 +18,6 @@ use ff_rdp_core::transport::RdpTransport;
 use ff_rdp_core::types::{ActorId, Grip};
 use ff_rdp_core::{RootActor, TabActor, WebConsoleActor};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
 use super::super::english_language_pack::{self, Pack, read_regular};
 use super::{LaunchHooks, USER_JS, startup};
@@ -65,7 +64,7 @@ fn remaining(deadline: Instant) -> Result<Duration> {
 }
 
 fn digest(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    crate::commands::english_language_pack::sha256_hex(bytes)
 }
 
 pub(super) struct Runtime {
