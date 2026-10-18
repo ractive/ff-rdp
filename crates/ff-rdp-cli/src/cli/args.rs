@@ -891,7 +891,9 @@ exclusive with --full-page.
 simulates the print medium (`@media print` rules apply; --media screen is the
 default and simulates nothing). Both are set on this command's own connection
 right before the capture, and the command waits until the page's matchMedia
-reports them. They end when the command exits: the tab is back to its own
+reports them and the CSS transitions/animations the change started have
+finished (infinite ones are ignored; capped at 2 s, after which it captures
+anyway with \"settled\": false). They end when the command exits: the tab is back to its own
 settings afterwards, and a later `eval` sees the unemulated page. Not
 available with --window-size, which captures in a separate Firefox process.
 --color-scheme dark is refused with --media print: Firefox always renders
@@ -904,7 +906,7 @@ Examples:
 
 Output: {\"results\": {\"path\": \"...\", \"width\": N, \"height\": N}, \"total\": 1, \"meta\": {...}}
 With --base64: {\"results\": {\"base64\": \"...\"}, \"total\": 1, \"meta\": {...}}
-With --color-scheme/--media: results also carries \"emulation\": {\"color_scheme\": \"dark\", \"media\": \"print\"} (only the flags passed).
+With --color-scheme/--media: results also carries \"emulation\": {\"color_scheme\": \"dark\", \"media\": \"print\", \"settled\": true} (only the flags passed; no \"settled\" for --media screen alone).
 With --window-size: {\"results\": {\"path\"|\"base64\": ..., \"width\": N, \"height\": N, \"capture\": \"batch-window-size\"}, \"total\": 1, \"meta\": {...}}")]
     Screenshot(ScreenshotArgs),
     /// Click an element matching a CSS selector

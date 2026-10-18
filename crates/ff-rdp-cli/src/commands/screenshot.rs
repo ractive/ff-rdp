@@ -184,7 +184,7 @@ pub fn run_core(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<serde_json::Valu
         ));
     }
     // Emulation lives on the RDP connection, so it cannot reach that process.
-    if opts.window_size.is_some() && opts.emulation_echo(None).is_some() {
+    if opts.window_size.is_some() && (opts.color_scheme.is_some() || opts.media.is_some()) {
         return Err(AppError::User(
             "screenshot: --color-scheme/--media cannot be combined with --window-size, which \
              captures in a separate Firefox process"
@@ -206,9 +206,10 @@ pub fn run_core(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<serde_json::Valu
         let tab_actor = ctx.target_tab_actor().clone();
         let watcher =
             TabActor::get_watcher(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;
+        let since = super::emulation::timeline_now(&mut ctx)?;
         super::emulation::apply(&mut ctx, &watcher, &configuration)?;
         super::emulation::wait_for_media(&mut ctx, &configuration)?;
-        settled = Some(super::emulation::wait_for_animations(&mut ctx)?);
+        settled = Some(super::emulation::wait_for_animations(&mut ctx, since)?);
     }
 
     let sc_actor = ctx.target().screenshot_content_actor.clone();
