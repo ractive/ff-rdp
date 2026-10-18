@@ -703,3 +703,114 @@ fn screenshot_emulation_refuses_impossible_combinations() {
         assert!(note.contains(needle), "{extra:?}: {note}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// --viewport WxH (iframe wrapper on the live tab)
+// ---------------------------------------------------------------------------
+
+/// `screenshot_server` plus the three recorded `evaluateJSAsync` replies of a
+/// `--viewport` capture: inject → poll (loaded, images settled) → cleanup.
+///
+/// The recorder normalises actor ids to `child0`, while
+/// `get_target_response.json` hands out `child2/consoleActor3`; the mock only
+/// rewrites `from` on replies, not on `evaluationResult` events, so the test
+/// addresses each event to the console actor the client was given.
+fn viewport_server() -> MockRdpServer {
+    let console = load_fixture("get_target_response.json")["frame"]["consoleActor"].clone();
+    assert!(
+        console.is_string(),
+        "consoleActor in get_target_response.json"
+    );
+    let result = |name: &str| {
+        let mut event = load_fixture(name);
+        event["from"] = console.clone();
+        vec![event]
+    };
+    let immediate = load_fixture("eval_immediate_response_location_href.json");
+    screenshot_server().on_sequence(
+        "evaluateJSAsync",
+        vec![
+            (
+                immediate.clone(),
+                result("eval_result_viewport_inject.json"),
+            ),
+            (
+                immediate.clone(),
+                result("eval_result_viewport_poll_loaded.json"),
+            ),
+            (immediate, result("eval_result_viewport_cleanup.json")),
+        ],
+    )
+}
+
+#[test]
+fn screenshot_viewport_captures_the_wrapper_rect_and_removes_it() {
+    let (output, requests) = run_emulated(viewport_server(), &["--viewport", "390x844"]);
+    assert!(output.status.success(), "{}", support::output_note(&output));
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("JSON");
+    let results = &json["results"];
+    assert_eq!(results["capture"], "live-viewport-iframe", "{json}");
+    assert_eq!(results["viewport"]["width"], 390, "{json}");
+    assert_eq!(results["viewport"]["height"], 844, "{json}");
+    assert_eq!(results["url"], "https://example.com/", "{json}");
+    assert_eq!(results["images_settled"], true, "{json}");
+
+    let capture = requests
+        .iter()
+        .find(|r| r["type"] == "capture")
+        .expect("a capture request");
+    let rect = &capture["args"]["rect"];
+    assert_eq!(rect["width"], 390.0, "{capture}");
+    assert_eq!(rect["height"], 844.0, "{capture}");
+    assert_eq!(rect["left"], 0.0, "{capture}");
+    assert_eq!(capture["args"]["fullpage"], false, "{capture}");
+
+    // inject, poll, cleanup — the cleanup comes after the capture.
+    let types: Vec<&str> = requests.iter().filter_map(|r| r["type"].as_str()).collect();
+    let evals: Vec<usize> = types
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| **t == "evaluateJSAsync")
+        .map(|(i, _)| i)
+        .collect();
+    let capture_at = types.iter().position(|t| *t == "capture").expect("capture");
+    assert_eq!(evals.len(), 3, "{types:?}");
+    assert!(evals[1] < capture_at && capture_at < evals[2], "{types:?}");
+    let cleanup = requests[evals[2]]["text"].as_str().unwrap_or_default();
+    assert!(cleanup.contains("data-ffrdp-viewport"), "{cleanup}");
+}
+
+/// Argument errors are reported before any connection (port 1 is unroutable).
+#[test]
+fn screenshot_viewport_rejects_bad_values_and_conflicts() {
+    for (extra, needle) in [
+        (&["--viewport", "390"][..], "WxH"),
+        (&["--viewport", "0x844"][..], "between 1 and"),
+        (
+            &["--viewport", "390x844", "--window-size", "390x844"][..],
+            "--window-size",
+        ),
+        (&["--viewport", "390x844", "--full-page"][..], "--full-page"),
+    ] {
+        let output = std::process::Command::new(ff_rdp_bin())
+            .args(["--host", "127.0.0.1", "--port", "1", "screenshot"])
+            .args(extra)
+            .output()
+            .expect("failed to spawn ff-rdp");
+        assert!(!output.status.success(), "{extra:?} must be refused");
+        let note = support::output_note(&output);
+        assert!(note.contains(needle), "{extra:?}: {note}");
+    }
+}
+
+#[test]
+fn screenshot_help_documents_viewport_limits() {
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(["screenshot", "--help"])
+        .output()
+        .expect("failed to spawn ff-rdp");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--viewport <WxH>"), "{stdout}");
+    assert!(stdout.contains("NOT"), "{stdout}");
+    assert!(stdout.contains("X-Frame-Options"), "{stdout}");
+}

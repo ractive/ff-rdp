@@ -1,0 +1,10 @@
+{
+  "type": "evaluationResult",
+  "resultID": "0",
+  "hasException": false,
+  "input": "(function() {\n  var d = document.querySelector('[data-ffrdp-viewport=rec]');\n  var st = d && d.__ffrdp;\n  if (!st) return JSON.stringify({ phase: 'gone' });\n  var f = d.querySelector('iframe'), ready = null, href = null;\n  try { ready = f.contentDocument && f.contentDocument.readyState; href = f.contentWindow.location.href; } catch (e) {}\n  return JSON.stringify({ phase: st.phase, images_settled: st.images_settled, pending: st.pending,\n    probed: st.probed, xfo: st.xfo, csp: st.csp, ready: ready, href: href });\n})()",
+  "result": "{\"phase\":\"loaded\",\"images_settled\":true,\"pending\":0,\"probed\":false,\"xfo\":null,\"csp\":null,\"ready\":\"complete\",\"href\":\"https://example.com/\"}",
+  "startTime": 1792349887549.084,
+  "timestamp": 1792349887549.366,
+  "from": "server1.conn0.child0/consoleActor3"
+}

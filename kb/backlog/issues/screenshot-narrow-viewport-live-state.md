@@ -46,3 +46,18 @@ The workaround was a separate headless Chrome script with
   WebDriver BiDi (`browsingContext.setViewport`) on the live tab.
 - Or `screenshot --window-size` accepting a short script to replay (e.g. a click)
   after its fresh navigation, so state can be rebuilt.
+
+## Partial: #338
+
+`ff-rdp screenshot --viewport 390x844` now captures a phone-width layout on the
+live tab without a second Firefox: the tab's URL is loaded into a 390x844
+iframe overlaid on the page, `max-width` media queries evaluate against 390,
+images in that first viewport are made eager and awaited, and the iframe is
+removed afterwards. It composes with `--color-scheme` / `--media`.
+
+Still open: the iframe loads the URL afresh, so the opened `<dialog>` from the
+repro (or any other state built by earlier commands) is not in the capture.
+RDP has no viewport sizing for the live tab (Responsive Design Mode is
+parent-chrome CSS) and WebDriver BiDi is out of scope, so live-state capture
+at phone width remains unsolved. Pages that refuse framing still need
+`--window-size`.

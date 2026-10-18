@@ -3958,3 +3958,97 @@ fn unit_send_raw_rejects_oneway() {
         reject_oneway_request(&json!({"to": "root", "type": two_way}));
     }
 }
+
+/// Records the three `evaluateJSAsync` replies of `screenshot --viewport`
+/// (inject the iframe wrapper, poll its state, remove it) for the CLI e2e
+/// mock. The JS is a reduced copy of the CLI's builders in
+/// `crates/ff-rdp-cli/src/commands/screenshot_viewport.rs` (the core crate
+/// cannot call them): same wrapper attribute, same reply shapes, a real
+/// same-origin frame on example.com.
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_screenshot_viewport_evals() {
+    if !should_run_live() {
+        return;
+    }
+    let mut conn = connect();
+    let transport = conn.transport_mut();
+    navigate_to_example_com(transport);
+    let console = get_console_actor(transport);
+
+    let inject = r"(function() {
+  var d = document.createElement('div');
+  d.setAttribute('data-ffrdp-viewport', 'rec');
+  d.style.cssText = 'all: initial; display: block; position: absolute; z-index: 2147483647;'
+    + ' left: ' + window.scrollX + 'px; top: ' + window.scrollY + 'px; width: 390px; height: 844px;';
+  var st = { phase: 'loading', images_settled: false, pending: 0, probed: false, xfo: null, csp: null };
+  d.__ffrdp = st;
+  var f = document.createElement('iframe');
+  f.style.cssText = 'all: initial; display: block; width: 390px; height: 844px;';
+  f.addEventListener('load', function() { st.phase = 'loaded'; st.images_settled = true; });
+  f.src = location.href;
+  d.appendChild(f);
+  document.documentElement.appendChild(d);
+  var r = d.getBoundingClientRect();
+  return JSON.stringify({ left: r.left + window.scrollX, top: r.top + window.scrollY });
+})()";
+    let (_, injected) = record_eval(
+        transport,
+        &console,
+        inject,
+        None,
+        Some("eval_result_viewport_inject.json"),
+    );
+    let origin: Value = serde_json::from_str(
+        injected["result"]
+            .as_str()
+            .expect("inject returns a string"),
+    )
+    .expect("inject returns JSON");
+    assert_eq!(origin["left"], 0, "{origin}");
+
+    let poll = r"(function() {
+  var d = document.querySelector('[data-ffrdp-viewport=rec]');
+  var st = d && d.__ffrdp;
+  if (!st) return JSON.stringify({ phase: 'gone' });
+  var f = d.querySelector('iframe'), ready = null, href = null;
+  try { ready = f.contentDocument && f.contentDocument.readyState; href = f.contentWindow.location.href; } catch (e) {}
+  return JSON.stringify({ phase: st.phase, images_settled: st.images_settled, pending: st.pending,
+    probed: st.probed, xfo: st.xfo, csp: st.csp, ready: ready, href: href });
+})()";
+    let deadline = Instant::now() + TIMEOUT;
+    loop {
+        let (_, polled) = record_eval(transport, &console, poll, None, None);
+        let state: Value = serde_json::from_str(polled["result"].as_str().expect("poll string"))
+            .expect("poll JSON");
+        if state["phase"] == "loaded" {
+            break;
+        }
+        assert!(Instant::now() < deadline, "frame never loaded: {state}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let (_, polled) = record_eval(
+        transport,
+        &console,
+        poll,
+        None,
+        Some("eval_result_viewport_poll_loaded.json"),
+    );
+    let state: Value =
+        serde_json::from_str(polled["result"].as_str().expect("poll string")).expect("poll JSON");
+    assert_eq!(state["href"], "https://example.com/", "{state}");
+
+    let cleanup = r"(function() {
+  var n = 0;
+  document.querySelectorAll('[data-ffrdp-viewport]').forEach(function(e) { e.remove(); n++; });
+  return n;
+})()";
+    let (_, removed) = record_eval(
+        transport,
+        &console,
+        cleanup,
+        None,
+        Some("eval_result_viewport_cleanup.json"),
+    );
+    assert_eq!(removed["result"], 1, "{removed}");
+}

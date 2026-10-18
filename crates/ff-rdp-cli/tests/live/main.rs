@@ -130,6 +130,7 @@ mod live_reload_hard;
 mod live_screenshot_bulk_fallback;
 mod live_screenshot_ff151;
 mod live_screenshot_shim;
+mod live_screenshot_viewport;
 mod live_snapshot_max_depth;
 mod live_stale_tab_race;
 mod live_styles_applied;

@@ -50,6 +50,9 @@ pub(crate) struct ScreenshotOpts<'a> {
     /// with or without e10s; see `kb/research/viewport-emulation.md`
     /// addendum.
     pub(crate) window_size: Option<&'a str>,
+    /// `--viewport WxH`: capture the live tab's URL at `WxH` CSS px through an
+    /// iframe wrapper — see [`super::screenshot_viewport`].
+    pub(crate) viewport: Option<&'a str>,
     /// `--color-scheme`: simulated `prefers-color-scheme` for this capture.
     pub(crate) color_scheme: Option<ColorSchemeArg>,
     /// `--media`: simulated CSS media type for this capture.
@@ -189,6 +192,10 @@ pub fn run_core(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<serde_json::Valu
     if let Some(window_size) = opts.window_size {
         return run_batch_window_size(cli, opts, window_size);
     }
+    let viewport = opts
+        .viewport
+        .map(super::screenshot_viewport::parse_viewport)
+        .transpose()?;
 
     let mut ctx = connect_and_get_target(cli)?;
 
@@ -200,6 +207,17 @@ pub fn run_core(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<serde_json::Valu
             TabActor::get_watcher(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;
         super::emulation::apply(&mut ctx, &watcher, &configuration)?;
         super::emulation::wait_for_media(&mut ctx, &configuration)?;
+    }
+
+    if let Some(size) = viewport {
+        let capture = super::screenshot_viewport::capture(
+            &mut ctx,
+            size,
+            Duration::from_millis(cli.timeout),
+        )?;
+        let mut fields = capture.fields;
+        fields.extend(opts.emulation_echo().map(|echo| ("emulation", echo)));
+        return build_capture_result(opts, &capture.png, &fields);
     }
 
     let sc_actor = ctx.target().screenshot_content_actor.clone();

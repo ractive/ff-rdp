@@ -856,6 +856,7 @@ fn dispatch_inner(
             output_root,
             bulk,
             window_size,
+            viewport,
             color_scheme,
             media,
         }) => commands::screenshot::run(
@@ -867,6 +868,7 @@ fn dispatch_inner(
                 bulk: *bulk,
                 output_root: output_root.as_deref(),
                 window_size: window_size.as_deref(),
+                viewport: viewport.as_deref(),
                 color_scheme: *color_scheme,
                 media: *media,
             },

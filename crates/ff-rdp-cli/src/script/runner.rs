@@ -1302,6 +1302,7 @@ fn execute_screenshot(step: &ScreenshotStep, cli: &Cli) -> Result<Value, AppErro
         bulk: false,
         output_root: None,
         window_size: None,
+        viewport: None,
         color_scheme: None,
         media: None,
     };

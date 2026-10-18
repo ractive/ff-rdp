@@ -42,6 +42,7 @@ pub(crate) mod record;
 pub(crate) mod responsive;
 pub(crate) mod run;
 pub(crate) mod screenshot;
+pub(crate) mod screenshot_viewport;
 pub(crate) mod scroll;
 pub(crate) mod skill_doc;
 pub(crate) mod snapshot;

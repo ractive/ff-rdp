@@ -1,0 +1,10 @@
+{
+  "type": "evaluationResult",
+  "resultID": "0",
+  "hasException": false,
+  "input": "(function() {\n  var n = 0;\n  document.querySelectorAll('[data-ffrdp-viewport]').forEach(function(e) { e.remove(); n++; });\n  return n;\n})()",
+  "result": 1,
+  "startTime": 1792349887550.241,
+  "timestamp": 1792349887551.263,
+  "from": "server1.conn0.child0/consoleActor3"
+}
