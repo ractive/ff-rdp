@@ -469,12 +469,6 @@ fn report_failed_profile_cleanup(
     }
 }
 
-/// How to see the startup stderr that `StderrCapture::summary` redacts: the
-/// `launch_startup` trace logs it at debug level, unredacted only with the
-/// raw-trace opt-in.
-const STDERR_HINT: &str =
-    "to see Firefox's stderr, rerun with --log-level debug and FF_RDP_TRACE_RAW=1";
-
 /// A spawned browser remains this command's responsibility until its launch
 /// result has been delivered. Never remove its profile while it may still run.
 fn stop_failed_launch(
@@ -1260,9 +1254,7 @@ pub(crate) fn run_with_hooks(
     match observation.initial_interval() {
         Ok(Some(status)) => {
             observation.terminal("initial_interval", "natural_exit");
-            let error = AppError::User(format!(
-                "Firefox exited immediately with {status}; {STDERR_HINT}"
-            ));
+            let error = AppError::User(format!("Firefox exited immediately with {status}"));
             Err(pending.fail(error))
         }
         Ok(None) => {
@@ -2596,7 +2588,7 @@ mod iter_175_tests {
         assert!(
             err.to_error_json()["error_type"] == "User"
                 && err.to_string().contains("exited immediately")
-                && err.to_string().contains("FF_RDP_TRACE_RAW=1"),
+                && format!("{err:?}").contains("FF_RDP_TRACE_RAW=1"),
             "expected the immediate-exit message, got {err:?}"
         );
 

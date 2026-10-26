@@ -123,9 +123,7 @@ fn live_296_with_page_title_is_document_title() {
     let nav = run_json(port, &["navigate", &data_url(html), "--with-page"]);
     let page = &nav["results"]["page"];
     assert_eq!(page["title"], "Document title", "{page}");
-    if let Some(reader_title) = page.get("reader_title") {
-        assert_eq!(reader_title, "OG title", "{page}");
-    }
+    assert_eq!(page["reader_title"], "OG title", "{page}");
 }
 
 const STICKY_PAGE: &str = "<!doctype html><html><head><meta charset=utf-8><title>sticky</title><style>\
@@ -238,4 +236,58 @@ fn live_296_output_root_default_and_window_size_full_page() {
         shot["results"]["height"].as_u64().unwrap_or(0) > 844,
         "full-page batch capture must be taller than the window: {shot}"
     );
+}
+
+/// A `translate(-50%,-50%)`-centred fixed box inside a sticky header (which
+/// the freeze turns into its containing block) lands where the viewport
+/// capture shows it: the freeze measures where it landed and corrects.
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_296_full_page_fixed_in_sticky_keeps_position() {
+    if !live_tests_enabled() {
+        eprintln!("live_296_full_page_fixed_in_sticky_keeps_position: set FF_RDP_LIVE_TESTS=1");
+        return;
+    }
+    let ff = LiveFirefox::headless_on_random_port();
+    let port = ff.port();
+    navigate(
+        port,
+        "<!doctype html><html><head><meta charset=utf-8><style>body{margin:0}\
+         header{position:sticky;top:0;height:72px;background:rgb(204,0,0)}\
+         .modal{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);\
+         width:100px;height:100px;background:rgb(0,0,255)}\
+         .tall{height:3000px;background:rgb(200,200,200)}</style></head>\
+         <body><header><div class=modal></div></header><div class=tall></div></body></html>",
+    );
+    let rect = run_json(
+        port,
+        &[
+            "eval",
+            "var r=document.querySelector('.modal').getBoundingClientRect();\
+             JSON.stringify([Math.round(r.left+r.width/2),Math.round(r.top+r.height/2)])",
+        ],
+    );
+    let centre: Vec<u32> =
+        serde_json::from_str(rect["results"].as_str().expect("json string")).expect("centre pair");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let full = dir.path().join("full.png");
+    let shot = run_json(
+        port,
+        &[
+            "screenshot",
+            "--full-page",
+            "-o",
+            full.to_str().expect("utf-8 path"),
+        ],
+    );
+    let blue = (0, 0, 255);
+    for (dx, dy) in [(0_i32, 0_i32), (-40, -40), (40, 40)] {
+        let x = centre[0].saturating_add_signed(dx);
+        let y = centre[1].saturating_add_signed(dy);
+        assert_eq!(
+            png_pixel(&full, x, y),
+            blue,
+            "fixed box must stay centred at {centre:?} (probe {x},{y}): {shot}"
+        );
+    }
 }

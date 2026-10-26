@@ -121,7 +121,7 @@ COMMAND REFERENCE:
     ff-rdp storage local|session [--key KEY]
 
   Screenshot & debug:
-    ff-rdp screenshot [-o PATH | --base64] [--full-page | --window-size WxH | --viewport WxH]
+    ff-rdp screenshot [-o PATH | --base64] [--full-page] [--window-size WxH | --viewport WxH]
     ff-rdp inspect <JS_EXPRESSION> [--depth N]
     ff-rdp sources [--filter URL | --pattern REGEX]
 

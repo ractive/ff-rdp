@@ -1,4 +1,3 @@
-use std::io::Read as _;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -388,7 +387,16 @@ fn run_batch_window_size(
     cmd.env("MOZ_CRASHREPORTER_DISABLE", "1");
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::null());
-    cmd.stderr(std::process::Stdio::piped());
+    // stderr goes to a file, not a pipe: an undrained pipe fills (64 KiB of
+    // "Failed to allocate a surface" on a very tall page) and blocks Firefox,
+    // and a blocking read after exit can hang on descendants that inherited it.
+    let stderr_path = scratch.path().join("stderr.log");
+    let stderr_file = std::fs::File::create(&stderr_path).map_err(|e| {
+        AppError::User(format!(
+            "screenshot: failed to create batch-capture stderr file: {e}"
+        ))
+    })?;
+    cmd.stderr(stderr_file);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt as _;
@@ -427,10 +435,7 @@ fn run_batch_window_size(
         }
     };
 
-    let mut stderr_text = String::new();
-    if let Some(mut stderr) = child.stderr.take() {
-        let _ = stderr.read_to_string(&mut stderr_text);
-    }
+    let stderr_text = batch_stderr_tail(&stderr_path);
     let stderr_text = stderr_text.trim();
     let detail = if stderr_text.is_empty() {
         String::new()
@@ -448,6 +453,14 @@ fn run_batch_window_size(
         .map_err(|e| AppError::User(missing_batch_png_message(opts.full_page, &e, &detail)))?;
 
     build_capture_result(opts, &png_bytes, &[("capture", json!("batch-window-size"))])
+}
+
+/// The last 2 KiB of the batch capture's stderr file (empty if unreadable).
+fn batch_stderr_tail(path: &std::path::Path) -> String {
+    const TAIL: usize = 2048;
+    let bytes = std::fs::read(path).unwrap_or_default();
+    let start = bytes.len().saturating_sub(TAIL);
+    String::from_utf8_lossy(&bytes[start..]).into_owned()
 }
 
 /// The `--window-size` argument for the batch capture. Firefox's batch mode
@@ -796,39 +809,62 @@ const FROZEN_STYLE_ATTR: &str = "data-ffrdp-frozen-style";
 fn freeze_fixed_and_sticky_js() -> String {
     format!(
         r"(function() {{
+  // iter-296: all reads, then all writes, then one correction pass — no
+  // per-element forced reflow, and positions measured after every ancestor
+  // has been frozen.
   var els = document.querySelectorAll('*');
-  var frozen = 0;
+  var found = [];
   for (var i = 0; i < els.length; i++) {{
-    var el = els[i];
-    var cs = window.getComputedStyle(el);
-    if (cs.position !== 'fixed' && cs.position !== 'sticky') continue;
-    var rect = el.getBoundingClientRect();
+    var pos = window.getComputedStyle(els[i]).position;
+    if (pos !== 'fixed' && pos !== 'sticky') continue;
+    var item = {{el: els[i], sticky: pos === 'sticky'}};
+    if (!item.sticky) {{
+      item.rect = els[i].getBoundingClientRect();
+      item.w = els[i].offsetWidth;
+      item.h = els[i].offsetHeight;
+    }}
+    found[found.length] = item;
+  }}
+  for (var j = 0; j < found.length; j++) {{
+    var f = found[j], el = f.el;
     el.setAttribute('{FROZEN_MARKER_ATTR}', '1');
     el.setAttribute('{FROZEN_STYLE_ATTR}', el.getAttribute('style') || '');
-    if (cs.position === 'sticky') {{
-      // iter-296: stay in flow at the static position. `absolute` took the
-      // element out of flow (content jumped up under it) and shrink-wrapped
-      // it (a full-width header narrowed).
+    if (f.sticky) {{
+      // Stay in flow at the static position. `absolute` took the element
+      // out of flow (content jumped up under it) and shrink-wrapped it (a
+      // full-width header narrowed).
       el.style.position = 'relative';
       el.style.top = 'auto';
       el.style.bottom = 'auto';
       el.style.left = 'auto';
       el.style.right = 'auto';
     }} else {{
-      // Fixed is already out of flow; pin the box so `absolute` does not
-      // re-resolve its size against a different containing block.
+      // Fixed is already out of flow; pin its untransformed border box so
+      // `absolute` does not re-resolve the size against another block.
       el.style.position = 'absolute';
-      el.style.top = (rect.top + window.scrollY) + 'px';
-      el.style.left = (rect.left + window.scrollX) + 'px';
+      el.style.top = (f.rect.top + window.scrollY) + 'px';
+      el.style.left = (f.rect.left + window.scrollX) + 'px';
       el.style.right = 'auto';
       el.style.bottom = 'auto';
       el.style.boxSizing = 'border-box';
-      el.style.width = rect.width + 'px';
-      el.style.height = rect.height + 'px';
+      el.style.width = f.w + 'px';
+      el.style.height = f.h + 'px';
     }}
-    frozen++;
   }}
-  return JSON.stringify({{frozen: frozen}});
+  // The containing block of an `absolute` element may be a positioned (or
+  // just-frozen) ancestor, and a transform still applies on top: measure
+  // where each fixed element landed and shift it back to where it was. In
+  // document order, one element at a time, so a corrected ancestor has
+  // already moved its descendants before they are measured (fixed elements
+  // are few; sticky ones need no correction).
+  for (var m = 0; m < found.length; m++) {{
+    var g = found[m];
+    if (g.sticky) continue;
+    var landed = g.el.getBoundingClientRect();
+    g.el.style.top = (parseFloat(g.el.style.top) - (landed.top - g.rect.top)) + 'px';
+    g.el.style.left = (parseFloat(g.el.style.left) - (landed.left - g.rect.left)) + 'px';
+  }}
+  return JSON.stringify({{frozen: found.length}});
 }})()"
     )
 }
@@ -1282,13 +1318,15 @@ mod tests {
     #[test]
     fn freeze_js_matches_fixed_and_sticky_and_uses_bounding_rect() {
         let js = freeze_fixed_and_sticky_js();
-        assert!(js.contains("cs.position !== 'fixed'"));
-        assert!(js.contains("cs.position !== 'sticky'"));
+        assert!(js.contains("pos !== 'fixed'"));
+        assert!(js.contains("pos !== 'sticky'"));
         assert!(js.contains("getBoundingClientRect"));
         assert!(js.contains("position = 'absolute'"));
         // iter-296: sticky stays in flow (relative), fixed keeps its box size.
         assert!(js.contains("position = 'relative'"));
-        assert!(js.contains("style.width = rect.width"));
+        assert!(js.contains("style.width = f.w"));
+        // Positions are corrected after landing (containing block, transforms).
+        assert!(js.contains("landed.top - g.rect.top"));
         assert!(js.contains(FROZEN_MARKER_ATTR));
         assert!(js.contains(FROZEN_STYLE_ATTR));
     }
