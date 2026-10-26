@@ -145,6 +145,7 @@ mod live_275_consent_selection;
 mod live_286_native_sources;
 mod live_295_navigate_wait_idle;
 mod live_295_perf_cold;
+mod live_296_triage_easy_batch;
 mod live_304_refs_snapshot_eval;
 mod live_smooth_scroll_measure;
 mod live_stop_command;

@@ -425,6 +425,11 @@ fn browser_command(
     cmd.env("LANG", "en_US.UTF-8");
     cmd.env("LC_ALL", "en_US.UTF-8");
 
+    // iter-296: a crashing instance — even a headless one — otherwise opens
+    // a crash-reporter dialog on the user's desktop. ff-rdp reports the exit
+    // itself; nobody is there to submit the report.
+    cmd.env("MOZ_CRASHREPORTER_DISABLE", "1");
+
     // Detach from the terminal so the spawned browser doesn't inherit our
     // stdin/stdout. Capture stderr so we can surface early crash messages.
     cmd.stdin(std::process::Stdio::null());
@@ -1447,6 +1452,14 @@ mod tests {
         assert_eq!(
             default.get_envs().collect::<Vec<_>>(),
             with_url.get_envs().collect::<Vec<_>>()
+        );
+        // iter-296: no crash-reporter dialog from a launched instance.
+        assert!(
+            default
+                .get_envs()
+                .any(|(k, v)| k == "MOZ_CRASHREPORTER_DISABLE"
+                    && v == Some(std::ffi::OsStr::new("1"))),
+            "launch must disable the crash reporter"
         );
         for profile in [&default_profile, &url_profile] {
             assert_eq!(
@@ -2574,7 +2587,8 @@ mod iter_175_tests {
             .expect_err("a browser that exits immediately must fail the launch");
         assert!(
             err.to_error_json()["error_type"] == "User"
-                && err.to_string().contains("exited immediately"),
+                && err.to_string().contains("exited immediately")
+                && format!("{err:?}").contains("FF_RDP_TRACE_RAW=1"),
             "expected the immediate-exit message, got {err:?}"
         );
 

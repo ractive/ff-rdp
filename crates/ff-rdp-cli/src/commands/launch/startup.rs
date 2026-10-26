@@ -79,8 +79,10 @@ impl StderrCapture {
         } else {
             "unread bytes unknown"
         };
+        // iter-296: say how to see the redacted text — the `launch_startup`
+        // trace logs it at debug level, unredacted only with the raw opt-in.
         format!(
-            "startup stderr: {} bytes observed, {} retained (content redacted), {} discarded; {missing}; read error {:?}",
+            "startup stderr: {} bytes observed, {} retained (content redacted), {} discarded; {missing}; read error {:?}; to see it, rerun with --log-level debug and FF_RDP_TRACE_RAW=1",
             self.observed,
             self.tail.len(),
             self.observed.saturating_sub(self.tail.len() as u64),
