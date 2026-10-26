@@ -7,3 +7,12 @@
 # baseline use.
 # Usage: FF_RDP_LIVE_TESTS=1 cargo test-live
 test-live = "test --workspace -- --include-ignored --test-threads=1"
+
+# Link the C runtime statically into Windows MSVC binaries, so `ff-rdp.exe`
+# does not import VCRUNTIME140.dll. That DLL ships with the VC++
+# Redistributable, not with Windows, and winget/Scoop/zip users without it
+# could not start the binary. `ring` builds its C code through `cc`, which
+# honours `crt-static`. An env `RUSTFLAGS` would replace this setting; no CI
+# or release workflow sets one.
+[target.'cfg(all(target_os = "windows", target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]
