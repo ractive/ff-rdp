@@ -3322,8 +3322,9 @@ still alive is still removed (--all is the explicit escape hatch), but each such
 logged as a warning and its basename is listed under `removed_live` in the output
 (`would_remove_live` with --dry-run, which removes nothing). Do not run
 --all while a Firefox launched by ff-rdp is still using one of these profiles: `ff-rdp stop
---all` stops those Firefoxes and removes their profiles. `hint` names `ff-rdp stop` whenever a
-live-owned profile is present under the root (kept by an age-gated prune), `null` otherwise.
+--all` stops those Firefoxes and removes their profiles. `hint` names `ff-rdp stop --all` whenever,
+after the prune, the root still holds a profile of a running Firefox that `stop --all` would
+stop; `null` otherwise.
 `failed` reports, per selected directory, any removal that did NOT happen, with the OS
 error — `{}` when everything selected was removed. This matters most under --all against a
 live owner: the browser is writing into the profile throughout, so `remove_dir_all` can meet

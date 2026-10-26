@@ -715,7 +715,13 @@ impl LaunchHooks {
         Self {
             initialize_language_pack: language_initialization::run,
             emit_launch: |cli, envelope| {
-                let hint_ctx = HintContext::new(HintSource::Launch);
+                let mut hint_ctx = HintContext::new(HintSource::Launch);
+                if let Some(port) = envelope["results"]["port"]
+                    .as_u64()
+                    .and_then(|p| u16::try_from(p).ok())
+                {
+                    hint_ctx = hint_ctx.with_port(port);
+                }
                 OutputPipeline::from_cli(cli)
                     .and_then(|pipeline| pipeline.finalize_with_hints(envelope, Some(&hint_ctx)))
             },
@@ -803,7 +809,7 @@ fn emit_already_running(
     let mut meta = json!({});
     crate::connection_meta::merge_into_if_verbose(&mut meta, host, port, None, cli.is_verbose());
     let envelope = output::envelope(&result, 1, &meta);
-    let hint_ctx = HintContext::new(HintSource::Launch);
+    let hint_ctx = HintContext::new(HintSource::Launch).with_port(port);
     OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 

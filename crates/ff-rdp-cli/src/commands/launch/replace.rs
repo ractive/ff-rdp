@@ -110,23 +110,34 @@ pub(crate) struct StopReport {
 /// Run the SIGTERM → 2 s → SIGKILL ladder against a Firefox whose ownership
 /// [`profile_dir::authorize_kill`] has just proved.
 ///
-/// Ownership is re-proved before **every** signal (rule 6): the marker and
-/// start token through `authorize_kill`, and — when `port` is given — that
-/// the PID still owns the port. A PID recycled between the check and a signal
-/// therefore never receives one.
+/// Ownership is re-proved before **every** signal (rule 6): the marker, start
+/// token and executable through `authorize_kill`, and — when `port` is given —
+/// that no *other* process now holds the port. A port the PID already closed
+/// (a Firefox that dropped its listener early in shutdown but is still
+/// running) does not block the SIGKILL: the start token is the identity proof,
+/// the port only named the candidate. A PID recycled between the check and a
+/// signal therefore never receives one.
 pub(crate) fn stop_owned_firefox(owned: &OwnedFirefox, port: Option<u16>) -> StopReport {
     let reverify = move |pid: u32| {
-        profile_dir::authorize_kill(pid).is_ok() && port.is_none_or(|p| port_still_owned_by(p, pid))
+        profile_dir::authorize_kill(pid).is_ok()
+            && port.is_none_or(|p| port_free_or_held_by(p, pid))
     };
     stop_pid_with_full_escalation(owned.pid, port, &EscalationHooks::real(), &reverify)
 }
 
-/// Does `pid` still own `port`?
-fn port_still_owned_by(port: u16, pid: u32) -> bool {
-    matches!(
-        crate::port_owner::find_listener(port),
-        Ok(Some(ref current)) if current.pid == pid
-    )
+/// Is `port` either free or held by `pid`? An unidentifiable holder of an
+/// in-use port answers `false` (fail closed).
+fn port_free_or_held_by(port: u16, pid: u32) -> bool {
+    match crate::port_owner::find_listener(port) {
+        Ok(Some(current)) => current.pid == pid,
+        Ok(None) | Err(_) => !crate::port_owner::is_port_in_use(port),
+    }
+}
+
+/// The process group of whatever now listens on `port`, if identifiable.
+fn listener_pgid(port: u16) -> Option<Pgid> {
+    let listener = crate::port_owner::find_listener(port).ok().flatten()?;
+    process::get_process_group_id(listener.pid)
 }
 
 /// Format the post-escalation "still running" error message.
@@ -178,6 +189,9 @@ struct EscalationHooks {
     get_pgid: fn(u32) -> Option<Pgid>,
     /// Poll `port` until closed or `timeout` elapses; returns `true` if closed.
     wait_port_closed: fn(u16, Duration) -> bool,
+    /// The process group of the port's current listener (step-4 re-check).
+    #[cfg_attr(not(unix), allow(dead_code))]
+    listener_pgid: fn(u16) -> Option<Pgid>,
 }
 
 impl EscalationHooks {
@@ -189,12 +203,13 @@ impl EscalationHooks {
             kill_process_tree: process::kill_process_tree,
             get_pgid: process::get_process_group_id,
             wait_port_closed: process::wait_for_port_closed,
+            listener_pgid,
         }
     }
 }
 
 /// Poll `is_alive(pid)` until it reports dead or `timeout` elapses.
-fn wait_for_exit(is_alive: fn(u32) -> bool, pid: u32, timeout: Duration) -> bool {
+pub(crate) fn wait_for_exit(is_alive: fn(u32) -> bool, pid: u32, timeout: Duration) -> bool {
     let deadline = std::time::Instant::now() + timeout;
     loop {
         if !is_alive(pid) {
@@ -256,15 +271,18 @@ fn stop_pid_with_full_escalation(
         };
     }
 
-    // Step 4: reach the children that outlived the parent. On Unix that is
-    // the group the PID led when it was captured — a group id cannot be
-    // reused while any member lives, so it still names only Firefox's
-    // children; no capture (or a group that was not the PID's own) means no
-    // group signal at all. On Windows it is `taskkill /T /PID`, which is
-    // PID-scoped, so it fires only while the PID is alive and still proved
-    // ours: a dead PID's number may already belong to someone else.
+    // Step 4: reach the children that outlived the parent — re-verified like
+    // every other signal (rule 6). On Unix the target is the group the PID
+    // led when it was captured, and it is signalled only while the PID is
+    // still alive and proved ours, or while the port's current listener is a
+    // member of that very group (a group id cannot be reused while any member
+    // lives, so that listener is one of Firefox's children). On Windows it is
+    // `taskkill /T /PID`, which is PID-scoped, so it fires only while the PID
+    // is alive and proved ours: a dead PID's number may belong to someone else.
     #[cfg(unix)]
-    let tree_kill_allowed = captured_pgid.is_some();
+    let tree_kill_allowed = captured_pgid.is_some()
+        && (((h.is_alive)(pid) && reverify(pid))
+            || port.is_some_and(|p| (h.listener_pgid)(p) == captured_pgid));
     #[cfg(not(unix))]
     let tree_kill_allowed = (h.is_alive)(pid) && reverify(pid);
     if tree_kill_allowed {
@@ -340,7 +358,29 @@ mod tests {
                 log_call("wait_port_closed");
                 false
             },
+            // A surviving child of the captured group still holds the port.
+            listener_pgid: |_port| Some(4242),
         }
+    }
+
+    /// Rule 6 on step 4: with the parent dead, the group kill fires only when
+    /// the port's current holder is in the captured group. A holder from some
+    /// other group (the PID's group is gone and the port changed hands) gets
+    /// nothing.
+    #[cfg(unix)]
+    #[test]
+    fn unit_stop_tree_kill_requires_listener_in_captured_group() {
+        let _serialized = begin_call_log();
+        let hooks = EscalationHooks {
+            listener_pgid: |_port| Some(9999),
+            ..recording_hooks_dead_parent()
+        };
+        let _ = stop_pid_with_full_escalation(4242, Some(65005), &hooks, &always_owned);
+        let log = take_call_log();
+        assert!(
+            !log.contains(&"kill_process_tree"),
+            "a port holder outside the captured group must not trigger a group kill; {log:?}"
+        );
     }
 
     /// `get_pgid` is called strictly before the first kill hook (iter-158).
@@ -441,6 +481,7 @@ mod tests {
             kill_process_tree: |_pid, _pgid| log_call("kill_process_tree"),
             get_pgid: |pid| Pgid::try_from(pid).ok(),
             wait_port_closed: |_port, _timeout| true,
+            listener_pgid: |_port| None,
         };
         let _ = stop_pid_with_full_escalation(4242, Some(65003), &hooks, &|_pid| false);
         let log = take_call_log();

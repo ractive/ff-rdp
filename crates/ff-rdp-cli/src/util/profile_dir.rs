@@ -764,6 +764,23 @@ fn owned_profile_under(root: &Path, pid: u32) -> Result<PathBuf, KillRefusal> {
     Err(refusal)
 }
 
+/// Rule 4, shared by [`authorize_kill_in`] and [`owned_instances_under`]: the
+/// OS must name `pid`'s executable as a Firefox binary.
+fn running_firefox(
+    pid: u32,
+    executable_name: fn(u32) -> Option<String>,
+) -> Result<(), KillRefusal> {
+    let name = executable_name(pid);
+    if name
+        .as_deref()
+        .is_some_and(crate::util::process::is_firefox_executable_name)
+    {
+        Ok(())
+    } else {
+        Err(KillRefusal::NotFirefox(name))
+    }
+}
+
 /// [`authorize_kill`] over explicit roots and an injectable executable-name
 /// lookup, so every refusal branch is unit-testable.
 fn authorize_kill_in(
@@ -775,13 +792,7 @@ fn authorize_kill_in(
     for root in roots {
         match owned_profile_under(root, pid) {
             Ok(profile) => {
-                let name = executable_name(pid);
-                if !name
-                    .as_deref()
-                    .is_some_and(crate::util::process::is_firefox_executable_name)
-                {
-                    return Err(KillRefusal::NotFirefox(name));
-                }
+                running_firefox(pid, executable_name)?;
                 return Ok(OwnedFirefox {
                     pid,
                     profile,
@@ -851,15 +862,14 @@ fn owned_instances_under(
         .filter(|path| is_managed_profile_path(path))
         .filter_map(|path| {
             let pid = read_owner_pid_marker(&path)?;
+            // The same two per-profile checks `authorize_kill_in` applies.
             kill_grade(&path, pid).ok()?;
-            executable_name(pid)
-                .as_deref()
-                .is_some_and(crate::util::process::is_firefox_executable_name)
-                .then(|| OwnedFirefox {
-                    pid,
-                    profile: path,
-                    root: root.to_path_buf(),
-                })
+            running_firefox(pid, executable_name).ok()?;
+            Some(OwnedFirefox {
+                pid,
+                profile: path,
+                root: root.to_path_buf(),
+            })
         })
         .collect();
     out.sort_by_key(|owned| owned.pid);

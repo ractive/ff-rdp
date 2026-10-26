@@ -40,6 +40,15 @@ const EXIT_AFTER_RELEASE_WAIT: Duration = Duration::from_secs(3);
 
 /// `ff-rdp stop [--all] [--dry-run]`.
 pub fn run(cli: &Cli, all: bool, dry_run: bool) -> Result<(), AppError> {
+    // Both forms only ever act on this machine; a remote --host is a request
+    // ff-rdp cannot honour, so it is refused rather than ignored.
+    if !crate::connection_meta::is_loopback(&cli.host) {
+        return Err(AppError::User(format!(
+            "`ff-rdp stop` only stops a Firefox on this machine; --host {} is not a loopback \
+             address",
+            cli.host
+        )));
+    }
     if all {
         run_all(cli, dry_run)
     } else {
@@ -49,13 +58,6 @@ pub fn run(cli: &Cli, all: bool, dry_run: bool) -> Result<(), AppError> {
 
 /// `ff-rdp stop` on `--port`.
 fn run_port(cli: &Cli, dry_run: bool) -> Result<(), AppError> {
-    if !crate::connection_meta::is_loopback(&cli.host) {
-        return Err(AppError::User(format!(
-            "`ff-rdp stop` only stops a Firefox on this machine; --host {} is not a loopback \
-             address",
-            cli.host
-        )));
-    }
     let port = cli.port;
     let listener = match crate::port_owner::find_listener(port) {
         Ok(Some(listener)) => listener,
@@ -102,10 +104,7 @@ fn run_port(cli: &Cli, dry_run: bool) -> Result<(), AppError> {
     }
 
     let report = replace::stop_owned_firefox(&owned, Some(port));
-    if !report.released {
-        return Err(AppError::User(report.message));
-    }
-    let profile_removed = remove_profile_once_exited(&owned, report.exited);
+    let profile_removed = finish_stop(&owned, &report).map_err(AppError::User)?;
     let results = json!({
         "stopped": true,
         "pid": owned.pid,
@@ -135,22 +134,24 @@ fn run_all(cli: &Cli, dry_run: bool) -> Result<(), AppError> {
                 });
             }
             let report = replace::stop_owned_firefox(owned, None);
-            if !report.released {
-                any_failed = true;
-                return json!({
-                    "stopped": false,
+            match finish_stop(owned, &report) {
+                Ok(profile_removed) => json!({
+                    "stopped": true,
                     "pid": owned.pid,
                     "profile": owned.profile.display().to_string(),
-                    "profile_removed": false,
-                    "error": report.message,
-                });
+                    "profile_removed": profile_removed,
+                }),
+                Err(error) => {
+                    any_failed = true;
+                    json!({
+                        "stopped": false,
+                        "pid": owned.pid,
+                        "profile": owned.profile.display().to_string(),
+                        "profile_removed": false,
+                        "error": error,
+                    })
+                }
             }
-            json!({
-                "stopped": true,
-                "pid": owned.pid,
-                "profile": owned.profile.display().to_string(),
-                "profile_removed": remove_profile_once_exited(owned, report.exited),
-            })
         })
         .collect();
     let total = entries.len();
@@ -167,29 +168,34 @@ fn run_all(cli: &Cli, dry_run: bool) -> Result<(), AppError> {
     }
 }
 
-/// Remove the stopped instance's managed profile — only once the process is
-/// gone, never while it might still be writing into it.
-fn remove_profile_once_exited(owned: &OwnedFirefox, exited: bool) -> bool {
-    let exited = exited || {
-        let deadline = std::time::Instant::now() + EXIT_AFTER_RELEASE_WAIT;
-        loop {
-            if !crate::util::process::is_process_alive(owned.pid) {
-                break true;
-            }
-            if std::time::Instant::now() >= deadline {
-                break false;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
-    };
-    if !exited {
-        tracing::warn!(
-            "stop: Firefox pid {} released its port but has not exited; keeping {}",
-            owned.pid,
-            owned.profile.display()
-        );
-        return false;
+/// Turn a ladder report into the outcome `stop` reports: `Ok(profile_removed)`
+/// only once the process has actually exited, `Err(message)` otherwise — a
+/// released port alone is never reported as `stopped: true`. The profile is
+/// removed only after exit, never while Firefox might still be writing it.
+fn finish_stop(owned: &OwnedFirefox, report: &replace::StopReport) -> Result<bool, String> {
+    if !report.released {
+        return Err(report.message.clone());
     }
+    let exited = report.exited
+        || replace::wait_for_exit(
+            crate::util::process::is_process_alive,
+            owned.pid,
+            EXIT_AFTER_RELEASE_WAIT,
+        );
+    if !exited {
+        return Err(format!(
+            "Firefox (pid {}) released its port but is still running after SIGTERM+SIGKILL; \
+             its profile {} was kept. Check it with `ps -p {}`.",
+            owned.pid,
+            owned.profile.display(),
+            owned.pid
+        ));
+    }
+    Ok(remove_stopped_profile(owned))
+}
+
+/// Remove an exited instance's managed profile.
+fn remove_stopped_profile(owned: &OwnedFirefox) -> bool {
     match profile_dir::remove_stopped_profile(owned) {
         ProfileCleanup::Removed(_) => true,
         ProfileCleanup::Skipped(reason) => {

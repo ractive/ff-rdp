@@ -323,18 +323,11 @@ fn c_int_from(n: usize) -> Option<libc::c_int> {
 /// The precondition for every group signal in this module: `launch` puts
 /// Firefox in its own group (`process_group(0)`), but a group signal sent on
 /// the *assumption* that it did would, for a process sharing the caller's
-/// group, reach the caller's whole shell job. Always `false` off Unix, where
-/// there are no process groups to signal.
-pub fn is_process_group_leader(pid: u32) -> bool {
-    #[cfg(unix)]
-    {
-        get_process_group_id(pid).is_some_and(|pgid| i64::from(pgid) == i64::from(pid))
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = pid;
-        false
-    }
+/// group, reach the caller's whole shell job. Unix only: elsewhere there are
+/// no process groups to signal.
+#[cfg(unix)]
+fn is_process_group_leader(pid: u32) -> bool {
+    get_process_group_id(pid).is_some_and(|pgid| i64::from(pgid) == i64::from(pid))
 }
 
 /// Send `signal` to `pid`'s process group when `pid` leads its own group,
