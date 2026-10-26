@@ -884,15 +884,50 @@ fn owned_instances_under(
 /// one this invocation resolves (deletion stays scoped to the configured
 /// root, as in iter-188, even though ownership proof spans both).
 pub(crate) fn remove_stopped_profile(owned: &OwnedFirefox) -> ProfileCleanup {
-    let configured = resolve_profile_root(
+    match stopped_profile_removal_root(owned, configured_profile_root()) {
+        Ok(root) => cleanup_profile_dir_under(&root, &owned.profile),
+        Err(skip) => ProfileCleanup::Skipped(skip),
+    }
+}
+
+/// Would [`remove_stopped_profile`] remove `owned`'s profile once it exits?
+/// `stop --dry-run` reports this, so a run that will keep the profile (an
+/// instance launched under a different `$FF_RDP_HOME`) is visible up front.
+/// Same predicate as the real removal; only `remove_dir_all` itself can still
+/// fail.
+pub(crate) fn profile_would_be_removed(owned: &OwnedFirefox) -> bool {
+    stopped_profile_removal_root(owned, configured_profile_root()).is_ok()
+}
+
+/// The root this invocation resolves — the only one deletion may touch.
+fn configured_profile_root() -> Result<PathBuf, AppError> {
+    resolve_profile_root(
         crate::util::home_override(),
         dirs::state_dir(),
         dirs::data_local_dir(),
-    );
+    )
+}
+
+/// The removal predicate shared by [`remove_stopped_profile`] and
+/// [`profile_would_be_removed`]: the root that vouched for `owned` must be the
+/// configured one, and the profile a managed basename under it. Returns the
+/// root to delete under, or why the profile is kept.
+fn stopped_profile_removal_root(
+    owned: &OwnedFirefox,
+    configured: Result<PathBuf, AppError>,
+) -> Result<PathBuf, ProfileCleanupSkip> {
     match configured {
-        Ok(root) if root == owned.root => cleanup_profile_dir_under(&root, &owned.profile),
-        Ok(_) => ProfileCleanup::Skipped(ProfileCleanupSkip::OutsideProfileRoot),
-        Err(_) => ProfileCleanup::Skipped(ProfileCleanupSkip::NoProfileRoot),
+        Ok(root) if root == owned.root => {
+            if !owned.profile.starts_with(&root) {
+                Err(ProfileCleanupSkip::OutsideProfileRoot)
+            } else if !is_managed_profile_path(&owned.profile) {
+                Err(ProfileCleanupSkip::NotManagedBasename)
+            } else {
+                Ok(root)
+            }
+        }
+        Ok(_) => Err(ProfileCleanupSkip::OutsideProfileRoot),
+        Err(_) => Err(ProfileCleanupSkip::NoProfileRoot),
     }
 }
 
@@ -3095,5 +3130,39 @@ mod tests {
                 "the previous owner's start token must not survive a re-mark"
             );
         }
+    }
+
+    /// The predicate behind `stop --dry-run`'s `profile_would_be_removed` and
+    /// `remove_stopped_profile`: removal only under the configured root.
+    #[test]
+    fn stopped_profile_removal_requires_the_configured_root() {
+        let root = PathBuf::from("/tmp/ffrdp-root");
+        let owned = OwnedFirefox {
+            pid: 1,
+            profile: root.join(format!("ff-rdp-profile-{}", "a".repeat(16))),
+            root: root.clone(),
+        };
+        assert_eq!(
+            stopped_profile_removal_root(&owned, Ok(root.clone())),
+            Ok(root.clone())
+        );
+        // Launched under a different FF_RDP_HOME: kept.
+        assert_eq!(
+            stopped_profile_removal_root(&owned, Ok(PathBuf::from("/tmp/other-root"))),
+            Err(ProfileCleanupSkip::OutsideProfileRoot)
+        );
+        assert_eq!(
+            stopped_profile_removal_root(&owned, Err(AppError::User("no root".into()))),
+            Err(ProfileCleanupSkip::NoProfileRoot)
+        );
+        let unmanaged = OwnedFirefox {
+            pid: 1,
+            profile: root.join("my-profile"),
+            root: root.clone(),
+        };
+        assert_eq!(
+            stopped_profile_removal_root(&unmanaged, Ok(root)),
+            Err(ProfileCleanupSkip::NotManagedBasename)
+        );
     }
 }

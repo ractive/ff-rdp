@@ -100,10 +100,14 @@ fn live_stop_all_stops_every_launched_instance() {
     assert!(ok, "{raw}");
     assert_eq!(json["results"]["would_stop"], true, "{raw}");
     assert_eq!(json["results"]["pid"], first.pid(), "{raw}");
+    assert_eq!(json["results"]["profile_would_be_removed"], true, "{raw}");
 
     let (ok, json, raw) = stop(&["--all", "--dry-run"]);
     assert!(ok, "{raw}");
     assert_eq!(json["total"], 2, "{raw}");
+    for entry in json["results"].as_array().expect("array") {
+        assert_eq!(entry["profile_would_be_removed"], true, "{raw}");
+    }
     std::thread::sleep(Duration::from_millis(300));
     assert!(
         pid_alive(first.pid()) && pid_alive(second.pid()),
