@@ -500,6 +500,9 @@ ff-rdp launch
 # Launch headless Firefox with temporary profile
 ff-rdp launch --headless --temp-profile
 
+# Launch and land on a page in one step (positional shorthand for --url)
+ff-rdp launch --headless https://example.com
+
 # Open a browser-owned diagnostic page at startup, keeping managed profile prefs
 ff-rdp launch --headless --url about:support
 # Launch waits for the debug port; use tabs to verify the requested page is ready.

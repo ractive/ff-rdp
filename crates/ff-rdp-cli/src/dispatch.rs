@@ -878,6 +878,7 @@ fn dispatch_inner(
             english_language_pack,
             restart_after_language_pack_install,
             url,
+            url_pos,
             headless,
             profile,
             temp_profile,
@@ -892,7 +893,7 @@ fn dispatch_inner(
             &commands::launch::LaunchOpts {
                 english_language_pack: english_language_pack.as_deref(),
                 restart_after_language_pack_install: *restart_after_language_pack_install,
-                url: url.as_deref(),
+                url: url.as_deref().or(url_pos.as_deref()),
                 headless: *headless,
                 profile: profile.as_deref(),
                 temp_profile: *temp_profile,

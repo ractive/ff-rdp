@@ -1124,7 +1124,7 @@ pub(crate) fn run_with_hooks(
                     if pack.is_some() {
                         "--english-language-pack"
                     } else {
-                        "--url"
+                        "A startup URL (--url or positional)"
                     }
                 )));
             }
@@ -2348,7 +2348,7 @@ mod iter_175_tests {
         assert!(matches!(err, AppError::User(_)));
         assert!(
             err.to_string()
-                .contains("--url requires a new Firefox launch")
+                .contains("A startup URL (--url or positional) requires a new Firefox launch")
         );
     }
 
