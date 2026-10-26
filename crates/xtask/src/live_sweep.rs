@@ -404,9 +404,9 @@ pub fn preexisting_instance_available() -> bool {
 /// may sit between the `#[ignore]` and the `fn`. Both are handled by scanning
 /// the whole file as one string rather than line-by-line.
 ///
-/// A test whose reason is a quarantine (see [`is_quarantine_reason`]) is never
+/// A test whose reason is a quarantine (see `is_quarantine_reason`) is never
 /// a gated test, whatever env vars the reason also names — it is reported by
-/// [`scan_quarantined`] instead.
+/// `scan_quarantined` instead.
 pub fn scan_source(src: &str, module_prefix: Option<&str>) -> Vec<GatedTest> {
     let needs_preexisting = source_needs_preexisting_instance(src);
     scan_ignored_fns(src, module_prefix)
@@ -441,16 +441,16 @@ pub fn scan_source(src: &str, module_prefix: Option<&str>) -> Vec<GatedTest> {
 /// passed on re-run. The sweep does not run such a test, but it must not treat
 /// it as a compiled ignored test the scanner dropped either: the nightly of
 /// 2026-10-26 (run 40401331279) aborted in reconciliation on exactly that.
-pub const QUARANTINE_REASON_PREFIX: &str = "flaky:";
+const QUARANTINE_REASON_PREFIX: &str = "flaky:";
 
 /// Is this `#[ignore]` reason a quarantine of a flaky test?
-pub fn is_quarantine_reason(reason: &str) -> bool {
+fn is_quarantine_reason(reason: &str) -> bool {
     reason.trim_start().starts_with(QUARANTINE_REASON_PREFIX)
 }
 
 /// Names of the quarantined (`#[ignore = "flaky: …"]`) test functions in one
 /// file's source, prefixed exactly like [`scan_source`]'s names.
-pub fn scan_quarantined(src: &str, module_prefix: Option<&str>) -> Vec<String> {
+fn scan_quarantined(src: &str, module_prefix: Option<&str>) -> Vec<String> {
     scan_ignored_fns(src, module_prefix)
         .into_iter()
         .filter(|(reason, _)| is_quarantine_reason(reason))
@@ -583,7 +583,7 @@ fn parse_fn_name(src: &str, start: usize) -> Option<String> {
 /// except for `main.rs` / `mod.rs` (which only declare `mod` lines).
 ///
 /// Returns the gated tests and, separately, the quarantined test names
-/// ([`scan_quarantined`]).
+/// (`scan_quarantined`).
 pub fn scan_modules_dir(dir: &Path) -> Result<(Vec<GatedTest>, Vec<String>)> {
     let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
         .with_context(|| format!("reading directory {}", dir.display()))?
@@ -743,9 +743,8 @@ fn filter_compiled_target(target: &mut SweepTarget, compiled_names: &[String]) -
         .gated
         .retain(|test| runnable.contains(&test.full_name));
     // Same host-cfg rule for quarantined names: report only what compiled.
-    target
-        .quarantined
-        .retain(|name| compiled_names.contains(name));
+    let compiled: std::collections::BTreeSet<&String> = compiled_names.iter().collect();
+    target.quarantined.retain(|name| compiled.contains(name));
     Ok(())
 }
 
