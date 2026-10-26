@@ -1073,6 +1073,13 @@ fn selection(scenario: Scenario, expected_actors: &[&str], expected: Expected) {
     let port = listener.local_addr().unwrap().port();
     listener.set_nonblocking(true).unwrap();
     let allow_no_cmp = scenario.allow_no_cmp;
+    // A banner that never hides waits out the whole timeout; keep that short so
+    // the timing-sensitive tests sharing this binary are not starved (Windows CI).
+    let timeout_ms = if scenario.overlay_stays {
+        "500"
+    } else {
+        "3000"
+    };
     let server = std::thread::spawn(move || {
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         let (mut stream, _) = loop {
@@ -1216,7 +1223,7 @@ fn selection(scenario: Scenario, expected_actors: &[&str], expected: Expected) {
         "--port",
         &port.to_string(),
         "--timeout",
-        "3000",
+        timeout_ms,
         "consent",
         "accept",
     ])
