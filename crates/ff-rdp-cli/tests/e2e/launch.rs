@@ -38,6 +38,61 @@ fn e2e_147_launch_url_validation_precedes_replace_and_profile_creation() {
     }
 }
 
+/// `launch <URL>` is shorthand for `launch --url <URL>`: the positional form
+/// parses (no clap "unexpected argument") and reaches the same validation, so
+/// the same rejected URLs fail as `User` errors before any side effect.
+#[test]
+fn e2e_launch_positional_url_parses_and_is_validated_like_url_flag() {
+    let home = tempfile::tempdir().unwrap();
+    let profile = home.path().join("must-not-exist");
+    for url in [
+        "https://",
+        "about:support\n",
+        "file:///private/report",
+        "javascript:void(0)",
+        "data:text/html,hi",
+    ] {
+        let output = std::process::Command::new(ff_rdp_bin())
+            .env("FF_RDP_HOME", home.path())
+            .args(["launch", "--headless", url, "--replace", "--profile"])
+            .arg(&profile)
+            .output()
+            .expect("run invalid positional startup URL");
+        assert!(!output.status.success(), "{url:?} must be rejected");
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .unwrap_or_else(|_| panic!("{url:?}: {}", support::output_note(&output)));
+        assert_eq!(json["error_type"], "User", "{url:?}: {json}");
+        assert!(!profile.exists());
+        assert!(!home.path().join(".ff-rdp").exists());
+    }
+}
+
+/// Giving the URL both positionally and via `--url` is a clap conflict.
+#[test]
+fn e2e_launch_positional_url_conflicts_with_url_flag() {
+    let home = tempfile::tempdir().unwrap();
+    let output = std::process::Command::new(ff_rdp_bin())
+        .env("FF_RDP_HOME", home.path())
+        .args([
+            "launch",
+            "--headless",
+            "https://example.com",
+            "--url",
+            "https://example.org",
+        ])
+        .output()
+        .expect("run launch with both URL forms");
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "{}",
+        support::output_note(&output)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("cannot be used with"), "{stderr}");
+    assert!(!home.path().join(".ff-rdp").exists());
+}
+
 // ---------------------------------------------------------------------------
 // CLI argument-parsing smoke tests (no Firefox needed)
 // ---------------------------------------------------------------------------

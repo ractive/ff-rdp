@@ -133,6 +133,8 @@ product work that needs design. Keep items to one line — if an item needs more
 - [ ] **research** live-state phone-width capture: resize `gBrowser.selectedBrowser` from the chrome console the way Responsive Design Mode does — [[screenshot-narrow-viewport-live-state]] (iter-296 triage)
 - [ ] **polish** clap usage errors (e.g. conflicting flags) print plain text, exit 2, instead of the JSON error envelope; needs a decision-log entry — [[screenshot-window-size-full-page]] part 2 (iter-296 triage)
 - [ ] **gap** route `file:` navigation through the parent process (`browsingContext.loadURI`) instead of refusing it — follow-up to [[navigate-file-url-crashes-firefox]] (iter-296 triage)
+- [x] **bug** `ff-rdp launch --headless <URL>` (the `home` hint's own form) failed with "unexpected argument"; `launch` now takes a positional URL as shorthand for `--url`, same validation, conflicts with `--url` (fix/launch-positional-url)
+- [ ] **polish** a `data:` startup URL (`launch --allow-unsafe-urls --url data:…`) is accepted and reported as `requested_url`, but Firefox 158 leaves the tab on about:blank (found in fix/launch-positional-url)
 
 ## Done
 

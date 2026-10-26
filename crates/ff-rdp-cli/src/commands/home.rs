@@ -646,6 +646,45 @@ mod tests {
         );
     }
 
+    /// The no-browser hints are commands `launch` actually accepts: each one,
+    /// with `<URL>` filled in, parses as a real `ff-rdp` invocation. The
+    /// `launch --headless <URL>` hint failed with "unexpected argument" until
+    /// `launch` took a positional URL.
+    #[test]
+    fn unit_launch_hints_parse_as_real_launch_invocations() {
+        use clap::Parser as _;
+        let results = build_results("ff-rdp", "0.4.3", &no_browser(), &[], None);
+        let hints: Vec<&str> = results["hints"]
+            .as_array()
+            .expect("hints array")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(
+            hints.iter().any(|h| h.contains("launch --headless <URL>")),
+            "{hints:?}"
+        );
+        for hint in hints {
+            let command = hint.split('#').next().unwrap_or(hint).trim();
+            let argv: Vec<&str> = command
+                .split_whitespace()
+                .map(|w| {
+                    if w == "<URL>" {
+                        "https://example.com"
+                    } else {
+                        w
+                    }
+                })
+                .collect();
+            let parsed = Cli::try_parse_from(&argv);
+            assert!(
+                parsed.is_ok(),
+                "hint `{hint}` does not parse: {}",
+                parsed.err().map(|e| e.to_string()).unwrap_or_default()
+            );
+        }
+    }
+
     /// A reachable browser sitting on `about:blank` is not a page — offering
     /// `click --ref` there would be offering a handle that does not exist.
     #[test]

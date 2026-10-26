@@ -1382,10 +1382,12 @@ enabled. Use --profile to reuse an existing profile, or --temp-profile to
 make the temporary profile explicit.
 
 --url URL opens an initial page through Firefox's browser startup handler,
-including about:support. This retains the temporary profile's English locale
-preferences. Launch waits only for the debug port; use tabs and page commands
-to verify that the requested document is ready. results.requested_url is present
-only when --url was supplied and means forwarded, not loaded.
+including about:support. A positional URL (`ff-rdp launch --headless URL`) is
+shorthand for --url: same validation, and giving both is an error. This retains
+the temporary profile's English locale preferences. Launch waits only for the
+debug port; use tabs and page commands to verify that the requested document is
+ready. results.requested_url is present only when a URL was supplied and means
+forwarded, not loaded.
 
 URL schemes follow the normal policy: http, https and about are allowed;
 file requires --allow-file-urls, and data/javascript require --allow-unsafe-urls.
@@ -1443,6 +1445,7 @@ FF_RDP_PROFILE_PRUNE_DAYS.
 Examples:
   ff-rdp launch                          # launch with temp profile on port 6000
   ff-rdp launch --headless               # headless mode (no visible window)
+  ff-rdp launch --headless https://example.com   # land on a page in one step
   ff-rdp launch --headless --url about:support   # browser-owned diagnostic page
   ff-rdp launch --headless               # again: exit 0, already_running: true
   ff-rdp launch --port 9222              # use a different debug port
@@ -2795,6 +2798,10 @@ pub struct LaunchArgs {
     /// Launch waits for the debug port, not for this document to finish loading.
     #[arg(long, value_name = "URL")]
     pub url: Option<String>,
+    /// Initial URL (positional shorthand for --url; same validation, cannot be
+    /// combined with --url)
+    #[arg(value_name = "URL", conflicts_with = "url")]
+    pub url_pos: Option<String>,
     /// Run Firefox in headless mode
     #[arg(long)]
     pub headless: bool,
