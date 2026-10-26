@@ -393,10 +393,12 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub allow_unsafe_urls: bool,
 
-    /// Allow file:// URL schemes for `navigate` and `perf compare` (off by
-    /// default; local files become exfiltratable via subsequent page-text /
-    /// eval / screenshot). Independent of --allow-unsafe-urls — that flag
-    /// only opens javascript:/data:, not file:.
+    /// Allow file:// URLs for `launch --url` (off by default; local files
+    /// become exfiltratable via subsequent page-text / eval / screenshot).
+    /// `navigate` and `perf compare` still refuse file: because loading it
+    /// into a tab crashes Firefox; use `launch --allow-file-urls --url
+    /// file://…`. Independent of --allow-unsafe-urls — that flag only opens
+    /// javascript:/data:, not file:.
     #[arg(long, global = true)]
     pub allow_file_urls: bool,
 
@@ -886,8 +888,10 @@ window `launch` created, which clamps below ~500px CSS width). This
 re-navigates the current tab's URL from scratch: cookies/localStorage/session
 state from the live tab are NOT carried over. No density knob here —
 `layout.css.devPixelsPerPx` was tested against this exact capture path and
-found to have zero effect on the output raster (Firefox 153.0.3). Mutually
-exclusive with --full-page.
+found to have zero effect on the output raster (Firefox 153.0.3). With
+--full-page (iter-296) only the width is passed, so the PNG is W wide and as
+tall as the whole document at that width; a page too tall for Firefox to
+allocate the surface fails with an error instead of a PNG.
 
 --color-scheme dark|light simulates `prefers-color-scheme`, and --media print
 simulates the print medium (`@media print` rules apply; --media screen is the
@@ -945,6 +949,10 @@ Dispatch modes (--dispatch):
   pointer     Full pointer+mouse event sequence (default — Radix/Headless-UI compatible)
   legacy      Mouse-event sequence only (mouseover, mouseenter, mousedown, mouseup, click)
   click-only  Synthetic .click() only (pre-iter-59 behaviour, fastest)
+
+Every mode dispatches script-made events (isTrusted: false), so the click gives
+the page no user activation: window.open, the clipboard, fullscreen and other
+calls the browser gates on a user gesture are refused.
 
 Cross-origin / iframe reach (iter-129): if the selector isn't found in the top
 document, click automatically enumerates the tab's frame targets (including
@@ -2177,7 +2185,8 @@ pub struct ScreenshotArgs {
     /// Capture the entire scrollable page (document.scrollingElement.scrollHeight)
     #[arg(long)]
     pub full_page: bool,
-    /// Restrict output to paths under this directory (rejects path traversal)
+    /// Restrict output to paths under this directory (rejects path traversal);
+    /// without --output, the auto-named file is written inside it
     #[arg(long, value_name = "DIR")]
     pub output_root: Option<std::path::PathBuf>,
     /// Attempt to receive the screenshot via a bulk-frame streaming path.
@@ -2199,7 +2208,9 @@ pub struct ScreenshotArgs {
     /// session state from the live tab are NOT carried over. No density knob:
     /// `layout.css.devPixelsPerPx` was tested against this exact capture path
     /// and found to have zero effect on the output raster (Firefox 153.0.3).
-    #[arg(long, value_name = "WxH", conflicts_with = "full_page")]
+    /// With `--full-page`, only the width is used and the PNG spans the whole
+    /// document.
+    #[arg(long, value_name = "WxH")]
     pub window_size: Option<String>,
     /// Capture the current tab's URL laid out at exactly `WxH` CSS pixels
     /// (e.g. `390x844` for a phone), on the live tab: the page is loaded into

@@ -119,6 +119,20 @@ product work that needs design. Keep items to one line — if an item needs more
 - [ ] **polish** `run` has no `page_text` verb ("unknown variant") (session 64 verification N5)
 - [x] **polish** a never-settling Promise (`eval --timeout 4000 'new Promise(()=>{})'`) exits rc 5, which `eval --help` does not list (session 64 verification N5) (fix/easy-batch-2: documented in `eval --help`; no README exit-code table exists)
 - [ ] **polish** `--with-page` on Firefox's error page (`click body --with-page` on `about:certerror`) spends the whole `--timeout` collecting, then reports `page_ready:false` (found in #308)
+- [x] **wrong** `a11y summary` reported every `<header>`/`<footer>` as banner/contentinfo, including ones inside `article`/`section`/`nav` — [[a11y-summary-banner-for-nested-header]] (#347)
+- [x] **wrong** `a11y summary` / `--with-page` grouped headings by level instead of document order — [[a11y-summary-headings-not-in-document-order]] (#347)
+- [x] **wrong** `navigate --with-page` `page.title` was Readability's `og:title`; now `document.title`, Readability's in `page.reader_title` — [[navigate-with-page-title-is-og-title]] (#347)
+- [x] **bug** `navigate --allow-file-urls file://…` crashed Firefox (IPC FatalError); content navigation to `file:` is refused and points at `launch --allow-file-urls --url` — [[navigate-file-url-crashes-firefox]] (#347)
+- [x] **bug** `launch` sets `MOZ_CRASHREPORTER_DISABLE=1` so a crashing headless Firefox opens no crash-reporter dialog (iter-296 triage) (#347)
+- [x] **wrong** `screenshot --output-root DIR` without `-o` wrote to the cwd and failed as "escapes --output-root" — [[screenshot-output-root-default-path]] (#347)
+- [x] **wrong** `screenshot --full-page` moved content under a sticky header and narrowed it (freeze used `absolute`) — [[screenshot-full-page-layout-shift]] (#347)
+- [x] **gap** `screenshot --window-size WxH --full-page`: full-page capture at a true mobile width — [[screenshot-window-size-full-page]] part 1 (#347)
+- [x] **polish** `launch`'s "exited immediately" error names how to see Firefox's stderr; the window-size exit does not reproduce — [[launch-window-size-exits]] (#347)
+- [x] **polish** `click --help` says the click gives the page no user activation — [[click-without-user-activation]] interim (#347)
+- [ ] **gap** trusted input for `click` (user activation for `window.open`, clipboard, fullscreen), e.g. WebDriver BiDi `input.performActions` or a parent-process `sendMouseEvent` — [[click-without-user-activation]] (iter-296 triage)
+- [ ] **research** live-state phone-width capture: resize `gBrowser.selectedBrowser` from the chrome console the way Responsive Design Mode does — [[screenshot-narrow-viewport-live-state]] (iter-296 triage)
+- [ ] **polish** clap usage errors (e.g. conflicting flags) print plain text, exit 2, instead of the JSON error envelope; needs a decision-log entry — [[screenshot-window-size-full-page]] part 2 (iter-296 triage)
+- [ ] **gap** route `file:` navigation through the parent process (`browsingContext.loadURI`) instead of refusing it — follow-up to [[navigate-file-url-crashes-firefox]] (iter-296 triage)
 
 ## Done
 

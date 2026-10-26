@@ -65,6 +65,60 @@ fn e2e_147_privileged_navigation_rejected_before_connect() {
     }
 }
 
+/// iter-296: content navigation to a file: URL crashes Firefox 158 (IPC
+/// FatalError in the parent), so it is refused before any connection even
+/// with --allow-file-urls; the error points at `launch --url`.
+#[test]
+fn e2e_296_file_navigation_rejected_before_connect() {
+    use std::net::TcpListener;
+    let blocked = "file:///etc/hosts";
+    let commands = [
+        vec!["navigate", "--allow-file-urls", blocked],
+        vec!["navigate", "--allow-file-urls", blocked, "--with-page"],
+        vec!["navigate", "--allow-file-urls", blocked, "--with-network"],
+        vec![
+            "perf",
+            "compare",
+            "--allow-file-urls",
+            "https://example.com/",
+            blocked,
+        ],
+    ];
+    for args in commands {
+        let home = tempfile::tempdir().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let output = std::process::Command::new(ff_rdp_bin())
+            .env("FF_RDP_HOME", home.path())
+            .args([
+                "--host",
+                "127.0.0.1",
+                "--port",
+                &listener.local_addr().unwrap().port().to_string(),
+                "--timeout",
+                "100",
+            ])
+            .args(&args)
+            .output()
+            .expect("run rejected navigation");
+        assert!(!output.status.success(), "{args:?}");
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(json["error_type"], "User", "{args:?}");
+        assert!(
+            json["error"]
+                .as_str()
+                .unwrap()
+                .contains("launch --allow-file-urls --url"),
+            "{args:?}: {json}"
+        );
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock,
+            "connection attempted: {args:?}"
+        );
+    }
+}
+
 fn base_args(port: u16) -> Vec<String> {
     vec![
         "--host".to_owned(),

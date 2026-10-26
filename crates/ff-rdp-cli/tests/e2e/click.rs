@@ -4,6 +4,23 @@ fn ff_rdp_bin() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_ff-rdp"))
 }
 
+/// iter-296: `click --help` must say the click gives the page no user
+/// activation (script-made events), so callers know why `window.open`,
+/// clipboard and fullscreen calls are refused.
+#[test]
+fn click_help_states_no_user_activation() {
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(["click", "--help"])
+        .output()
+        .expect("run click --help");
+    assert!(output.status.success());
+    let help = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        help.contains("no user activation"),
+        "click --help must mention user activation:\n{help}"
+    );
+}
+
 fn base_args(port: u16) -> Vec<String> {
     vec![
         "--host".to_owned(),

@@ -288,7 +288,7 @@ fn build_capture_result(
             "bytes": png_bytes.len(),
         })
     } else {
-        let dest = resolve_output_path(opts.output_path)
+        let dest = resolve_output_path(opts.output_path, opts.output_root)
             .map_err(|e| AppError::from(anyhow::anyhow!("screenshot: {e}")))?;
 
         if let Some(root) = opts.output_root {
@@ -381,8 +381,11 @@ fn run_batch_window_size(
     cmd.arg("-profile").arg(scratch.path());
     cmd.arg("--headless");
     cmd.arg("--screenshot").arg(&capture_path);
-    cmd.arg(format!("--window-size={width},{height}"));
+    cmd.arg(batch_window_size_arg(width, height, opts.full_page));
     cmd.arg(&url);
+    // iter-296: a batch capture that crashes (e.g. a surface too large to
+    // allocate) must not open a crash-reporter dialog on the desktop.
+    cmd.env("MOZ_CRASHREPORTER_DISABLE", "1");
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::null());
     cmd.stderr(std::process::Stdio::piped());
@@ -424,30 +427,52 @@ fn run_batch_window_size(
         }
     };
 
+    let mut stderr_text = String::new();
+    if let Some(mut stderr) = child.stderr.take() {
+        let _ = stderr.read_to_string(&mut stderr_text);
+    }
+    let stderr_text = stderr_text.trim();
+    let detail = if stderr_text.is_empty() {
+        String::new()
+    } else {
+        format!(": {stderr_text}")
+    };
+
     if !status.success() {
-        let mut stderr_text = String::new();
-        if let Some(mut stderr) = child.stderr.take() {
-            let _ = stderr.read_to_string(&mut stderr_text);
-        }
-        let stderr_text = stderr_text.trim();
-        let detail = if stderr_text.is_empty() {
-            String::new()
-        } else {
-            format!(": {stderr_text}")
-        };
         return Err(AppError::User(format!(
             "screenshot: batch --window-size capture exited with {status}{detail}"
         )));
     }
 
-    let png_bytes = std::fs::read(&capture_path).map_err(|e| {
-        AppError::User(format!(
-            "screenshot: batch capture exited successfully but no PNG was produced at {}: {e}",
-            capture_path.display()
-        ))
-    })?;
+    let png_bytes = std::fs::read(&capture_path)
+        .map_err(|e| AppError::User(missing_batch_png_message(opts.full_page, &e, &detail)))?;
 
     build_capture_result(opts, &png_bytes, &[("capture", json!("batch-window-size"))])
+}
+
+/// The `--window-size` argument for the batch capture. Firefox's batch mode
+/// captures the full document height when given a width only, which is what
+/// `--full-page` asks for.
+fn batch_window_size_arg(width: u32, height: u32, full_page: bool) -> String {
+    if full_page {
+        format!("--window-size={width}")
+    } else {
+        format!("--window-size={width},{height}")
+    }
+}
+
+/// The error for a batch capture that exited 0 without writing its PNG.
+/// Firefox does that when the full-page surface is too large to allocate
+/// ("Failed to allocate a surface" on very tall pages).
+fn missing_batch_png_message(full_page: bool, error: &std::io::Error, stderr: &str) -> String {
+    let cause = if full_page {
+        "the page is probably too tall for a full-page capture at this width (Firefox could not \
+         allocate the surface); capture without --full-page, or use --full-page without \
+         --window-size"
+    } else {
+        "Firefox wrote no PNG"
+    };
+    format!("screenshot: batch --window-size capture produced no PNG ({error}): {cause}{stderr}")
 }
 
 /// Resolve the current tab's URL over the live RDP connection so the batch
@@ -780,9 +805,27 @@ fn freeze_fixed_and_sticky_js() -> String {
     var rect = el.getBoundingClientRect();
     el.setAttribute('{FROZEN_MARKER_ATTR}', '1');
     el.setAttribute('{FROZEN_STYLE_ATTR}', el.getAttribute('style') || '');
-    el.style.position = 'absolute';
-    el.style.top = (rect.top + window.scrollY) + 'px';
-    el.style.left = (rect.left + window.scrollX) + 'px';
+    if (cs.position === 'sticky') {{
+      // iter-296: stay in flow at the static position. `absolute` took the
+      // element out of flow (content jumped up under it) and shrink-wrapped
+      // it (a full-width header narrowed).
+      el.style.position = 'relative';
+      el.style.top = 'auto';
+      el.style.bottom = 'auto';
+      el.style.left = 'auto';
+      el.style.right = 'auto';
+    }} else {{
+      // Fixed is already out of flow; pin the box so `absolute` does not
+      // re-resolve its size against a different containing block.
+      el.style.position = 'absolute';
+      el.style.top = (rect.top + window.scrollY) + 'px';
+      el.style.left = (rect.left + window.scrollX) + 'px';
+      el.style.right = 'auto';
+      el.style.bottom = 'auto';
+      el.style.boxSizing = 'border-box';
+      el.style.width = rect.width + 'px';
+      el.style.height = rect.height + 'px';
+    }}
     frozen++;
   }}
   return JSON.stringify({{frozen: frozen}});
@@ -950,8 +993,13 @@ fn screenshot_via_process_drawsnapshot_fallback(
 /// Determine the output file path.
 ///
 /// If the caller provided an explicit path, use it.  Otherwise generate a
-/// timestamped filename in the current directory.
-fn resolve_output_path(output_path: Option<&str>) -> anyhow::Result<PathBuf> {
+/// timestamped filename inside `output_root` when one is set (iter-296: a
+/// cwd-relative default always "escaped" the root), else in the current
+/// directory.
+fn resolve_output_path(
+    output_path: Option<&str>,
+    output_root: Option<&std::path::Path>,
+) -> anyhow::Result<PathBuf> {
     if let Some(p) = output_path {
         return Ok(PathBuf::from(p));
     }
@@ -961,7 +1009,8 @@ fn resolve_output_path(output_path: Option<&str>) -> anyhow::Result<PathBuf> {
         .context("system clock is before UNIX epoch")?
         .as_millis();
 
-    Ok(PathBuf::from(format!("screenshot-{ts}.png")))
+    let name = format!("screenshot-{ts}.png");
+    Ok(output_root.map_or_else(|| PathBuf::from(&name), |root| root.join(&name)))
 }
 
 /// Extract width and height from a PNG file's IHDR chunk.
@@ -1106,13 +1155,62 @@ mod tests {
 
     #[test]
     fn resolve_output_path_explicit() {
-        let path = resolve_output_path(Some("/tmp/test.png")).unwrap();
+        let path = resolve_output_path(Some("/tmp/test.png"), None).unwrap();
+        assert_eq!(path, PathBuf::from("/tmp/test.png"));
+        // An explicit -o wins over --output-root (the root only bounds it).
+        let root = std::path::Path::new("/srv/shots");
+        let path = resolve_output_path(Some("/tmp/test.png"), Some(root)).unwrap();
         assert_eq!(path, PathBuf::from("/tmp/test.png"));
     }
 
     #[test]
+    fn batch_window_size_full_page_passes_width_only() {
+        assert_eq!(
+            batch_window_size_arg(390, 844, false),
+            "--window-size=390,844"
+        );
+        assert_eq!(batch_window_size_arg(390, 844, true), "--window-size=390");
+    }
+
+    #[test]
+    fn missing_batch_png_message_names_the_full_page_cause() {
+        let err = std::io::Error::from(std::io::ErrorKind::NotFound);
+        let full = missing_batch_png_message(true, &err, ": Failed to allocate a surface");
+        assert!(full.contains("too tall"), "{full}");
+        assert!(full.contains("Failed to allocate a surface"), "{full}");
+        let plain = missing_batch_png_message(false, &err, "");
+        assert!(!plain.contains("too tall"), "{plain}");
+    }
+
+    #[test]
+    fn clap_window_size_composes_with_full_page() {
+        let cli = Cli::try_parse_from([
+            "ff-rdp",
+            "screenshot",
+            "--window-size",
+            "390x844",
+            "--full-page",
+        ])
+        .expect("--window-size --full-page must parse");
+        let Command::Screenshot(args) = cli.command else {
+            panic!("expected screenshot");
+        };
+        assert!(args.full_page);
+        assert_eq!(args.window_size.as_deref(), Some("390x844"));
+    }
+
+    #[test]
+    fn resolve_output_path_default_lands_in_output_root() {
+        let root = tempfile::tempdir().unwrap();
+        let path = resolve_output_path(None, Some(root.path())).unwrap();
+        assert_eq!(path.parent(), Some(root.path()));
+        crate::util::safe_io::ensure_within_root(&path, root.path())
+            .expect("the default name must not escape --output-root");
+    }
+
+    #[test]
     fn resolve_output_path_auto_timestamped() {
-        let path = resolve_output_path(None).unwrap();
+        let path = resolve_output_path(None, None).unwrap();
         let name = path.to_string_lossy();
         assert!(
             name.starts_with("screenshot-")
@@ -1188,6 +1286,9 @@ mod tests {
         assert!(js.contains("cs.position !== 'sticky'"));
         assert!(js.contains("getBoundingClientRect"));
         assert!(js.contains("position = 'absolute'"));
+        // iter-296: sticky stays in flow (relative), fixed keeps its box size.
+        assert!(js.contains("position = 'relative'"));
+        assert!(js.contains("style.width = rect.width"));
         assert!(js.contains(FROZEN_MARKER_ATTR));
         assert!(js.contains(FROZEN_STYLE_ATTR));
     }

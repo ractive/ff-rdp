@@ -53,12 +53,22 @@ pub fn validate_content_navigation_url(
     validate_url_with_opts(url, allow_file_urls, allow_unsafe_urls)?;
     // URL parsing removes query/fragment and normalizes the scheme. We only
     // restrict the demonstrated module, not about:blank/neterror/reader.
-    if let Ok(parsed) = url::Url::parse(url)
+    let parsed = url::Url::parse(url).ok();
+    if let Some(parsed) = &parsed
         && parsed.scheme() == "about"
         && parsed.path().eq_ignore_ascii_case("support")
     {
         return Err(AppError::User(
             "about:support cannot be opened through content navigation; Firefox can crash. Start a new owned instance with `ff-rdp launch --url about:support` instead".to_owned(),
+        ));
+    }
+    // A content-process `navigateTo` to file: kills the whole browser on
+    // Firefox 158 ("IPC FatalError in the parent process: Illegal load attempt
+    // of file: URL from webIsolated"). Only reached with --allow-file-urls,
+    // since validate_url_with_opts already refused it otherwise.
+    if parsed.as_ref().map(url::Url::scheme) == Some(FILE_SCHEME) {
+        return Err(AppError::User(
+            "file: URLs cannot be opened through content navigation; Firefox crashes (IPC FatalError: illegal load of a file: URL from a web content process). Start a new owned instance with `ff-rdp launch --allow-file-urls --url file://…` instead".to_owned(),
         ));
     }
     Ok(())
@@ -142,6 +152,27 @@ mod tests {
             "https://example.com/",
         ] {
             validate_content_navigation_url(url, false, false).unwrap();
+        }
+    }
+
+    #[test]
+    fn file_url_content_navigation_refused_even_when_opted_in() {
+        for url in [
+            "file:///etc/hosts",
+            "FILE:///tmp/x.html",
+            "file://localhost/tmp/a",
+        ] {
+            let err = validate_content_navigation_url(url, true, true).unwrap_err();
+            assert!(matches!(err, AppError::User(_)));
+            assert!(
+                err.to_string().contains("launch --allow-file-urls --url"),
+                "{err}"
+            );
+            // Without the opt-in, the scheme policy error still comes first.
+            let err = validate_content_navigation_url(url, false, false).unwrap_err();
+            assert!(err.to_string().contains("--allow-file-urls"), "{err}");
+            // Startup URLs keep working through the privileged path.
+            validate_startup_url_with_opts(url, true, false).unwrap();
         }
     }
 

@@ -216,12 +216,13 @@ const PAGE_VIEW_JS_TEMPLATE: &str = r#"(function() {
 
 __LANDMARKS_BLOCK__
 
-  // Headings
-  for (var level = 1; level <= 6; level++) {
-    var headings = document.querySelectorAll('h' + level);
-    for (var j = 0; j < headings.length; j++) {
-      result.headings[result.headings.length] = {level: level, text: __ffrdpAccName(headings[j])};
-    }
+  // Headings, in document order (iter-296): one pass, level from the tag.
+  var headings = document.querySelectorAll('h1,h2,h3,h4,h5,h6');
+  for (var j = 0; j < headings.length; j++) {
+    result.headings[result.headings.length] = {
+      level: Number(headings[j].tagName.charAt(1)),
+      text: __ffrdpAccName(headings[j])
+    };
   }
 
   // Interactive: links
@@ -274,10 +275,17 @@ const LANDMARKS_BLOCK_JS: &str = r#"
   }
   var landmarkTags = ['HEADER','NAV','MAIN','FOOTER','ASIDE'];
   var landmarkTagRoles = ['banner','navigation','main','contentinfo','complementary'];
+  // HTML-AAM: <header>/<footer> are banner/contentinfo only when they are not
+  // scoped to a sectioning element (or its ARIA role equivalent).
+  var sectioningScope = 'article,aside,main,nav,section,[role="article"],' +
+    '[role="complementary"],[role="main"],[role="navigation"],[role="region"]';
   for (var lt = 0; lt < landmarkTags.length; lt++) {
     var tagEls = document.getElementsByTagName(landmarkTags[lt]);
     for (var ti = 0; ti < tagEls.length; ti++) {
       if (tagEls[ti].getAttribute('role')) { continue; }
+      if ((landmarkTags[lt] === 'HEADER' || landmarkTags[lt] === 'FOOTER') &&
+          tagEls[ti].parentElement &&
+          tagEls[ti].parentElement.closest(sectioningScope)) { continue; }
       result.landmarks[result.landmarks.length] = {
         role: landmarkTagRoles[lt],
         label: tagEls[ti].getAttribute('aria-label') || '',
@@ -303,6 +311,8 @@ const LANDMARKS_BLOCK_JS: &str = r#"
 ///   most; `text_chars` always reports the full article length so Rust can say
 ///   whether the excerpt was cut.
 const READER_BLOCK_JS: &str = r#"
+  // iter-296: page.title is the document's own title, Readability or not.
+  result.title = String(document.title || '');
   var H = null;
   try { H = window.__HANDLE__; } catch (e) { H = null; }
   if (!H || H.v !== __HANDLE_VERSION__ || typeof H.Readability !== 'function') {
@@ -338,7 +348,8 @@ const READER_BLOCK_JS: &str = r#"
       ? article.content : null;
     if (contentRoot) {
       result.source = 'readability';
-      if (article.title) { result.title = String(article.title); }
+      // Readability prefers og:title; keep it apart from document.title.
+      if (article.title) { result.reader_title = String(article.title); }
       var marked = contentRoot.querySelectorAll('[' + STAMP + ']');
       var inContent = {};
       for (var mi = 0; mi < marked.length; mi++) {

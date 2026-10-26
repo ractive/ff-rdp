@@ -425,6 +425,11 @@ fn browser_command(
     cmd.env("LANG", "en_US.UTF-8");
     cmd.env("LC_ALL", "en_US.UTF-8");
 
+    // iter-296: a crashing instance — even a headless one — otherwise opens
+    // a crash-reporter dialog on the user's desktop. ff-rdp reports the exit
+    // itself; nobody is there to submit the report.
+    cmd.env("MOZ_CRASHREPORTER_DISABLE", "1");
+
     // Detach from the terminal so the spawned browser doesn't inherit our
     // stdin/stdout. Capture stderr so we can surface early crash messages.
     cmd.stdin(std::process::Stdio::null());
@@ -463,6 +468,12 @@ fn report_failed_profile_cleanup(
         None => error,
     }
 }
+
+/// How to see the startup stderr that `StderrCapture::summary` redacts: the
+/// `launch_startup` trace logs it at debug level, unredacted only with the
+/// raw-trace opt-in.
+const STDERR_HINT: &str =
+    "to see Firefox's stderr, rerun with --log-level debug and FF_RDP_TRACE_RAW=1";
 
 /// A spawned browser remains this command's responsibility until its launch
 /// result has been delivered. Never remove its profile while it may still run.
@@ -1249,7 +1260,9 @@ pub(crate) fn run_with_hooks(
     match observation.initial_interval() {
         Ok(Some(status)) => {
             observation.terminal("initial_interval", "natural_exit");
-            let error = AppError::User(format!("Firefox exited immediately with {status}"));
+            let error = AppError::User(format!(
+                "Firefox exited immediately with {status}; {STDERR_HINT}"
+            ));
             Err(pending.fail(error))
         }
         Ok(None) => {
@@ -1447,6 +1460,14 @@ mod tests {
         assert_eq!(
             default.get_envs().collect::<Vec<_>>(),
             with_url.get_envs().collect::<Vec<_>>()
+        );
+        // iter-296: no crash-reporter dialog from a launched instance.
+        assert!(
+            default
+                .get_envs()
+                .any(|(k, v)| k == "MOZ_CRASHREPORTER_DISABLE"
+                    && v == Some(std::ffi::OsStr::new("1"))),
+            "launch must disable the crash reporter"
         );
         for profile in [&default_profile, &url_profile] {
             assert_eq!(
@@ -2574,7 +2595,8 @@ mod iter_175_tests {
             .expect_err("a browser that exits immediately must fail the launch");
         assert!(
             err.to_error_json()["error_type"] == "User"
-                && err.to_string().contains("exited immediately"),
+                && err.to_string().contains("exited immediately")
+                && err.to_string().contains("FF_RDP_TRACE_RAW=1"),
             "expected the immediate-exit message, got {err:?}"
         );
 

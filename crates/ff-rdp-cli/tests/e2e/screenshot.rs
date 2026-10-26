@@ -181,6 +181,46 @@ fn screenshot_auto_names_file_when_no_output_given() {
     let _ = std::fs::remove_dir_all(&work_dir);
 }
 
+/// iter-296: `--output-root DIR` without `-o` writes the auto-named file
+/// inside DIR (it used to land in the cwd and fail as "escapes --output-root").
+#[test]
+fn screenshot_output_root_without_output_writes_inside_root() {
+    let server = screenshot_server();
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let work_dir = unique_temp_dir("screenshot_root_cwd");
+    let root = unique_temp_dir("screenshot_root");
+
+    let mut args = base_args(port);
+    args.extend([
+        "screenshot".to_owned(),
+        "--output-root".to_owned(),
+        root.to_string_lossy().into_owned(),
+    ]);
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .current_dir(&work_dir)
+        .output()
+        .expect("failed to spawn ff-rdp");
+    handle.join().unwrap();
+
+    assert!(output.status.success(), "{}", support::output_note(&output));
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be valid JSON");
+    let path = PathBuf::from(json["results"]["path"].as_str().unwrap_or(""));
+    assert!(path.exists(), "PNG should exist at {}", path.display());
+    assert_eq!(
+        path.parent().map(std::path::Path::to_path_buf),
+        Some(root.canonicalize().unwrap()),
+        "default file must land in --output-root"
+    );
+    assert_eq!(std::fs::read_dir(&work_dir).unwrap().count(), 0);
+
+    let _ = std::fs::remove_dir_all(&work_dir);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 // ---------------------------------------------------------------------------
 // --base64 mode: returns PNG as base64 in JSON, no file written
 // ---------------------------------------------------------------------------
@@ -472,27 +512,42 @@ fn screenshot_help_mentions_window_size_and_resize_to() {
     );
 }
 
-/// `--window-size` and `--full-page` are mutually exclusive (batch capture
-/// vs. the live full-scroll capture) — clap rejects the combination before
-/// connecting.
+/// iter-296: `--window-size` composes with `--full-page` (a width-only batch
+/// capture). clap no longer rejects the pair; with no Firefox listening the
+/// command gets as far as connecting and fails with the JSON envelope.
 #[test]
-fn screenshot_window_size_conflicts_with_full_page() {
+fn screenshot_window_size_composes_with_full_page() {
+    let port = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    let home = tempfile::tempdir().unwrap();
     let output = std::process::Command::new(ff_rdp_bin())
+        .env("FF_RDP_HOME", home.path())
+        .args(["--host", "127.0.0.1", "--port", &port.to_string()])
+        .args(["--timeout", "500"])
         .args(["screenshot", "--window-size", "390x844", "--full-page"])
         .output()
         .expect("failed to spawn ff-rdp");
-    assert!(
-        !output.status.success(),
-        "expected failure when both --window-size and --full-page are given"
-    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("window-size")
-            || stderr.contains("full-page")
-            || stderr.contains("cannot be used with"),
-        "expected conflict error, got: {stderr} ({})",
+        !stderr.contains("cannot be used with"),
+        "the pair must parse, got: {stderr} ({})",
         support::output_note(&output)
     );
+    assert_ne!(
+        output.status.code(),
+        Some(2),
+        "{}",
+        support::output_note(&output)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|e| {
+        panic!(
+            "JSON envelope expected ({e}): {}",
+            support::output_note(&output)
+        )
+    });
+    assert!(json.get("error").is_some(), "{json}");
 }
 
 /// `screenshot` has no `--dppx` flag — it was dropped (see the `window_size`
