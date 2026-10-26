@@ -419,7 +419,7 @@ fn late_insert_fixture() -> HashMap<String, FixtureRoute> {
 /// appears once an in-flight request lands still resolves — the short-circuit
 /// is an addition on top of the poll, not a replacement for it.
 #[test]
-#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+#[ignore = "flaky: see kb/backlog.md"]
 fn live_237_late_selector_behind_a_request_still_clicks() {
     if !live_tests_enabled() {
         eprintln!("live_237_late_selector_behind_a_request_still_clicks: set FF_RDP_LIVE_TESTS=1");
