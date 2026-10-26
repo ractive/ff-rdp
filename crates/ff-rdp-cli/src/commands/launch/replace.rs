@@ -1,18 +1,22 @@
-//! `launch --replace`: stop the Firefox ff-rdp launched on a port so a fresh
-//! one can take it.
+//! Stopping a Firefox ff-rdp launched: the shared path behind
+//! `launch --replace` and `ff-rdp stop`.
 //!
-//! The only ownership proof is the owner-PID marker `launch` writes into the
-//! managed profile it creates (iter-110 Theme A0): the process listening on
-//! the port must be named by such a marker, or nothing is signalled. A Firefox
-//! the user started by hand — or one launched with a `--profile` directory the
-//! user owns, which never receives a marker — is refused.
+//! The only ownership proof is the owner-marker pair `launch` writes into the
+//! managed profile it creates (iter-110 Theme A0, iter-171): the process must
+//! be named by such a marker under a trusted root, its recorded start token
+//! must match, and it must be running a Firefox executable — see
+//! [`crate::util::profile_dir::authorize_kill`]. Anything else is refused: a
+//! Firefox the user started by hand, one launched with a `--profile`
+//! directory the user owns (which never receives a marker), or a recycled PID.
 
 use std::time::Duration;
 
 use crate::error::AppError;
 use crate::util::process::{self, Pgid};
+use crate::util::profile_dir::{self, KillRefusal, OwnedFirefox};
 
-/// Maximum time to wait for a port to become free after stopping Firefox.
+/// Maximum time to wait for a port to become free (or a PID to exit) after
+/// stopping Firefox.
 ///
 /// If the port is still in use after this bound, the tree kill runs before
 /// declaring failure.
@@ -29,12 +33,33 @@ pub(crate) struct StopOutcome {
     pub(crate) pid: Option<u32>,
 }
 
+/// The error for a port held by a process ff-rdp will not signal (rule 7:
+/// refusal is an error, and it names the PID and process).
+pub(crate) fn refusal_error(
+    port: u16,
+    process_name: &str,
+    pid: u32,
+    refusal: &KillRefusal,
+    advice: &str,
+) -> AppError {
+    let who = if process_name.is_empty() {
+        format!("PID {pid}")
+    } else {
+        format!("{process_name} (PID {pid})")
+    };
+    AppError::User(format!(
+        "port {port} is in use by {who}, which ff-rdp did not launch: {}. Refusing to stop a \
+         process ff-rdp does not own — {advice}",
+        refusal.reason()
+    ))
+}
+
 /// Stop the ff-rdp-launched Firefox listening on `port`.
 ///
 /// Returns the [`StopOutcome`] if the port is free afterwards, `Err` if it is
 /// still in use or its listener is not provably ours. Never prints.
 pub(crate) fn stop_prior_instance(port: u16) -> Result<StopOutcome, AppError> {
-    let Ok(Some(owner)) = crate::port_owner::find_listener(port) else {
+    let Ok(Some(listener)) = crate::port_owner::find_listener(port) else {
         // Nothing we could identify is listening — the port may already be free.
         if !process::wait_for_port_closed(port, PORT_FREE_WAIT_BOUND) {
             return Err(AppError::User(format!(
@@ -50,37 +75,53 @@ pub(crate) fn stop_prior_instance(port: u16) -> Result<StopOutcome, AppError> {
     // iter-110 Theme A0: never signal a process we did not spawn. The
     // port-owner lookup finds whatever is *listening on the RDP port* — which
     // may be a Firefox the user launched by hand on ff-rdp's default port
-    // 6000. Killing it (the 2026-07-09 incident) is never acceptable. Fails
-    // closed: no marker ⇒ no kill (see `pid_is_ff_rdp_spawned`).
-    if !crate::util::profile_dir::pid_is_ff_rdp_spawned(owner.pid) {
-        return Err(AppError::User(format!(
-            "port {port} is in use by {} (PID {}), which ff-rdp did not launch \
-             (no owner-PID marker). Refusing to stop a process ff-rdp does not own — \
-             stop it yourself, or pass --debug-port to use a different port.",
-            owner.process_name, owner.pid
-        )));
-    }
-    // iter-100 Theme D: re-verify port ownership immediately before each
-    // signal. `find_listener` resolved the PID at time T; between T and the
-    // signal the process may have exited and the OS may have recycled the PID
-    // onto an unrelated process.
-    let (_, port_free, escalation_msg) = stop_pid_with_full_escalation(
-        owner.pid,
-        port,
-        &EscalationHooks::real(),
-        Some(port_still_owned_by),
-    );
-    if !port_free {
-        return Err(AppError::User(escalation_msg));
+    // 6000. Killing it (the 2026-07-09 incident) is never acceptable.
+    let owned = profile_dir::authorize_kill(listener.pid).map_err(|refusal| {
+        refusal_error(
+            port,
+            &listener.process_name,
+            listener.pid,
+            &refusal,
+            "stop it yourself, or pass --debug-port to use a different port.",
+        )
+    })?;
+    let report = stop_owned_firefox(&owned, Some(port));
+    if !report.released {
+        return Err(AppError::User(report.message));
     }
     Ok(StopOutcome {
         stopped: true,
-        pid: Some(owner.pid),
+        pid: Some(owned.pid),
     })
 }
 
-/// [`OwnershipCheck`] for the port-owner stop path: does `pid` still own
-/// `port`?
+/// What [`stop_owned_firefox`] achieved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StopReport {
+    /// The PID is no longer alive.
+    pub(crate) exited: bool,
+    /// The resource the stop waited on was released: the port when one was
+    /// given, otherwise the PID itself.
+    pub(crate) released: bool,
+    /// Why the stop failed; empty when `released`.
+    pub(crate) message: String,
+}
+
+/// Run the SIGTERM → 2 s → SIGKILL ladder against a Firefox whose ownership
+/// [`profile_dir::authorize_kill`] has just proved.
+///
+/// Ownership is re-proved before **every** signal (rule 6): the marker and
+/// start token through `authorize_kill`, and — when `port` is given — that
+/// the PID still owns the port. A PID recycled between the check and a signal
+/// therefore never receives one.
+pub(crate) fn stop_owned_firefox(owned: &OwnedFirefox, port: Option<u16>) -> StopReport {
+    let reverify = move |pid: u32| {
+        profile_dir::authorize_kill(pid).is_ok() && port.is_none_or(|p| port_still_owned_by(p, pid))
+    };
+    stop_pid_with_full_escalation(owned.pid, port, &EscalationHooks::real(), &reverify)
+}
+
+/// Does `pid` still own `port`?
 fn port_still_owned_by(port: u16, pid: u32) -> bool {
     matches!(
         crate::port_owner::find_listener(port),
@@ -88,29 +129,35 @@ fn port_still_owned_by(port: u16, pid: u32) -> bool {
     )
 }
 
-/// Format the post-escalation "port still listening" error message.
+/// Format the post-escalation "still running" error message.
 ///
 /// `pgid_killed` indicates whether the pgid-level kill step was attempted.
-fn port_still_listening_after_escalation_msg(pid: u32, port: u16, pgid_killed: bool) -> String {
+fn still_held_after_escalation_msg(pid: u32, port: Option<u16>, pgid_killed: bool) -> String {
     #[cfg(unix)]
     let escalation_detail = if pgid_killed {
-        "after SIGTERM+SIGKILL on pid + SIGKILL on pgid, port still listening"
+        "after SIGTERM+SIGKILL on pid + SIGKILL on pgid"
     } else {
-        "after SIGTERM+SIGKILL escalation (pgid kill skipped), port still listening"
+        "after SIGTERM+SIGKILL escalation (pgid kill skipped)"
     };
     #[cfg(not(unix))]
     let escalation_detail = if pgid_killed {
-        "after TerminateProcess + taskkill /T on pid tree, port still listening"
+        "after TerminateProcess + taskkill /T on pid tree"
     } else {
-        "after TerminateProcess escalation (tree kill skipped), port still listening"
+        "after TerminateProcess escalation (tree kill skipped)"
     };
-    format!(
-        "stopped Firefox (pid {pid}) but port {port} is still listening after {} s \
-         ({escalation_detail}) — \
-         another process may be holding it. Run `ff-rdp doctor` or \
-         `lsof -i :{port}` to investigate.",
-        PORT_FREE_WAIT_BOUND.as_secs()
-    )
+    let secs = PORT_FREE_WAIT_BOUND.as_secs();
+    match port {
+        Some(port) => format!(
+            "stopped Firefox (pid {pid}) but port {port} is still listening after {secs} s \
+             ({escalation_detail}, port still listening) — another process may be holding it. \
+             Run `ff-rdp doctor` or `lsof -i :{port}` to investigate."
+        ),
+        None => format!(
+            "Firefox (pid {pid}) is still running after {secs} s ({escalation_detail}) — \
+             ff-rdp stopped signalling it once its ownership could no longer be confirmed, or \
+             it ignored SIGKILL. Check it with `ps -p {pid}`."
+        ),
+    }
 }
 
 /// The injectable operations used by [`stop_pid_with_full_escalation`]: a
@@ -119,12 +166,13 @@ fn port_still_listening_after_escalation_msg(pid: u32, port: u16, pgid_killed: b
 struct EscalationHooks {
     /// Returns `true` if the process with `pid` is currently alive.
     is_alive: fn(u32) -> bool,
-    /// Send SIGTERM to the process group of `pid`.
+    /// SIGTERM `pid` — its group only when `pid` leads it.
     kill_group_term: fn(u32),
-    /// Send SIGKILL to the process group of `pid` (pid==pgid assumed).
+    /// SIGKILL `pid` — its group only when `pid` leads it.
     kill_group_kill: fn(u32),
-    /// Kill the explicitly captured process group `pgid`. Also receives the
-    /// original `pid` for the Windows `taskkill` path.
+    /// Kill the explicitly captured process group `pgid` (refused unless it
+    /// equals `pid`). Also receives the original `pid` for the Windows
+    /// `taskkill` path.
     kill_process_tree: fn(u32, Option<Pgid>),
     /// Capture the PGID of `pid` (before escalation starts).
     get_pgid: fn(u32) -> Option<Pgid>,
@@ -145,31 +193,47 @@ impl EscalationHooks {
     }
 }
 
-/// An ownership re-verification performed *between* signals: given
-/// `(port, pid)`, returns `true` when `pid` still owns `port`.
-type OwnershipCheck = fn(u16, u32) -> bool;
+/// Poll `is_alive(pid)` until it reports dead or `timeout` elapses.
+fn wait_for_exit(is_alive: fn(u32) -> bool, pid: u32, timeout: Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if !is_alive(pid) {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
 
-/// The stop-escalation ladder (iter-158 Theme C): SIGTERM group → grace →
-/// SIGKILL group → wait for the port → tree-kill the captured pgid → wait.
+/// The stop-escalation ladder (iter-158 Theme C): SIGTERM → grace → SIGKILL →
+/// wait for release → tree-kill the captured group → wait.
+///
+/// "Release" is the port closing when `port` is `Some`, the PID exiting when
+/// it is `None` (`stop --all`, which has no port to watch).
 ///
 /// The pgid is captured **before any signal is sent** (by then a dead parent's
-/// `getpgid` fails), and there is no `is_alive` gate on the tree kill: a dead
-/// parent whose children still hold the port is precisely the case it exists
-/// for.
+/// `getpgid` fails) and kept only when it equals `pid` — Firefox leads its own
+/// group. A pgid that differs from the PID, or one that could not be read, is
+/// never signalled (rule 5); the step is skipped instead. Every signal to the
+/// PID itself is preceded by `reverify` (rule 6).
 ///
-/// Returns `(stopped, port_free, escalation_msg)`. `escalation_msg` is
-/// non-empty only when `port_free` is false.
+/// Returns a [`StopReport`]; `message` is non-empty only when not released.
 fn stop_pid_with_full_escalation(
     pid: u32,
-    port: u16,
+    port: Option<u16>,
     h: &EscalationHooks,
-    reverify: Option<OwnershipCheck>,
-) -> (bool, bool, String) {
-    let captured_pgid = (h.get_pgid)(pid);
-    let still_owns = || reverify.is_none_or(|check| check(port, pid));
+    reverify: &dyn Fn(u32) -> bool,
+) -> StopReport {
+    let captured_pgid = (h.get_pgid)(pid).filter(|group| i64::from(*group) == i64::from(pid));
+    let released = |timeout: Duration| match port {
+        Some(port) => (h.wait_port_closed)(port, timeout),
+        None => wait_for_exit(h.is_alive, pid, timeout),
+    };
 
-    // Step 1: SIGTERM the process group, then a bounded grace period.
-    if (h.is_alive)(pid) && still_owns() {
+    // Step 1: SIGTERM, then a bounded grace period.
+    if (h.is_alive)(pid) && reverify(pid) {
         (h.kill_group_term)(pid);
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
         while (h.is_alive)(pid) && std::time::Instant::now() < deadline {
@@ -177,47 +241,48 @@ fn stop_pid_with_full_escalation(
         }
     }
 
-    // Step 2: SIGKILL the process group (`launch` puts Firefox in its own
-    // group, so pid == pgid).
-    if (h.is_alive)(pid) && still_owns() {
+    // Step 2: SIGKILL.
+    if (h.is_alive)(pid) && reverify(pid) {
         (h.kill_group_kill)(pid);
         std::thread::sleep(Duration::from_millis(300));
     }
 
-    // Step 3: wait for the OS to reclaim the socket.
-    if (h.wait_port_closed)(port, PORT_FREE_WAIT_BOUND) {
-        return (!(h.is_alive)(pid), true, String::new());
+    // Step 3: wait for the OS to reclaim the socket (or the PID).
+    if released(PORT_FREE_WAIT_BOUND) {
+        return StopReport {
+            exited: !(h.is_alive)(pid),
+            released: true,
+            message: String::new(),
+        };
     }
 
-    // Step 4: reach the children that outlived the parent via the
-    // pre-captured PGID (`taskkill /F /T /PID <pid>` on Windows). `getpgid`
-    // on an already-dead parent returns `None`; on Unix fall back to `pid`,
-    // because `launch` makes Firefox its own group leader and a group
-    // outlives its leader while any member is alive.
+    // Step 4: reach the children that outlived the parent. On Unix that is
+    // the group the PID led when it was captured — a group id cannot be
+    // reused while any member lives, so it still names only Firefox's
+    // children; no capture (or a group that was not the PID's own) means no
+    // group signal at all. On Windows it is `taskkill /T /PID`, which is
+    // PID-scoped, so it fires only while the PID is alive and still proved
+    // ours: a dead PID's number may already belong to someone else.
     #[cfg(unix)]
-    let effective_pgid = captured_pgid.or_else(|| Pgid::try_from(pid).ok());
+    let tree_kill_allowed = captured_pgid.is_some();
     #[cfg(not(unix))]
-    let effective_pgid = captured_pgid;
-
-    // Only fire the group kill when the group IS the target pid's own: a
-    // Firefox not spawned into its own group would otherwise take the
-    // caller's shell group with it.
-    let pgid_safe_to_kill = match effective_pgid {
-        Some(group_id) => i64::from(group_id) == i64::from(pid),
-        None => true, // Windows path is pid-scoped, no group risk.
-    };
-    if pgid_safe_to_kill {
-        (h.kill_process_tree)(pid, effective_pgid);
+    let tree_kill_allowed = (h.is_alive)(pid) && reverify(pid);
+    if tree_kill_allowed {
+        (h.kill_process_tree)(pid, captured_pgid);
     }
-    if (h.wait_port_closed)(port, Duration::from_millis(500)) {
-        return (!(h.is_alive)(pid), true, String::new());
+    if released(Duration::from_millis(500)) {
+        return StopReport {
+            exited: !(h.is_alive)(pid),
+            released: true,
+            message: String::new(),
+        };
     }
 
-    (
-        !(h.is_alive)(pid),
-        false,
-        port_still_listening_after_escalation_msg(pid, port, pgid_safe_to_kill),
-    )
+    StopReport {
+        exited: !(h.is_alive)(pid),
+        released: false,
+        message: still_held_after_escalation_msg(pid, port, tree_kill_allowed),
+    }
 }
 
 #[cfg(test)]
@@ -252,6 +317,10 @@ mod tests {
         CALL_LOG.lock().map(|v| v.clone()).unwrap_or_default()
     }
 
+    fn always_owned(_pid: u32) -> bool {
+        true
+    }
+
     /// Hooks where the process is already dead and the port never frees — the
     /// orphaned-children scenario the tree kill exists for.
     fn recording_hooks_dead_parent() -> EscalationHooks {
@@ -275,11 +344,12 @@ mod tests {
     }
 
     /// `get_pgid` is called strictly before the first kill hook (iter-158).
+    #[cfg(unix)]
     #[test]
     fn unit_158_stop_ladder_captures_pgid_before_any_kill() {
         let _serialized = begin_call_log();
         let hooks = recording_hooks_dead_parent();
-        let _ = stop_pid_with_full_escalation(4242, 65000, &hooks, None);
+        let _ = stop_pid_with_full_escalation(4242, Some(65000), &hooks, &always_owned);
 
         let log = take_call_log();
         let pgid_at = log
@@ -302,50 +372,61 @@ mod tests {
     }
 
     /// With the parent dead and the port never closing, the ladder still
-    /// reaches `kill_process_tree` (iter-158).
+    /// reaches `kill_process_tree` on the group the PID led (iter-158).
+    #[cfg(unix)]
     #[test]
     fn unit_158_stop_ladder_reaches_tree_kill_when_parent_is_dead() {
         let _serialized = begin_call_log();
         let hooks = recording_hooks_dead_parent();
-        let (stopped, port_free, msg) = stop_pid_with_full_escalation(4242, 65001, &hooks, None);
+        let report = stop_pid_with_full_escalation(4242, Some(65001), &hooks, &always_owned);
 
         let log = take_call_log();
         assert!(
             log.contains(&"kill_process_tree"),
             "the tree kill must run even when the parent is already dead; log was {log:?}"
         );
-        assert!(stopped, "a dead parent counts as stopped");
-        assert!(!port_free, "the stub never frees the port");
+        assert!(report.exited, "a dead parent counts as stopped");
+        assert!(!report.released, "the stub never frees the port");
         assert!(
-            msg.contains("still listening"),
-            "a failed stop must carry an escalation message: {msg}"
+            report.message.contains("still listening"),
+            "a failed stop must carry an escalation message: {}",
+            report.message
         );
     }
 
-    /// On Unix a dead parent yields `None` from `getpgid`; the ladder falls
-    /// back to `pid` as the group id so the tree kill is not a no-op.
-    #[cfg(unix)]
+    /// Rule 5 (replaces iter-158's pid fallback): when `getpgid` fails there
+    /// is no verified group, so no group signal is sent at all — previously
+    /// the ladder assumed the PID was the group id and signalled `-pid`.
     #[test]
-    fn unit_158_tree_kill_falls_back_to_pid_when_pgid_lookup_fails() {
-        use std::sync::atomic::{AtomicI64, Ordering};
-        static SEEN_PGID: AtomicI64 = AtomicI64::new(-1);
-        SEEN_PGID.store(-1, Ordering::SeqCst);
-
+    fn unit_stop_tree_kill_skipped_when_pgid_lookup_fails() {
+        let _serialized = begin_call_log();
         let hooks = EscalationHooks {
-            is_alive: |_pid| false,
-            kill_group_term: |_pid| {},
-            kill_group_kill: |_pid| {},
-            kill_process_tree: |_pid, pgid| {
-                SEEN_PGID.store(pgid.map_or(-1, i64::from), Ordering::SeqCst);
-            },
             get_pgid: |_pid| None,
-            wait_port_closed: |_port, _timeout| false,
+            ..recording_hooks_dead_parent()
         };
-        let _ = stop_pid_with_full_escalation(4242, 65002, &hooks, None);
-        assert_eq!(
-            SEEN_PGID.load(Ordering::SeqCst),
-            4242,
-            "the tree kill must fall back to the pid as the group id"
+        let report = stop_pid_with_full_escalation(4242, Some(65002), &hooks, &always_owned);
+        let log = take_call_log();
+        assert!(
+            !log.contains(&"kill_process_tree"),
+            "no verified group means no group signal; log was {log:?}"
+        );
+        assert!(report.message.contains("skipped"), "{}", report.message);
+    }
+
+    /// Rule 5: a captured pgid that is not the PID's own (the caller's shell
+    /// job group, say) is never handed to the tree kill.
+    #[test]
+    fn unit_stop_tree_kill_skipped_when_pgid_differs_from_pid() {
+        let _serialized = begin_call_log();
+        let hooks = EscalationHooks {
+            get_pgid: |_pid| Some(7),
+            ..recording_hooks_dead_parent()
+        };
+        let _ = stop_pid_with_full_escalation(4242, Some(65004), &hooks, &always_owned);
+        let log = take_call_log();
+        assert!(
+            !log.contains(&"kill_process_tree"),
+            "a foreign pgid must never be signalled; log was {log:?}"
         );
     }
 
@@ -361,11 +442,34 @@ mod tests {
             get_pgid: |pid| Pgid::try_from(pid).ok(),
             wait_port_closed: |_port, _timeout| true,
         };
-        let _ = stop_pid_with_full_escalation(4242, 65003, &hooks, Some(|_port, _pid| false));
+        let _ = stop_pid_with_full_escalation(4242, Some(65003), &hooks, &|_pid| false);
         let log = take_call_log();
         assert!(
             !log.contains(&"kill_group_term") && !log.contains(&"kill_group_kill"),
             "a recycled PID must never be signalled; log was {log:?}"
+        );
+    }
+
+    /// Without a port (`stop --all`), release means the PID exited: a PID
+    /// that is already dead is released at once and no signal is sent.
+    #[test]
+    fn unit_stop_portless_ladder_waits_on_the_pid() {
+        let _serialized = begin_call_log();
+        let report = stop_pid_with_full_escalation(
+            4242,
+            None,
+            &recording_hooks_dead_parent(),
+            &always_owned,
+        );
+        let log = take_call_log();
+        assert!(report.released && report.exited);
+        assert!(
+            !log.contains(&"wait_port_closed"),
+            "no port to wait on; log was {log:?}"
+        );
+        assert!(
+            !log.iter().any(|c| c.starts_with("kill_")),
+            "a dead PID is never signalled; log was {log:?}"
         );
     }
 }

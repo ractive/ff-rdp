@@ -203,6 +203,109 @@ pub fn process_start_token(pid: u32) -> Option<String> {
     }
 }
 
+/// The file name of the executable `pid` is running (`firefox`,
+/// `firefox.exe`, …), as reported by the OS — never from a command line,
+/// which the process itself controls.
+///
+/// - macOS: `proc_pidpath`.
+/// - Linux/Android: the `/proc/<pid>/exe` link target.
+/// - Windows: `QueryFullProcessImageNameW`.
+///
+/// `None` when the process does not exist, the OS refuses the query, or the
+/// platform has no supported source. Callers that gate a signal on this treat
+/// `None` as "not Firefox" and refuse.
+pub fn process_executable_name(pid: u32) -> Option<String> {
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    {
+        let target = libc::c_int::try_from(pid).ok()?;
+        let size = usize::try_from(libc::PROC_PIDPATHINFO_MAXSIZE).ok()?;
+        let mut buf = vec![0u8; size];
+        let len = u32::try_from(buf.len()).ok()?;
+        // SAFETY: `proc_pidpath` writes at most `len` bytes into `buf`, a live
+        // allocation of exactly that size, and returns the byte count written
+        // (or <= 0 on failure). No other side effects.
+        let written = unsafe { libc::proc_pidpath(target, buf.as_mut_ptr().cast(), len) };
+        let written = usize::try_from(written).ok().filter(|n| *n > 0)?;
+        buf.truncate(written);
+        let path = String::from_utf8(buf).ok()?;
+        executable_file_name(&path)
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        let link = std::fs::read_link(format!("/proc/{pid}/exe")).ok()?;
+        let path = link.to_string_lossy();
+        // A binary replaced on disk (a package upgrade under a running
+        // Firefox) reads back as "<path> (deleted)".
+        executable_file_name(path.strip_suffix(" (deleted)").unwrap_or(&path))
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStringExt;
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+            QueryFullProcessImageNameW,
+        };
+
+        // SAFETY: `OpenProcess` only returns a handle (or NULL); it is closed
+        // on every path below.
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            return None;
+        }
+        let mut buf = vec![0u16; 32_768];
+        let mut len = u32::try_from(buf.len()).unwrap_or(u32::MAX);
+        // SAFETY: `handle` is valid; `buf` is a live buffer of `len` UTF-16
+        // units and `len` is updated in place to the count written.
+        let ok = unsafe {
+            QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &raw mut len)
+        };
+        // SAFETY: `handle` is the valid handle opened above, not used again.
+        unsafe { CloseHandle(handle) };
+        if ok == 0 {
+            return None;
+        }
+        buf.truncate(usize::try_from(len).ok()?);
+        let path = std::ffi::OsString::from_wide(&buf);
+        executable_file_name(&path.to_string_lossy())
+    }
+
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "linux",
+        target_os = "android",
+        windows
+    )))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+/// The last component of an executable path, split on both separators so a
+/// Windows path parses the same on every host.
+fn executable_file_name(path: &str) -> Option<String> {
+    let name = path.rsplit(['/', '\\']).next()?.trim();
+    (!name.is_empty()).then(|| name.to_owned())
+}
+
+/// Whether `name` (an executable file name from [`process_executable_name`])
+/// is a Firefox binary: `firefox`, `firefox-bin` or `firefox-esr`, with an
+/// optional `.exe`, compared case-insensitively.
+///
+/// Deliberately a closed list rather than a `firefox*` prefix match: the
+/// point of the check is that `stop` cannot be steered into signalling some
+/// other program, and a prefix would admit any binary someone names
+/// `firefox-anything`.
+pub fn is_firefox_executable_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    let stem = lower.strip_suffix(".exe").unwrap_or(&lower);
+    matches!(stem, "firefox" | "firefox-bin" | "firefox-esr")
+}
+
 /// `usize` → `c_int` without an `as` cast, so an implausibly large struct size
 /// yields `None` instead of a silently truncated FFI argument.
 #[cfg(any(target_os = "macos", target_os = "ios"))]
@@ -214,28 +317,65 @@ fn c_int_from(n: usize) -> Option<libc::c_int> {
 // Process signaling
 // ---------------------------------------------------------------------------
 
-/// Kill the entire process group of `pid` using SIGTERM (Unix).
+/// Return `true` when `pid` is the leader of its own process group, i.e.
+/// `getpgid(pid) == pid`.
 ///
-/// On Unix we send SIGTERM to the negative PID (the process group leader).
-/// This reaches Firefox's child processes (GPU, RDD, etc.) so the port is
-/// actually freed instead of just the parent shell wrapper exiting.
+/// The precondition for every group signal in this module: `launch` puts
+/// Firefox in its own group (`process_group(0)`), but a group signal sent on
+/// the *assumption* that it did would, for a process sharing the caller's
+/// group, reach the caller's whole shell job. Always `false` off Unix, where
+/// there are no process groups to signal.
+pub fn is_process_group_leader(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        get_process_group_id(pid).is_some_and(|pgid| i64::from(pgid) == i64::from(pid))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
+/// Send `signal` to `pid`'s process group when `pid` leads its own group,
+/// otherwise to `pid` alone. Never signals a group whose id differs from
+/// `pid`, and never PID 0 or 1.
+#[cfg(unix)]
+fn signal_pid_or_own_group(pid: u32, signal: libc::c_int) {
+    let Ok(target) = libc::pid_t::try_from(pid) else {
+        return;
+    };
+    if target <= 1 {
+        return;
+    }
+    let target = if is_process_group_leader(pid) {
+        -target
+    } else {
+        target
+    };
+    // SAFETY: `kill` only delivers a signal. `target` is either the PID itself
+    // or the negated id of the group that PID leads, verified by `getpgid`
+    // immediately above. A group id cannot be reused while any member lives.
+    // Errors surface only through the return value, which the caller ignores
+    // (it polls liveness separately).
+    unsafe {
+        libc::kill(target, signal);
+    }
+}
+
+/// SIGTERM `pid` — its whole process group when `pid` is the group leader
+/// (Unix), so Firefox's content/GPU children are reached too.
 ///
-/// On Windows there is no POSIX process-group concept; we fall back to
-/// terminating just the parent PID (same as `kill_process`).
+/// The group is signalled only after `getpgid(pid) == pid` is confirmed; a
+/// process that shares another group (the caller's shell job, typically)
+/// gets the signal to its PID alone. On Windows there is no POSIX
+/// process-group concept; the PID is terminated (same as `kill_process`).
 ///
 /// Errors are silently ignored — the caller checks PID liveness separately.
 pub fn kill_process_group(pid: u32) {
     #[cfg(unix)]
     {
-        // SAFETY: `kill(-pgid, SIGTERM)` sends SIGTERM to all processes in the
-        // process group.  We use the PID as the PGID because Firefox calls
-        // `setsid()` making itself a session leader whose PGID equals its PID.
-        // The cast from u32 to pid_t (i32) is intentional; the OS accepts any
-        // valid PGID and we received this PID from the OS registry.
-        #[allow(clippy::cast_possible_wrap)]
-        unsafe {
-            libc::kill(-(pid as libc::pid_t), libc::SIGTERM);
-        }
+        signal_pid_or_own_group(pid, libc::SIGTERM);
     }
 
     #[cfg(windows)]
@@ -250,25 +390,15 @@ pub fn kill_process_group(pid: u32) {
     }
 }
 
-/// Forcibly kill the process group of `pid` using SIGKILL (Unix).
+/// SIGKILL `pid` — its process group when `pid` leads it (Unix), with the
+/// same `getpgid(pid) == pid` precondition as [`kill_process_group`].
 ///
 /// Used as a last resort after the SIGTERM grace period expires.
 /// On Windows, falls back to `kill_process`.
-///
-/// **Note:** This function derives the PGID by assuming `pid == pgid`, which
-/// is true when Firefox called `setsid()` at startup. If the parent has already
-/// exited by the time this is called, the PGID may have been re-assigned by the
-/// OS. Prefer [`kill_process_tree`] when a pre-captured pgid is
-/// available — it targets the correct group even after the parent dies.
 pub fn kill_process_group_force(pid: u32) {
     #[cfg(unix)]
     {
-        // SAFETY: Same rationale as `kill_process_group`; SIGKILL cannot be caught
-        // or ignored, so it is guaranteed to terminate the process group.
-        #[allow(clippy::cast_possible_wrap)]
-        unsafe {
-            libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
-        }
+        signal_pid_or_own_group(pid, libc::SIGKILL);
     }
 
     #[cfg(windows)]
@@ -314,11 +444,14 @@ pub fn get_process_group_id(pid: u32) -> Option<Pgid> {
 
 /// Forcibly kill a **pre-captured** process group using SIGKILL (Unix).
 ///
-/// Unlike [`kill_process_group_force`] — which derives the PGID from the parent
-/// PID and can race if the parent exits before the signal is sent — this helper
+/// Unlike [`kill_process_group_force`] — which checks leadership at signal
+/// time and so cannot reach a group whose leader already exited — this helper
 /// takes a pgid that was resolved once at escalation entry via
 /// [`get_process_group_id`].  The captured value survives the parent's death
 /// because the kernel keeps the PGID alive as long as any member process exists.
+///
+/// On Unix the group is signalled only when `pgid == pid_for_windows`; a
+/// captured group id that differs from the target PID is never signalled.
 ///
 /// On Windows the equivalent "kill the whole tree" operation is
 /// `taskkill /F /T /PID <pid>`, which terminates the process and all its
@@ -331,18 +464,22 @@ pub fn get_process_group_id(pid: u32) -> Option<Pgid> {
 pub fn kill_process_tree(pid_for_windows: u32, pgid: Option<Pgid>) {
     #[cfg(unix)]
     {
-        if let Some(pgid_val) = pgid {
+        // Only the group the target PID itself led may be signalled: a
+        // captured pgid that differs from the PID is some other group — the
+        // caller's shell job, typically — and is never a target. `None`
+        // (getpgid failed, or leadership was never verified) sends nothing.
+        if let Some(pgid_val) = pgid
+            && pgid_val > 1
+            && i64::from(pgid_val) == i64::from(pid_for_windows)
+        {
             // SAFETY: `kill(-pgid, SIGKILL)` sends SIGKILL to every process in the
-            // group identified by `pgid_val`. The pgid was captured before the
-            // escalation ladder started and remains valid as long as any group
-            // member is alive. SIGKILL cannot be caught or ignored.
+            // group identified by `pgid_val`, which equals the target PID: the
+            // group that PID led when the caller captured it. A group id cannot
+            // be reused while any member is alive. SIGKILL cannot be caught.
             unsafe {
                 libc::kill(-pgid_val, libc::SIGKILL);
             }
         }
-        // If pgid is None (getpgid failed, meaning the process had already exited),
-        // there is nothing left to kill — the group has already dissolved.
-        let _ = pid_for_windows;
     }
 
     #[cfg(windows)]
@@ -470,6 +607,109 @@ mod tests {
             None,
             "a PID that does not exist has no start token"
         );
+    }
+
+    /// The executable-name gate `stop` applies before any signal: a closed
+    /// list of Firefox binary names, case-insensitive, optional `.exe`.
+    #[test]
+    fn unit_stop_firefox_executable_names() {
+        for yes in [
+            "firefox",
+            "firefox-bin",
+            "firefox-esr",
+            "firefox.exe",
+            "FIREFOX.EXE",
+            "Firefox",
+        ] {
+            assert!(is_firefox_executable_name(yes), "{yes} is a Firefox binary");
+        }
+        for no in [
+            "",
+            "sleep",
+            "firefox-evil",
+            "notfirefox",
+            "firefox.sh",
+            "bash",
+            "ff-rdp",
+            "plugin-container",
+        ] {
+            assert!(!is_firefox_executable_name(no), "{no} must not pass");
+        }
+        assert_eq!(
+            executable_file_name(r"C:\Program Files\Mozilla Firefox\firefox.exe").as_deref(),
+            Some("firefox.exe")
+        );
+        assert_eq!(
+            executable_file_name("/Applications/Firefox.app/Contents/MacOS/firefox").as_deref(),
+            Some("firefox")
+        );
+        assert_eq!(executable_file_name("/"), None);
+    }
+
+    /// `process_executable_name` reads this test binary's own name from the
+    /// OS — which is not a Firefox name, so the gate refuses it.
+    #[test]
+    fn unit_stop_process_executable_name_of_self_is_not_firefox() {
+        let name = process_executable_name(std::process::id());
+        #[cfg(any(target_os = "macos", target_os = "linux", windows))]
+        assert!(name.is_some(), "supported platform must name its own exe");
+        assert!(!name.as_deref().is_some_and(is_firefox_executable_name));
+        assert_eq!(process_executable_name(999_999_999), None);
+    }
+
+    /// Rule 5: a process sharing the caller's group is not a group leader, so
+    /// a "group" kill reaches the PID alone — the child dies (the old
+    /// `kill(-pid)` hit no group and left it running) and this test process,
+    /// in the same group, is untouched by construction.
+    #[cfg(unix)]
+    #[test]
+    fn unit_stop_non_leader_is_signalled_by_pid_alone() {
+        let mut child = Command::new("sleep").arg("30").spawn().expect("spawn");
+        let pid = child.id();
+        assert!(
+            !is_process_group_leader(pid),
+            "a child in our group must not read as a group leader"
+        );
+        kill_process_group_force(pid);
+        let status = child.wait().expect("wait");
+        assert!(!status.success(), "the PID-alone SIGKILL must reach it");
+    }
+
+    /// Rule 5: a leader of its own group is recognised, and `kill_process_tree`
+    /// refuses a captured pgid that is not the target PID's own group.
+    #[cfg(unix)]
+    #[test]
+    fn unit_stop_tree_kill_refuses_a_foreign_pgid() {
+        use std::os::unix::process::CommandExt;
+        let mut bystander = Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .expect("spawn bystander");
+        let mut target = Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .expect("spawn target");
+        assert!(is_process_group_leader(target.id()));
+        let bystander_group = get_process_group_id(bystander.id());
+        assert!(bystander_group.is_some());
+
+        kill_process_tree(target.id(), bystander_group);
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            matches!(bystander.try_wait(), Ok(None)),
+            "a pgid other than the target PID must never be signalled"
+        );
+        assert!(
+            matches!(target.try_wait(), Ok(None)),
+            "nothing is sent at all when the pgid does not match"
+        );
+
+        kill_process_tree(target.id(), get_process_group_id(target.id()));
+        assert!(!target.wait().expect("wait target").success());
+        let _ = bystander.kill();
+        let _ = bystander.wait();
     }
 
     /// AC (iter-171): the token actually *distinguishes* processes — two

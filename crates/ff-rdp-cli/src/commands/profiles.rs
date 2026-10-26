@@ -453,6 +453,8 @@ pub fn run_prune(cli: &Cli, older_than: &str, all: bool, dry_run: bool) -> Resul
     } else {
         Some(parse_older_than(older_than)?)
     };
+    // Graded before the prune: under `--all` the live ones are about to go.
+    let live_owned = count_live_owned(&root);
     let outcome = prune_profiles(&root, threshold, dry_run);
 
     let total = if dry_run {
@@ -488,10 +490,34 @@ pub fn run_prune(cli: &Cli, older_than: &str, all: bool, dry_run: bool) -> Resul
             .map(|(name, reason)| (name.clone(), json!(reason)))
             .collect::<serde_json::Map<String, serde_json::Value>>(),
         "dry_run": dry_run,
+        "hint": stop_hint(live_owned),
     });
 
     let envelope = output::envelope(&results, total, &json!({}));
     OutputPipeline::from_cli(cli)?.finalize(&envelope)
+}
+
+/// How many managed profiles under `root` a still-running owner keeps alive.
+fn count_live_owned(root: &Path) -> usize {
+    scan_managed_profiles(root)
+        .iter()
+        .filter(|entry| {
+            crate::util::profile_dir::owner_liveness_of(&entry.path).keeps_profile_alive()
+        })
+        .count()
+}
+
+/// `prune`'s pointer at `ff-rdp stop`: an age-gated prune never touches a
+/// profile whose Firefox is running, so the way to reclaim it is to stop that
+/// Firefox — which removes its profile too.
+fn stop_hint(live_owned: usize) -> Option<String> {
+    (live_owned > 0).then(|| {
+        format!(
+            "{live_owned} profile(s) belong to a Firefox that is still running; prune keeps \
+             them unless --all. `ff-rdp stop --all` stops ff-rdp-launched Firefoxes and removes \
+             their profiles."
+        )
+    })
 }
 
 #[cfg(test)]
@@ -523,6 +549,22 @@ mod tests {
     // -----------------------------------------------------------------
     // aggregate_profiles / `profiles list`
     // -----------------------------------------------------------------
+
+    /// `prune` points at `ff-rdp stop` exactly when a live-owned profile is
+    /// present, and stays `null` otherwise.
+    #[test]
+    fn unit_stop_prune_hint_names_stop_for_live_owned_profiles() {
+        let root = tempfile::tempdir().expect("tempdir");
+        seed_profile(root.path(), &"a".repeat(16), 1, Duration::from_secs(1));
+        assert_eq!(count_live_owned(root.path()), 0);
+        assert_eq!(stop_hint(0), None);
+
+        let live = seed_profile(root.path(), &"b".repeat(16), 1, Duration::from_secs(1));
+        crate::util::profile_dir::write_owner_pid_marker(&live, std::process::id());
+        assert_eq!(count_live_owned(root.path()), 1);
+        let hint = stop_hint(1).expect("a live-owned profile yields a hint");
+        assert!(hint.contains("ff-rdp stop"), "{hint}");
+    }
 
     /// AC: `unit_profiles_list_aggregates_size_and_count_correctly` — two
     /// managed profile dirs with known payload sizes (one with a nested

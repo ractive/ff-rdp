@@ -13,6 +13,7 @@ COMMAND REFERENCE:
   Launch & connect:
     ff-rdp launch [--headless] [--profile PATH | --temp-profile] [--auto-consent] [--port PORT]
     ff-rdp doctor                  # diagnose connection, port, tabs, version
+    ff-rdp stop [--all] [--dry-run]  # stop a Firefox ff-rdp launched, remove its profile
     ff-rdp tabs
 
   Navigate & wait:
@@ -338,7 +339,7 @@ Command groups (use `ff-rdp <cmd> --help` for details on any command):
   Inspect    dom, styles, computed, cascade, a11y, snapshot, page-text, perf
   Navigate   navigate, reload, click, type, screenshot
   Trace      console, network, eval
-  Lifecycle  launch, doctor
+  Lifecycle  launch, stop, doctor
 
 {}
 'ff-rdp launch' starts a separate Firefox process that won't interfere with
@@ -351,7 +352,7 @@ the -no-remote flag automatically.",
 #[derive(Parser)]
 #[command(
     name = "ff-rdp",
-    about = "Firefox Remote Debugging Protocol CLI\n\nCommand groups (see `ff-rdp <cmd> --help` for details):\n  Inspect    dom, styles, computed, cascade, a11y, snapshot, page-text, perf\n  Navigate   navigate, reload, click, type, screenshot\n  Trace      console, network, eval\n  Lifecycle  launch, doctor\n\nQuick start:  ff-rdp launch --headless   # start Firefox with debugging enabled\n              ff-rdp navigate <URL> --with-page --query \"<text>\"   # open a page and read it",
+    about = "Firefox Remote Debugging Protocol CLI\n\nCommand groups (see `ff-rdp <cmd> --help` for details):\n  Inspect    dom, styles, computed, cascade, a11y, snapshot, page-text, perf\n  Navigate   navigate, reload, click, type, screenshot\n  Trace      console, network, eval\n  Lifecycle  launch, stop, doctor\n\nQuick start:  ff-rdp launch --headless   # start Firefox with debugging enabled\n              ff-rdp navigate <URL> --with-page --query \"<text>\"   # open a page and read it",
     long_about = long_about(),
     after_help = "Tip: Run 'ff-rdp launch' first to start Firefox with remote debugging.\n     It won't affect any existing Firefox windows — safe to run alongside\n     your normal browser.",
     after_long_help = AFTER_LONG_HELP,
@@ -1442,6 +1443,10 @@ Examples:
   ff-rdp launch --profile ~/my-prof      # reuse an existing profile
   ff-rdp launch --headless --window-size 600x800   # true viewport, >= floor
   ff-rdp launch --headless --window-size 390x844   # below floor — clamps to ~500, warns
+  ff-rdp stop                            # done: stop it and remove its temporary profile
+
+The launched Firefox keeps running until you stop it — ff-rdp never stops it on
+its own. `ff-rdp stop` (see its --help) stops it and removes its temporary profile.
 
 --auto-consent installs the Consent-O-Matic extension into the profile so it
 CAN dismiss cookie banners it recognizes once a page loads — but `launch`
@@ -1458,6 +1463,43 @@ actually clicked).
 Output: {\"results\": {\"pid\": N, \"host\": \"...\", \"port\": N, \"headless\": bool, \"profile\": \"...\", \"profile_path\": \"...\", \"temp_profile\": bool, \"auto_consent_extension_installed\": bool, \"window_size\": {\"requested\": {\"width\": N, \"height\": N}, \"below_floor\": bool}|null, \"warnings\"?: [...]}, \"total\": 1, \"meta\": {\"firefox\": \"...\", \"launch_wait_secs\": N, \"replaced\"?: {\"stopped\": bool, \"pid\": N}}}"
     )]
     Launch(LaunchArgs),
+    /// Stop a Firefox that `ff-rdp launch` started, and remove its temporary profile
+    #[command(
+        long_about = "Stop a Firefox that `ff-rdp launch` started, and remove its temporary profile.
+
+`ff-rdp stop` stops the Firefox listening on --port (or FF_RDP_PORT, default
+6000) — SIGTERM, then SIGKILL after 2 s, the same path `launch --replace` uses —
+and then removes that instance's managed `ff-rdp-profile-*` directory. With
+nothing listening on the port it exits 0 with `stopped: false`.
+
+`ff-rdp stop --all` stops every live Firefox ff-rdp launched under the
+configured profile root ($FF_RDP_HOME when set), found from the owner markers
+`launch` writes; no port is needed. `--dry-run` reports what would be stopped
+and signals nothing.
+
+ff-rdp never stops a process it cannot prove it launched. Before every signal
+it requires: an owner-PID marker naming the PID in a managed profile under a
+profile root you own that nobody else can write; the process start time ff-rdp
+recorded beside it, matching the live process (so a reused PID is refused);
+and a Firefox executable. A process group is signalled only when the PID leads
+its own group; otherwise the PID alone. There is no --pid flag. A Firefox you
+started yourself, one launched with --profile, or any other process on the
+port is refused with an error naming its PID; under --all such processes are
+simply not candidates.
+
+Nothing stops automatically: every ff-rdp command opens its own connection, so
+the browser has to outlive each of them. Stop it when you are done.
+
+Examples:
+  ff-rdp stop                     # the ff-rdp-launched Firefox on port 6000
+  ff-rdp stop --port 9222         # the one on port 9222
+  ff-rdp stop --dry-run           # what would be stopped, signal nothing
+  ff-rdp stop --all               # every Firefox ff-rdp launched
+
+Output:       {\"results\": {\"stopped\": bool, \"pid\": N|null, \"port\": N, \"profile\": \"...\"|null, \"profile_removed\": bool, \"dry_run\": bool, \"would_stop\"?: true, \"reason\"?: \"...\"}, \"total\": 1, \"meta\": {...}}
+Output (--all): {\"results\": [{\"stopped\": bool, \"pid\": N, \"profile\": \"...\", \"profile_removed\": bool, \"would_stop\"?: true, \"error\"?: \"...\"}], \"total\": N, \"meta\": {\"dry_run\": bool}}"
+    )]
+    Stop(StopArgs),
     /// Install Claude Code skill files to the user or project filesystem
     #[command(
         name = "install-skill",
@@ -1542,7 +1584,9 @@ Output: {\"results\": {\"target\": \"...\", \"scope\": \"...\", \"path\": \"...\
     #[command(long_about = "Diagnose the ff-rdp connection top-to-bottom.
 
 Probes (in order):
-  1. Port owner     — who is listening on --port (PID, process, uptime)?
+  1. Port owner     — who is listening on --port (PID, process, uptime)? Did
+                      ff-rdp launch it (`ff_rdp_launched`, the proof
+                      `ff-rdp stop` requires)? If so the hint names `ff-rdp stop`.
   2. RDP handshake  — can we receive a Firefox greeting?
   3. Tabs           — how many tabs are exposed by the connected target?
   4. Firefox version — within the tested compatibility range?
@@ -1559,7 +1603,7 @@ Output: {\"results\": [{\"name\": \"...\", \"status\": \"pass|warn|fail\", \"det
     #[command(
         long_about = "Inspect and clean up the ephemeral Firefox profile directories ff-rdp creates for itself under its secure per-user profile root (see `ff-rdp launch`).
 
-`launch` prunes stale ones automatically (see its --help). A launched Firefox is never stopped by ff-rdp on its own, so its profile stays until it is pruned: this command is the manual way to reclaim them.
+`launch` prunes stale ones automatically (see its --help). A launched Firefox keeps running until you stop it: `ff-rdp stop` (or `ff-rdp stop --all`) stops it and removes its profile in one step. A profile whose Firefox ended some other way (killed, crashed) stays until it is pruned: this command is the manual way to reclaim those.
 
 Only directories matching the `ff-rdp-profile-<16 alphanumeric chars>` naming convention are ever listed or removed — a `--profile` directory you passed to `launch` yourself is never touched, even if it happens to live under the same root.
 
@@ -2715,6 +2759,16 @@ pub struct CascadeArgs {
 }
 
 #[derive(clap::Args)]
+pub struct StopArgs {
+    /// Stop every live Firefox ff-rdp launched under the profile root (no port needed)
+    #[arg(long)]
+    pub all: bool,
+    /// Report what would be stopped without signalling anything
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+#[derive(clap::Args)]
 pub struct LaunchArgs {
     /// Stage a matching local en-US Firefox language pack in a fresh managed profile.
     /// No download or signature bypass. Firefox decides activation; staged does not
@@ -3267,7 +3321,9 @@ Pass --all to remove every managed entry regardless of age (mutually exclusive w
 still alive is still removed (--all is the explicit escape hatch), but each such removal is
 logged as a warning and its basename is listed under `removed_live` in the output
 (`would_remove_live` with --dry-run, which removes nothing). Do not run
---all while a Firefox launched by ff-rdp is still using one of these profiles.
+--all while a Firefox launched by ff-rdp is still using one of these profiles: `ff-rdp stop
+--all` stops those Firefoxes and removes their profiles. `hint` names `ff-rdp stop` whenever a
+live-owned profile is present under the root (kept by an age-gated prune), `null` otherwise.
 `failed` reports, per selected directory, any removal that did NOT happen, with the OS
 error — `{}` when everything selected was removed. This matters most under --all against a
 live owner: the browser is writing into the profile throughout, so `remove_dir_all` can meet
@@ -3298,7 +3354,7 @@ Examples:
   ff-rdp profiles prune --older-than 24h
   ff-rdp profiles prune --all
 
-Output: {\"results\": {\"path\": \"...\", \"would_remove\": [...], \"removed\": [...], \"removed_live\": [...], \"would_remove_live\": [...], \"owner_liveness\": {\"<basename>\": \"live|unverified|unreadable|dead|unmarked\"}, \"failed\": {\"<basename>\": \"<os error>\"}, \"dry_run\": bool}, \"total\": N, \"meta\": {...}}"
+Output: {\"results\": {\"path\": \"...\", \"would_remove\": [...], \"removed\": [...], \"removed_live\": [...], \"would_remove_live\": [...], \"owner_liveness\": {\"<basename>\": \"live|unverified|unreadable|dead|unmarked\"}, \"failed\": {\"<basename>\": \"<os error>\"}, \"dry_run\": bool, \"hint\": \"...\"|null}, \"total\": N, \"meta\": {...}}"
     )]
     Prune {
         /// Only remove entries whose mtime is at least this old. Accepts <N>d, <N>h, <N>m, <N>s,

@@ -147,3 +147,4 @@ mod live_295_navigate_wait_idle;
 mod live_295_perf_cold;
 mod live_304_refs_snapshot_eval;
 mod live_smooth_scroll_measure;
+mod live_stop_command;

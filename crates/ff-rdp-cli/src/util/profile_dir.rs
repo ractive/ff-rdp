@@ -487,8 +487,10 @@ impl OwnerLiveness {
     /// The two `true` cases are not the same claim. [`Self::Live`] is positive
     /// proof; [`Self::Unverified`] (iter-171) is "the PID is alive and I
     /// cannot confirm its identity", which still has a live process behind it.
-    /// The kill-scoping gate, whose blast radius points the other way, tests
-    /// for [`Self::Live`] on its own and so refuses `Unverified`.
+    /// The kill-scoping gate, whose blast radius points the other way, does
+    /// not use this grading at all: [`authorize_kill`] demands a recorded
+    /// start token that matches, so it refuses `Unverified` *and* the
+    /// no-token profiles this enum calls `Live`.
     ///
     /// [`Self::Unreadable`] is deliberately **not** here, and the reasoning is
     /// worth keeping. It is also "cannot tell", but unlike `Unverified` it has
@@ -615,10 +617,273 @@ fn read_owner_pid_marker_graded(dir: &Path) -> OwnerPidMarker {
 /// prevent. [`OwnerLiveness::Unverified`] therefore also refuses here (the
 /// opposite of what the prune paths do with it), because "cannot confirm"
 /// must never mean "go ahead and kill".
+///
+/// Since `ff-rdp stop` this is [`authorize_kill`] collapsed to a `bool`, so
+/// it applies the same rules: a recorded start token that matches (a profile
+/// with no token never authorises), and a Firefox executable.
 pub(crate) fn pid_is_ff_rdp_spawned(pid: u32) -> bool {
-    ownership_scan_roots()
-        .iter()
-        .any(|root| pid_is_ff_rdp_spawned_under(root, pid))
+    authorize_kill(pid).is_ok()
+}
+
+/// A live Firefox ff-rdp launched, proved by its managed profile's owner
+/// markers: the profile `profile` under the trusted root `root` names `pid`,
+/// and the recorded start token matches the live process.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OwnedFirefox {
+    pub(crate) pid: u32,
+    pub(crate) profile: PathBuf,
+    root: PathBuf,
+}
+
+/// Why [`authorize_kill`] refused to vouch for a PID. Every variant means
+/// "do not signal"; they differ only in what the error message says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum KillRefusal {
+    /// No managed profile under a trusted root carries a marker naming it.
+    NoOwnerMarker,
+    /// A root that could hold the marker exists but is not trustworthy (not
+    /// owned by this user, or group/world-writable), so it was not read.
+    UntrustedRoot(PathBuf),
+    /// The marker names the PID but no start token was recorded beside it, so
+    /// the PID's identity cannot be confirmed (a pre-iter-171 profile, or a
+    /// launch where the OS gave no token).
+    MissingStartToken,
+    /// The recorded start token disagrees with the live process's: the PID was
+    /// recycled onto a different process.
+    StartTokenMismatch,
+    /// A token was recorded but the OS will not disclose the live process's.
+    StartTokenUnavailable,
+    /// The marker names the PID, but nothing runs under it any more.
+    NotRunning,
+    /// The process is not running a Firefox executable (the name the OS
+    /// reported, if any).
+    NotFirefox(Option<String>),
+}
+
+impl KillRefusal {
+    /// One clause for an error message: why ff-rdp will not signal the PID.
+    pub(crate) fn reason(&self) -> String {
+        match self {
+            Self::NoOwnerMarker => {
+                "no owner-PID marker in ff-rdp's profile root names it".to_owned()
+            }
+            Self::UntrustedRoot(root) => format!(
+                "the profile root {} is not owned by you or is writable by others, so its \
+                 markers are not trusted",
+                root.display()
+            ),
+            Self::MissingStartToken => {
+                "its owner marker has no start token, so its identity cannot be confirmed"
+                    .to_owned()
+            }
+            Self::StartTokenMismatch => {
+                "its start time does not match the one ff-rdp recorded (the PID was reused)"
+                    .to_owned()
+            }
+            Self::StartTokenUnavailable => {
+                "the OS would not disclose its start time, so its identity cannot be confirmed"
+                    .to_owned()
+            }
+            Self::NotRunning => "it is no longer running".to_owned(),
+            Self::NotFirefox(Some(name)) => format!("its executable {name:?} is not Firefox"),
+            Self::NotFirefox(None) => {
+                "its executable could not be identified as Firefox".to_owned()
+            }
+        }
+    }
+
+    /// Ranking used when several roots disagree: the most specific refusal
+    /// wins the message. A marker-level answer beats "root not trusted",
+    /// which beats "no marker anywhere".
+    fn specificity(&self) -> u8 {
+        match self {
+            Self::NoOwnerMarker => 0,
+            Self::UntrustedRoot(_) => 1,
+            _ => 2,
+        }
+    }
+}
+
+/// Grade `dir`'s markers for a kill of `pid`. Stricter than
+/// [`owner_liveness`]: a missing start token is a refusal here, where the
+/// prune paths read it as `Live`.
+fn kill_grade(dir: &Path, pid: u32) -> Result<(), KillRefusal> {
+    if read_owner_pid_marker(dir) != Some(pid) {
+        return Err(KillRefusal::NoOwnerMarker);
+    }
+    if !crate::util::process::is_process_alive(pid) {
+        return Err(KillRefusal::NotRunning);
+    }
+    let Some(recorded) = read_owner_start_marker(dir) else {
+        return Err(KillRefusal::MissingStartToken);
+    };
+    match crate::util::process::process_start_token(pid) {
+        Some(current) if current == recorded => Ok(()),
+        Some(_) => Err(KillRefusal::StartTokenMismatch),
+        None => Err(KillRefusal::StartTokenUnavailable),
+    }
+}
+
+/// Check `root`'s trust and say why it cannot be read, if it cannot.
+fn trusted_root_or_refusal(root: &Path) -> Result<(), KillRefusal> {
+    match root_is_trustworthy(root) {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            tracing::warn!(
+                "ownership check: refusing to trust {} — it is not owned by this process's \
+                 user, or is writable by group or other, either of which would let another \
+                 account plant an owner-PID marker",
+                root.display()
+            );
+            Err(KillRefusal::UntrustedRoot(root.to_path_buf()))
+        }
+        // A root that does not exist holds no marker; not a trust problem.
+        Err(_) => Err(KillRefusal::NoOwnerMarker),
+    }
+}
+
+/// The managed profile under the trusted `root` whose markers prove `pid` is
+/// a Firefox ff-rdp launched, or the most specific reason none does.
+fn owned_profile_under(root: &Path, pid: u32) -> Result<PathBuf, KillRefusal> {
+    trusted_root_or_refusal(root)?;
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Err(KillRefusal::NoOwnerMarker);
+    };
+    let mut refusal = KillRefusal::NoOwnerMarker;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !is_managed_profile_path(&path) {
+            continue;
+        }
+        match kill_grade(&path, pid) {
+            Ok(()) => return Ok(path),
+            Err(KillRefusal::NoOwnerMarker) => {}
+            Err(other) => refusal = other,
+        }
+    }
+    Err(refusal)
+}
+
+/// [`authorize_kill`] over explicit roots and an injectable executable-name
+/// lookup, so every refusal branch is unit-testable.
+fn authorize_kill_in(
+    roots: &[PathBuf],
+    pid: u32,
+    executable_name: fn(u32) -> Option<String>,
+) -> Result<OwnedFirefox, KillRefusal> {
+    let mut refusal = KillRefusal::NoOwnerMarker;
+    for root in roots {
+        match owned_profile_under(root, pid) {
+            Ok(profile) => {
+                let name = executable_name(pid);
+                if !name
+                    .as_deref()
+                    .is_some_and(crate::util::process::is_firefox_executable_name)
+                {
+                    return Err(KillRefusal::NotFirefox(name));
+                }
+                return Ok(OwnedFirefox {
+                    pid,
+                    profile,
+                    root: root.clone(),
+                });
+            }
+            Err(other) if other.specificity() > refusal.specificity() => refusal = other,
+            Err(_) => {}
+        }
+    }
+    Err(refusal)
+}
+
+/// The single gate every ff-rdp signal to a Firefox passes (`stop`,
+/// `launch --replace`): `pid` may be signalled only if all of these hold,
+/// checked fresh on every call (callers re-run it before each signal):
+///
+/// 1. A managed `ff-rdp-profile-*` directory under a trusted root (see
+///    `root_is_trustworthy`) carries an owner-PID marker naming `pid`.
+/// 2. That directory also records a start token, and it equals the live
+///    process's current token. A missing token refuses — unlike the prune
+///    paths, which read it as `Live`.
+/// 3. The process runs a Firefox executable
+///    ([`crate::util::process::is_firefox_executable_name`]).
+///
+/// Fails closed: every error or ambiguity is a [`KillRefusal`].
+pub(crate) fn authorize_kill(pid: u32) -> Result<OwnedFirefox, KillRefusal> {
+    authorize_kill_in(
+        &ownership_scan_roots(),
+        pid,
+        crate::util::process::process_executable_name,
+    )
+}
+
+/// Every live Firefox ff-rdp launched whose profile sits under the
+/// *configured* root (`$FF_RDP_HOME` when set), for `ff-rdp stop --all`.
+///
+/// Unlike [`authorize_kill`] this does not also scan the default root an
+/// override hides: `--all` is a destructive sweep, and `$FF_RDP_HOME` is the
+/// isolation tool that must bound it. Each entry passes exactly the
+/// [`authorize_kill`] rules; anything else is left out rather than reported.
+pub(crate) fn owned_instances() -> Vec<OwnedFirefox> {
+    match resolve_profile_root(
+        crate::util::home_override(),
+        dirs::state_dir(),
+        dirs::data_local_dir(),
+    ) {
+        Ok(root) => owned_instances_under(&root, crate::util::process::process_executable_name),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Root-parameterised core of [`owned_instances`].
+fn owned_instances_under(
+    root: &Path,
+    executable_name: fn(u32) -> Option<String>,
+) -> Vec<OwnedFirefox> {
+    if trusted_root_or_refusal(root).is_err() {
+        return Vec::new();
+    }
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut out: Vec<OwnedFirefox> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| is_managed_profile_path(path))
+        .filter_map(|path| {
+            let pid = read_owner_pid_marker(&path)?;
+            kill_grade(&path, pid).ok()?;
+            executable_name(pid)
+                .as_deref()
+                .is_some_and(crate::util::process::is_firefox_executable_name)
+                .then(|| OwnedFirefox {
+                    pid,
+                    profile: path,
+                    root: root.to_path_buf(),
+                })
+        })
+        .collect();
+    out.sort_by_key(|owned| owned.pid);
+    out.dedup_by_key(|owned| owned.pid);
+    out
+}
+
+/// Remove the managed profile of a Firefox `stop` has just stopped.
+///
+/// Confined like every other deletion path: the directory must be a managed
+/// basename under the root that vouched for it, and that root must be the
+/// one this invocation resolves (deletion stays scoped to the configured
+/// root, as in iter-188, even though ownership proof spans both).
+pub(crate) fn remove_stopped_profile(owned: &OwnedFirefox) -> ProfileCleanup {
+    let configured = resolve_profile_root(
+        crate::util::home_override(),
+        dirs::state_dir(),
+        dirs::data_local_dir(),
+    );
+    match configured {
+        Ok(root) if root == owned.root => cleanup_profile_dir_under(&root, &owned.profile),
+        Ok(_) => ProfileCleanup::Skipped(ProfileCleanupSkip::OutsideProfileRoot),
+        Err(_) => ProfileCleanup::Skipped(ProfileCleanupSkip::NoProfileRoot),
+    }
 }
 
 /// Every root a profile ff-rdp created may be sitting under, for the
@@ -748,47 +1013,12 @@ fn root_is_trustworthy(_root: &Path) -> Result<bool, std::io::ErrorKind> {
     Ok(true)
 }
 
-/// Root-parameterised core of [`pid_is_ff_rdp_spawned`] so the ownership gate
-/// can be unit-tested against a temp profile root without touching the real
-/// per-user directory.
+/// Root-parameterised marker/token half of [`pid_is_ff_rdp_spawned`] (no
+/// executable check), so the ownership gate can be unit-tested against a temp
+/// profile root with this test process standing in for Firefox.
+#[cfg(test)]
 fn pid_is_ff_rdp_spawned_under(root: &Path, pid: u32) -> bool {
-    match root_is_trustworthy(root) {
-        Ok(true) => {}
-        Ok(false) => {
-            tracing::warn!(
-                "pid_is_ff_rdp_spawned: refusing to trust {} for ownership proof — it is not \
-                 owned by this process's user, or is writable by group or other, either of \
-                 which would let another account plant an owner-PID marker",
-                root.display()
-            );
-            return false;
-        }
-        // Every `Err` returns the same `false` — there is nothing to scan
-        // either way. The distinction between "root is missing" and "root
-        // exists but its metadata could not be read" is real at the type
-        // level (`root_is_trustworthy`'s return type, and
-        // `root_is_trustworthy_distinguishes_missing_from_untrustworthy`
-        // below), it just does not change this function's behavior: neither
-        // case logs — the warning above only fires for `Ok(false)`, an
-        // *actual* untrustworthy root — so a missing default root under an
-        // isolated `$FF_RDP_HOME` (every live test the 188 work added) stays
-        // silent rather than logging a false "writable by group or other".
-        Err(_) => return false,
-    }
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return false;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !is_managed_profile_path(&path) {
-            continue;
-        }
-        if read_owner_pid_marker(&path) == Some(pid) && owner_liveness(&path) == OwnerLiveness::Live
-        {
-            return true;
-        }
-    }
-    false
+    owned_profile_under(root, pid).is_ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -2101,6 +2331,219 @@ mod tests {
             !pid_is_ff_rdp_spawned_under(root.path(), std::process::id()),
             "a marker whose start token disagrees names a PID ff-rdp no longer \
              owns — it must never authorise a kill"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // `ff-rdp stop`: the kill gate's refusal branches
+    // -----------------------------------------------------------------
+
+    #[allow(clippy::unnecessary_wraps)] // must match the `fn(u32) -> Option<String>` hook
+    fn exe_firefox(_pid: u32) -> Option<String> {
+        Some("firefox".to_owned())
+    }
+
+    #[allow(clippy::unnecessary_wraps)]
+    fn exe_shell(_pid: u32) -> Option<String> {
+        Some("bash".to_owned())
+    }
+
+    fn exe_unknown(_pid: u32) -> Option<String> {
+        None
+    }
+
+    /// Positive control: a managed profile with a real marker pair, under a
+    /// private root, for a process named `firefox` → authorised.
+    #[test]
+    fn unit_stop_authorize_kill_accepts_marker_token_and_firefox() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = seed_fake_profile(root.path(), &"g".repeat(16), Duration::from_secs(1));
+        write_owner_pid_marker(&dir, std::process::id());
+        let owned = authorize_kill_in(
+            &[root.path().to_path_buf()],
+            std::process::id(),
+            exe_firefox,
+        )
+        .expect("a proved, Firefox-named owner must be authorised");
+        assert_eq!(owned.pid, std::process::id());
+        assert_eq!(owned.profile, dir);
+    }
+
+    /// Rule 2 (gap (a) from triage): a marker without a start token used to
+    /// grade `Live` and so authorise a kill. It must refuse — while the prune
+    /// paths still read it as live (they must not delete a running browser's
+    /// profile just because it predates iter-171).
+    #[test]
+    fn unit_stop_refuses_missing_start_token() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = seed_fake_profile(root.path(), &"h".repeat(16), Duration::from_secs(1));
+        std::fs::write(
+            dir.join(OWNER_PID_MARKER),
+            format!("{}\n", std::process::id()),
+        )
+        .expect("write legacy marker");
+        assert_eq!(
+            owner_liveness(&dir),
+            OwnerLiveness::Live,
+            "prune still keeps it"
+        );
+        assert_eq!(
+            authorize_kill_in(
+                &[root.path().to_path_buf()],
+                std::process::id(),
+                exe_firefox
+            ),
+            Err(KillRefusal::MissingStartToken)
+        );
+        assert!(!pid_is_ff_rdp_spawned_under(
+            root.path(),
+            std::process::id()
+        ));
+
+        // A blank token file is the same as none.
+        std::fs::write(dir.join(OWNER_START_MARKER), b"  \n").expect("blank token");
+        assert_eq!(
+            authorize_kill_in(
+                &[root.path().to_path_buf()],
+                std::process::id(),
+                exe_firefox
+            ),
+            Err(KillRefusal::MissingStartToken)
+        );
+    }
+
+    /// Rule 2: a recorded token that disagrees with the live process (a
+    /// recycled PID) refuses.
+    #[test]
+    fn unit_stop_refuses_start_token_mismatch() {
+        let root = tempfile::tempdir().expect("tempdir");
+        seed_recycled_pid_profile(root.path(), &"i".repeat(16));
+        assert_eq!(
+            authorize_kill_in(
+                &[root.path().to_path_buf()],
+                std::process::id(),
+                exe_firefox
+            ),
+            Err(KillRefusal::StartTokenMismatch)
+        );
+    }
+
+    /// Rule 3: a group/world-writable root is never read, even when it holds
+    /// a perfect marker pair for a Firefox-named process.
+    #[cfg(unix)]
+    #[test]
+    fn unit_stop_refuses_untrusted_root() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = seed_fake_profile(root.path(), &"j".repeat(16), Duration::from_secs(1));
+        write_owner_pid_marker(&dir, std::process::id());
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o777))
+            .expect("chmod 0777");
+        let verdict = authorize_kill_in(
+            &[root.path().to_path_buf()],
+            std::process::id(),
+            exe_firefox,
+        );
+        let listed = owned_instances_under(root.path(), exe_firefox);
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("restore 0700");
+        assert_eq!(
+            verdict,
+            Err(KillRefusal::UntrustedRoot(root.path().to_path_buf()))
+        );
+        assert!(listed.is_empty(), "--all must not list it either");
+    }
+
+    /// Rule 4: a process that is not running a Firefox executable refuses,
+    /// whatever its markers say — including when the OS names nothing.
+    #[test]
+    fn unit_stop_refuses_non_firefox_executable() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = seed_fake_profile(root.path(), &"k".repeat(16), Duration::from_secs(1));
+        write_owner_pid_marker(&dir, std::process::id());
+        let roots = [root.path().to_path_buf()];
+        assert_eq!(
+            authorize_kill_in(&roots, std::process::id(), exe_shell),
+            Err(KillRefusal::NotFirefox(Some("bash".to_owned())))
+        );
+        assert_eq!(
+            authorize_kill_in(&roots, std::process::id(), exe_unknown),
+            Err(KillRefusal::NotFirefox(None))
+        );
+        // And the real lookup: this test binary is not Firefox.
+        assert!(matches!(
+            authorize_kill_in(
+                &roots,
+                std::process::id(),
+                crate::util::process::process_executable_name
+            ),
+            Err(KillRefusal::NotFirefox(_))
+        ));
+        assert!(owned_instances_under(root.path(), exe_shell).is_empty());
+    }
+
+    /// Rule 1/7: no marker anywhere is a refusal, and a marker for a PID that
+    /// is no longer running is too.
+    #[test]
+    fn unit_stop_refuses_unmarked_and_dead_owner() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let roots = [root.path().to_path_buf()];
+        assert_eq!(
+            authorize_kill_in(&roots, std::process::id(), exe_firefox),
+            Err(KillRefusal::NoOwnerMarker)
+        );
+        let dead_pid = spawn_and_reap_child_pid();
+        let dir = seed_fake_profile(root.path(), &"l".repeat(16), Duration::from_secs(1));
+        std::fs::write(dir.join(OWNER_PID_MARKER), format!("{dead_pid}\n")).expect("marker");
+        assert_eq!(
+            authorize_kill_in(&roots, dead_pid, exe_firefox),
+            Err(KillRefusal::NotRunning)
+        );
+    }
+
+    /// `--all` lists exactly the proved instances: a good one, not the
+    /// token-less, recycled or unmanaged neighbours.
+    #[test]
+    fn unit_stop_owned_instances_lists_only_proved_owners() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let good = seed_fake_profile(root.path(), &"m".repeat(16), Duration::from_secs(1));
+        write_owner_pid_marker(&good, std::process::id());
+        let legacy = seed_fake_profile(root.path(), &"n".repeat(16), Duration::from_secs(1));
+        std::fs::write(
+            legacy.join(OWNER_PID_MARKER),
+            format!("{}\n", std::process::id()),
+        )
+        .expect("legacy marker");
+        seed_recycled_pid_profile(root.path(), &"o".repeat(16));
+        let unmanaged = root.path().join("my-profile");
+        std::fs::create_dir_all(&unmanaged).expect("unmanaged dir");
+        write_owner_pid_marker(&unmanaged, std::process::id());
+
+        let listed = owned_instances_under(root.path(), exe_firefox);
+        assert_eq!(listed.len(), 1, "{listed:?}");
+        assert_eq!(listed[0].profile, good);
+    }
+
+    /// The most specific refusal across roots wins the message.
+    #[test]
+    fn unit_stop_refusal_prefers_marker_level_reason_across_roots() {
+        let empty = tempfile::tempdir().expect("tempdir");
+        let legacy_root = tempfile::tempdir().expect("tempdir");
+        let dir = seed_fake_profile(legacy_root.path(), &"p".repeat(16), Duration::from_secs(1));
+        std::fs::write(
+            dir.join(OWNER_PID_MARKER),
+            format!("{}\n", std::process::id()),
+        )
+        .expect("legacy marker");
+        let roots = [empty.path().to_path_buf(), legacy_root.path().to_path_buf()];
+        assert_eq!(
+            authorize_kill_in(&roots, std::process::id(), exe_firefox),
+            Err(KillRefusal::MissingStartToken)
+        );
+        assert!(
+            KillRefusal::MissingStartToken
+                .reason()
+                .contains("start token")
         );
     }
 

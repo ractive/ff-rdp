@@ -45,6 +45,7 @@ mod script_runner;
 mod scroll;
 mod snapshot;
 mod sources;
+mod stop;
 mod storage;
 mod styles;
 mod tabs;

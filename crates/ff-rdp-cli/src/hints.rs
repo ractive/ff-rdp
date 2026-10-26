@@ -196,6 +196,11 @@ fn hints_launch(_ctx: &HintContext) -> Vec<Hint> {
             "Navigate to a URL and read the page it lands on",
             "ff-rdp navigate <URL> --with-page --query \"<text>\"",
         ),
+        // Nothing stops a launched Firefox on its own; say how to, up front.
+        Hint::new(
+            "Stop this Firefox and remove its profile when you are done",
+            "ff-rdp stop",
+        ),
     ]
 }
 
@@ -669,6 +674,17 @@ mod tests {
                 navigate.cmd
             );
         }
+    }
+
+    /// `launch` tells the caller how the browser it started is stopped.
+    #[test]
+    fn unit_stop_launch_hints_name_stop() {
+        let hints = generate_hints(&HintContext::new(HintSource::Launch));
+        assert!(
+            hints.iter().any(|h| h.cmd == "ff-rdp stop"),
+            "launch should hint at `ff-rdp stop`; got: {hints:?}"
+        );
+        assert!(hints.len() <= MAX_HINTS);
     }
 
     #[test]

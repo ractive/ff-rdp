@@ -1,5 +1,5 @@
 mod language_initialization;
-mod replace;
+pub(crate) mod replace;
 mod startup;
 
 use std::net::ToSocketAddrs as _;
@@ -837,9 +837,14 @@ fn reject_if_port_occupied(port: u16, hooks: &LaunchHooks) -> Result<(), AppErro
         None => "by another process".to_owned(),
     };
     let replace_hint = if replaceable {
-        "pass --replace to stop the existing instance, "
+        format!(
+            "run `ff-rdp stop --port {port}` to stop the existing instance (or pass --replace to \
+             stop it and launch a new one), "
+        )
     } else {
-        "stop that process yourself (--replace only stops a Firefox ff-rdp launched), "
+        "stop that process yourself (`ff-rdp stop` and --replace only stop a Firefox ff-rdp \
+         launched), "
+            .to_owned()
     };
     Err(AppError::User(format!(
         "port {port} is already in use {detail} — pass --debug-port {suggested} to pick another, \
@@ -1727,6 +1732,7 @@ mod tests {
             panic!("an occupied port must be a user error");
         };
         assert!(msg.contains("pass --replace"), "{msg:?}");
+        assert!(msg.contains("`ff-rdp stop --port 7108`"), "{msg:?}");
 
         let foreign = LaunchHooks {
             pid_is_ff_rdp_spawned: |_pid| false,
@@ -1736,6 +1742,7 @@ mod tests {
             panic!("an occupied port must be a user error");
         };
         assert!(!msg.contains("pass --replace"), "{msg:?}");
+        assert!(!msg.contains("ff-rdp stop --port"), "{msg:?}");
         assert!(msg.contains("--debug-port 7118"), "{msg:?}");
 
         let unknown = LaunchHooks {
