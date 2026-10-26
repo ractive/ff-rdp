@@ -403,9 +403,65 @@ pub fn preexisting_instance_available() -> bool {
 /// line continuation), and a `#[cfg(…)]`
 /// may sit between the `#[ignore]` and the `fn`. Both are handled by scanning
 /// the whole file as one string rather than line-by-line.
+///
+/// A test whose reason is a quarantine (see [`is_quarantine_reason`]) is never
+/// a gated test, whatever env vars the reason also names — it is reported by
+/// [`scan_quarantined`] instead.
 pub fn scan_source(src: &str, module_prefix: Option<&str>) -> Vec<GatedTest> {
-    let mut out = Vec::new();
     let needs_preexisting = source_needs_preexisting_instance(src);
+    scan_ignored_fns(src, module_prefix)
+        .into_iter()
+        .filter(|(reason, _)| !is_quarantine_reason(reason) && reason.contains("FF_RDP_LIVE"))
+        .map(|(reason, full_name)| {
+            let needs_network = reason.contains("FF_RDP_LIVE_NETWORK_TESTS");
+            let needs_sites = reason.contains("FF_RDP_LIVE_SITES_TESTS");
+            let mut needs_live = reason.contains("FF_RDP_LIVE_TESTS");
+            if !needs_live && !needs_network {
+                // Neither literal present despite matching "FF_RDP_LIVE" —
+                // shouldn't happen per the iter-155 audit, but default to
+                // the more conservative requirement rather than silently
+                // treating the test as gate-free.
+                needs_live = true;
+            }
+            GatedTest {
+                full_name,
+                needs_live,
+                needs_network,
+                needs_sites,
+                needs_preexisting,
+            }
+        })
+        .collect()
+}
+
+/// Prefix of an `#[ignore]` reason that quarantines a flaky live test.
+///
+/// CLAUDE.md "Live tests → Flakes" prescribes
+/// `#[ignore = "flaky: see kb/backlog.md"]` for a test that failed once and
+/// passed on re-run. The sweep does not run such a test, but it must not treat
+/// it as a compiled ignored test the scanner dropped either: the nightly of
+/// 2026-10-26 (run 40401331279) aborted in reconciliation on exactly that.
+pub const QUARANTINE_REASON_PREFIX: &str = "flaky:";
+
+/// Is this `#[ignore]` reason a quarantine of a flaky test?
+pub fn is_quarantine_reason(reason: &str) -> bool {
+    reason.trim_start().starts_with(QUARANTINE_REASON_PREFIX)
+}
+
+/// Names of the quarantined (`#[ignore = "flaky: …"]`) test functions in one
+/// file's source, prefixed exactly like [`scan_source`]'s names.
+pub fn scan_quarantined(src: &str, module_prefix: Option<&str>) -> Vec<String> {
+    scan_ignored_fns(src, module_prefix)
+        .into_iter()
+        .filter(|(reason, _)| is_quarantine_reason(reason))
+        .map(|(_, full_name)| full_name)
+        .collect()
+}
+
+/// Every `#[ignore]`-attributed `fn` in `src`, as `(reason, full_name)`.
+/// A bare `#[ignore]` yields an empty reason.
+fn scan_ignored_fns(src: &str, module_prefix: Option<&str>) -> Vec<(String, String)> {
+    let mut out = Vec::new();
     let bytes = src.as_bytes();
     let mut pos = 0usize;
 
@@ -450,30 +506,12 @@ pub fn scan_source(src: &str, module_prefix: Option<&str>) -> Vec<GatedTest> {
             break;
         }
 
-        if reason.contains("FF_RDP_LIVE")
-            && let Some(name) = parse_fn_name(src, scan)
-        {
-            let needs_network = reason.contains("FF_RDP_LIVE_NETWORK_TESTS");
-            let needs_sites = reason.contains("FF_RDP_LIVE_SITES_TESTS");
-            let mut needs_live = reason.contains("FF_RDP_LIVE_TESTS");
-            if !needs_live && !needs_network {
-                // Neither literal present despite matching "FF_RDP_LIVE" —
-                // shouldn't happen per the iter-155 audit, but default to
-                // the more conservative requirement rather than silently
-                // treating the test as gate-free.
-                needs_live = true;
-            }
+        if let Some(name) = parse_fn_name(src, scan) {
             let full_name = match module_prefix {
                 Some(m) => format!("{m}::{name}"),
                 None => name,
             };
-            out.push(GatedTest {
-                full_name,
-                needs_live,
-                needs_network,
-                needs_sites,
-                needs_preexisting,
-            });
+            out.push((reason, full_name));
         }
 
         pos = ignore_start + 1;
@@ -543,7 +581,10 @@ fn parse_fn_name(src: &str, start: usize) -> Option<String> {
 /// Scan every `.rs` file directly inside `dir` (non-recursive, matching
 /// `tests/live/`'s flat layout), module-prefixing each by its file stem
 /// except for `main.rs` / `mod.rs` (which only declare `mod` lines).
-pub fn scan_modules_dir(dir: &Path) -> Result<Vec<GatedTest>> {
+///
+/// Returns the gated tests and, separately, the quarantined test names
+/// ([`scan_quarantined`]).
+pub fn scan_modules_dir(dir: &Path) -> Result<(Vec<GatedTest>, Vec<String>)> {
     let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
         .with_context(|| format!("reading directory {}", dir.display()))?
         .map(|entry| entry.map(|entry| entry.path()))
@@ -555,6 +596,7 @@ pub fn scan_modules_dir(dir: &Path) -> Result<Vec<GatedTest>> {
     files.sort();
 
     let mut out = Vec::new();
+    let mut quarantined = Vec::new();
     for path in files {
         let stem = path
             .file_stem()
@@ -570,8 +612,9 @@ pub fn scan_modules_dir(dir: &Path) -> Result<Vec<GatedTest>> {
             .with_context(|| format!("reading {}", path.display()))?
             .replace("\r\n", "\n");
         out.extend(scan_source(&src, module_prefix.as_deref()));
+        quarantined.extend(scan_quarantined(&src, module_prefix.as_deref()));
     }
-    Ok(out)
+    Ok((out, quarantined))
 }
 
 // ---------------------------------------------------------------------------
@@ -582,6 +625,9 @@ pub struct SweepTarget {
     pub package: String,
     pub test_name: String,
     pub gated: Vec<GatedTest>,
+    /// Quarantined (`#[ignore = "flaky: …"]`) tests: never run by the sweep,
+    /// but reported by name so they stay visible.
+    pub quarantined: Vec<String>,
 }
 
 /// Compare the source-derived gated plan with the ignored tests registered in
@@ -589,13 +635,21 @@ pub struct SweepTarget {
 ///
 /// The compiled list is authoritative for host inclusion: a source test may
 /// be excluded by `#[cfg]` on this host, but a compiled ignored test absent
-/// from the source plan always indicates that the scanner dropped a test.
+/// from the source plan always indicates that the scanner dropped a test —
+/// unless the source quarantines it, in which case it is deliberately not run
+/// and is left out of the returned (runnable) names.
 pub fn reconcile_compiled_corpus(
     source_names: &[String],
+    quarantined_names: &[String],
     compiled_names: &[String],
 ) -> Result<Vec<String>> {
     let source: std::collections::BTreeSet<_> = source_names.iter().cloned().collect();
-    let compiled: std::collections::BTreeSet<_> = compiled_names.iter().cloned().collect();
+    let quarantined: std::collections::BTreeSet<_> = quarantined_names.iter().cloned().collect();
+    let compiled: std::collections::BTreeSet<_> = compiled_names
+        .iter()
+        .filter(|name| !quarantined.contains(*name))
+        .cloned()
+        .collect();
     let missing_from_plan: Vec<_> = compiled.difference(&source).cloned().collect();
 
     if !missing_from_plan.is_empty() {
@@ -676,17 +730,22 @@ fn filter_compiled_target(target: &mut SweepTarget, compiled_names: &[String]) -
         .iter()
         .map(|test| test.full_name.clone())
         .collect();
-    let compiled_names =
-        reconcile_compiled_corpus(&source_names, compiled_names).with_context(|| {
-            format!(
-                "reconciling -p {} --test {}",
-                target.package, target.test_name
-            )
-        })?;
-    let compiled: std::collections::BTreeSet<_> = compiled_names.into_iter().collect();
+    let runnable_names =
+        reconcile_compiled_corpus(&source_names, &target.quarantined, compiled_names)
+            .with_context(|| {
+                format!(
+                    "reconciling -p {} --test {}",
+                    target.package, target.test_name
+                )
+            })?;
+    let runnable: std::collections::BTreeSet<_> = runnable_names.into_iter().collect();
     target
         .gated
-        .retain(|test| compiled.contains(&test.full_name));
+        .retain(|test| runnable.contains(&test.full_name));
+    // Same host-cfg rule for quarantined names: report only what compiled.
+    target
+        .quarantined
+        .retain(|name| compiled_names.contains(name));
     Ok(())
 }
 
@@ -735,12 +794,13 @@ pub fn default_targets(workspace_root: &Path) -> Result<Vec<SweepTarget>> {
     let mut targets = Vec::new();
 
     let cli_live_dir = workspace_root.join("crates/ff-rdp-cli/tests/live");
-    let cli_gated = scan_modules_dir(&cli_live_dir)
+    let (cli_gated, cli_quarantined) = scan_modules_dir(&cli_live_dir)
         .with_context(|| format!("scanning {}", cli_live_dir.display()))?;
     targets.push(SweepTarget {
         package: "ff-rdp-cli".to_owned(),
         test_name: "live".to_owned(),
         gated: cli_gated,
+        quarantined: cli_quarantined,
     });
 
     let core_tests_dir = workspace_root.join("crates/ff-rdp-core/tests");
@@ -770,13 +830,15 @@ pub fn default_targets(workspace_root: &Path) -> Result<Vec<SweepTarget>> {
             .with_context(|| format!("reading {}", path.display()))?
             .replace("\r\n", "\n");
         let gated = scan_source(&src, None);
-        if gated.is_empty() {
+        let quarantined = scan_quarantined(&src, None);
+        if gated.is_empty() && quarantined.is_empty() {
             continue;
         }
         targets.push(SweepTarget {
             package: "ff-rdp-core".to_owned(),
             test_name: stem,
             gated,
+            quarantined,
         });
     }
 
@@ -1891,8 +1953,23 @@ pub fn run(args: Args) -> Result<()> {
     // see *which* tests the count referred to without scrolling back through
     // every tier. Collect them and print them beside the summary too.
     let mut launch_timeout_names: Vec<String> = Vec::new();
+    // Quarantined tests are never run, so they are no tier of
+    // `LIVE_SWEEP_SUMMARY`; they get their own line so they stay visible.
+    let mut quarantined_names: Vec<String> = Vec::new();
 
     for target in &targets {
+        if !target.quarantined.is_empty() {
+            eprintln!(
+                "live-sweep: -p {} --test {}: {} quarantined test(s) (`#[ignore = \"flaky: …\"]`, \
+                 see kb/backlog.md) will NOT run: {}",
+                target.package,
+                target.test_name,
+                target.quarantined.len(),
+                target.quarantined.join(", ")
+            );
+            quarantined_names.extend(target.quarantined.iter().cloned());
+        }
+
         let needs_preexisting = target.gated.iter().any(|g| g.needs_preexisting);
 
         // iter-173 Theme B: re-probe port 6000 immediately before this target,
@@ -2136,6 +2213,14 @@ pub fn run(args: Args) -> Result<()> {
             "LIVE_SWEEP_LAUNCH_TIMEOUT n={} tests={}",
             launch_timeout_names.len(),
             launch_timeout_names.join(", ")
+        );
+    }
+    if !quarantined_names.is_empty() {
+        quarantined_names.sort();
+        println!(
+            "LIVE_SWEEP_QUARANTINED n={} tests={}",
+            quarantined_names.len(),
+            quarantined_names.join(", ")
         );
     }
     if overall_ok {
@@ -3019,10 +3104,80 @@ failures:
     fn test_263_compiled_test_dropped_from_plan_is_named() {
         let source = vec!["live_a".to_owned()];
         let compiled = vec!["live_a".to_owned(), "live_252_missing".to_owned()];
-        let err = reconcile_compiled_corpus(&source, &compiled).unwrap_err();
+        let err = reconcile_compiled_corpus(&source, &[], &compiled).unwrap_err();
         let message = err.to_string();
         assert!(message.contains("missing from plan"), "{message}");
         assert!(message.contains("live_252_missing"), "{message}");
+    }
+
+    /// The nightly of 2026-10-26 (run 40401331279) aborted in reconciliation
+    /// because the one `#[ignore = "flaky: see kb/backlog.md"]` test was a
+    /// compiled ignored test the plan did not name. A quarantined test is
+    /// reconciled as quarantined: no error, and it is not runnable.
+    #[test]
+    fn quarantined_test_is_reconciled_as_quarantined_not_missing() {
+        let src = "#[test]\n#[ignore = \"requires FF_RDP_LIVE_TESTS=1\"]\nfn live_ok() {}\n\n\
+                   #[test]\n#[ignore = \"flaky: see kb/backlog.md\"]\nfn live_flaky() {}\n";
+        let gated = scan_source(src, Some("live_296_triage_easy_batch"));
+        let quarantined = scan_quarantined(src, Some("live_296_triage_easy_batch"));
+        assert_eq!(
+            gated
+                .iter()
+                .map(|t| t.full_name.as_str())
+                .collect::<Vec<_>>(),
+            ["live_296_triage_easy_batch::live_ok"]
+        );
+        assert_eq!(quarantined, ["live_296_triage_easy_batch::live_flaky"]);
+
+        let mut target = SweepTarget {
+            package: "ff-rdp-cli".into(),
+            test_name: "live".into(),
+            gated,
+            quarantined,
+        };
+        let compiled = vec![
+            "live_296_triage_easy_batch::live_flaky".to_owned(),
+            "live_296_triage_easy_batch::live_ok".to_owned(),
+        ];
+        filter_compiled_target(&mut target, &compiled).expect("quarantine must not trip reconcile");
+        assert_eq!(target.gated.len(), 1);
+        assert_eq!(
+            target.quarantined,
+            ["live_296_triage_easy_batch::live_flaky"]
+        );
+        let runnable = reconcile_compiled_corpus(
+            &["live_296_triage_easy_batch::live_ok".to_owned()],
+            &target.quarantined,
+            &compiled,
+        )
+        .unwrap();
+        assert_eq!(runnable, ["live_296_triage_easy_batch::live_ok"]);
+    }
+
+    /// A `flaky:` reason wins over any env-gate names it also mentions.
+    #[test]
+    fn flaky_reason_naming_a_gate_is_still_quarantined() {
+        let src = "#[test]\n#[ignore = \"flaky: needs FF_RDP_LIVE_TESTS=1, see kb/backlog.md\"]\nfn t() {}\n";
+        assert!(scan_source(src, None).is_empty());
+        assert_eq!(scan_quarantined(src, None), ["t"]);
+    }
+
+    /// The quarantine exemption is narrow: an unplanned compiled ignored test
+    /// whose reason is not `flaky:` still fails reconciliation by name, even
+    /// when some other test in the same target is quarantined.
+    #[test]
+    fn non_flaky_unplanned_ignored_test_still_errors() {
+        let src = "#[test]\n#[ignore = \"flaky: see kb/backlog.md\"]\nfn live_flaky() {}\n\n\
+                   #[test]\n#[ignore = \"slow\"]\nfn live_unplanned() {}\n";
+        assert!(scan_source(src, None).is_empty());
+        let quarantined = scan_quarantined(src, None);
+        assert_eq!(quarantined, ["live_flaky"]);
+        let compiled = vec!["live_flaky".to_owned(), "live_unplanned".to_owned()];
+        let err = reconcile_compiled_corpus(&[], &quarantined, &compiled).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("missing from plan"), "{message}");
+        assert!(message.contains("live_unplanned"), "{message}");
+        assert!(!message.contains("live_flaky"), "{message}");
     }
 
     /// A source-only name is a valid host-cfg exclusion. The compiled corpus is
@@ -3061,6 +3216,7 @@ failures:
                     needs_preexisting: false,
                 })
                 .collect(),
+            quarantined: Vec::new(),
         }
     }
 
@@ -3127,7 +3283,7 @@ failures:
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let workspace_root = manifest_dir.join("..").join("..");
         let cli_live_dir = workspace_root.join("crates/ff-rdp-cli/tests/live");
-        let gated = scan_modules_dir(&cli_live_dir).expect("scan_modules_dir");
+        let (gated, _quarantined) = scan_modules_dir(&cli_live_dir).expect("scan_modules_dir");
         let target_name = "live_109_throttle_block::live_navigate_throttle_slow3g_slows_load";
         let target = gated
             .iter()
