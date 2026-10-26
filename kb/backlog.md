@@ -9,7 +9,7 @@ tags: [backlog]
 # Backlog
 
 One line per item, with where it came from. Tick it in the same commit as the fix. This file
-replaces GitHub issues and per-item iteration plans for follow-ups; a plan file is only for real
+replaces per-item iteration plans for follow-ups; a plan file is only for real
 product work that needs design. Keep items to one line — if an item needs more, it is a plan.
 
 ## Product

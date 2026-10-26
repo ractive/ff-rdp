@@ -4,7 +4,7 @@ name: Live Tests
 # kb/research/step-back-2026-10-02.md §5). It runs nightly on `main`, on
 # demand, and at release. A red nightly gets one kb/backlog.md line; a test
 # that fails and passes on one re-run is quarantined with
-# `#[ignore = "flaky: see kb/backlog.md"]` — no GitHub issue, no iteration plan.
+# `#[ignore = "flaky: see kb/backlog.md"]` — never an iteration plan.
 #
 # Third-party-site tests (BBC, Guardian, HN, Wikipedia, MDN, …) additionally
 # need FF_RDP_LIVE_SITES_TESTS=1 and run only in the weekly `sites` job: those

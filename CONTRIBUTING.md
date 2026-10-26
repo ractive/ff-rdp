@@ -91,7 +91,7 @@ skipped=M …` line. `ff-rdp-core` live tests need a Firefox someone else starte
 `preexisting`, not run.
 
 **Flakes.** A live test that fails and then passes on one re-run is quarantined with
-`#[ignore = "flaky: see kb/backlog.md"]` and one `kb/backlog.md` line (no GitHub issue). It does not
+`#[ignore = "flaky: see kb/backlog.md"]` and one `kb/backlog.md` line. It does not
 get an iteration plan or an attribution investigation. A red nightly gets one `kb/backlog.md` line.
 
 Third-party-site tests are never gating: those pages change and go down on their own schedule.
@@ -146,7 +146,7 @@ installed on the runners.
 ## Review rules
 
 - **Every new `pub` item needs a non-test consumer in the same PR.**
-- **Every `TODO`/`FIXME`/`XXX` needs a GitHub issue link, a `WORD-123` ticket, or
+- **Every `TODO`/`FIXME`/`XXX` needs a `kb/backlog.md` line it names, or
   `// allow-todo: <reason>`.**
 - **Spec drift** — a field or method ff-rdp sends that the published Firefox spec does not
   declare — needs `// allow-spec-drift: bug NNNN` on the call site.
@@ -210,7 +210,7 @@ cargo +nightly fuzz run transport_recv_from seeds/transport_recv_from -- -max_to
 ```
 
 When CI reports a crash: download the minimised input from the job artifacts, reproduce with
-`cargo +nightly fuzz run <target> <input>`, open a GitHub issue tagged `fuzz-finding`, fix the
+`cargo +nightly fuzz run <target> <input>`, add a `kb/backlog.md` line, fix the
 parser, then check the input into `fuzz/seeds/<target>/` as a regression seed. See
 `fuzz/README.md`.
 
