@@ -11,9 +11,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::common::{
-    ff_rdp_bin, ff_rdp_launch_command, guard_launched_firefox, live_tests_enabled,
-};
+use crate::common::{ff_rdp_launch_command, guard_launched_firefox, live_tests_enabled};
 
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
@@ -52,7 +50,7 @@ fn live_launch_positional_url_lands_on_the_page() {
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut last = String::new();
     while Instant::now() < deadline {
-        let eval = std::process::Command::new(ff_rdp_bin())
+        let eval = ff_rdp_launch_command()
             .args(["--host", "127.0.0.1", "--port", &port.to_string()])
             .args(["eval", "location.href", "--jq", ".results"])
             .output()

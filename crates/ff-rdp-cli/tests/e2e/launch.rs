@@ -89,7 +89,10 @@ fn e2e_launch_positional_url_conflicts_with_url_flag() {
         support::output_note(&output)
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("cannot be used with"), "{stderr}");
+    assert!(
+        stderr.contains("[URL]") && stderr.contains("--url"),
+        "{stderr}"
+    );
     assert!(!home.path().join(".ff-rdp").exists());
 }
 
