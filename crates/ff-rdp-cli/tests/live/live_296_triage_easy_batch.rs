@@ -197,7 +197,7 @@ fn live_296_full_page_keeps_sticky_header_layout() {
 /// `--output-root DIR` without `-o` writes inside DIR, and `--window-size W×H
 /// --full-page` writes a W-wide PNG taller than H.
 #[test]
-#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+#[ignore = "flaky: see kb/backlog.md"]
 fn live_296_output_root_default_and_window_size_full_page() {
     if !live_tests_enabled() {
         eprintln!(

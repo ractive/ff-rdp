@@ -49,7 +49,7 @@ rather than substituting a local run for it (CI's `stable` may be newer than you
   `bug TBD (<rationale>)` only for a newly-discovered drift's first landing.
 - Every spec method change needs a test.
 - Every new `pub` item needs at least one non-test consumer in the same PR (review rule).
-- Every `TODO`/`FIXME`/`XXX` needs an issue link or `// allow-todo: <reason>` (review rule).
+- Every `TODO`/`FIXME`/`XXX` needs a `kb/backlog.md` line it names, or `// allow-todo: <reason>` (review rule).
 
 ## Live tests
 Env gates: `FF_RDP_LIVE_TESTS=1` (launches headless Firefox locally), `FF_RDP_LIVE_NETWORK_TESTS=1`
@@ -63,8 +63,8 @@ BBC, Guardian, HN, Wikipedia, MDN; weekly CI job only).
   Tests whose gate is unset return early and still print `ok` — set every gate the module's
   `#[ignore]` reasons name before reading the result as a pass.
 - **Flakes:** a live test that fails and then passes on one re-run is quarantined with
-  `#[ignore = "flaky: issue #N"]` plus a GitHub issue. Never an iteration plan, never an
-  "attribution" investigation. A red nightly gets one GitHub issue.
+  `#[ignore = "flaky: see kb/backlog.md"]` plus one `kb/backlog.md` line. Never an iteration plan, never an
+  "attribution" investigation. A red nightly gets one `kb/backlog.md` line.
 
 ## Working with Firefox
 - **Proof:** every behaviour claim in a PR body is backed by a real-Firefox command and its output.
@@ -126,7 +126,7 @@ delegated prompts.
   optional).
 - Plan `status:` is `planned | in-progress | in-review | done | obsolete` — `done`, never
   `completed`.
-- Follow-up work goes in `kb/backlog.md` (one line per item, with the PR it came from), ticked in the same commit as the fix; file a new plan only for product work that needs design. Not GitHub issues. Reports from other projects land in `kb/backlog/issues/` — triage them per its `CLAUDE.md`.
+- Follow-up work goes in `kb/backlog.md` (one line per item, with the PR it came from), ticked in the same commit as the fix; file a new plan only for product work that needs design. Reports from other projects land in `kb/backlog/issues/` — triage them per its `CLAUDE.md`.
 
 Why the process was cut back on 2026-10-02: `kb/research/step-back-2026-10-02.md` and
 `kb/discipline-rationale.md`. Contributor details: `CONTRIBUTING.md`. The repo has no pre-commit

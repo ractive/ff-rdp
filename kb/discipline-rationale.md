@@ -76,7 +76,7 @@ them.
 
 ## Why there is no `check-todo-annotations` and no pre-commit hook
 
-The "every TODO/FIXME/XXX carries an issue link or `// allow-todo: <reason>`" rule is also a review
+The "every TODO/FIXME/XXX names a `kb/backlog.md` line or carries `// allow-todo: <reason>`" rule is also a review
 rule. The gate and the `.githooks/pre-commit` that duplicated it both went in iter-162a, having
 guarded an empty set — 0 hits in `crates/ff-rdp-{core,cli}/src` — for their entire lifetime.
 
@@ -159,7 +159,7 @@ numbers. The reset removed, in one PR:
   only the live tests for touched modules run;
 - the flake-attribution rules ("every red gets an owner plan", "an isolated pass is not
   evidence", "no retry, no timeout widening") — replaced by: fails, passes on one re-run →
-  `#[ignore = "flaky: issue #N"]` plus a GitHub issue;
+  `#[ignore = "flaky: see kb/backlog.md"]` plus a `kb/backlog.md` line;
 - the carry-over sweep, the `iteration-close` skill, the dogfood-script gate
   (`check-dogfood-script`, `tools/lint-dogfood-script.sh`) and the ralph-loop mirror rule;
 - the `tests/iter_*_harness_*.rs` honesty scans and the wall-clock-vs-reported timing bounds in
