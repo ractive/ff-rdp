@@ -544,7 +544,7 @@ dependencies = [
 
 [[package]]
 name = "ff-rdp-cli"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -582,7 +582,7 @@ dependencies = [
 
 [[package]]
 name = "ff-rdp-core"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "dashmap",
  "regex",
