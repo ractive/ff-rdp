@@ -134,7 +134,7 @@ pub(crate) fn run_with_network(
     // still live, then drain again briefly so the requests the click triggers
     // land in this invocation's capture.
     let consent = if auto_consent {
-        let c = detect_and_accept_on(&mut ctx);
+        let c = detect_and_accept_on(&mut ctx, Duration::from_millis(cli.timeout));
         let post = drain_network_events_timed(
             ctx.transport_mut(),
             Duration::from_millis(CONSENT_POST_DRAIN_MS),
@@ -274,10 +274,20 @@ pub(crate) fn run_with_network(
     let wait_result = wait_after_navigate(&mut ctx, wait_opts)?;
     let wait_for_result = run_wait_for_predicates(&mut ctx, wait_opts)?;
 
+    // Consent-overlay probe: after the `--auto-consent` step and the waits, so
+    // the warning describes the page this command hands back.
+    let overlay = {
+        let console_actor = ctx.target().console_actor.clone();
+        crate::commands::consent::probe_overlay(&mut ctx, &console_actor)
+    };
+
     let mut result = json!({
         "navigated": url,
         "network": network_entries,
     });
+    if let Some(overlay) = &overlay {
+        crate::commands::consent::attach_overlay_warning(&mut result, overlay);
+    }
     if let Some(ref ci) = commit_info
         && let Some(obj) = result.as_object_mut()
     {
@@ -326,7 +336,8 @@ pub(crate) fn run_with_network(
     );
     let envelope = output::envelope(&result, 1, &meta);
 
-    let hint_ctx = HintContext::new(HintSource::Navigate);
+    let hint_ctx = HintContext::new(HintSource::Navigate)
+        .with_consent_overlay(overlay.as_ref().map(crate::commands::consent::ConsentOverlay::cmp));
     OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))?;
     crate::commands::page_view::render_text_section(page_text.as_ref());
     Ok(())

@@ -13,8 +13,21 @@
 //! Wired into two entry points:
 //! - `ff-rdp consent accept` — explicit, on-demand.
 //! - `ff-rdp navigate --auto-consent` — best-effort, post-navigate.
+//!
+//! An accept click is not a dismissal: consentmanager hides `#cmpbox` and
+//! lifts its `body { overflow: hidden }` scroll lock on a later task, so a
+//! `screenshot` taken right after the click still showed the banner. After a
+//! click, [`wait_for_dismissal`] polls the overlay until it is hidden, bounded
+//! by the command's `--timeout` (2026-10-26 consent follow-up).
+//!
+//! The same tables also drive a read-only overlay probe
+//! ([`overlay_probe_expr`]) that `navigate`, `screenshot` and `scroll` use to
+//! warn that a known banner is still covering the page and to point at
+//! `ff-rdp consent accept`.
 
-use ff_rdp_core::{Grip, WebConsoleActor};
+use std::time::{Duration, Instant};
+
+use ff_rdp_core::{ActorId, Grip, WebConsoleActor};
 use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
@@ -30,7 +43,7 @@ use super::connect_tab::{ConnectedTab, connect_and_get_target};
 /// (`allow_no_cmp`) restores exit 0 for the no-CMP outcome only.
 pub fn run(cli: &Cli, allow_no_cmp: bool) -> Result<(), AppError> {
     let mut ctx = connect_and_get_target(cli)?;
-    let result = detect_and_accept(&mut ctx)?;
+    let result = detect_and_accept(&mut ctx, Duration::from_millis(cli.timeout))?;
     let status = status_of(&result);
 
     let mut meta = json!({});
@@ -89,6 +102,13 @@ fn consent_exit_error(
             "a known consent-management platform was detected, but acceptance could not be confirmed.\n\
              hint: to act on a known control, use \
              `ff-rdp click --frame <url-substring> <selector>`."
+                .to_owned()
+        }
+        ConsentStatus::ClickedNotDismissed => {
+            "the consent banner's accept control was clicked, but the banner was still visible \
+             when --timeout ran out — it was not dismissed.\n\
+             hint: retry with a longer --timeout, or check what covers the page with \
+             `ff-rdp screenshot`."
                 .to_owned()
         }
         ConsentStatus::NoCmpDetected => {
@@ -151,6 +171,11 @@ struct NativeCmpEntry {
     /// CSS selector for the accept control, evaluated against the top
     /// document.
     selector: &'static str,
+    /// CSS selector for the element whose visibility *is* the banner: the
+    /// overlay probe reports it, and an accept is only `accepted` once it is
+    /// hidden. Where the banner's container is not known, the accept control
+    /// itself stands in (it disappears with the banner).
+    overlay_selector: &'static str,
 }
 
 impl NativeCmpEntry {
@@ -186,11 +211,17 @@ const NATIVE_CMP_TABLE: &[NativeCmpEntry] = &[
         name: "bbc",
         host_url_substrings: &["bbc.com", "bbc.co.uk"],
         selector: "#bbccookies-continue-button",
+        overlay_selector: "#bbccookies-continue-button",
     },
+    // 2026-10-26: `#cmpbox` (the dialog) gets `display: none` and the body's
+    // inline `overflow: hidden` becomes `overflow: auto` between ~25 ms and
+    // ~1 s after the click (measured on the comparis intranet page), not in
+    // the click's own task.
     NativeCmpEntry {
         name: "consentmanager",
         host_url_substrings: &[],
         selector: "#cmpbox a.cmpboxbtnyes",
+        overlay_selector: "#cmpbox",
     },
 ];
 
@@ -218,8 +249,12 @@ pub(crate) struct ConsentResult {
 /// cannot drift into separate wordings for the same outcome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ConsentStatus {
-    /// A known CMP was found and its accept control was clicked.
+    /// A known CMP was found, its accept control was clicked, and the banner
+    /// was then observed hidden.
     Accepted,
+    /// The accept control was clicked, but the banner was still visible when
+    /// the settle budget (`--timeout`) ran out. `action` is `"clicked"`.
+    ClickedNotDismissed,
     /// A known CMP was recognised, but acceptance was not confirmed. This
     /// includes ambiguous evaluation failures after a possible partial action.
     DetectedNotActioned,
@@ -231,6 +266,7 @@ impl ConsentStatus {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Accepted => "accepted",
+            Self::ClickedNotDismissed => "clicked_not_dismissed",
             Self::DetectedNotActioned => "detected_not_actioned",
             Self::NoCmpDetected => "no_cmp_detected",
         }
@@ -241,6 +277,7 @@ impl ConsentStatus {
     fn error_type(self) -> Option<&'static str> {
         match self {
             Self::Accepted => None,
+            Self::ClickedNotDismissed => Some("consent_not_dismissed"),
             Self::DetectedNotActioned => Some("consent_not_actioned"),
             Self::NoCmpDetected => Some("consent_no_cmp"),
         }
@@ -260,6 +297,7 @@ impl ConsentResult {
     /// disagree about the same pass.
     fn status(&self) -> ConsentStatus {
         match (self.cmp, self.action) {
+            (Some(_), Some(ACTION_CLICKED)) => ConsentStatus::ClickedNotDismissed,
             (Some(_), Some(_)) => ConsentStatus::Accepted,
             (Some(_), None) => ConsentStatus::DetectedNotActioned,
             (None, _) => ConsentStatus::NoCmpDetected,
@@ -285,6 +323,7 @@ impl ConsentResult {
 fn status_of(result: &Value) -> ConsentStatus {
     match result.get("status").and_then(Value::as_str) {
         Some("accepted") => ConsentStatus::Accepted,
+        Some("clicked_not_dismissed") => ConsentStatus::ClickedNotDismissed,
         Some("detected_not_actioned") => ConsentStatus::DetectedNotActioned,
         _ => ConsentStatus::NoCmpDetected,
     }
@@ -415,7 +454,7 @@ fn try_native_cmp(
             AcceptAttempt::Accepted => {
                 return Ok(Some(ConsentResult {
                     cmp: Some(entry.name),
-                    action: Some("accepted"),
+                    action: Some(ACTION_ACCEPTED),
                 }));
             }
             // An any-host probe runs on pages that never had this CMP, so an
@@ -451,17 +490,28 @@ fn try_native_cmp(
 /// Returns `{"cmp": "<name>", "action": null}` when a CMP frame is found but
 /// acceptance could not be confirmed (including an ambiguous partial action).
 /// These keys remain present for every outcome, never omitted.
-/// Returns `{"cmp": "<name>", "action": "accepted"}` on success.
-pub(crate) fn detect_and_accept(ctx: &mut ConnectedTab) -> Result<Value, AppError> {
+/// Returns `{"cmp": "<name>", "action": "accepted"}` once the click landed and
+/// the banner was then observed hidden, and `{"cmp": "<name>", "action":
+/// "clicked"}` (status `clicked_not_dismissed`) when it was still visible after
+/// `settle_budget` — see [`settle_action`].
+pub(crate) fn detect_and_accept(
+    ctx: &mut ConnectedTab,
+    settle_budget: Duration,
+) -> Result<Value, AppError> {
     // One frame-target enumeration per connection — see `fetch_frame_targets`.
     let targets = crate::commands::frame_targets::fetch_frame_targets(ctx)?;
+    let top = targets.iter().find(|t| t.is_top_level);
+    let top_console = top.and_then(|t| t.console_actor.clone());
 
     // iter-144 Theme C: try the same-origin table before the iframe table —
     // see NATIVE_CMP_TABLE's doc comment for why order matters on BBC.
-    if let Some(top) = targets.iter().find(|t| t.is_top_level)
+    if let Some(top) = top
         && let (Some(console_actor), Some(url)) = (&top.console_actor, &top.url)
-        && let Some(result) = try_native_cmp(ctx, console_actor, url)?
+        && let Some(mut result) = try_native_cmp(ctx, console_actor, url)?
     {
+        if let (Some(cmp), Some(ACTION_ACCEPTED)) = (result.cmp, result.action) {
+            result.action = Some(settle_action(ctx, console_actor, cmp, settle_budget));
+        }
         return Ok(result.to_json());
     }
 
@@ -481,7 +531,15 @@ pub(crate) fn detect_and_accept(ctx: &mut ConnectedTab) -> Result<Value, AppErro
         };
         let action = match evaluate_accept(ctx, console_actor, &js)? {
             AcceptAttempt::Miss => continue,
-            AcceptAttempt::Accepted => Some("accepted"),
+            // The iframe CMP has the same race as the native one: the click
+            // runs in the CMP frame, and the top document removes or hides
+            // that frame later. Settle on the top document's view of it.
+            // Without a top console there is nothing to observe it with, so
+            // the click result stands, as before.
+            AcceptAttempt::Accepted => Some(match &top_console {
+                Some(top_console) => settle_action(ctx, top_console, cmp_name, settle_budget),
+                None => ACTION_ACCEPTED,
+            }),
             AcceptAttempt::Unconfirmed => None,
         };
         return Ok(ConsentResult {
@@ -515,6 +573,342 @@ fn matching_native_cmps(url: &str) -> impl Iterator<Item = &'static NativeCmpEnt
     NATIVE_CMP_TABLE.iter().filter(move |e| {
         e.host_url_substrings.is_empty() || e.host_url_substrings.iter().any(|s| lower.contains(s))
     })
+}
+
+// ── settle: an accept is a dismissal only once the banner is hidden ─────────
+
+/// `action` of a click whose banner was then observed hidden.
+const ACTION_ACCEPTED: &str = "accepted";
+/// `action` of a click whose banner was still visible when the settle budget
+/// ran out (status `clicked_not_dismissed`).
+const ACTION_CLICKED: &str = "clicked";
+
+/// How often the settle loop re-reads the overlay.
+const SETTLE_POLL: Duration = Duration::from_millis(100);
+
+/// How long the settle loop keeps waiting for a scroll lock to lift once the
+/// overlay itself is hidden. Bounded separately from `--timeout` because a
+/// page may keep `overflow: hidden` for reasons of its own; the banner being
+/// gone is what makes the accept `accepted`.
+const UNLOCK_GRACE: Duration = Duration::from_secs(2);
+
+/// One read of the overlay the settle loop is waiting on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SettleSample {
+    /// The banner element is shown and intersects the viewport.
+    visible: bool,
+    /// `<html>` or `<body>` has `overflow-y: hidden`.
+    scroll_locked: bool,
+}
+
+/// What the settle loop concluded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Settle {
+    /// The overlay was observed hidden. `scroll_locked` is whether the page
+    /// was still scroll-locked when the loop stopped waiting for the lock.
+    Dismissed { scroll_locked: bool },
+    /// The overlay was still visible (or could not be read) at the deadline.
+    StillVisible,
+}
+
+/// Poll `sample` until the overlay is hidden, within `budget`.
+///
+/// Once the overlay is hidden, keep polling up to `unlock_grace` longer (still
+/// inside `budget`) for the scroll lock to lift, so the caller's next `scroll`
+/// or `screenshot` does not see a page that is still frozen. A sample of
+/// `None` (the evaluation failed) counts as "not yet hidden": an unreadable
+/// overlay is not evidence that it went away.
+fn wait_for_dismissal(
+    mut sample: impl FnMut() -> Option<SettleSample>,
+    budget: Duration,
+    poll: Duration,
+    unlock_grace: Duration,
+) -> Settle {
+    let deadline = Instant::now() + budget;
+    let mut hidden_since: Option<Instant> = None;
+    loop {
+        let read = sample();
+        let now = Instant::now();
+        match read {
+            Some(SettleSample {
+                visible: false,
+                scroll_locked: false,
+            }) => {
+                return Settle::Dismissed {
+                    scroll_locked: false,
+                };
+            }
+            Some(SettleSample { visible: false, .. }) => {
+                let since = *hidden_since.get_or_insert(now);
+                if now >= deadline || now.duration_since(since) >= unlock_grace {
+                    return Settle::Dismissed {
+                        scroll_locked: true,
+                    };
+                }
+            }
+            _ => {
+                hidden_since = None;
+                if now >= deadline {
+                    return Settle::StillVisible;
+                }
+            }
+        }
+        std::thread::sleep(poll.min(deadline.saturating_duration_since(now)));
+    }
+}
+
+/// Wait for `cmp`'s overlay to hide after its accept control was clicked, and
+/// return the `action` the result should carry.
+fn settle_action(
+    ctx: &mut ConnectedTab,
+    top_console: &ActorId,
+    cmp: &'static str,
+    budget: Duration,
+) -> &'static str {
+    let js = format!("JSON.stringify({})", overlay_probe_expr(Some(cmp)));
+    let settle = wait_for_dismissal(
+        || {
+            let result = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), top_console, &js)
+                .ok()?;
+            if result.exception.is_some() {
+                return None;
+            }
+            let state = overlay_state_from_grip(&result.result)?;
+            Some(SettleSample {
+                visible: state.visible,
+                scroll_locked: state.scroll_locked,
+            })
+        },
+        budget,
+        SETTLE_POLL,
+        UNLOCK_GRACE,
+    );
+    tracing::debug!(cmp, ?settle, "consent: settle after accept click");
+    match settle {
+        Settle::Dismissed { .. } => ACTION_ACCEPTED,
+        Settle::StillVisible => ACTION_CLICKED,
+    }
+}
+
+// ── overlay probe: is a known banner covering the page right now? ───────────
+
+/// Marker embedded in the overlay probe so a reader of a protocol log (or a
+/// mock server) can tell it from the accept-click JS.
+pub(crate) const OVERLAY_PROBE_MARKER: &str = "ff-rdp:consent-overlay-probe";
+
+/// The command every consent-overlay warning and hint points at.
+pub(crate) const CONSENT_ACCEPT_CMD: &str = "ff-rdp consent accept";
+
+/// The `warnings[].type` of a consent-overlay warning.
+const OVERLAY_WARNING_TYPE: &str = "consent_overlay";
+
+/// The `{natives, frames}` tables the probe JS walks, as a JS literal. With
+/// `only`, just that CMP's entry (the settle loop watches one banner).
+fn overlay_tables_js(only: Option<&str>) -> String {
+    let keep = |name: &str| only.is_none_or(|o| o == name);
+    let natives: Vec<Value> = NATIVE_CMP_TABLE
+        .iter()
+        .filter(|e| keep(e.name))
+        .map(|e| json!({"name": e.name, "hosts": e.host_url_substrings, "sel": e.overlay_selector}))
+        .collect();
+    let frames: Vec<Value> = CMP_TABLE
+        .iter()
+        .filter(|e| keep(e.name))
+        .map(|e| json!({"name": e.name, "subs": e.frame_url_substrings}))
+        .collect();
+    json!({"natives": natives, "frames": frames}).to_string()
+}
+
+/// A JS expression (no trailing semicolon) evaluating to `{cmp, visible,
+/// scroll_locked}` for the known CMPs in [`NATIVE_CMP_TABLE`] and
+/// [`CMP_TABLE`] (or only `only`'s entry).
+///
+/// - `cmp`: the first CMP whose overlay is shown and intersects the viewport,
+///   else the first whose overlay merely exists, else `null`. A native CMP's
+///   overlay is its `overlay_selector`; an iframe CMP's is any `<iframe>` in
+///   the top document whose `src` matches its `frame_url_substrings`.
+/// - `visible`: whether `cmp` is the shown one.
+/// - `scroll_locked`: `<html>` or `<body>` has `overflow-y: hidden`.
+///
+/// Read-only, no frame-target enumeration: one evaluation in the top document,
+/// cheap enough to fold into JS a command already runs (`scroll`) or to run
+/// once after `navigate` / before `screenshot`.
+pub(crate) fn overlay_probe_expr(only: Option<&str>) -> String {
+    let tables = overlay_tables_js(only);
+    format!(
+        r"(function() {{ /* {OVERLAY_PROBE_MARKER} */
+  var t = {tables};
+  function shown(el) {{
+    var cs = getComputedStyle(el);
+    if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+    var r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0 &&
+      r.top < window.innerHeight && r.left < window.innerWidth;
+  }}
+  function lock(el) {{ return !!el && getComputedStyle(el).overflowY === 'hidden'; }}
+  var href = String(location.href).toLowerCase();
+  var present = null, visible = null;
+  function note(name, el) {{
+    if (!present) present = name;
+    if (!visible && shown(el)) visible = name;
+  }}
+  t.natives.forEach(function(n) {{
+    if (n.hosts.length && !n.hosts.some(function(h) {{ return href.indexOf(h) !== -1; }})) return;
+    var el = document.querySelector(n.sel);
+    if (el) note(n.name, el);
+  }});
+  var frames = document.querySelectorAll('iframe');
+  t.frames.forEach(function(f) {{
+    for (var i = 0; i < frames.length; i++) {{
+      var src = String(frames[i].src || '').toLowerCase();
+      if (f.subs.some(function(s) {{ return src.indexOf(s) !== -1; }})) note(f.name, frames[i]);
+    }}
+  }});
+  return {{cmp: visible || present, visible: !!visible,
+    scroll_locked: lock(document.documentElement) || lock(document.body)}};
+}})()"
+    )
+}
+
+/// The probe's raw reading, as parsed from its JSON.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+struct OverlayState {
+    cmp: Option<String>,
+    #[serde(default)]
+    visible: bool,
+    #[serde(default)]
+    scroll_locked: bool,
+}
+
+fn overlay_state_from_value(value: &Value) -> Option<OverlayState> {
+    // The standalone probe returns `JSON.stringify(...)`, i.e. a string; the
+    // folded form (`scroll`) is already an object inside the command's JSON.
+    match value {
+        Value::String(s) => serde_json::from_str(s).ok(),
+        Value::Object(_) => serde_json::from_value(value.clone()).ok(),
+        _ => None,
+    }
+}
+
+fn overlay_state_from_grip(grip: &Grip) -> Option<OverlayState> {
+    match grip {
+        Grip::Value(v) => overlay_state_from_value(v),
+        _ => None,
+    }
+}
+
+/// A known CMP banner that is covering the page or holding its scroll lock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ConsentOverlay {
+    cmp: String,
+    visible: bool,
+    scroll_locked: bool,
+}
+
+impl ConsentOverlay {
+    /// Warn when a known CMP is present and either visible or the page is
+    /// scroll-locked (consentmanager locks `body` while `#cmpbox` is up).
+    fn from_state(state: OverlayState) -> Option<Self> {
+        let cmp = state.cmp?;
+        (state.visible || state.scroll_locked).then_some(Self {
+            cmp,
+            visible: state.visible,
+            scroll_locked: state.scroll_locked,
+        })
+    }
+
+    pub(crate) fn cmp(&self) -> &str {
+        &self.cmp
+    }
+
+    /// The `results.warnings[]` entry for this overlay.
+    fn warning(&self) -> Value {
+        let what = match (self.visible, self.scroll_locked) {
+            (true, true) => "is covering the page and has locked scrolling",
+            (true, false) => "is covering the page",
+            _ => "has locked scrolling",
+        };
+        json!({
+            "type": OVERLAY_WARNING_TYPE,
+            "consent_overlay": self.cmp,
+            "visible": self.visible,
+            "scroll_locked": self.scroll_locked,
+            "message": format!(
+                "a {} consent banner {what}: screenshots show it, clicks may land on it and \
+                 scrolling may not move the page. Dismiss it with `{CONSENT_ACCEPT_CMD}`.",
+                self.cmp
+            ),
+            "hint": CONSENT_ACCEPT_CMD,
+        })
+    }
+}
+
+/// Run the overlay probe on `console_actor` (the top document's console).
+///
+/// Best-effort: any failure — a dead actor, an exception, an unexpected
+/// result — is `None`, because the probe only decides whether to add a
+/// warning and must never fail the command it rides on.
+pub(crate) fn probe_overlay(
+    ctx: &mut ConnectedTab,
+    console_actor: &ActorId,
+) -> Option<ConsentOverlay> {
+    let js = format!("JSON.stringify({})", overlay_probe_expr(None));
+    let result = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, &js).ok()?;
+    if result.exception.is_some() {
+        return None;
+    }
+    ConsentOverlay::from_state(overlay_state_from_grip(&result.result)?)
+}
+
+/// Remove the folded probe's `consent_overlay` field from a command's JS
+/// result and return the overlay it reports, if any (`scroll`).
+pub(crate) fn take_overlay_field(results: &mut Value) -> Option<ConsentOverlay> {
+    let raw = results.as_object_mut()?.remove(OVERLAY_WARNING_TYPE)?;
+    ConsentOverlay::from_state(overlay_state_from_value(&raw)?)
+}
+
+/// Append `overlay`'s warning to `results.warnings` (created when absent).
+pub(crate) fn attach_overlay_warning(results: &mut Value, overlay: &ConsentOverlay) {
+    let Some(obj) = results.as_object_mut() else {
+        return;
+    };
+    let warnings = obj
+        .entry("warnings")
+        .or_insert_with(|| Value::Array(Vec::new()));
+    if let Some(list) = warnings.as_array_mut() {
+        list.push(overlay.warning());
+    }
+}
+
+/// The CMP named by a consent-overlay warning in `results.warnings`, for the
+/// command's hint context.
+pub(crate) fn overlay_cmp_in(results: &Value) -> Option<&str> {
+    results
+        .get("warnings")?
+        .as_array()?
+        .iter()
+        .find(|w| w.get("type").and_then(Value::as_str) == Some(OVERLAY_WARNING_TYPE))?
+        .get(OVERLAY_WARNING_TYPE)?
+        .as_str()
+}
+
+/// Drop the consent-overlay warning from `results.warnings` (and the key when
+/// it empties) — for `navigate --auto-consent`, whose accept ran after the
+/// probe and dismissed the banner the warning describes.
+pub(crate) fn clear_overlay_warning(results: &mut Value) {
+    let Some(obj) = results.as_object_mut() else {
+        return;
+    };
+    let empty = match obj.get_mut("warnings").and_then(Value::as_array_mut) {
+        Some(list) => {
+            list.retain(|w| w.get("type").and_then(Value::as_str) != Some(OVERLAY_WARNING_TYPE));
+            list.is_empty()
+        }
+        None => false,
+    };
+    if empty {
+        obj.remove("warnings");
+    }
 }
 
 #[cfg(test)]

@@ -499,16 +499,10 @@ pub fn run_core(
     };
 
     // This connection's target and navigation latch do not escape run_core.
-    // Refresh only when a postcommit consumer will use them; plain committed
-    // navigation can return its captured result and drop the connection. Keep
-    // no-wait's existing sequence because it has not established a commit.
-    if wait_opts.no_wait
-        || wait_opts.has_condition()
-        || !wait_opts.wait_for.is_empty()
-        || page_args.with_page
-    {
-        refresh_console_actor(&mut ctx);
-    }
+    // Every route refreshes them now: a committed navigation has at least one
+    // postcommit consumer, the consent-overlay probe below, and no-wait keeps
+    // its existing sequence.
+    refresh_console_actor(&mut ctx);
 
     // iter-295: `--wait-idle` runs after the readiness wait above and before
     // every predicate below. Clap rejects it with `--no-wait`, so a commit
@@ -528,6 +522,17 @@ pub fn run_core(
 
     // Parse and run --wait-for predicates after commit.
     let wait_for_result = run_wait_for_predicates(&mut ctx, wait_opts)?;
+
+    // 2026-10-26 consent follow-up: one read-only probe for a known CMP banner
+    // covering the page, so the caller learns about `ff-rdp consent accept`
+    // before its screenshot shows the banner. Skipped under --no-wait: the
+    // new document has not committed, and the old one is not what was asked.
+    let overlay = if wait_opts.no_wait {
+        None
+    } else {
+        let console_actor = ctx.target().console_actor.clone();
+        super::consent::probe_overlay(&mut ctx, &console_actor)
+    };
 
     // iter-138 Theme A: `status` is always present, defaulting to `null` —
     // consistent with iter-128's always-present-nullable-key convention.
@@ -566,6 +571,9 @@ pub fn run_core(
         && let Some(obj) = result.as_object_mut()
     {
         obj.insert("wait_for".to_string(), wf);
+    }
+    if let Some(overlay) = &overlay {
+        super::consent::attach_overlay_warning(&mut result, overlay);
     }
 
     // iter-210 Theme A: `--with-page`. Collected here, last, and on the
@@ -622,6 +630,11 @@ pub fn run(
     )?;
     if auto_consent {
         merge_auto_consent(cli, &mut result);
+        // The probe in `run_core` ran before this accept. An `accepted` status
+        // means the banner was then observed hidden, so its warning is stale.
+        if result.pointer("/consent/status").and_then(Value::as_str) == Some("accepted") {
+            super::consent::clear_overlay_warning(&mut result);
+        }
     }
     if defer_with_page {
         let mut ctx = connect_and_get_target(cli)?;
@@ -638,7 +651,8 @@ pub fn run(
     );
     let envelope = output::envelope(&result, 1, &meta);
 
-    let hint_ctx = HintContext::new(HintSource::Navigate);
+    let hint_ctx = HintContext::new(HintSource::Navigate)
+        .with_consent_overlay(super::consent::overlay_cmp_in(&result));
     OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))?;
     super::page_view::render_text_section(page_text.as_ref());
     Ok(())

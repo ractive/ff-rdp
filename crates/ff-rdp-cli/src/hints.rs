@@ -63,6 +63,9 @@ pub enum HintSource {
     PageText,
     Eval,
     Inspect,
+    /// `scroll` (window scrolls): no follow-ups of its own; carries only the
+    /// consent-overlay hint when a banner is up.
+    Scroll,
 }
 
 /// Context gathered by a command for hint generation.
@@ -90,6 +93,10 @@ pub struct HintContext {
     /// The debug port the command talked to, for hints that must name it
     /// (`launch`'s `ff-rdp stop --port N`).
     pub(crate) port: Option<u16>,
+    /// A known consent banner (CMP name) the command saw covering the page or
+    /// holding its scroll lock. Leads every source's hints with
+    /// `ff-rdp consent accept` (2026-10-26 consent follow-up).
+    pub(crate) consent_overlay: Option<String>,
 }
 
 impl HintContext {
@@ -103,7 +110,14 @@ impl HintContext {
             storage_type: None,
             capped_sample: None,
             port: None,
+            consent_overlay: None,
         }
+    }
+
+    /// Record the consent banner the command saw, if any.
+    pub fn with_consent_overlay(mut self, cmp: Option<&str>) -> Self {
+        self.consent_overlay = cmp.map(str::to_owned);
+        self
     }
 
     pub fn with_port(mut self, port: u16) -> Self {
@@ -180,8 +194,25 @@ pub fn generate_hints(ctx: &HintContext) -> Vec<Hint> {
         HintSource::PageText => hints_page_text(ctx),
         HintSource::Eval => hints_eval(ctx),
         HintSource::Inspect => hints_inspect(ctx),
+        HintSource::Scroll => Vec::new(),
     };
-    hints.into_iter().take(MAX_HINTS).collect()
+    consent_overlay_hint(ctx)
+        .into_iter()
+        .chain(hints)
+        .take(MAX_HINTS)
+        .collect()
+}
+
+/// The hint that leads when a known consent banner covers the page: every
+/// other suggestion (screenshot, click, scroll) acts on a page the banner is
+/// in front of.
+fn consent_overlay_hint(ctx: &HintContext) -> Option<Hint> {
+    ctx.consent_overlay.as_deref().map(|cmp| {
+        Hint::new(
+            format!("Dismiss the {cmp} consent banner covering the page"),
+            crate::commands::consent::CONSENT_ACCEPT_CMD,
+        )
+    })
 }
 
 // ---------------------------------------------------------------------------

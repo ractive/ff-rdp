@@ -71,6 +71,14 @@ fn finalize_scroll(
     mut meta: Value,
     page_args: &crate::cli::args::PageViewArgs,
 ) -> Result<(), AppError> {
+    // The window scrolls (`to`, `by`, `top`, `bottom`) fold the consent-overlay
+    // probe into their own JS as `consent_overlay`; lift it out into a warning.
+    // Under consentmanager's `body { overflow: hidden }` the scroll does not
+    // move the page, and nothing else in the result says why.
+    let overlay = super::consent::take_overlay_field(&mut result);
+    if let Some(overlay) = &overlay {
+        super::consent::attach_overlay_warning(&mut result, overlay);
+    }
     if page_args.with_page {
         super::page_view::attach(cli, ctx, &mut result, Some(cli.timeout), page_args)?;
     }
@@ -84,7 +92,9 @@ fn finalize_scroll(
     );
     let envelope = output::envelope(&result, 1, &meta);
 
-    OutputPipeline::from_cli(cli)?.finalize(&envelope)?;
+    let hint_ctx = crate::hints::HintContext::new(crate::hints::HintSource::Scroll)
+        .with_consent_overlay(overlay.as_ref().map(super::consent::ConsentOverlay::cmp));
+    OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))?;
     super::page_view::render_text_section(page_text.as_ref());
     Ok(())
 }
@@ -205,6 +215,7 @@ pub fn run_by(cli: &Cli, dx: i64, dy: Option<i64>, opts: ScrollByOptions) -> Res
 /// JS for [`run_to`]: scroll the matched element into view and report the
 /// resulting viewport and rect.
 fn scroll_to_js(escaped: &str, selector_lit: &str, block_spec: &str, behavior: &str) -> String {
+    let overlay = super::consent::overlay_probe_expr(None);
     format!(
         r"(function() {{
   var el = document.querySelector('{escaped}');
@@ -217,7 +228,8 @@ fn scroll_to_js(escaped: &str, selector_lit: &str, block_spec: &str, behavior: &
     selector: {selector_lit},
     viewport: {{x: window.scrollX, y: window.scrollY, width: window.innerWidth, height: window.innerHeight}},
     target: {{selector: {selector_lit}, rect: {{top: r.top, left: r.left, width: r.width, height: r.height, bottom: r.bottom, right: r.right}}}},
-    atEnd: atEnd
+    atEnd: atEnd,
+    consent_overlay: {overlay}
   }});
 }})()"
     )
@@ -226,6 +238,7 @@ fn scroll_to_js(escaped: &str, selector_lit: &str, block_spec: &str, behavior: &
 /// JS for [`run_by`]: scroll the window by `(dx, <dy_expr>)` and report where
 /// it landed.
 fn scroll_by_js(dx: i64, dy_expr: &str, behavior: &str) -> String {
+    let overlay = super::consent::overlay_probe_expr(None);
     format!(
         r"(function() {{
   var topVal = {dy_expr};
@@ -235,7 +248,8 @@ fn scroll_by_js(dx: i64, dy_expr: &str, behavior: &str) -> String {
     scrolled: true,
     viewport: {{x: window.scrollX, y: window.scrollY, width: window.innerWidth, height: window.innerHeight}},
     scrollHeight: document.documentElement.scrollHeight,
-    atEnd: atEnd
+    atEnd: atEnd,
+    consent_overlay: {overlay}
   }});
 }})()"
     )
@@ -275,6 +289,7 @@ fn run_scroll_absolute(
 /// JS for [`run_scroll_absolute`]: jump the window to `(0, <y_expr>)` and
 /// report where it landed.
 fn scroll_absolute_js(y_expr: &str) -> String {
+    let overlay = super::consent::overlay_probe_expr(None);
     // iter-129 Theme D: on a page with a CMP/modal overlay that sets
     // `overflow:hidden` on <html>/<body>, `window.scrollTo` silently no-ops —
     // the position doesn't move and `atEnd` reports `true` trivially (0-height
@@ -308,7 +323,8 @@ fn scroll_absolute_js(y_expr: &str) -> String {
     viewport: {{x: root.scrollLeft, y: after, width: window.innerWidth, height: window.innerHeight}},
     scrollHeight: root.scrollHeight,
     atEnd: atEnd,
-    warning: warning
+    warning: warning,
+    consent_overlay: {overlay}
   }});
 }})()"#
     )
