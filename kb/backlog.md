@@ -9,7 +9,7 @@ tags: [backlog]
 # Backlog
 
 One line per item, with where it came from. Tick it in the same commit as the fix. This file
-replaces GitHub issues and per-item iteration plans for follow-ups; a plan file is only for real
+replaces per-item iteration plans for follow-ups; a plan file is only for real
 product work that needs design. Keep items to one line — if an item needs more, it is a plan.
 
 ## Product
@@ -42,6 +42,7 @@ product work that needs design. Keep items to one line — if an item needs more
 
 ## Tests and tooling
 
+- [ ] **flaky** `live_296_output_root_default_and_window_size_full_page` quarantined: nightly on d090030a (run 40356820412) failed once on ubuntu-latest, `screenshot --window-size 390x844 --full-page` batch Firefox exited SIGSEGV (`Sandbox: CanCreateUserNamespace() unshare(CLONE_NEWPID): EPERM`), passed on re-run; `live_133` (same size, no `--full-page`) passes — check whether width-only batch capture really crashes on Linux before un-quarantining (#350)
 - [ ] `ff-rdp-core` `transport::tests::redact_*` race on the global `REDACT_THRESHOLD`: some take `REDACT_LOCK`, others assume the default, so a narrow filter (`cargo test -p ff-rdp-core --lib transport::tests::redact`) fails 4-5 of them; every test touching or reading the threshold must hold the lock (from the retired rust-developer agent memory, docs/agent-protocol-to-claude-md)
 - [x] `WINGET_TOKEN` lacks the `workflow` scope, so the release pipeline's `gh repo sync ractive/winget-pkgs` fails whenever upstream has touched `.github/workflows` since the last sync (v0.4.0 run 37229772393). Either regenerate the token with `workflow`, or make the sync in `release-workflows` not push the fork's default branch. `WINGET_TOKEN` was reset on 2026-10-04 20:55 UTC; the winget job is skipped on dry runs, so tick this once the next release's winget job passes without a manual sync. Workaround if it fails again: `gh repo sync ractive/winget-pkgs` locally, then `gh run rerun <id> --failed` (release v0.4.0) — v0.4.1 (run 37280007041): the job failed earlier, at `WINGET_TOKEN secret is not set`; the secret exists but reached the job empty, so the 2026-10-04 reset stored a blank/wrong value. Re-set it with a token that has `workflow`, then `gh run rerun 37280007041 --failed` — done 2026-10-05 10:21 UTC: the re-run's winget job passed in 30 s with no manual fork sync, manifest PR https://github.com/microsoft/winget-pkgs/pull/446922
 - [x] Remaining wall-clock bounds in live tests measure the laptop, not the product: live_113, 129, 145, 158, 174, 237, 272, `live_bulk_cap`, `live_navigate_default_fast` — delete the bounds, keep the functional assertions (#290)
