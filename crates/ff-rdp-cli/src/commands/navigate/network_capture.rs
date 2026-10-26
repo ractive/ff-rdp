@@ -336,8 +336,11 @@ pub(crate) fn run_with_network(
     );
     let envelope = output::envelope(&result, 1, &meta);
 
-    let hint_ctx = HintContext::new(HintSource::Navigate)
-        .with_consent_overlay(overlay.as_ref().map(crate::commands::consent::ConsentOverlay::cmp));
+    let hint_ctx = HintContext::new(HintSource::Navigate).with_consent_overlay(
+        overlay
+            .as_ref()
+            .map(crate::commands::consent::ConsentOverlay::cmp),
+    );
     OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))?;
     crate::commands::page_view::render_text_section(page_text.as_ref());
     Ok(())

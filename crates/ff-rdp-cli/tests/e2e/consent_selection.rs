@@ -1023,6 +1023,11 @@ fn is_cmpbox_probe(js: &str) -> bool {
     js.contains("#cmpbox a.cmpboxbtnyes")
 }
 
+/// The read-only consent-overlay probe (settle after an accept click).
+fn is_overlay_probe(js: &str) -> bool {
+    js.contains("ff-rdp:consent-overlay-probe")
+}
+
 #[derive(Clone, Copy)]
 enum Reply {
     Boolean(bool),
@@ -1037,6 +1042,9 @@ struct Scenario {
     second: Option<Reply>,
     recognized: bool,
     allow_no_cmp: bool,
+    /// The settle reads after an accepted click keep reporting the banner
+    /// visible (2026-10-26 consent follow-up).
+    overlay_stays: bool,
 }
 impl Default for Scenario {
     fn default() -> Self {
@@ -1046,6 +1054,7 @@ impl Default for Scenario {
             second: Some(Reply::Boolean(true)),
             recognized: true,
             allow_no_cmp: false,
+            overlay_stays: false,
         }
     }
 }
@@ -1056,6 +1065,7 @@ enum Expected {
     NoCmp,
     AllowedNoCmp,
     Disconnected,
+    NotDismissed(&'static str),
 }
 
 fn selection(scenario: Scenario, expected_actors: &[&str], expected: Expected) {
@@ -1141,6 +1151,23 @@ fn selection(scenario: Scenario, expected_actors: &[&str], expected: Expected) {
                 }
                 "evaluateJSAsync" => {
                     assert!(request.get("frameActor").is_none());
+                    // After an accepted click the CLI settles on the top
+                    // document's view of the overlay; these fixtures have
+                    // none, so it reads as already hidden.
+                    if request["text"].as_str().is_some_and(is_overlay_probe) {
+                        assert_eq!(actor, "top-console");
+                        send(&mut stream, &json!({"from":actor,"resultID":"overlay"}));
+                        let reading = if scenario.overlay_stays {
+                            r#"{"cmp":"stays","visible":true,"scroll_locked":true}"#
+                        } else {
+                            r#"{"cmp":null,"visible":false,"scroll_locked":false}"#
+                        };
+                        send(
+                            &mut stream,
+                            &json!({"from":actor,"type":"evaluationResult","resultID":"overlay","result":reading}),
+                        );
+                        continue;
+                    }
                     // The any-host consentmanager.net entry probes `#cmpbox` in
                     // the top document on every page; none of these fixtures
                     // has one, so it is a pre-action miss.
@@ -1213,10 +1240,24 @@ fn selection(scenario: Scenario, expected_actors: &[&str], expected: Expected) {
         .filter(|r| r["text"].as_str().is_some_and(is_cmpbox_probe))
         .count();
     assert!(probes <= 1, "the consentmanager probe runs at most once");
+    // An accepted click is followed by exactly one settle read when the
+    // fixture reports the overlay hidden at once, and by repeated reads until
+    // the timeout when it stays; no other outcome settles.
+    let settles = requests
+        .iter()
+        .filter(is_eval)
+        .filter(|r| r["text"].as_str().is_some_and(is_overlay_probe))
+        .count();
+    match expected {
+        Expected::Accepted(_) => assert_eq!(settles, 1, "one settle read"),
+        Expected::NotDismissed(_) => assert!(settles >= 2, "polled: {settles}"),
+        _ => assert_eq!(settles, 0, "no settle without a click"),
+    }
     let actors: Vec<_> = requests
         .iter()
         .filter(is_eval)
         .filter(|r| !r["text"].as_str().is_some_and(is_cmpbox_probe))
+        .filter(|r| !r["text"].as_str().is_some_and(is_overlay_probe))
         .map(|r| r["to"].as_str().unwrap())
         .collect();
     assert_eq!(
@@ -1274,6 +1315,19 @@ fn selection(scenario: Scenario, expected_actors: &[&str], expected: Expected) {
                 "{value}"
             );
             assert!(value.get("status").is_none());
+        }
+        Expected::NotDismissed(cmp) => {
+            assert_eq!(output.status.code(), Some(1), "{value}");
+            assert_eq!(value["cmp"], cmp, "{value}");
+            assert_eq!(value["action"], "clicked", "{value}");
+            assert_eq!(value["status"], "clicked_not_dismissed", "{value}");
+            assert_eq!(value["error_type"], "consent_not_dismissed", "{value}");
+            assert!(
+                value["error"]
+                    .as_str()
+                    .is_some_and(|e| e.contains("still visible")),
+                "{value}"
+            );
         }
     }
     assert_eq!(
@@ -1356,6 +1410,32 @@ fn native_success_precedes_all_iframe_actions() {
         },
         &["top-console"],
         Expected::Accepted("bbc"),
+    );
+}
+/// 2026-10-26: a native click whose banner never hides within `--timeout` is
+/// `clicked_not_dismissed` (exit 1), not `accepted`.
+#[test]
+fn native_click_whose_banner_stays_is_not_dismissed() {
+    selection(
+        Scenario {
+            native: Some(Reply::Boolean(true)),
+            overlay_stays: true,
+            ..Scenario::default()
+        },
+        &["top-console"],
+        Expected::NotDismissed("bbc"),
+    );
+}
+/// The iframe CMP path settles on the top document too.
+#[test]
+fn iframe_click_whose_banner_stays_is_not_dismissed() {
+    selection(
+        Scenario {
+            overlay_stays: true,
+            ..Scenario::default()
+        },
+        &["first-console", "second-console"],
+        Expected::NotDismissed("sourcepoint"),
     );
 }
 #[test]

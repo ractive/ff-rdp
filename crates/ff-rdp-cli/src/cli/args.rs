@@ -587,6 +587,13 @@ This is the CLI-native complement to `launch --auto-consent` (the
 Consent-O-Matic extension), which does not reliably work headless against
 Sourcepoint-gated sites.
 
+Without --auto-consent, a known consent banner (consentmanager, Sourcepoint,
+BBC) still covering the page or locking its scroll after the load adds
+`results.warnings[] = {\"type\": \"consent_overlay\", \"consent_overlay\": \"<cmp>\",
+\"visible\": bool, \"scroll_locked\": bool, \"message\": \"...\", \"hint\": \"ff-rdp consent accept\"}`;
+`screenshot` and the window `scroll` subcommands report the same warning.
+Nothing is dismissed automatically.
+
 Output: {\"results\": {\"navigated\": \"...\", \"status\": 200|null, \"status_reason\": null|\"not_observed\"|\"no_document_request\"|\"no_status_reported\", \"committed_url\": \"...\", \"ready_state\": \"...\", \"elapsed_ms\": N}, \"total\": 1, \"meta\": {...}}
 
 --with-network output: results.network is ONE canonical object on every path (quiet or busy page, --detail/--jq or default, --all or capped); 'committed_url'/'ready_state'/'status' are also present alongside it (iter-138 — previously dropped, forcing a choice between truthful navigation info and network data):
@@ -2968,8 +2975,16 @@ used to exit 0 for all three outcomes, so a page whose banner was still up and
 still swallowing clicks was indistinguishable from a dismissed one.
 
   status \"accepted\"               exit 0
+  status \"clicked_not_dismissed\"  exit 1, error_type \"consent_not_dismissed\"
   status \"detected_not_actioned\"  exit 1, error_type \"consent_not_actioned\"
   status \"no_cmp_detected\"        exit 1, error_type \"consent_no_cmp\"
+
+A click is not a dismissal: some CMPs (consentmanager) hide the banner and lift
+the body scroll lock on a later task. After clicking, the command waits —
+bounded by --timeout — until the banner is hidden, so a `screenshot` run right
+after it no longer shows the banner. `accepted` means the banner was observed
+hidden; `clicked_not_dismissed` (action \"clicked\") means it was still visible
+when --timeout ran out.
 
 One JSON document either way. On exit 0 that is the usual results envelope; on
 exit 1 it is the error envelope, which carries `cmp`, `action` and `status`
@@ -2977,7 +2992,7 @@ alongside `error`/`error_type` so nothing is lost. The command deliberately does
 NOT print a results envelope and then fail — two JSON documents on stdout is the
 double-envelope bug iter-153 removed from `launch --replace`.
 
-Output: {\"results\": {\"cmp\": \"sourcepoint\"|\"bbc\"|\"consentmanager\"|null, \"action\": \"accepted\"|null, \"status\": \"accepted\"|\"detected_not_actioned\"|\"no_cmp_detected\"}, \"total\": 1, \"meta\": {...}}"
+Output: {\"results\": {\"cmp\": \"sourcepoint\"|\"bbc\"|\"consentmanager\"|null, \"action\": \"accepted\"|\"clicked\"|null, \"status\": \"accepted\"|\"clicked_not_dismissed\"|\"detected_not_actioned\"|\"no_cmp_detected\"}, \"total\": 1, \"meta\": {...}}"
     )]
     Accept {
         /// Exit 0 instead of 1 when no known CMP was found on the page.

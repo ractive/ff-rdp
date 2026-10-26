@@ -668,8 +668,8 @@ fn settle_action(
     let js = format!("JSON.stringify({})", overlay_probe_expr(Some(cmp)));
     let settle = wait_for_dismissal(
         || {
-            let result = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), top_console, &js)
-                .ok()?;
+            let result =
+                WebConsoleActor::evaluate_js_async(ctx.transport_mut(), top_console, &js).ok()?;
             if result.exception.is_some() {
                 return None;
             }
@@ -732,7 +732,10 @@ fn overlay_tables_js(only: Option<&str>) -> String {
 ///
 /// Read-only, no frame-target enumeration: one evaluation in the top document,
 /// cheap enough to fold into JS a command already runs (`scroll`) or to run
-/// once after `navigate` / before `screenshot`.
+/// once after `navigate` / before `screenshot`. It looks elements up with
+/// `querySelectorAll(..)[0]`, not `querySelector`, so it stays apart from the
+/// accept path's `querySelector` calls (the live_275 fixture records those to
+/// prove which control the accept clicked).
 pub(crate) fn overlay_probe_expr(only: Option<&str>) -> String {
     let tables = overlay_tables_js(only);
     format!(
@@ -754,7 +757,7 @@ pub(crate) fn overlay_probe_expr(only: Option<&str>) -> String {
   }}
   t.natives.forEach(function(n) {{
     if (n.hosts.length && !n.hosts.some(function(h) {{ return href.indexOf(h) !== -1; }})) return;
-    var el = document.querySelector(n.sel);
+    var el = document.querySelectorAll(n.sel)[0];
     if (el) note(n.name, el);
   }});
   var frames = document.querySelectorAll('iframe');
@@ -853,7 +856,8 @@ pub(crate) fn probe_overlay(
     console_actor: &ActorId,
 ) -> Option<ConsentOverlay> {
     let js = format!("JSON.stringify({})", overlay_probe_expr(None));
-    let result = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, &js).ok()?;
+    let result =
+        WebConsoleActor::evaluate_js_async(ctx.transport_mut(), console_actor, &js).ok()?;
     if result.exception.is_some() {
         return None;
     }
@@ -1173,6 +1177,14 @@ mod tests {
                 false,
             ),
             (ConsentResult::none(), "no_cmp_detected", false),
+            (
+                ConsentResult {
+                    cmp: Some("consentmanager"),
+                    action: Some(ACTION_CLICKED),
+                },
+                "clicked_not_dismissed",
+                false,
+            ),
         ];
 
         let mut seen = std::collections::HashSet::new();
@@ -1199,7 +1211,7 @@ mod tests {
                 assert_eq!(err.exit_code(), 1);
             }
         }
-        assert_eq!(seen.len(), 3);
+        assert_eq!(seen.len(), 4);
     }
 
     /// The failing path must be able to carry `cmp`/`action`/`status` on its
@@ -1264,5 +1276,322 @@ mod tests {
             status_of(&json!({"status": "accepted"})),
             ConsentStatus::Accepted
         );
+    }
+
+    // ── 2026-10-26: settle after the accept click ────────────────────────
+
+    const FAST: Duration = Duration::from_millis(1);
+
+    #[allow(clippy::unnecessary_wraps)] // the settle closure yields `Option`
+    fn sample(visible: bool, scroll_locked: bool) -> Option<SettleSample> {
+        Some(SettleSample {
+            visible,
+            scroll_locked,
+        })
+    }
+
+    /// Feed `reads` in order, repeating the last one.
+    fn scripted(reads: Vec<Option<SettleSample>>) -> impl FnMut() -> Option<SettleSample> {
+        let mut i = 0;
+        move || {
+            let read = reads[i.min(reads.len() - 1)];
+            i += 1;
+            read
+        }
+    }
+
+    #[test]
+    fn settle_returns_at_once_when_the_overlay_is_already_gone() {
+        let mut calls = 0;
+        let settle = wait_for_dismissal(
+            || {
+                calls += 1;
+                sample(false, false)
+            },
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+            UNLOCK_GRACE,
+        );
+        assert_eq!(
+            settle,
+            Settle::Dismissed {
+                scroll_locked: false
+            }
+        );
+        assert_eq!(calls, 1, "no sleep, no second read");
+    }
+
+    /// The comparis race: visible for the first reads after the click, then
+    /// hidden with the scroll lock lifted.
+    #[test]
+    fn settle_waits_for_a_deferred_hide() {
+        let settle = wait_for_dismissal(
+            scripted(vec![
+                sample(true, true),
+                sample(true, true),
+                sample(false, false),
+            ]),
+            Duration::from_secs(5),
+            FAST,
+            UNLOCK_GRACE,
+        );
+        assert_eq!(
+            settle,
+            Settle::Dismissed {
+                scroll_locked: false
+            }
+        );
+    }
+
+    #[test]
+    fn settle_reports_still_visible_at_the_deadline() {
+        let start = Instant::now();
+        let settle = wait_for_dismissal(
+            scripted(vec![sample(true, true)]),
+            Duration::from_millis(60),
+            FAST,
+            UNLOCK_GRACE,
+        );
+        assert_eq!(settle, Settle::StillVisible);
+        assert!(start.elapsed() >= Duration::from_millis(60));
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "bounded by budget"
+        );
+    }
+
+    /// A failed read is not evidence that the banner went away.
+    #[test]
+    fn settle_treats_unreadable_overlay_as_not_hidden() {
+        let settle = wait_for_dismissal(
+            scripted(vec![None]),
+            Duration::from_millis(30),
+            FAST,
+            UNLOCK_GRACE,
+        );
+        assert_eq!(settle, Settle::StillVisible);
+    }
+
+    /// Hidden first, lock lifted a little later: wait for the lift.
+    #[test]
+    fn settle_waits_for_the_scroll_lock_to_lift_after_the_hide() {
+        let settle = wait_for_dismissal(
+            scripted(vec![
+                sample(false, true),
+                sample(false, true),
+                sample(false, false),
+            ]),
+            Duration::from_secs(5),
+            FAST,
+            Duration::from_secs(5),
+        );
+        assert_eq!(
+            settle,
+            Settle::Dismissed {
+                scroll_locked: false
+            }
+        );
+    }
+
+    /// A page that keeps `overflow: hidden` for its own reasons costs at most
+    /// the unlock grace, and the hidden banner still counts as dismissed.
+    #[test]
+    fn settle_gives_up_on_a_lock_that_never_lifts_after_the_grace() {
+        let start = Instant::now();
+        let settle = wait_for_dismissal(
+            scripted(vec![sample(false, true)]),
+            Duration::from_secs(5),
+            FAST,
+            Duration::from_millis(40),
+        );
+        assert_eq!(
+            settle,
+            Settle::Dismissed {
+                scroll_locked: true
+            }
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "grace, not budget"
+        );
+    }
+
+    /// A zero budget still takes one read (the click may already have hidden
+    /// the overlay synchronously).
+    #[test]
+    fn settle_with_zero_budget_reads_once() {
+        assert_eq!(
+            wait_for_dismissal(
+                scripted(vec![sample(false, false)]),
+                Duration::ZERO,
+                FAST,
+                UNLOCK_GRACE
+            ),
+            Settle::Dismissed {
+                scroll_locked: false
+            }
+        );
+        assert_eq!(
+            wait_for_dismissal(
+                scripted(vec![sample(true, false)]),
+                Duration::ZERO,
+                FAST,
+                UNLOCK_GRACE
+            ),
+            Settle::StillVisible
+        );
+    }
+
+    #[test]
+    fn clicked_not_dismissed_is_a_distinct_failing_status() {
+        let json = ConsentResult {
+            cmp: Some("consentmanager"),
+            action: Some(ACTION_CLICKED),
+        }
+        .to_json();
+        assert_eq!(json["status"], "clicked_not_dismissed");
+        assert_eq!(json["action"], "clicked");
+        assert_eq!(status_of(&json), ConsentStatus::ClickedNotDismissed);
+        let err = consent_exit_error(status_of(&json), true, &json)
+            .expect("--allow-no-cmp does not forgive a banner that stayed");
+        assert_eq!(err.error_type(), "consent_not_dismissed");
+        assert_eq!(err.exit_code(), 1);
+        let envelope = err.to_error_json();
+        assert_eq!(envelope["cmp"], "consentmanager");
+        assert_eq!(envelope["status"], "clicked_not_dismissed");
+    }
+
+    // ── 2026-10-26: overlay probe, warning and hint builders ─────────────
+
+    #[test]
+    fn overlay_probe_carries_marker_and_both_tables() {
+        let js = overlay_probe_expr(None);
+        assert!(js.contains(OVERLAY_PROBE_MARKER), "{js}");
+        assert!(js.contains("\"sel\":\"#cmpbox\""), "{js}");
+        assert!(js.contains("\"name\":\"bbc\""), "{js}");
+        assert!(js.contains("\"name\":\"sourcepoint\""), "{js}");
+        assert!(js.contains("privacy-mgmt.com"), "{js}");
+        assert!(js.contains("overflowY === 'hidden'"), "{js}");
+        assert!(js.contains("getBoundingClientRect"), "{js}");
+        assert!(js.contains("cs.display === 'none'"), "{js}");
+        // Read-only: it never clicks.
+        assert!(!js.contains(".click()"), "{js}");
+    }
+
+    #[test]
+    fn overlay_probe_only_keeps_the_settling_cmp() {
+        let js = overlay_probe_expr(Some("consentmanager"));
+        assert!(js.contains("\"name\":\"consentmanager\""), "{js}");
+        assert!(!js.contains("\"name\":\"bbc\""), "{js}");
+        assert!(!js.contains("\"name\":\"sourcepoint\""), "{js}");
+        let js = overlay_probe_expr(Some("sourcepoint"));
+        assert!(js.contains("\"natives\":[]"), "{js}");
+        assert!(js.contains("\"name\":\"sourcepoint\""), "{js}");
+    }
+
+    /// The settle loop watches the banner, not the accept button, where the
+    /// banner's container is known.
+    #[test]
+    fn consentmanager_overlay_is_the_cmpbox_dialog() {
+        let entry = NATIVE_CMP_TABLE
+            .iter()
+            .find(|e| e.name == "consentmanager")
+            .expect("entry");
+        assert_eq!(entry.overlay_selector, "#cmpbox");
+    }
+
+    fn overlay(v: &Value) -> Option<ConsentOverlay> {
+        ConsentOverlay::from_state(overlay_state_from_value(v)?)
+    }
+
+    #[test]
+    fn overlay_warns_when_visible_or_scroll_locked() {
+        assert!(
+            overlay(&json!({"cmp":"consentmanager","visible":true,"scroll_locked":false}))
+                .is_some()
+        );
+        assert!(
+            overlay(&json!({"cmp":"consentmanager","visible":false,"scroll_locked":true}))
+                .is_some()
+        );
+        assert!(
+            overlay(&json!({"cmp":"consentmanager","visible":false,"scroll_locked":false}))
+                .is_none()
+        );
+        // A lock with no known CMP present is somebody else's modal.
+        assert!(overlay(&json!({"cmp":null,"visible":false,"scroll_locked":true})).is_none());
+        // The standalone probe returns a JSON string.
+        let s = json!({"cmp":"sourcepoint","visible":true,"scroll_locked":true}).to_string();
+        assert!(overlay(&Value::String(s)).is_some());
+        // Anything else is no reading at all.
+        assert!(overlay(&json!(1)).is_none());
+        assert!(overlay(&json!("not json")).is_none());
+    }
+
+    #[test]
+    fn overlay_warning_names_the_cmp_and_the_accept_command() {
+        let o = overlay(&json!({"cmp":"consentmanager","visible":true,"scroll_locked":true}))
+            .expect("overlay");
+        let mut results = json!({"navigated": "https://x.test/"});
+        attach_overlay_warning(&mut results, &o);
+        let w = &results["warnings"][0];
+        assert_eq!(w["type"], "consent_overlay");
+        assert_eq!(w["consent_overlay"], "consentmanager");
+        assert_eq!(w["visible"], true);
+        assert_eq!(w["scroll_locked"], true);
+        assert_eq!(w["hint"], CONSENT_ACCEPT_CMD);
+        let msg = w["message"].as_str().expect("message");
+        assert!(msg.contains("consentmanager") && msg.contains("locked scrolling"));
+        assert!(msg.contains(CONSENT_ACCEPT_CMD), "{msg}");
+        assert_eq!(overlay_cmp_in(&results), Some("consentmanager"));
+    }
+
+    /// An existing `warnings` array is appended to, not replaced.
+    #[test]
+    fn attach_overlay_warning_appends_to_existing_warnings() {
+        let o =
+            overlay(&json!({"cmp":"bbc","visible":true,"scroll_locked":false})).expect("overlay");
+        let mut results = json!({"warnings": ["earlier"]});
+        attach_overlay_warning(&mut results, &o);
+        assert_eq!(results["warnings"][0], "earlier");
+        assert_eq!(results["warnings"][1]["consent_overlay"], "bbc");
+        assert!(
+            results["warnings"][1]["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("is covering the page:"))
+        );
+    }
+
+    #[test]
+    fn clear_overlay_warning_drops_only_the_consent_entry() {
+        let o =
+            overlay(&json!({"cmp":"bbc","visible":true,"scroll_locked":false})).expect("overlay");
+        let mut alone = json!({});
+        attach_overlay_warning(&mut alone, &o);
+        clear_overlay_warning(&mut alone);
+        assert!(alone.get("warnings").is_none(), "{alone}");
+        assert_eq!(overlay_cmp_in(&alone), None);
+
+        let mut mixed = json!({"warnings": ["keep"]});
+        attach_overlay_warning(&mut mixed, &o);
+        clear_overlay_warning(&mut mixed);
+        assert_eq!(mixed["warnings"], json!(["keep"]));
+    }
+
+    /// `scroll` folds the probe into its own JS as `consent_overlay`; the
+    /// field is always removed from the result, warning or not.
+    #[test]
+    fn take_overlay_field_lifts_and_removes_the_folded_probe() {
+        let mut locked = json!({"scrolled": true, "consent_overlay": {"cmp":"consentmanager","visible":false,"scroll_locked":true}});
+        let o = take_overlay_field(&mut locked).expect("overlay");
+        assert_eq!(o.cmp(), "consentmanager");
+        assert!(locked.get("consent_overlay").is_none(), "{locked}");
+
+        let mut clear = json!({"scrolled": true, "consent_overlay": {"cmp":null,"visible":false,"scroll_locked":false}});
+        assert!(take_overlay_field(&mut clear).is_none());
+        assert!(clear.get("consent_overlay").is_none(), "{clear}");
+
+        let mut container = json!({"scrolled": true});
+        assert!(take_overlay_field(&mut container).is_none());
     }
 }

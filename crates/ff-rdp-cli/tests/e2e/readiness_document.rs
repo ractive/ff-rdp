@@ -253,7 +253,10 @@ fn serve(listener: &TcpListener, case: Case) -> Vec<Value> {
                         } else {
                             json!(case.before_href())
                         }
-                    } else if text.contains("var h = window.location.href") {
+                    } else if text.contains("var h = window.location.href")
+                        // Or the post-commit consent-overlay probe: no banner.
+                        || text.contains("ff-rdp:consent-overlay-probe")
+                    {
                         Value::Null // Declared schedule: no same-document shortcut.
                     } else if text.contains("document.readyState") {
                         assert!(dispatched);
@@ -712,7 +715,10 @@ fn status_fallback_case(case: FallbackStatusCase) {
                         json!(100)
                     } else if !dispatched && text == "window.location.href" {
                         json!("about:blank")
-                    } else if text.contains("var h = window.location.href") {
+                    } else if text.contains("var h = window.location.href")
+                        // Or the post-commit consent-overlay probe: no banner.
+                        || text.contains("ff-rdp:consent-overlay-probe")
+                    {
                         Value::Null
                     } else if text.contains("JSON.stringify({readyState:") {
                         assert!(dispatched);

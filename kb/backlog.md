@@ -133,6 +133,7 @@ product work that needs design. Keep items to one line — if an item needs more
 - [ ] **research** live-state phone-width capture: resize `gBrowser.selectedBrowser` from the chrome console the way Responsive Design Mode does — [[screenshot-narrow-viewport-live-state]] (iter-296 triage)
 - [ ] **polish** clap usage errors (e.g. conflicting flags) print plain text, exit 2, instead of the JSON error envelope; needs a decision-log entry — [[screenshot-window-size-full-page]] part 2 (iter-296 triage)
 - [ ] **gap** route `file:` navigation through the parent process (`browsingContext.loadURI`) instead of refusing it — follow-up to [[navigate-file-url-crashes-firefox]] (iter-296 triage)
+- [ ] **research** early script injection: ff-rdp cannot run JS before page scripts (no `addInitScript` equivalent), so CMP suppression flags like consentmanager's `window.cmp_noscreen = true` are set too late; research injecting at document start via DevTools/RDP (a parent-process frame script or a `DOMWindowCreated` listener from the chrome console, or a WebExtension content script at `document_start`), then offer `navigate --suppress-consent` and similar init hooks (stub `Date`, disable animations) (consent follow-up, 2026-10-26)
 
 ## Done
 

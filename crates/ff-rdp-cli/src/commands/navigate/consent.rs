@@ -31,11 +31,9 @@ pub(crate) fn merge_auto_consent(cli: &Cli, result: &mut Value) {
 /// the time this runs. `--with-network` must reuse its live connection instead
 /// — see [`detect_and_accept_on`].
 pub(crate) fn detect_and_accept_best_effort(cli: &Cli) -> Value {
-    match connect_and_get_target(cli)
-        .and_then(|mut ctx| {
-            crate::commands::consent::detect_and_accept(&mut ctx, Duration::from_millis(cli.timeout))
-        })
-    {
+    match connect_and_get_target(cli).and_then(|mut ctx| {
+        crate::commands::consent::detect_and_accept(&mut ctx, Duration::from_millis(cli.timeout))
+    }) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("warning: --auto-consent: consent detection failed: {e}"); // stderr-ok: (b) warn-and-continue — best-effort by design, see the doc comment above

@@ -733,6 +733,36 @@ mod tests {
         assert!(hints.len() <= MAX_HINTS);
     }
 
+    /// 2026-10-26 consent follow-up: a known banner covering the page puts
+    /// `ff-rdp consent accept` first, for every source that records it, and
+    /// the cap still holds.
+    #[test]
+    fn consent_overlay_hint_leads_and_respects_the_cap() {
+        for source in [
+            HintSource::Navigate,
+            HintSource::Screenshot,
+            HintSource::Scroll,
+        ] {
+            let hints = generate_hints(
+                &HintContext::new(source).with_consent_overlay(Some("consentmanager")),
+            );
+            assert_eq!(hints[0].cmd, "ff-rdp consent accept", "{hints:?}");
+            assert!(hints[0].description.contains("consentmanager"), "{hints:?}");
+            assert!(hints.len() <= MAX_HINTS, "{hints:?}");
+        }
+    }
+
+    #[test]
+    fn no_consent_overlay_no_consent_hint() {
+        let hints =
+            generate_hints(&HintContext::new(HintSource::Navigate).with_consent_overlay(None));
+        assert!(
+            !hints.iter().any(|h| h.cmd == "ff-rdp consent accept"),
+            "{hints:?}"
+        );
+        assert!(generate_hints(&HintContext::new(HintSource::Scroll)).is_empty());
+    }
+
     #[test]
     fn inspect_hints_are_empty() {
         let ctx = HintContext::new(HintSource::Inspect);

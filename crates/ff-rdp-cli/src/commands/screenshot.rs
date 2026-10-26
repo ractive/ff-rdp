@@ -243,11 +243,8 @@ fn capture_live(
     }
 
     if let Some(size) = viewport {
-        let capture = super::screenshot_viewport::capture(
-            ctx,
-            size,
-            Duration::from_millis(cli.timeout),
-        )?;
+        let capture =
+            super::screenshot_viewport::capture(ctx, size, Duration::from_millis(cli.timeout))?;
         let mut fields = capture.fields;
         fields.extend(opts.emulation_echo(settled).map(|echo| ("emulation", echo)));
         return build_capture_result(opts, &capture.png, &fields);
