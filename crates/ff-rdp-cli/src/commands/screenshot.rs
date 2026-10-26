@@ -203,6 +203,30 @@ pub fn run_core(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<serde_json::Valu
 
     let mut ctx = connect_and_get_target(cli)?;
 
+    // 2026-10-26 consent follow-up: a known CMP banner in front of the page
+    // ends up in the PNG; say so, and name `ff-rdp consent accept`. One
+    // read-only probe, best-effort (a failure adds no warning). The
+    // `--window-size` path above captures in a fresh profile of its own, where
+    // the live tab's banner state says nothing about the capture.
+    let overlay = {
+        let console_actor = ctx.target().console_actor.clone();
+        super::consent::probe_overlay(&mut ctx, &console_actor)
+    };
+    let mut results = capture_live(cli, opts, &mut ctx, viewport)?;
+    if let Some(overlay) = &overlay {
+        super::consent::attach_overlay_warning(&mut results, overlay);
+    }
+    Ok(results)
+}
+
+/// The live-tab capture half of [`run_core`]: emulation, then either the
+/// `--viewport` capture or the two-step screenshot.
+fn capture_live(
+    cli: &Cli,
+    opts: &ScreenshotOpts<'_>,
+    ctx: &mut super::connect_tab::ConnectedTab,
+    viewport: Option<(u32, u32)>,
+) -> Result<serde_json::Value, AppError> {
     // `--color-scheme`/`--media`: set on this connection right before the
     // capture; Firefox restores them when the command disconnects.
     // Then wait for the transitions the change started, so the capture shows
@@ -212,18 +236,15 @@ pub fn run_core(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<serde_json::Valu
         let tab_actor = ctx.target_tab_actor().clone();
         let watcher =
             TabActor::get_watcher(ctx.transport_mut(), &tab_actor).map_err(AppError::from)?;
-        let since = super::emulation::timeline_now(&mut ctx)?;
-        super::emulation::apply(&mut ctx, &watcher, &configuration)?;
-        super::emulation::wait_for_media(&mut ctx, &configuration)?;
-        settled = Some(super::emulation::wait_for_animations(&mut ctx, since)?);
+        let since = super::emulation::timeline_now(ctx)?;
+        super::emulation::apply(ctx, &watcher, &configuration)?;
+        super::emulation::wait_for_media(ctx, &configuration)?;
+        settled = Some(super::emulation::wait_for_animations(ctx, since)?);
     }
 
     if let Some(size) = viewport {
-        let capture = super::screenshot_viewport::capture(
-            &mut ctx,
-            size,
-            Duration::from_millis(cli.timeout),
-        )?;
+        let capture =
+            super::screenshot_viewport::capture(ctx, size, Duration::from_millis(cli.timeout))?;
         let mut fields = capture.fields;
         fields.extend(opts.emulation_echo(settled).map(|echo| ("emulation", echo)));
         return build_capture_result(opts, &capture.png, &fields);
@@ -238,7 +259,7 @@ pub fn run_core(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<serde_json::Valu
     // `screenshot_via_process_drawsnapshot` path which uses the parent-process
     // chrome console to call `BrowsingContext.drawSnapshot` directly.
     let data_url = try_two_step_screenshot(
-        &mut ctx,
+        ctx,
         sc_actor.as_ref(),
         browsing_ctx_id,
         opts.full_page,
@@ -521,7 +542,8 @@ pub fn run(cli: &Cli, opts: &ScreenshotOpts<'_>) -> Result<(), AppError> {
     );
     let envelope = output::envelope(&results, 1, &meta);
 
-    let hint_ctx = HintContext::new(HintSource::Screenshot);
+    let hint_ctx = HintContext::new(HintSource::Screenshot)
+        .with_consent_overlay(super::consent::overlay_cmp_in(&results));
     OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
 }
 

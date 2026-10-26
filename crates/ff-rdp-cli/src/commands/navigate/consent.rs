@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use serde_json::{Value, json};
 
 use crate::cli::args::Cli;
@@ -29,9 +31,9 @@ pub(crate) fn merge_auto_consent(cli: &Cli, result: &mut Value) {
 /// the time this runs. `--with-network` must reuse its live connection instead
 /// — see [`detect_and_accept_on`].
 pub(crate) fn detect_and_accept_best_effort(cli: &Cli) -> Value {
-    match connect_and_get_target(cli)
-        .and_then(|mut ctx| crate::commands::consent::detect_and_accept(&mut ctx))
-    {
+    match connect_and_get_target(cli).and_then(|mut ctx| {
+        crate::commands::consent::detect_and_accept(&mut ctx, Duration::from_millis(cli.timeout))
+    }) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("warning: --auto-consent: consent detection failed: {e}"); // stderr-ok: (b) warn-and-continue — best-effort by design, see the doc comment above
@@ -58,8 +60,11 @@ pub(crate) fn consent_failure_value() -> Value {
 /// iter-159: `--with-network` runs the consent step on its own connection so
 /// the resource subscription stays live across the interaction, and the
 /// requests the banner dismissal unblocks are still captured.
-pub(crate) fn detect_and_accept_on(ctx: &mut crate::commands::connect_tab::ConnectedTab) -> Value {
-    match crate::commands::consent::detect_and_accept(ctx) {
+pub(crate) fn detect_and_accept_on(
+    ctx: &mut crate::commands::connect_tab::ConnectedTab,
+    settle_budget: Duration,
+) -> Value {
+    match crate::commands::consent::detect_and_accept(ctx, settle_budget) {
         Ok(v) => v,
         Err(e) => {
             // stderr-ok: (b) warn-and-continue — best-effort, same contract as

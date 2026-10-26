@@ -810,6 +810,12 @@ fn viewport_server(png: &str) -> MockRdpServer {
     screenshot_server_capturing(png).on_sequence(
         "evaluateJSAsync",
         vec![
+            // The consent-overlay probe runs first; any non-probe reply (here
+            // the recorded cleanup's `1`) reads as "no banner".
+            (
+                immediate.clone(),
+                result("eval_result_viewport_cleanup.json"),
+            ),
             (
                 immediate.clone(),
                 result("eval_result_viewport_inject.json"),
@@ -848,7 +854,7 @@ fn screenshot_viewport_captures_the_wrapper_rect_and_removes_it() {
     assert_eq!(rect["left"], 0.0, "{capture}");
     assert_eq!(capture["args"]["fullpage"], false, "{capture}");
 
-    // inject, poll, cleanup — the cleanup comes after the capture.
+    // overlay probe, inject, poll, cleanup — the cleanup comes after the capture.
     let types: Vec<&str> = requests.iter().filter_map(|r| r["type"].as_str()).collect();
     let evals: Vec<usize> = types
         .iter()
@@ -857,9 +863,11 @@ fn screenshot_viewport_captures_the_wrapper_rect_and_removes_it() {
         .map(|(i, _)| i)
         .collect();
     let capture_at = types.iter().position(|t| *t == "capture").expect("capture");
-    assert_eq!(evals.len(), 3, "{types:?}");
-    assert!(evals[1] < capture_at && capture_at < evals[2], "{types:?}");
-    let cleanup = requests[evals[2]]["text"].as_str().unwrap_or_default();
+    assert_eq!(evals.len(), 4, "{types:?}");
+    let probe = requests[evals[0]]["text"].as_str().unwrap_or_default();
+    assert!(probe.contains("ff-rdp:consent-overlay-probe"), "{probe}");
+    assert!(evals[2] < capture_at && capture_at < evals[3], "{types:?}");
+    let cleanup = requests[evals[3]]["text"].as_str().unwrap_or_default();
     assert!(cleanup.contains("data-ffrdp-viewport"), "{cleanup}");
 }
 
@@ -917,4 +925,59 @@ fn screenshot_help_documents_viewport_limits() {
     assert!(stdout.contains("--viewport <WxH>"), "{stdout}");
     assert!(stdout.contains("NOT"), "{stdout}");
     assert!(stdout.contains("X-Frame-Options"), "{stdout}");
+}
+
+// ---------------------------------------------------------------------------
+// Consent-overlay warning (2026-10-26 consent follow-up)
+// ---------------------------------------------------------------------------
+
+/// A screenshot of a page a known consent banner covers still succeeds, and
+/// says so: `results.warnings[]` names the CMP and `ff-rdp consent accept`,
+/// and that command leads the hints.
+#[test]
+fn screenshot_warns_and_hints_when_a_consent_banner_covers_the_page() {
+    // The recorded string `evaluationResult`, its value swapped for the
+    // probe's JSON reading (the reply shape is the recorded one).
+    let mut probe = load_fixture("eval_result_string.json");
+    probe["result"] = serde_json::Value::String(
+        serde_json::json!({"cmp": "consentmanager", "visible": true, "scroll_locked": false})
+            .to_string(),
+    );
+    let server = screenshot_server().on_with_followup(
+        "evaluateJSAsync",
+        load_fixture("eval_immediate_response.json"),
+        probe,
+    );
+    let (output, requests) = run_emulated(server, &["--hints"]);
+    assert!(output.status.success(), "{}", support::output_note(&output));
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("JSON");
+    let warning = &json["results"]["warnings"][0];
+    assert_eq!(warning["type"], "consent_overlay", "{json}");
+    assert_eq!(warning["consent_overlay"], "consentmanager", "{json}");
+    assert_eq!(warning["visible"], true, "{json}");
+    assert_eq!(warning["hint"], "ff-rdp consent accept", "{json}");
+    assert_eq!(json["hints"][0]["cmd"], "ff-rdp consent accept", "{json}");
+    assert_eq!(json["results"]["width"], 1, "the capture still ran: {json}");
+    // One probe, before the capture.
+    let evals: Vec<_> = requests
+        .iter()
+        .filter(|r| r["type"] == "evaluateJSAsync")
+        .collect();
+    assert_eq!(evals.len(), 1, "{requests:?}");
+    assert!(
+        evals[0]["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("ff-rdp:consent-overlay-probe")),
+        "{requests:?}"
+    );
+}
+
+/// When the probe cannot run (here the mock has no `evaluateJSAsync`), the
+/// screenshot is unaffected: no warning, no failure.
+#[test]
+fn screenshot_without_a_probe_reply_adds_no_warning() {
+    let (output, _) = run_emulated(screenshot_server(), &[]);
+    assert!(output.status.success(), "{}", support::output_note(&output));
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).expect("JSON");
+    assert!(json["results"].get("warnings").is_none(), "{json}");
 }

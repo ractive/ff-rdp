@@ -36,6 +36,10 @@ if(accept) accept.addEventListener('click',()=>{
   window.clickCount++;
   accept.remove();
   parent.proof.push(sample('click-after'));
+  // Like a real CMP closing its message, hide the consent frames in the top
+  // document once accepted: `consent accept` settles on that (2026-10-26).
+  // `visibility` keeps their layout, so the readback geometry is unchanged.
+  Array.from(parent.document.getElementsByTagName('iframe')).forEach(f=>{f.style.visibility='hidden';});
 });
 window.snapshot=()=>sample('readback');
 "#;

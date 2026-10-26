@@ -625,10 +625,11 @@ fn navigate_wait_text_reresolves_console_actor_after_navigate() {
     );
 }
 
-/// A completed plain navigation owns no further target consumer. Preserve the
-/// subscription and commit path, but do not fetch a target after tearing it down.
+/// A completed plain navigation has exactly one target consumer after the
+/// subscription teardown: the consent-overlay probe (2026-10-26). Preserve the
+/// subscription and commit path, and fetch the target once, for that probe.
 #[test]
-fn e2e_279_plain_commit_finishes_without_unused_target_refresh() {
+fn e2e_279_plain_commit_refreshes_target_only_for_the_overlay_probe() {
     let server = navigate_server();
     let requests = server.request_log();
     let port = server.port();
@@ -666,9 +667,21 @@ fn e2e_279_plain_commit_finishes_without_unused_target_refresh() {
         "{methods:?}"
     );
     assert!(first("unwatchResources") < teardown, "{methods:?}");
+    let after: Vec<_> = requests[teardown + 1..].iter().collect();
+    let refreshes = after.iter().filter(|r| r["type"] == "getTarget").count();
+    assert_eq!(
+        refreshes, 1,
+        "one target fetch after teardown, for the probe: {methods:?}"
+    );
+    let refresh = after.iter().position(|r| r["type"] == "getTarget").unwrap();
     assert!(
-        !methods[teardown + 1..].contains(&"getTarget"),
-        "unused target fetch after subscription teardown: {methods:?}"
+        after[refresh + 1..]
+            .iter()
+            .any(|r| r["type"] == "evaluateJSAsync"
+                && r["text"]
+                    .as_str()
+                    .is_some_and(|t| t.contains("ff-rdp:consent-overlay-probe"))),
+        "the post-teardown target fetch feeds the consent-overlay probe: {methods:?}"
     );
 }
 
@@ -1222,4 +1235,116 @@ fn e2e_295_wait_idle_conflicts_rejected_before_connect() {
             "connection attempted: {extra:?}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Consent-overlay warning (2026-10-26 consent follow-up)
+// ---------------------------------------------------------------------------
+
+/// The recorded string `evaluationResult` with its value replaced by the
+/// overlay probe's JSON reading. The probe's reply shape (a plain string grip)
+/// is the recorded one; only the string differs.
+fn overlay_probe_result(reading: &serde_json::Value) -> serde_json::Value {
+    let mut event = load_fixture("eval_result_string.json");
+    event["result"] = serde_json::Value::String(reading.to_string());
+    event
+}
+
+/// [`navigate_server`] whose post-commit overlay probe (the third evaluation,
+/// after the pre-navigation epoch and href reads) reports `reading`.
+fn navigate_server_with_overlay(reading: &serde_json::Value) -> MockRdpServer {
+    MockRdpServer::new()
+        .on("listTabs", load_fixture("list_tabs_response.json"))
+        .on("getTarget", load_fixture("get_target_response.json"))
+        .on("getWatcher", load_fixture("get_watcher_response.json"))
+        .on("watchTargets", load_fixture("watch_targets_response.json"))
+        .on(
+            "watchResources",
+            load_fixture("watch_resources_response.json"),
+        )
+        .on_with_followups(
+            "navigateTo",
+            load_fixture("navigate_response.json"),
+            vec![
+                load_fixture("resources_available_document_event_dom_loading.json"),
+                load_fixture("resources_available_document_event_dom_complete.json"),
+            ],
+        )
+        .on(
+            "unwatchResources",
+            load_fixture("watch_resources_response.json"),
+        )
+        .on_sequence(
+            "evaluateJSAsync",
+            vec![
+                (
+                    load_fixture("eval_immediate_response.json"),
+                    vec![load_fixture("eval_result_ready_state_complete.json")],
+                ),
+                (
+                    load_fixture("eval_immediate_response.json"),
+                    vec![load_fixture("eval_result_string.json")],
+                ),
+                (
+                    load_fixture("eval_immediate_response.json"),
+                    vec![overlay_probe_result(reading)],
+                ),
+            ],
+        )
+}
+
+fn run_navigate(server: MockRdpServer, extra: &[&str]) -> std::process::Output {
+    let port = server.port();
+    let peer = std::thread::spawn(move || server.serve_one());
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(base_args(port))
+        .args(["navigate", "https://example.com"])
+        .args(extra)
+        .output()
+        .expect("spawn navigate");
+    peer.join().expect("mock peer returned");
+    output
+}
+
+/// A visible, scroll-locking consentmanager banner after the commit becomes a
+/// `results.warnings[]` entry naming `ff-rdp consent accept` — in the JSON
+/// itself, since JSON output carries no `hints` by default — and leads the
+/// hints when they are on.
+#[test]
+fn e2e_navigate_warns_and_hints_when_a_consent_banner_covers_the_page() {
+    let banner =
+        serde_json::json!({"cmp": "consentmanager", "visible": true, "scroll_locked": true});
+    let output = run_navigate(navigate_server_with_overlay(&banner), &["--hints"]);
+    assert!(output.status.success(), "{}", support::output_note(&output));
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let warning = &json["results"]["warnings"][0];
+    assert_eq!(warning["type"], "consent_overlay", "{json}");
+    assert_eq!(warning["consent_overlay"], "consentmanager", "{json}");
+    assert_eq!(warning["scroll_locked"], true, "{json}");
+    assert_eq!(warning["hint"], "ff-rdp consent accept", "{json}");
+    assert_eq!(json["hints"][0]["cmd"], "ff-rdp consent accept", "{json}");
+}
+
+/// No banner, no warning: the probe's "nothing here" reading leaves the
+/// result exactly as before (no empty `warnings` key) and the hints untouched.
+#[test]
+fn e2e_navigate_adds_no_warning_without_a_consent_banner() {
+    let clear = serde_json::json!({"cmp": null, "visible": false, "scroll_locked": false});
+    let output = run_navigate(navigate_server_with_overlay(&clear), &["--hints"]);
+    assert!(output.status.success(), "{}", support::output_note(&output));
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(json["results"].get("warnings").is_none(), "{json}");
+    assert_ne!(json["hints"][0]["cmd"], "ff-rdp consent accept", "{json}");
+}
+
+/// A banner present but hidden while the page scrolls freely is not worth a
+/// warning (consentmanager keeps `#cmpbox` in the DOM after an accept).
+#[test]
+fn e2e_navigate_adds_no_warning_for_a_hidden_unlocking_banner() {
+    let hidden =
+        serde_json::json!({"cmp": "consentmanager", "visible": false, "scroll_locked": false});
+    let output = run_navigate(navigate_server_with_overlay(&hidden), &[]);
+    assert!(output.status.success(), "{}", support::output_note(&output));
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(json["results"].get("warnings").is_none(), "{json}");
 }
