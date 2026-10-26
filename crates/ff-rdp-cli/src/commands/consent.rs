@@ -666,10 +666,19 @@ fn settle_action(
     budget: Duration,
 ) -> &'static str {
     let js = format!("JSON.stringify({})", overlay_probe_expr(Some(cmp)));
+    let mut console = top_console.clone();
     let settle = wait_for_dismissal(
         || {
-            let result =
-                WebConsoleActor::evaluate_js_async(ctx.transport_mut(), top_console, &js).ok()?;
+            // A CMP that reloads the page on accept kills this console actor.
+            // Re-resolve the target, so the next read sees the new document
+            // (where a stored consent means no banner) instead of failing
+            // until the deadline.
+            let Ok(result) = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console, &js)
+            else {
+                ctx.refresh_target();
+                console = ctx.target().console_actor.clone();
+                return None;
+            };
             if result.exception.is_some() {
                 return None;
             }
@@ -724,11 +733,17 @@ fn overlay_tables_js(only: Option<&str>) -> String {
 /// [`CMP_TABLE`] (or only `only`'s entry).
 ///
 /// - `cmp`: the first CMP whose overlay is shown and intersects the viewport,
-///   else the first whose overlay merely exists, else `null`. A native CMP's
+///   else the first whose overlay is rendered (not `display: none` /
+///   `visibility: hidden`) — so a dismissed `#cmpbox` left in the DOM never
+///   counts, and an unrelated scroll lock is not blamed on it — else `null`.
+///   A native CMP's
 ///   overlay is its `overlay_selector`; an iframe CMP's is any `<iframe>` in
 ///   the top document whose `src` matches its `frame_url_substrings`.
 /// - `visible`: whether `cmp` is the shown one.
 /// - `scroll_locked`: `<html>` or `<body>` has `overflow-y: hidden`.
+///
+/// The body is wrapped in `try`/`catch` returning `null`: folded into another
+/// command's JS (`scroll`), a throwing probe must not fail that command.
 ///
 /// Read-only, no frame-target enumeration: one evaluation in the top document,
 /// cheap enough to fold into JS a command already runs (`scroll`) or to run
@@ -739,11 +754,14 @@ fn overlay_tables_js(only: Option<&str>) -> String {
 pub(crate) fn overlay_probe_expr(only: Option<&str>) -> String {
     let tables = overlay_tables_js(only);
     format!(
-        r"(function() {{ /* {OVERLAY_PROBE_MARKER} */
+        r"(function() {{ /* {OVERLAY_PROBE_MARKER} */ try {{
   var t = {tables};
-  function shown(el) {{
+  function rendered(el) {{
     var cs = getComputedStyle(el);
-    if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+    return cs.display !== 'none' && cs.visibility !== 'hidden';
+  }}
+  function shown(el) {{
+    if (!rendered(el)) return false;
     var r = el.getBoundingClientRect();
     return r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0 &&
       r.top < window.innerHeight && r.left < window.innerWidth;
@@ -752,7 +770,7 @@ pub(crate) fn overlay_probe_expr(only: Option<&str>) -> String {
   var href = String(location.href).toLowerCase();
   var present = null, visible = null;
   function note(name, el) {{
-    if (!present) present = name;
+    if (!present && rendered(el)) present = name;
     if (!visible && shown(el)) visible = name;
   }}
   t.natives.forEach(function(n) {{
@@ -769,7 +787,7 @@ pub(crate) fn overlay_probe_expr(only: Option<&str>) -> String {
   }});
   return {{cmp: visible || present, visible: !!visible,
     scroll_locked: lock(document.documentElement) || lock(document.body)}};
-}})()"
+}} catch (e) {{ return null; }} }})()"
     )
 }
 
@@ -1473,7 +1491,14 @@ mod tests {
         assert!(js.contains("privacy-mgmt.com"), "{js}");
         assert!(js.contains("overflowY === 'hidden'"), "{js}");
         assert!(js.contains("getBoundingClientRect"), "{js}");
-        assert!(js.contains("cs.display === 'none'"), "{js}");
+        assert!(js.contains("cs.display !== 'none'"), "{js}");
+        // A dismissed overlay left in the DOM is not "present".
+        assert!(
+            js.contains("if (!present && rendered(el)) present = name;"),
+            "{js}"
+        );
+        // Folded into scroll's JS, a throwing probe must not fail the scroll.
+        assert!(js.contains("} catch (e) { return null; } })()"), "{js}");
         // Read-only: it never clicks.
         assert!(!js.contains(".click()"), "{js}");
     }

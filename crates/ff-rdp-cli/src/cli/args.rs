@@ -576,8 +576,8 @@ Examples:
 
 --auto-consent (iter-129): after the document commits, run the same
 CMP-detection-and-accept flow as `ff-rdp consent accept` and add
-`results.consent = {\"cmp\": \"sourcepoint\"|\"bbc\"|\"consentmanager\"|null, \"action\": \"accepted\"|null,
-\"status\": \"accepted\"|\"detected_not_actioned\"|\"no_cmp_detected\"}` (all three keys
+`results.consent = {\"cmp\": \"sourcepoint\"|\"bbc\"|\"consentmanager\"|null, \"action\": \"accepted\"|\"clicked\"|null,
+\"status\": \"accepted\"|\"clicked_not_dismissed\"|\"detected_not_actioned\"|\"no_cmp_detected\"}` (all three keys
 always present, never omitted; `status` added in iter-160). Combinable with
 --with-network since iter-159, and the same three keys appear there.
 Best-effort — a detection failure prints a warning but does not fail the
@@ -1730,7 +1730,7 @@ clicking that frame's \"accept all\" control directly.
 Subcommands:
   consent accept   Detect a known CMP on the current tab and accept it
 
-Output: {\"results\": {\"cmp\": \"sourcepoint\"|\"bbc\"|\"consentmanager\"|null, \"action\": \"accepted\"|null, \"status\": \"accepted\"|\"detected_not_actioned\"|\"no_cmp_detected\"}, \"total\": 1, \"meta\": {...}}
+Output: {\"results\": {\"cmp\": \"sourcepoint\"|\"bbc\"|\"consentmanager\"|null, \"action\": \"accepted\"|\"clicked\"|null, \"status\": \"accepted\"|\"clicked_not_dismissed\"|\"detected_not_actioned\"|\"no_cmp_detected\"}, \"total\": 1, \"meta\": {...}}
 All three keys are always present — cmp/action are null/null when no known CMP was
 found on the page, and `status` (iter-160) names which of the three outcomes it was.
 `consent accept` exits 1 for the two non-accepting outcomes; see `consent accept --help`.

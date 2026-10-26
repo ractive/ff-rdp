@@ -275,8 +275,11 @@ pub(crate) fn run_with_network(
     let wait_for_result = run_wait_for_predicates(&mut ctx, wait_opts)?;
 
     // Consent-overlay probe: after the `--auto-consent` step and the waits, so
-    // the warning describes the page this command hands back.
-    let overlay = {
+    // the warning describes the page this command hands back. Skipped under
+    // --no-wait, like plain navigate: the old document is not what was asked.
+    let overlay = if wait_opts.no_wait {
+        None
+    } else {
         let console_actor = ctx.target().console_actor.clone();
         crate::commands::consent::probe_overlay(&mut ctx, &console_actor)
     };

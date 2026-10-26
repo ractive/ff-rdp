@@ -209,7 +209,7 @@ pub fn generate_hints(ctx: &HintContext) -> Vec<Hint> {
 fn consent_overlay_hint(ctx: &HintContext) -> Option<Hint> {
     ctx.consent_overlay.as_deref().map(|cmp| {
         Hint::new(
-            format!("Dismiss the {cmp} consent banner covering the page"),
+            format!("Dismiss the {cmp} consent banner"),
             crate::commands::consent::CONSENT_ACCEPT_CMD,
         )
     })
