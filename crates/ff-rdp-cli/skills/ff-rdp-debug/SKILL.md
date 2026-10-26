@@ -48,7 +48,7 @@ Run bare `ff-rdp` before reaching for `--help`: it costs one turn and answers "i
 
 | Group | Use it for | Commands |
 |---|---|---|
-| Get a browser | start Firefox with the debug port open, then check the stack end to end | `launch`, `doctor`, `tabs` |
+| Get a browser | start Firefox with the debug port open, check the stack end to end, stop it when done | `launch`, `doctor`, `tabs`, `stop` |
 | Go somewhere | navigate and wait for what you actually need, not a fixed sleep | `navigate`, `back`, `forward`, `reload`, `wait` |
 | See the page | read structure and text; `a11y summary` is the orientation view and hands out refs | `a11y`, `snapshot`, `dom`, `page-text`, `screenshot`, `inspect` |
 | Act on the page | click and type against a ref or a selector, then scroll | `click`, `type`, `scroll` |

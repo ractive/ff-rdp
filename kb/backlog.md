@@ -37,6 +37,7 @@ product work that needs design. Keep items to one line — if an item needs more
 - [ ] **wrong** plain `navigate` on an MDN reference page (e.g. `/en-US/docs/Web/HTML/Reference/Elements/img`) right after another navigate to the same page reports an `mdnplay.dev` live-example iframe URL as `committed_url` (3 of 5 runs, no `--wait-idle` involved); the commit wait accepts a frame target's document-event (found during iter-295/navigate-wait-idle)
 - [ ] **polish** `reload --wait-idle` has no quiet-window floor: the watcher batches resources every 100 ms (`RESOURCES_THROTTLING_DELAY`), so `--idle-ms` <= ~100 reads a busy page as idle; `navigate --wait-idle` raises it to 200 (iter-295/navigate-wait-idle)
 - [ ] **gap** `navigate --wait-idle` / `reload --wait-idle` measure quiet as "no network-event message", so a request that sends nothing for longer than `--idle-ms` (slow response) is not waited for; tracking in-flight requests until their `totalTime` update would close it (iter-295/navigate-wait-idle)
+- [x] **gap** no command stopped the Firefox `launch` started: `ff-rdp stop [--all] [--dry-run]` stops it and removes its profile; the shared kill gate now requires a matching start token and a Firefox executable, and group signals require `getpgid(pid) == pid` — [[launch-no-stop-command]] (saturnus 2026-10-26) (#344)
 
 ## Tests and tooling
 

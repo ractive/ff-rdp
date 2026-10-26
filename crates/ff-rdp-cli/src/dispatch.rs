@@ -3,8 +3,8 @@ use crate::cli::args::{
     ConsentCommand, ConsoleArgs, CookiesArgs, DomArgs, DomCommand, EvalArgs, GeometryArgs,
     HomeArgs, IndexArgs, InspectArgs, InstallHookArgs, LaunchArgs, NavigateArgs, NetworkArgs,
     NetworkConditionsArgs, PerfArgs, PerfCommand, ProfilesCommand, RecordCommand, ReloadArgs,
-    ResponsiveArgs, RunArgs, ScreenshotArgs, ScrollCommand, SnapshotArgs, SourcesArgs, StorageArgs,
-    StylesArgs, TypeArgs, WaitArgs,
+    ResponsiveArgs, RunArgs, ScreenshotArgs, ScrollCommand, SnapshotArgs, SourcesArgs, StopArgs,
+    StorageArgs, StylesArgs, TypeArgs, WaitArgs,
 };
 use crate::commands;
 use crate::commands::index::IndexOpts;
@@ -338,6 +338,7 @@ fn command_to_step(cmd: &Command, resolved_selector: Option<&str>) -> Option<Ste
         | Command::Inspect(InspectArgs { .. })
         | Command::Doctor
         | Command::Launch(LaunchArgs { .. })
+        | Command::Stop(StopArgs { .. })
         | Command::Record { .. }
         | Command::Run(RunArgs { .. })
         | Command::InstallSkill(_)
@@ -1096,6 +1097,7 @@ fn dispatch_inner(
             ScrollCommand::Bottom { page } => commands::scroll::run_bottom(cli, page),
         },
         Command::Doctor => commands::doctor::run(cli),
+        Command::Stop(StopArgs { all, dry_run }) => commands::stop::run(cli, *all, *dry_run),
         Command::Profiles { profiles_command } => match profiles_command {
             ProfilesCommand::List => commands::profiles::run_list(cli),
             ProfilesCommand::Prune {

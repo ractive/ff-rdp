@@ -87,6 +87,9 @@ pub struct HintContext {
     /// A zero result from a truncated sample must never be printable as a
     /// clean pass without that qualifier attached.
     pub(crate) capped_sample: Option<(bool, usize, usize)>,
+    /// The debug port the command talked to, for hints that must name it
+    /// (`launch`'s `ff-rdp stop --port N`).
+    pub(crate) port: Option<u16>,
 }
 
 impl HintContext {
@@ -99,7 +102,13 @@ impl HintContext {
             fail_only: false,
             storage_type: None,
             capped_sample: None,
+            port: None,
         }
+    }
+
+    pub fn with_port(mut self, port: u16) -> Self {
+        self.port = Some(port);
+        self
     }
 
     pub fn with_selector(mut self, sel: impl Into<String>) -> Self {
@@ -184,7 +193,13 @@ fn shell_escape_selector(sel: &str) -> String {
     sel.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-fn hints_launch(_ctx: &HintContext) -> Vec<Hint> {
+fn hints_launch(ctx: &HintContext) -> Vec<Hint> {
+    // The stop hint must name the port this launch used: a bare `ff-rdp stop`
+    // targets 6000 / FF_RDP_PORT, which may be a different Firefox.
+    let stop = ctx.port.map_or_else(
+        || "ff-rdp stop".to_owned(),
+        |port| format!("ff-rdp stop --port {port}"),
+    );
     vec![
         Hint::new("Verify the connection is healthy", "ff-rdp doctor"),
         Hint::new("List open tabs", "ff-rdp tabs"),
@@ -195,6 +210,11 @@ fn hints_launch(_ctx: &HintContext) -> Vec<Hint> {
         Hint::new(
             "Navigate to a URL and read the page it lands on",
             "ff-rdp navigate <URL> --with-page --query \"<text>\"",
+        ),
+        // Nothing stops a launched Firefox on its own; say how to, up front.
+        Hint::new(
+            "Stop this Firefox and remove its profile when you are done",
+            stop,
         ),
     ]
 }
@@ -669,6 +689,17 @@ mod tests {
                 navigate.cmd
             );
         }
+    }
+
+    /// `launch` tells the caller how the browser it started is stopped.
+    #[test]
+    fn unit_stop_launch_hints_name_stop() {
+        let hints = generate_hints(&HintContext::new(HintSource::Launch).with_port(7000));
+        assert!(
+            hints.iter().any(|h| h.cmd == "ff-rdp stop --port 7000"),
+            "launch should hint at `ff-rdp stop --port <its port>`; got: {hints:?}"
+        );
+        assert!(hints.len() <= MAX_HINTS);
     }
 
     #[test]

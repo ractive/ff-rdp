@@ -454,6 +454,10 @@ pub fn run_prune(cli: &Cli, older_than: &str, all: bool, dry_run: bool) -> Resul
         Some(parse_older_than(older_than)?)
     };
     let outcome = prune_profiles(&root, threshold, dry_run);
+    // Counted after the prune (a real `--all` has just removed live ones),
+    // and only what `ff-rdp stop --all` would actually stop — so the hint
+    // never points at a command that would answer `total: 0`.
+    let stoppable = crate::util::profile_dir::owned_instances().len();
 
     let total = if dry_run {
         outcome.would_remove.len()
@@ -488,10 +492,23 @@ pub fn run_prune(cli: &Cli, older_than: &str, all: bool, dry_run: bool) -> Resul
             .map(|(name, reason)| (name.clone(), json!(reason)))
             .collect::<serde_json::Map<String, serde_json::Value>>(),
         "dry_run": dry_run,
+        "hint": stop_hint(stoppable),
     });
 
     let envelope = output::envelope(&results, total, &json!({}));
     OutputPipeline::from_cli(cli)?.finalize(&envelope)
+}
+
+/// `prune`'s pointer at `ff-rdp stop`: `stoppable` profiles still belong to a
+/// running Firefox ff-rdp launched; an age-gated prune keeps them, and
+/// stopping that Firefox removes its profile too.
+fn stop_hint(stoppable: usize) -> Option<String> {
+    (stoppable > 0).then(|| {
+        format!(
+            "{stoppable} profile(s) still belong to a running Firefox ff-rdp launched; \
+             `ff-rdp stop --all` stops them and removes their profiles."
+        )
+    })
 }
 
 #[cfg(test)]
@@ -523,6 +540,15 @@ mod tests {
     // -----------------------------------------------------------------
     // aggregate_profiles / `profiles list`
     // -----------------------------------------------------------------
+
+    /// `prune` points at `ff-rdp stop` exactly when a live-owned profile is
+    /// present, and stays `null` otherwise.
+    #[test]
+    fn unit_stop_prune_hint_names_stop_for_live_owned_profiles() {
+        assert_eq!(stop_hint(0), None);
+        let hint = stop_hint(1).expect("a stoppable instance yields a hint");
+        assert!(hint.contains("ff-rdp stop"), "{hint}");
+    }
 
     /// AC: `unit_profiles_list_aggregates_size_and_count_correctly` — two
     /// managed profile dirs with known payload sizes (one with a nested

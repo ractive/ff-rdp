@@ -47,6 +47,7 @@ pub(crate) mod scroll;
 pub(crate) mod skill_doc;
 pub(crate) mod snapshot;
 pub(crate) mod sources;
+pub(crate) mod stop;
 pub(crate) mod storage;
 pub(crate) mod styles;
 pub(crate) mod tabs;

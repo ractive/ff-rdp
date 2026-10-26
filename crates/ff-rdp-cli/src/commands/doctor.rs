@@ -80,7 +80,18 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
         // unconditionally — that's the authoritative reachability test.
         true
     };
-    probes.push(probe_port_owner(port, port_in_use, owner.as_ref(), local));
+    // Whether the listener is a Firefox ff-rdp launched — the same proof
+    // `ff-rdp stop` requires before it signals anything.
+    let ff_rdp_launched = owner
+        .as_ref()
+        .map(|o| crate::util::profile_dir::pid_is_ff_rdp_spawned(o.pid));
+    probes.push(probe_port_owner(
+        port,
+        port_in_use,
+        owner.as_ref(),
+        local,
+        ff_rdp_launched,
+    ));
 
     // Skip the remaining probes when the port is dark on loopback; otherwise
     // attempt the handshake — for remote hosts that's the only reachability
@@ -177,7 +188,7 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
 
     let any_failed = probes.iter().any(|p| p.status == Status::Fail);
 
-    let results = build_results_json(&probes);
+    let results = build_results_json(&probes, ff_rdp_launched);
     let version_long = crate::cli::args::build_version_string();
     let mut meta = json!({
         "host": host,
@@ -196,7 +207,13 @@ pub fn run(cli: &Cli) -> Result<(), AppError> {
     }
 }
 
-fn probe_port_owner(port: u16, in_use: bool, owner: Option<&PortOwner>, local: bool) -> Probe {
+fn probe_port_owner(
+    port: u16,
+    in_use: bool,
+    owner: Option<&PortOwner>,
+    local: bool,
+    ff_rdp_launched: Option<bool>,
+) -> Probe {
     if !local {
         return Probe {
             name: "port_owner",
@@ -226,11 +243,28 @@ fn probe_port_owner(port: u16, in_use: bool, owner: Option<&PortOwner>, local: b
             } else {
                 format!(" ({})", o.process_name)
             };
+            let (ownership, hint) = match ff_rdp_launched {
+                Some(true) => (
+                    "; launched by ff-rdp",
+                    Some(format!(
+                        "when you are done, `ff-rdp stop --port {port}` stops it and removes its \
+                         temporary profile"
+                    )),
+                ),
+                Some(false) => (
+                    "; not launched by ff-rdp (`ff-rdp stop` will refuse it)",
+                    None,
+                ),
+                None => ("", None),
+            };
             Probe {
                 name: "port_owner",
                 status: Status::Pass,
-                detail: format!("PID {}{process} is listening on port {port}{uptime}", o.pid),
-                hint: None,
+                detail: format!(
+                    "PID {}{process} is listening on port {port}{uptime}{ownership}",
+                    o.pid
+                ),
+                hint,
             }
         }
         None => Probe {
@@ -504,11 +538,17 @@ fn probe_profile_disk_usage_at(root: &Path) -> Probe {
 /// last, so the table stays readable instead of being pushed off-screen by
 /// `detail`. This does not change the JSON shape — `hint` is still omitted
 /// entirely when `None`.
-fn build_results_json(probes: &[Probe]) -> Value {
+/// Render the probes. `ff_rdp_launched` lands on the `port_owner` entry as a
+/// boolean field — `null` when no listener was identified — so a caller can
+/// branch on ownership without parsing `detail`.
+fn build_results_json(probes: &[Probe], ff_rdp_launched: Option<bool>) -> Value {
     let arr: Vec<Value> = probes
         .iter()
         .map(|p| {
             let mut obj = serde_json::Map::new();
+            if p.name == "port_owner" {
+                obj.insert("ff_rdp_launched".to_string(), json!(ff_rdp_launched));
+            }
             obj.insert(
                 "glyph".to_string(),
                 Value::String(p.status.glyph().to_string()),
@@ -574,9 +614,42 @@ mod tests {
             detail: "bad".into(),
             hint: Some("try y".into()),
         }];
-        let json = build_results_json(&probes);
+        let json = build_results_json(&probes, None);
         assert_eq!(json[0]["hint"], "try y");
         assert_eq!(json[0]["status"], "fail");
+        assert!(json[0].get("ff_rdp_launched").is_none());
+    }
+
+    /// `doctor` reports whether the listener is ff-rdp-launched, and hints
+    /// `ff-rdp stop` only when it is.
+    #[test]
+    fn unit_stop_doctor_port_owner_reports_ownership() {
+        let owner = PortOwner {
+            pid: 4242,
+            process_name: "firefox".to_owned(),
+            uptime_s: None,
+        };
+        let ours = probe_port_owner(6000, true, Some(&owner), true, Some(true));
+        assert!(
+            ours.detail.contains("launched by ff-rdp"),
+            "{}",
+            ours.detail
+        );
+        assert!(
+            ours.hint
+                .as_deref()
+                .is_some_and(|h| h.contains("ff-rdp stop --port 6000")),
+            "{:?}",
+            ours.hint
+        );
+        let json = build_results_json(&[ours], Some(true));
+        assert_eq!(json[0]["ff_rdp_launched"], true);
+
+        let theirs = probe_port_owner(6000, true, Some(&owner), true, Some(false));
+        assert!(theirs.detail.contains("not launched by ff-rdp"));
+        assert!(theirs.hint.is_none());
+        let json = build_results_json(&[theirs], Some(false));
+        assert_eq!(json[0]["ff_rdp_launched"], false);
     }
 
     #[test]
