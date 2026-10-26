@@ -63,8 +63,9 @@ BBC, Guardian, HN, Wikipedia, MDN; weekly CI job only).
   Tests whose gate is unset return early and still print `ok` — set every gate the module's
   `#[ignore]` reasons name before reading the result as a pass.
 - **Flakes:** a live test that fails and then passes on one re-run is quarantined with
-  `#[ignore = "flaky: issue #N"]` plus a GitHub issue. Never an iteration plan, never an
-  "attribution" investigation. A red nightly gets one GitHub issue.
+  `#[ignore = "flaky: see kb/backlog.md"]` plus one `kb/backlog.md` line. Never a GitHub issue,
+  never an iteration plan, never an "attribution" investigation. A red nightly gets one
+  `kb/backlog.md` line.
 
 ## Working with Firefox
 - **Proof:** every behaviour claim in a PR body is backed by a real-Firefox command and its output.

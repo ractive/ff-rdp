@@ -91,8 +91,8 @@ skipped=M …` line. `ff-rdp-core` live tests need a Firefox someone else starte
 `preexisting`, not run.
 
 **Flakes.** A live test that fails and then passes on one re-run is quarantined with
-`#[ignore = "flaky: issue #N"]` and a GitHub issue. It does not get an iteration plan or an
-attribution investigation. A red nightly gets one GitHub issue.
+`#[ignore = "flaky: see kb/backlog.md"]` and one `kb/backlog.md` line (no GitHub issue). It does not
+get an iteration plan or an attribution investigation. A red nightly gets one `kb/backlog.md` line.
 
 Third-party-site tests are never gating: those pages change and go down on their own schedule.
 A file that navigates to a third-party host must gate on `common::live_sites_tests_enabled()`;
