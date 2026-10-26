@@ -1474,8 +1474,9 @@ nothing listening on the port it exits 0 with `stopped: false`.
 
 `ff-rdp stop --all` stops every live Firefox ff-rdp launched under the
 configured profile root ($FF_RDP_HOME when set), found from the owner markers
-`launch` writes; no port is needed. `--dry-run` reports what would be stopped
-and signals nothing.
+`launch` writes; no port is needed. `--dry-run` reports what would be stopped,
+and whether its profile would be removed (`profile_would_be_removed`: false when
+the instance was launched under a different profile root), and signals nothing.
 
 ff-rdp never stops a process it cannot prove it launched. Before every signal
 it requires: an owner-PID marker naming the PID in a managed profile under a
@@ -1496,8 +1497,8 @@ Examples:
   ff-rdp stop --dry-run           # what would be stopped, signal nothing
   ff-rdp stop --all               # every Firefox ff-rdp launched
 
-Output:       {\"results\": {\"stopped\": bool, \"pid\": N|null, \"port\": N, \"profile\": \"...\"|null, \"profile_removed\": bool, \"dry_run\": bool, \"would_stop\"?: true, \"reason\"?: \"...\"}, \"total\": 1, \"meta\": {...}}
-Output (--all): {\"results\": [{\"stopped\": bool, \"pid\": N, \"profile\": \"...\", \"profile_removed\": bool, \"would_stop\"?: true, \"error\"?: \"...\"}], \"total\": N, \"meta\": {\"dry_run\": bool}}"
+Output:       {\"results\": {\"stopped\": bool, \"pid\": N|null, \"port\": N, \"profile\": \"...\"|null, \"profile_removed\": bool, \"dry_run\": bool, \"would_stop\"?: true, \"profile_would_be_removed\"?: bool, \"reason\"?: \"...\"}, \"total\": 1, \"meta\": {...}}
+Output (--all): {\"results\": [{\"stopped\": bool, \"pid\": N, \"profile\": \"...\", \"profile_removed\": bool, \"would_stop\"?: true, \"profile_would_be_removed\"?: bool, \"error\"?: \"...\"}], \"total\": N, \"meta\": {\"dry_run\": bool}}"
     )]
     Stop(StopArgs),
     /// Install Claude Code skill files to the user or project filesystem

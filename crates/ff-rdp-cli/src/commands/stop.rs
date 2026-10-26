@@ -5,8 +5,17 @@
 //!
 //! ff-rdp runs with the caller's rights, so the threat is not privilege
 //! escalation but ff-rdp being steered — by an agent, a stale file, a recycled
-//! PID or a planted marker — into signalling a process it did not start.
-//! Every rule fails closed:
+//! PID or a marker planted by **another account** (rule 3) — into signalling a
+//! process it did not start. Every rule fails closed:
+//!
+//! Out of scope: a process running as the **same user**. It can write a
+//! marker plus a start token naming the user's own desktop Firefox into the
+//! trusted root, and `stop --all` would then kill it — but such a process can
+//! already `kill` that Firefox directly, so the gate grants it nothing new.
+//! Binding ownership to the live process's command line (`-profile <dir>`)
+//! and signalling through a pidfd/process handle would close this and the
+//! reverify→signal window; see the `#344 follow-up` line in `kb/backlog.md`.
+//!
 //!
 //! 1. **No PID input.** `stop` takes a port or `--all`; the PID always comes
 //!    from the OS (the port's listener, or a marker under the profile root)
@@ -61,17 +70,11 @@ fn run_port(cli: &Cli, dry_run: bool) -> Result<(), AppError> {
     let port = cli.port;
     let listener = match crate::port_owner::find_listener(port) {
         Ok(Some(listener)) => listener,
-        Ok(None) | Err(_) if !crate::port_owner::is_port_in_use(port) => {
-            let results = json!({
-                "stopped": false,
-                "pid": Value::Null,
-                "port": port,
-                "profile": Value::Null,
-                "profile_removed": false,
-                "dry_run": dry_run,
-                "reason": format!("nothing is listening on port {port}"),
-            });
-            return emit(cli, &results, 1);
+        Ok(None) if !crate::port_owner::is_port_in_use(port) => {
+            return emit(cli, &not_stopped(port, dry_run, None), 1);
+        }
+        Err(lookup_error) if !crate::port_owner::is_port_in_use(port) => {
+            return emit(cli, &not_stopped(port, dry_run, Some(&lookup_error)), 1);
         }
         Ok(None) | Err(_) => {
             return Err(AppError::User(format!(
@@ -98,6 +101,7 @@ fn run_port(cli: &Cli, dry_run: bool) -> Result<(), AppError> {
             "port": port,
             "profile": owned.profile.display().to_string(),
             "profile_removed": false,
+            "profile_would_be_removed": profile_dir::profile_would_be_removed(&owned),
             "dry_run": true,
         });
         return emit(cli, &results, 1);
@@ -131,6 +135,7 @@ fn run_all(cli: &Cli, dry_run: bool) -> Result<(), AppError> {
                     "pid": owned.pid,
                     "profile": owned.profile.display().to_string(),
                     "profile_removed": false,
+                    "profile_would_be_removed": profile_dir::profile_would_be_removed(owned),
                 });
             }
             let report = replace::stop_owned_firefox(owned, None);
@@ -209,7 +214,55 @@ fn remove_stopped_profile(owned: &OwnedFirefox) -> bool {
     }
 }
 
+/// The `stopped: false` result for a port nothing listens on (the connect
+/// probe found it free). `lookup_error` is set when the port-owner lookup
+/// itself failed: the port is still free, so there is nothing to stop and the
+/// exit stays 0, but the reason says the owner could not be checked rather
+/// than claiming a clean "nothing is listening".
+fn not_stopped(port: u16, dry_run: bool, lookup_error: Option<&str>) -> Value {
+    let reason = match lookup_error {
+        None => format!("nothing is listening on port {port}"),
+        Some(error) => format!(
+            "the owner of port {port} could not be checked ({error}); the port accepts no \
+             connections, so nothing was stopped. Run `ff-rdp doctor` to investigate."
+        ),
+    };
+    json!({
+        "stopped": false,
+        "pid": Value::Null,
+        "port": port,
+        "profile": Value::Null,
+        "profile_removed": false,
+        "dry_run": dry_run,
+        "reason": reason,
+    })
+}
+
 fn emit(cli: &Cli, results: &Value, total: usize) -> Result<(), AppError> {
     let envelope = output::envelope(results, total, &json!({}));
     OutputPipeline::from_cli(cli)?.finalize(&envelope)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::not_stopped;
+
+    #[test]
+    fn free_port_with_no_listener_says_nothing_is_listening() {
+        let v = not_stopped(6123, false, None);
+        assert_eq!(v["stopped"], false);
+        assert_eq!(v["reason"], "nothing is listening on port 6123");
+    }
+
+    #[test]
+    fn failed_owner_lookup_says_unchecked_and_points_at_doctor() {
+        let v = not_stopped(6123, true, Some("lsof not found"));
+        assert_eq!(v["stopped"], false);
+        assert_eq!(v["dry_run"], true);
+        let reason = v["reason"].as_str().expect("reason");
+        assert!(!reason.contains("nothing is listening"), "{reason}");
+        assert!(reason.contains("could not be checked"), "{reason}");
+        assert!(reason.contains("lsof not found"), "{reason}");
+        assert!(reason.contains("ff-rdp doctor"), "{reason}");
+    }
 }

@@ -115,8 +115,10 @@ pub(crate) struct StopReport {
 /// that no *other* process now holds the port. A port the PID already closed
 /// (a Firefox that dropped its listener early in shutdown but is still
 /// running) does not block the SIGKILL: the start token is the identity proof,
-/// the port only named the candidate. A PID recycled between the check and a
-/// signal therefore never receives one.
+/// the port only named the candidate. Re-verifying right before each signal
+/// narrows the window in which a recycled PID could receive one; it does not
+/// close it, because the check and the signal are not atomic (pidfd /
+/// process-handle signalling would — `#344 follow-up` in `kb/backlog.md`).
 pub(crate) fn stop_owned_firefox(owned: &OwnedFirefox, port: Option<u16>) -> StopReport {
     let reverify = move |pid: u32| {
         profile_dir::authorize_kill(pid).is_ok()
@@ -232,7 +234,9 @@ pub(crate) fn wait_for_exit(is_alive: fn(u32) -> bool, pid: u32, timeout: Durati
 /// `getpgid` fails) and kept only when it equals `pid` — Firefox leads its own
 /// group. A pgid that differs from the PID, or one that could not be read, is
 /// never signalled (rule 5); the step is skipped instead. Every signal to the
-/// PID itself is preceded by `reverify` (rule 6).
+/// PID itself is preceded by `reverify` (rule 6), which narrows — but, not
+/// being atomic with the signal, does not close — the window for a recycled
+/// PID (`#344 follow-up` in `kb/backlog.md`).
 ///
 /// Returns a [`StopReport`]; `message` is non-empty only when not released.
 fn stop_pid_with_full_escalation(

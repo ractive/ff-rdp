@@ -38,6 +38,7 @@ product work that needs design. Keep items to one line — if an item needs more
 - [ ] **polish** `reload --wait-idle` has no quiet-window floor: the watcher batches resources every 100 ms (`RESOURCES_THROTTLING_DELAY`), so `--idle-ms` <= ~100 reads a busy page as idle; `navigate --wait-idle` raises it to 200 (iter-295/navigate-wait-idle)
 - [ ] **gap** `navigate --wait-idle` / `reload --wait-idle` measure quiet as "no network-event message", so a request that sends nothing for longer than `--idle-ms` (slow response) is not waited for; tracking in-flight requests until their `totalTime` update would close it (iter-295/navigate-wait-idle)
 - [x] **gap** no command stopped the Firefox `launch` started: `ff-rdp stop [--all] [--dry-run]` stops it and removes its profile; the shared kill gate now requires a matching start token and a Firefox executable, and group signals require `getpgid(pid) == pid` — [[launch-no-stop-command]] (saturnus 2026-10-26) (#344)
+- [ ] **hardening** the kill gate trusts any marker + start token under the trusted root, so a same-user process can forge one naming the desktop Firefox and `stop --all` kills it (out of scope today: it could `kill` directly); bind ownership to the live process's command line naming the profile dir (`-profile <dir>`; `/proc/<pid>/cmdline`, macOS `KERN_PROCARGS2`, Windows TBD) so a forged marker cannot match, and signal through a pidfd / process handle to close the reverify→signal window in `replace::stop_owned_firefox` (#344 follow-up)
 
 ## Tests and tooling
 
