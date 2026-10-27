@@ -121,6 +121,7 @@ mod live_eval_scope;
 mod live_navigate_default_fast;
 mod live_navigate_readiness;
 mod live_navigate_real_site;
+mod live_navigate_wait_auto;
 mod live_network_headers;
 mod live_network_timeout_wall;
 mod live_oneway;

@@ -172,7 +172,8 @@ pub(crate) const AUTO_COMPLETE_GRACE: Duration = Duration::from_millis(3000);
 #[derive(Debug)]
 pub(crate) struct ReadinessGoal {
     level: WaitLevel,
-    /// First moment the navigated document was seen `interactive`, with its href.
+    /// First moment the navigated document was seen `interactive`, with the
+    /// href of the latest such sighting.
     interactive: Option<(Instant, String)>,
 }
 
@@ -198,7 +199,12 @@ impl ReadinessGoal {
                 Some((state, href))
             }
             (WaitLevel::Auto, SampledState::Interactive) => {
-                self.interactive.get_or_insert((now, href));
+                // The grace period runs from the first sighting; the href
+                // reported is the latest one.
+                match &mut self.interactive {
+                    Some((_, latest)) => *latest = href,
+                    None => self.interactive = Some((now, href)),
+                }
                 self.settled(now)
             }
         }
@@ -946,8 +952,12 @@ pub(crate) fn wait_for_doc_complete_retaining_status(
                         // events`): the event is the only interactive evidence,
                         // so it starts the grace period. With a probe, only a
                         // sample does: it proves href and navigation progress.
+                        // A replayed outgoing `dom-loading` can precede this
+                        // event (see the backlog), so judge its timestamp here
+                        // too rather than only before the first `dom-loading`.
                         if wait_level == WaitLevel::Auto
                             && !polling_probe
+                            && !is_stale_lifecycle_event(name, v, dispatched_at_ms)
                             && !needs_href_fallback(&eff_url, requested_url)
                         {
                             let _ = goal.observe(

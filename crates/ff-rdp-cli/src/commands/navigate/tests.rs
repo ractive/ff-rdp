@@ -456,15 +456,16 @@ fn readiness_goal_levels_and_auto_grace() {
     );
 
     // `auto`: interactive starts the grace period and is reported once it
-    // has lasted AUTO_COMPLETE_GRACE, keeping the first sample's href.
+    // has lasted AUTO_COMPLETE_GRACE from the FIRST sighting, reporting the
+    // latest sample's href.
     let mut auto = ReadinessGoal::new(WaitLevel::Auto);
     assert_eq!(auto.on_deadline(), None, "nothing usable seen yet");
-    assert_eq!(auto.observe(interactive, href(), t0), None);
-    let later = t0 + AUTO_COMPLETE_GRACE - Duration::from_millis(1);
     assert_eq!(
-        auto.observe(interactive, "https://other.test/".into(), later),
+        auto.observe(interactive, "https://first.test/".into(), t0),
         None
     );
+    let later = t0 + AUTO_COMPLETE_GRACE.saturating_sub(Duration::from_millis(1));
+    assert_eq!(auto.observe(interactive, href(), later), None);
     assert_eq!(auto.settled(later), None);
     assert_eq!(
         auto.settled(t0 + AUTO_COMPLETE_GRACE),
@@ -1121,6 +1122,83 @@ fn unit_navigate_interactive_sample_resolves_interactive_and_auto() {
             elapsed < AUTO_COMPLETE_GRACE + Duration::from_secs(2),
             "{level:?} must return long before the 10 s budget: {elapsed:?}"
         );
+    }
+}
+
+/// `--wait auto --wait-strategy events` (no probe): a fresh `dom-interactive`
+/// event starts the grace period and resolves `interactive`; a replayed one
+/// stamped before the dispatch does not, even after a `dom-loading`.
+#[test]
+fn unit_navigate_auto_without_probe_uses_fresh_dom_interactive_event() {
+    use std::net::TcpListener;
+
+    use ff_rdp_core::transport::RdpTransport;
+
+    for fresh in [true, false] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            use std::io::Write as _;
+            let (mut stream, _) = listener.accept().unwrap();
+            let greeting = serde_json::json!({
+                "from": "root", "applicationType": "browser", "traits": {}
+            });
+            let _ = stream
+                .write_all(ff_rdp_core::transport::encode_frame(&greeting.to_string()).as_bytes());
+            // Hold the connection open, silent, until the client hangs up.
+            let mut sink = [0_u8; 64];
+            while matches!(std::io::Read::read(&mut stream, &mut sink), Ok(n) if n > 0) {}
+        });
+        let mut transport =
+            RdpTransport::connect("127.0.0.1", port, Duration::from_secs(5)).unwrap();
+        let nav_start = Instant::now();
+        let time = if fresh {
+            epoch_ms_at(nav_start) + 10.0
+        } else {
+            epoch_ms_at(nav_start) - 60_000.0
+        };
+        let (tx, rx) = std::sync::mpsc::channel::<std::sync::Arc<Resource>>();
+        for event in [
+            serde_json::json!({"name": "dom-loading", "url": "https://heavy.test/", "time": time}),
+            serde_json::json!({"name": "dom-interactive", "url": "https://heavy.test/", "time": time}),
+        ] {
+            tx.send(std::sync::Arc::new(Resource::DocumentEvent(event)))
+                .unwrap();
+        }
+        let bus_arc = Arc::new(Mutex::new(ResourceCommand::new(
+            ff_rdp_core::ActorId::from("conn0/watcher1"),
+        )));
+        let budget_ms = if fresh { 10_000 } else { 1_500 };
+        let result = wait_for_doc_complete(
+            &mut transport,
+            &bus_arc,
+            &rx,
+            budget_ms,
+            WaitLevel::Auto,
+            nav_start,
+            None,
+            "https://heavy.test/",
+            false,
+        );
+        let elapsed = nav_start.elapsed();
+        drop(transport);
+        drop(tx);
+        server.join().unwrap();
+        if fresh {
+            let ci = result.expect("fresh dom-interactive resolves auto");
+            assert_eq!(ci.ready_state, "interactive");
+            assert_eq!(ci.committed_url, "https://heavy.test/");
+            assert!(elapsed >= AUTO_COMPLETE_GRACE, "{elapsed:?}");
+            assert!(
+                elapsed < AUTO_COMPLETE_GRACE + Duration::from_secs(2),
+                "{elapsed:?}"
+            );
+        } else {
+            assert!(
+                matches!(result, Err(AppError::Timeout(_))),
+                "a replayed dom-interactive must not resolve auto: {result:?}"
+            );
+        }
     }
 }
 
