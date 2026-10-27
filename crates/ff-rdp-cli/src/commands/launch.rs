@@ -148,20 +148,26 @@ pub(super) fn open_user_js_append(profile: &Path, what: &str) -> Result<std::fs:
 
 /// Prefs that keep Firefox's new-user Terms-of-Use / pre-onboarding modal
 /// ("Welcome to Firefox — By continuing, you agree to the Firefox Terms of
-/// Use…") and the data-reporting notice from covering the first window.
+/// Use…") from covering the first window.
 ///
 /// Taken from Firefox's own automation defaults,
 /// `remote/shared/RecommendedPreferences.sys.mjs` (mozilla-firefox/firefox),
 /// which sets exactly these for Marionette / WebDriver BiDi. They are in
 /// [`USER_JS`] for managed profiles and appended to a user-supplied
-/// `--profile` when missing (see `build_command`), because a profile that has
-/// never accepted the Terms of Use shows the modal no matter who created it.
+/// `--profile` when its `user.js` does not set them (see `build_command`),
+/// because a profile that has never accepted the Terms of Use shows the modal
+/// no matter who created it.
 ///
-/// `datareporting.policy.dataSubmissionEnabled = false` rides along on
-/// purpose: `TelemetryReportingPolicy.canUpload()` (toolkit/components/
-/// telemetry/app/TelemetryReportingPolicy.sys.mjs) treats a bypassed notice as
-/// consent, so the two bypass prefs without it would let telemetry upload from
-/// a profile whose user was never told.
+/// The data-reporting pair is needed too: without the bypass, a `--profile`
+/// whose ToU flow is off falls back to the legacy notice, which opens a second
+/// tab (`https://www.mozilla.org/<locale>/privacy/firefox/`) on first run and
+/// then lets telemetry upload (verified on Firefox 158). With the bypass,
+/// `datareporting.policy.dataSubmissionEnabled = false` must ride along:
+/// `TelemetryReportingPolicy.canUpload()` (toolkit/components/telemetry/app/
+/// TelemetryReportingPolicy.sys.mjs) treats a bypassed notice as consent, so
+/// the bypass alone would upload from a profile whose user was never told.
+/// These `user.js` lines persist past ff-rdp, like the devtools prefs; a
+/// value the profile's `user.js` already sets is left alone.
 const FIRST_RUN_PREFS: &[(&str, &str)] = &[
     ("browser.preonboarding.enabled", "false"),
     ("termsofuse.bypassNotification", "true"),
@@ -185,7 +191,19 @@ fn ensure_first_run_prefs(profile: &Path) -> Result<(), AppError> {
     ensure_prefs(profile, FIRST_RUN_PREFS, "first-run prefs")
 }
 
-/// Append each `(key, value)` whose key `user.js` does not mention yet.
+/// Does `user_js` set `key` on a live (not commented-out) `user_pref` line?
+/// The key is matched whole, quotes included, so `devtools.chrome.enabled`
+/// is not "set" by a longer pref that merely starts with it.
+fn user_js_sets(user_js: &str, key: &str) -> bool {
+    let quoted = format!("\"{key}\"");
+    user_js.lines().any(|line| {
+        line.trim_start()
+            .strip_prefix("user_pref(")
+            .is_some_and(|rest| rest.trim_start().starts_with(&quoted))
+    })
+}
+
+/// Append each `(key, value)` whose key `user.js` does not set yet.
 fn ensure_prefs(profile: &Path, prefs: &[(&str, &str)], what: &str) -> Result<(), AppError> {
     use std::fmt::Write as FmtWrite;
     use std::io::Write as IoWrite;
@@ -194,7 +212,7 @@ fn ensure_prefs(profile: &Path, prefs: &[(&str, &str)], what: &str) -> Result<()
     let existing = std::fs::read_to_string(&user_js).unwrap_or_default();
     let mut additions = String::new();
     for (key, val) in prefs {
-        if !existing.contains(key) {
+        if !user_js_sets(&existing, key) {
             let _ = writeln!(additions, "user_pref(\"{key}\", {val});");
         }
     }
@@ -815,7 +833,9 @@ impl LaunchHooks {
             pid_is_ff_rdp_spawned: |_pid| false,
             wait_for_tab: |_port, _deadline, _observation| PortWaitOutcome::Opened,
             suppress_consent_options_tab: |_port, _wait| Ok("closed".to_owned()),
-            record_user_profile_owner: |_profile, _pid| Ok(PathBuf::new()),
+            record_user_profile_owner: |_profile, _pid| {
+                Err(AppError::User("unit tests record no ownership".into()))
+            },
             ..Self::real()
         }
     }
@@ -1218,13 +1238,18 @@ pub(crate) fn run_with_hooks(
             // --replace / --force: stop the prior instance, then proceed.
             replaced = Some(replace::stop_prior_instance(port)?);
         } else if let Some(instance) = identify_running_instance(port, hooks) {
-            if url.is_some() || pack.is_some() {
+            // `--profile` too: the running instance may use another profile
+            // (or a managed one), and answering `already_running` would let
+            // the caller drive it as if it were the profile they named.
+            if url.is_some() || pack.is_some() || profile.is_some() {
                 return Err(AppError::User(format!(
                     "{} requires a new Firefox launch; the owned port is already running. Choose a free --debug-port or explicitly use --replace",
                     if pack.is_some() {
                         "--english-language-pack"
-                    } else {
+                    } else if url.is_some() {
                         "A startup URL (--url or positional)"
+                    } else {
+                        "--profile"
                     }
                 )));
             }
@@ -1351,11 +1376,16 @@ pub(crate) fn run_with_hooks(
         // A user `--profile` gets no marker; ownership goes into a separate
         // record under the profile root so `stop` / `--replace` can still
         // prove ff-rdp launched this Firefox. Warn-not-fail, like the marker.
-        if let Err(error) = (hooks.record_user_profile_owner)(dir, child.id()) {
-            tracing::warn!(
+        // The record is guarded like a managed profile: a failed launch
+        // removes it, a successful one hands it over (`pending.disarm`).
+        match (hooks.record_user_profile_owner)(dir, child.id()) {
+            Ok(record) => {
+                pending.profile = crate::util::profile_dir::ManagedProfileGuard::armed(&record);
+            }
+            Err(error) => tracing::warn!(
                 "launch: could not record ownership of the --profile launch ({error}); \
                  `ff-rdp stop` will refuse to stop it"
-            );
+            ),
         }
     }
 
@@ -1679,8 +1709,6 @@ mod tests {
         assert_eq!(found.pid, 777);
     }
 
-    /// AC: `unit_owner_pid_marker_written_only_for_managed_profiles` — the
-    /// owner-PID marker is written only for a managed (auto-created) profile.
     /// Every managed profile suppresses the Terms-of-Use / pre-onboarding
     /// modal and the data-reporting notice with exactly the values Firefox's
     /// `RecommendedPreferences.sys.mjs` uses, and keeps telemetry off.
@@ -1701,13 +1729,15 @@ mod tests {
     }
 
     /// `--profile` gets the first-run prefs appended, but a value the user
-    /// already set in their `user.js` is left alone.
+    /// already set in their `user.js` is left alone — and a commented-out
+    /// line does not count as set. Telemetry prefs are never touched.
     #[test]
     fn build_command_explicit_profile_appends_missing_first_run_prefs_only() {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(
             dir.path().join("user.js"),
-            "user_pref(\"datareporting.policy.dataSubmissionEnabled\", true);\n",
+            "user_pref(\"termsofuse.bypassNotification\", false);\n\
+             // user_pref(\"browser.preonboarding.enabled\", true);\n",
         )
         .expect("seed user.js");
         let firefox = PathBuf::from("/usr/bin/firefox");
@@ -1723,22 +1753,32 @@ mod tests {
         .expect("build_command");
         let user_js = std::fs::read_to_string(dir.path().join("user.js")).expect("user.js");
         assert_eq!(
-            user_js
-                .matches("datareporting.policy.dataSubmissionEnabled\"")
-                .count(),
+            user_js.matches("termsofuse.bypassNotification\"").count(),
             1,
+            "the user's own value must win:\n{user_js}"
+        );
+        assert!(
+            user_js.contains("user_pref(\"termsofuse.bypassNotification\", false);"),
             "{user_js}"
         );
         assert!(
-            user_js.contains("dataSubmissionEnabled\", true);"),
-            "{user_js}"
+            user_js.contains("\nuser_pref(\"browser.preonboarding.enabled\", false);"),
+            "a commented-out line must not count as set:\n{user_js}"
         );
-        for line in [
-            "user_pref(\"termsofuse.bypassNotification\", true);",
-            "user_pref(\"browser.preonboarding.enabled\", false);",
-        ] {
-            assert!(user_js.contains(line), "{line} missing:\n{user_js}");
-        }
+        assert!(
+            user_js.contains("user_pref(\"datareporting.policy.dataSubmissionEnabled\", false);"),
+            "the notice bypass must never be appended without telemetry off:\n{user_js}"
+        );
+    }
+
+    #[test]
+    fn user_js_sets_matches_live_lines_and_whole_keys_only() {
+        let js =
+            "  user_pref(\"a.b\", true);\n// user_pref(\"c.d\", 1);\nuser_pref(\"e.f.g\", 0);\n";
+        assert!(user_js_sets(js, "a.b"));
+        assert!(!user_js_sets(js, "c.d"));
+        assert!(!user_js_sets(js, "e.f"));
+        assert!(user_js_sets(js, "e.f.g"));
     }
 
     /// Managed profiles wait for (and close) Consent-O-Matic's certain
@@ -1760,6 +1800,8 @@ mod tests {
         assert!(failed.contains("connect: refused"), "{failed}");
     }
 
+    /// AC: `unit_owner_pid_marker_written_only_for_managed_profiles` — the
+    /// owner-PID marker is written only for a managed (auto-created) profile.
     /// A `--profile <user-path>` launch (`profile = Some(_)`) never triggers
     /// a marker write.
     #[test]
@@ -2557,6 +2599,39 @@ mod iter_175_tests {
             err.to_string()
                 .contains("A startup URL (--url or positional) requires a new Firefox launch")
         );
+    }
+
+    /// Now that a `--profile` launch is an owned instance, a second
+    /// `launch --profile B` on its port must not answer `already_running`
+    /// for a Firefox that may be running profile A.
+    #[test]
+    fn owned_existing_launch_cannot_silently_ignore_profile() {
+        let hooks = LaunchHooks {
+            is_port_in_use: |_| true,
+            find_listener: |_port| {
+                Some(port_owner::PortOwner {
+                    pid: 17348,
+                    process_name: "firefox".to_owned(),
+                    uptime_s: None,
+                })
+            },
+            pid_is_ff_rdp_spawned: |_| true,
+            locate_firefox: || panic!("existing instance should not spawn"),
+            spawn: |_| panic!("existing instance should not spawn"),
+            ..LaunchHooks::none_running()
+        };
+        let opts = LaunchOpts {
+            profile: Some("/never/created/profile-b"),
+            ..managed_opts(7350)
+        };
+        let err = run_with_hooks(&bare_launch_cli(), &opts, &hooks).unwrap_err();
+        assert!(matches!(err, AppError::User(_)));
+        assert!(
+            err.to_string()
+                .contains("--profile requires a new Firefox launch"),
+            "{err}"
+        );
+        assert!(!Path::new("/never/created/profile-b").exists());
     }
 
     #[cfg(unix)]

@@ -1481,9 +1481,14 @@ actually clicked). On the extension's first run in a profile it opens a
 \"Consent-O-Matic Options\" tab; `launch` waits for it and closes it before
 returning, so the startup page is the only tab.
 
-Firefox's first-run Terms-of-Use modal and data-reporting notice are switched
-off (the prefs Firefox's own automation uses), in the temporary profile and,
-where your user.js does not already set them, in a --profile directory.
+Firefox's first-run Terms-of-Use modal and its data-reporting notice (a
+privacy-notice tab on first run) are switched off with the prefs Firefox's own
+automation uses, and telemetry upload with them. A --profile directory gets
+these prefs appended to its user.js (they stay there, like the devtools
+prefs) unless its user.js already sets them: `browser.preonboarding.enabled`,
+`termsofuse.bypassNotification`,
+`datareporting.policy.dataSubmissionPolicyBypassNotification`,
+`datareporting.policy.dataSubmissionEnabled`.
 
 Output: {\"results\": {\"pid\": N, \"host\": \"...\", \"port\": N, \"headless\": bool, \"profile\": \"...\", \"profile_path\": \"...\", \"temp_profile\": bool, \"auto_consent_extension_installed\": bool, \"window_size\": {\"requested\": {\"width\": N, \"height\": N}, \"below_floor\": bool}|null, \"warnings\"?: [...]}, \"total\": 1, \"meta\": {\"firefox\": \"...\", \"launch_wait_secs\": N, \"replaced\"?: {\"stopped\": bool, \"pid\": N}}}"
     )]

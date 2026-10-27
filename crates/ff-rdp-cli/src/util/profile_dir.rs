@@ -702,6 +702,15 @@ fn create_ownership_record_in(
         ))
     })?;
     write_owner_pid_marker(&record, pid);
+    // `write_owner_pid_marker` only warns; a record without its marker proves
+    // nothing, so drop it and tell the caller.
+    if read_owner_pid_marker(&record) != Some(pid) {
+        let _ = std::fs::remove_dir_all(&record);
+        return Err(AppError::User(format!(
+            "failed to write the owner marker into {}",
+            record.display()
+        )));
+    }
     Ok(record)
 }
 

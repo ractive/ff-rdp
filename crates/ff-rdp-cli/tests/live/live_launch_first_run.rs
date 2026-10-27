@@ -67,6 +67,8 @@ const TOU_STATE_JS: &str = r#"(() => {
   });
 })()"#;
 
+/// No Terms-of-Use modal, no data-reporting notice (its privacy-notice tab),
+/// and nothing uploads.
 fn assert_no_first_run_modal(test: &str, port: u16) {
     let state: Value = serde_json::from_str(&parent_eval(port, TOU_STATE_JS)).expect("json");
     assert_eq!(state["willShowTOUModal"], false, "{test}: {state}");
@@ -76,7 +78,7 @@ fn assert_no_first_run_modal(test: &str, port: u16) {
     );
     assert_eq!(
         state["canUpload"], false,
-        "{test}: telemetry must stay off: {state}"
+        "{test}: nothing may upload: {state}"
     );
     assert_eq!(state["preonboarding"], false, "{test}: {state}");
     assert_eq!(state["touBypass"], true, "{test}: {state}");
