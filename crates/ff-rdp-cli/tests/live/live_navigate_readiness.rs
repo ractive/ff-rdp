@@ -1,5 +1,7 @@
 //! iter-79 Theme A AC: `ff-rdp navigate` against a real public URL must succeed
-//! under the default `--wait complete` + default `--timeout`.
+//! under the default `--wait` + default `--timeout` (since 2026-10-27 the
+//! default is `auto`, which still reports `complete` here: the page's load
+//! event follows `interactive` well inside the 3 s grace).
 //!
 //! Reproduces the dogfooding repro (2026-05-25): pre-iter-79 the command timed
 //! out at the default 10s and at 30s even though `eval document.readyState`

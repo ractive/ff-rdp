@@ -160,6 +160,11 @@ fn live_df64_readiness_ignores_subframe_completion() {
             "slow-3g",
             "--timeout",
             "60000",
+            // Strict: the default `auto` may legitimately return the
+            // interactive page while the image is held back; this test is
+            // about what `complete` means.
+            "--wait",
+            "complete",
         ],
     );
     assert_eq!(nav["results"]["ready_state"], "complete", "{nav}");

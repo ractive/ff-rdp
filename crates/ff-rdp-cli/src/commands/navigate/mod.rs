@@ -29,7 +29,7 @@ pub(crate) use status::{DocumentStatusTracker, not_observed_status};
 
 use consent::merge_auto_consent;
 use readiness::{
-    ReadinessCheck, ReadyStateProbe, capture_pre_nav_epoch, get_navigation_watcher,
+    ReadinessCheck, ReadinessGoal, ReadyStateProbe, capture_pre_nav_epoch, get_navigation_watcher,
     reclassify_timeout_as_neterror, run_wait_for_predicates, split_wait_budget,
     wait_for_doc_complete_retaining_status, wait_for_readystate_complete,
 };
@@ -41,9 +41,10 @@ use status::{FallbackStatusEvidence, StatusUnknown};
 use ff_rdp_core::{NavCause, Resource, ResourceCommand};
 #[cfg(test)]
 use readiness::{
-    READINESS_SAMPLE, classify_neterror, epoch_ms_at, error_page_cause, error_page_failed_url,
-    is_readystate_fresh, is_stale_lifecycle_event, must_reresolve_href, needs_href_fallback,
-    probe_same_document_commit, scripted_readiness, wait_for_doc_complete,
+    AUTO_COMPLETE_GRACE, READINESS_SAMPLE, Sample, SampledState, classify_neterror, epoch_ms_at,
+    error_page_cause, error_page_failed_url, is_readystate_fresh, is_stale_lifecycle_event,
+    must_reresolve_href, needs_href_fallback, probe_same_document_commit, scripted_readiness,
+    wait_for_doc_complete,
 };
 #[cfg(test)]
 use status::{
@@ -71,26 +72,60 @@ fn restore_timeout(transport: &mut RdpTransport, original_timeout_ms: u64) {
 pub enum WaitLevel {
     /// Return as soon as `dom-loading` fires (URL committed).
     Loading,
-    /// Return as soon as `dom-interactive` fires (DOM parsed, scripts may still be running).
+    /// Return as soon as the new document is `interactive` (DOM parsed,
+    /// scripts and sub-resources may still be loading) or `complete`.
     Interactive,
-    /// Return as soon as `dom-complete` fires (all resources loaded) — default.
-    #[default]
+    /// Return only once the new document is `complete` (the load event:
+    /// every sub-resource has loaded).
     Complete,
+    /// Default: return at `complete`, or at `interactive` once the document
+    /// has stayed interactive for 3 s (or the budget ran out) without
+    /// completing — a heavy or throttled page is usable long before its last
+    /// sub-resource arrives.
+    #[default]
+    Auto,
+}
+
+impl WaitLevel {
+    /// Whether a sampled `document.readyState` may resolve this wait — every
+    /// level but `loading`, which resolves on the `dom-loading` event only.
+    pub(crate) fn samples_readiness(self) -> bool {
+        !matches!(self, Self::Loading)
+    }
+
+    /// The level a `document.readyState` poll waits for: a sample is never
+    /// `loading`-level evidence, so that poll has always waited for `complete`.
+    pub(crate) fn poll_level(self) -> Self {
+        match self {
+            Self::Loading => Self::Complete,
+            other => other,
+        }
+    }
+
+    /// The `readyState` values a [`Self::poll_level`] poll is satisfied by,
+    /// for its timeout message.
+    pub(crate) fn poll_target_description(self) -> &'static str {
+        match self.poll_level() {
+            Self::Interactive | Self::Auto => "'interactive' or 'complete'",
+            Self::Loading | Self::Complete => "'complete'",
+        }
+    }
 }
 
 /// Strategy for waiting for navigation readiness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
 #[clap(rename_all = "lowercase")]
 pub enum WaitStrategy {
-    /// Wait for Firefox document-event resources (dom-complete).
+    /// Wait for Firefox document-event resources only (dom-interactive /
+    /// dom-complete, per --wait).
     Events,
-    /// Poll `document.readyState == "complete"` until timeout.
+    /// Poll `document.readyState` until it satisfies --wait, or timeout.
     Readystate,
     /// Wait on document-event resources while interleaving a lightweight
-    /// `document.readyState` probe; return as soon as either reports the page
-    /// is complete, then fall back to a dedicated readystate poll only if the
-    /// events phase times out. Default. Avoids the FF152 case where a page has
-    /// loaded but `dom-complete` never fires, burning the whole events budget.
+    /// `document.readyState` probe; return as soon as either satisfies --wait,
+    /// then fall back to a dedicated readystate poll only if the events phase
+    /// times out. Default. Avoids the FF152 case where a page has loaded but
+    /// `dom-complete` never fires, burning the whole events budget.
     #[default]
     Both,
 }
@@ -119,7 +154,7 @@ pub struct WaitAfterNav<'a> {
     /// Additional wait-for predicates to evaluate after the document commits.
     /// Each element is a raw predicate string: `selector:<css>`, `text:<substr>`, etc.
     pub wait_for: &'a [String],
-    /// Readiness level to wait for (default: `Complete`).
+    /// Readiness level to wait for (default: `Auto`).
     pub wait_level: WaitLevel,
     /// Strategy for waiting for navigation readiness (default: `Both`).
     pub wait_strategy: WaitStrategy,
@@ -253,6 +288,7 @@ pub fn run_core(
                 requested_url: url,
             },
             nav_start,
+            &mut ReadinessGoal::new(wait_opts.wait_level),
         );
         let ci = reclassify_timeout_as_neterror(&mut ctx, url, rs_result)?;
         // An error page reaches `complete` too: no status is observed on
@@ -380,12 +416,17 @@ pub fn run_core(
         // wait_for_doc_complete acquires the lock only during dispatch_event,
         // not across the full recv() wait — see its lock-discipline doc-comment.
         let mut fallback_status = FallbackStatusEvidence::new(ctx.target());
+        // Under `Both` the events slice is not the end of the budget: `auto`
+        // must not settle for `interactive` at its expiry while the
+        // readystate fallback can still see `complete`.
+        let mut goal = ReadinessGoal::new(wait_opts.wait_level);
+        goal.set_deadline_final(wait_opts.wait_strategy != WaitStrategy::Both);
         let event_result = wait_for_doc_complete_retaining_status(
             ctx.transport_mut(),
             &bus_arc,
             &rx,
             events_budget,
-            wait_opts.wait_level,
+            &mut goal,
             nav_start,
             readystate_probe.as_mut(),
             url,
@@ -438,10 +479,25 @@ pub fn run_core(
                 let elapsed_ms =
                     u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(cli.timeout);
                 let remaining = cli.timeout.saturating_sub(elapsed_ms);
+                // The fallback runs to the end of the budget: `auto`'s
+                // interactive sighting from the events slice carries over.
+                goal.begin_final_poll();
                 if remaining == 0 {
-                    Err(AppError::Timeout(
-                        "navigate: no remaining budget for readystate fallback".to_string(),
-                    ))
+                    match goal.on_deadline() {
+                        Some((state, href)) => {
+                            used_fallback = true;
+                            Ok(readiness::CommitInfo {
+                                committed_url: href,
+                                ready_state: state.as_str().to_owned(),
+                                elapsed_ms,
+                                http_status: None,
+                                status_reason: Some(StatusUnknown::NotObserved),
+                            })
+                        }
+                        None => Err(AppError::Timeout(
+                            "navigate: no remaining budget for readystate fallback".to_string(),
+                        )),
+                    }
                 } else {
                     used_fallback = true;
                     wait_for_readystate_complete(
@@ -453,6 +509,7 @@ pub fn run_core(
                             requested_url: url,
                         },
                         nav_start,
+                        &mut goal,
                     )
                 }
             }
