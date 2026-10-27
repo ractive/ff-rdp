@@ -1,5 +1,7 @@
 //! `ff-rdp stop` — stop a Firefox that ff-rdp launched and remove its
-//! temporary profile.
+//! temporary profile. A Firefox launched with a user `--profile` is proved
+//! through its ownership record (`profile_dir::create_ownership_record`);
+//! `stop` removes that record and keeps the user's directory.
 //!
 //! # Safety
 //!
@@ -99,7 +101,7 @@ fn run_port(cli: &Cli, dry_run: bool) -> Result<(), AppError> {
             "would_stop": true,
             "pid": owned.pid,
             "port": port,
-            "profile": owned.profile.display().to_string(),
+            "profile": owned.browser_profile().display().to_string(),
             "profile_removed": false,
             "profile_would_be_removed": profile_dir::profile_would_be_removed(&owned),
             "dry_run": true,
@@ -113,7 +115,7 @@ fn run_port(cli: &Cli, dry_run: bool) -> Result<(), AppError> {
         "stopped": true,
         "pid": owned.pid,
         "port": port,
-        "profile": owned.profile.display().to_string(),
+        "profile": owned.browser_profile().display().to_string(),
         "profile_removed": profile_removed,
         "dry_run": false,
     });
@@ -133,7 +135,7 @@ fn run_all(cli: &Cli, dry_run: bool) -> Result<(), AppError> {
                     "stopped": false,
                     "would_stop": true,
                     "pid": owned.pid,
-                    "profile": owned.profile.display().to_string(),
+                    "profile": owned.browser_profile().display().to_string(),
                     "profile_removed": false,
                     "profile_would_be_removed": profile_dir::profile_would_be_removed(owned),
                 });
@@ -143,7 +145,7 @@ fn run_all(cli: &Cli, dry_run: bool) -> Result<(), AppError> {
                 Ok(profile_removed) => json!({
                     "stopped": true,
                     "pid": owned.pid,
-                    "profile": owned.profile.display().to_string(),
+                    "profile": owned.browser_profile().display().to_string(),
                     "profile_removed": profile_removed,
                 }),
                 Err(error) => {
@@ -151,7 +153,7 @@ fn run_all(cli: &Cli, dry_run: bool) -> Result<(), AppError> {
                     json!({
                         "stopped": false,
                         "pid": owned.pid,
-                        "profile": owned.profile.display().to_string(),
+                        "profile": owned.browser_profile().display().to_string(),
                         "profile_removed": false,
                         "error": error,
                     })
@@ -192,17 +194,19 @@ fn finish_stop(owned: &OwnedFirefox, report: &replace::StopReport) -> Result<boo
             "Firefox (pid {}) released its port but is still running after SIGTERM+SIGKILL; \
              its profile {} was kept. Check it with `ps -p {}`.",
             owned.pid,
-            owned.profile.display(),
+            owned.browser_profile().display(),
             owned.pid
         ));
     }
     Ok(remove_stopped_profile(owned))
 }
 
-/// Remove an exited instance's managed profile.
+/// Remove an exited instance's managed profile. For a Firefox launched with a
+/// user `--profile` only its ownership record goes; the user's directory is
+/// kept, so the answer is always `false`.
 fn remove_stopped_profile(owned: &OwnedFirefox) -> bool {
     match profile_dir::remove_stopped_profile(owned) {
-        ProfileCleanup::Removed(_) => true,
+        ProfileCleanup::Removed(_) => owned.user_profile().is_none(),
         ProfileCleanup::Skipped(reason) => {
             tracing::warn!(
                 "stop: did not remove {} ({})",

@@ -633,6 +633,92 @@ pub(crate) struct OwnedFirefox {
     pub(crate) pid: u32,
     pub(crate) profile: PathBuf,
     root: PathBuf,
+    /// Set when `profile` is an ownership record ([`create_ownership_record`])
+    /// for a Firefox launched with a user `--profile`: the directory it names.
+    user_profile: Option<PathBuf>,
+}
+
+impl OwnedFirefox {
+    /// The user-supplied `--profile` this Firefox runs against, when `profile`
+    /// is only its ownership record. `stop` reports this directory and never
+    /// removes it.
+    pub(crate) fn user_profile(&self) -> Option<&Path> {
+        self.user_profile.as_deref()
+    }
+
+    /// The profile directory the browser actually uses — what `stop` reports.
+    pub(crate) fn browser_profile(&self) -> &Path {
+        self.user_profile().unwrap_or(&self.profile)
+    }
+}
+
+/// File inside an ownership record naming the user-supplied `--profile`
+/// directory its Firefox runs against.
+const USER_PROFILE_POINTER: &str = ".ff-rdp-user-profile";
+
+/// Record that ff-rdp launched `pid` against the user-supplied `user_profile`.
+///
+/// A user's `--profile` directory must never hold an owner marker: a file
+/// planted there could otherwise authorise a kill, and ff-rdp has no business
+/// writing into it. So ownership lives in a separate *record* — an otherwise
+/// empty managed `ff-rdp-profile-*` directory under the trusted profile root,
+/// created exactly like a managed profile (unpredictable name), holding the
+/// usual [`write_owner_pid_marker`] pair plus [`USER_PROFILE_POINTER`]. Every
+/// existing rule then applies unchanged: [`authorize_kill`] vouches for the PID
+/// through the record, `stop` removes the record (a managed basename under the
+/// configured root) and never the user directory, which is only ever *read*
+/// back for reporting; the dead-owner prune reclaims a record whose Firefox
+/// is gone.
+pub(crate) fn create_ownership_record(user_profile: &Path, pid: u32) -> Result<PathBuf, AppError> {
+    create_ownership_record_in(&secure_profile_root()?, user_profile, pid)
+}
+
+/// [`create_ownership_record`] under an explicit root, for tests.
+fn create_ownership_record_in(
+    root: &Path,
+    user_profile: &Path,
+    pid: u32,
+) -> Result<PathBuf, AppError> {
+    let record = tempfile::Builder::new()
+        .prefix(MANAGED_PROFILE_PREFIX)
+        .rand_bytes(MANAGED_PROFILE_SUFFIX_LEN)
+        .tempdir_in(root)
+        .map_err(|e| {
+            AppError::User(format!(
+                "failed to create an ownership record under {}: {e}",
+                root.display()
+            ))
+        })?
+        .keep();
+    let named = std::path::absolute(user_profile).unwrap_or_else(|_| user_profile.to_path_buf());
+    write_marker_atomically(
+        &record.join(USER_PROFILE_POINTER),
+        &format!("{}\n", named.display()),
+    )
+    .map_err(|e| {
+        AppError::User(format!(
+            "failed to write the ownership record {}: {e}",
+            record.display()
+        ))
+    })?;
+    write_owner_pid_marker(&record, pid);
+    // `write_owner_pid_marker` only warns; a record without its marker proves
+    // nothing, so drop it and tell the caller.
+    if read_owner_pid_marker(&record) != Some(pid) {
+        let _ = std::fs::remove_dir_all(&record);
+        return Err(AppError::User(format!(
+            "failed to write the owner marker into {}",
+            record.display()
+        )));
+    }
+    Ok(record)
+}
+
+/// The user profile an ownership record names, if `dir` is one.
+fn read_user_profile_pointer(dir: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(dir.join(USER_PROFILE_POINTER)).ok()?;
+    let line = text.trim_end_matches(['\n', '\r']);
+    (!line.is_empty()).then(|| PathBuf::from(line))
 }
 
 /// Why [`authorize_kill`] refused to vouch for a PID. Every variant means
@@ -795,6 +881,7 @@ fn authorize_kill_in(
                 running_firefox(pid, executable_name)?;
                 return Ok(OwnedFirefox {
                     pid,
+                    user_profile: read_user_profile_pointer(&profile),
                     profile,
                     root: root.clone(),
                 });
@@ -867,6 +954,7 @@ fn owned_instances_under(
             running_firefox(pid, executable_name).ok()?;
             Some(OwnedFirefox {
                 pid,
+                user_profile: read_user_profile_pointer(&path),
                 profile: path,
                 root: root.to_path_buf(),
             })
@@ -896,7 +984,9 @@ pub(crate) fn remove_stopped_profile(owned: &OwnedFirefox) -> ProfileCleanup {
 /// Same predicate as the real removal; only `remove_dir_all` itself can still
 /// fail.
 pub(crate) fn profile_would_be_removed(owned: &OwnedFirefox) -> bool {
-    stopped_profile_removal_root(owned, configured_profile_root()).is_ok()
+    // A user `--profile` is never removed; only its ownership record is.
+    owned.user_profile().is_none()
+        && stopped_profile_removal_root(owned, configured_profile_root()).is_ok()
 }
 
 /// The root this invocation resolves — the only one deletion may touch.
@@ -2412,6 +2502,45 @@ mod tests {
         .expect("a proved, Firefox-named owner must be authorised");
         assert_eq!(owned.pid, std::process::id());
         assert_eq!(owned.profile, dir);
+        assert_eq!(owned.user_profile(), None);
+    }
+
+    /// A Firefox launched with a user `--profile` is stoppable through its
+    /// ownership record, and the record — not the user directory — is what
+    /// `stop` may remove. The user directory receives no marker.
+    #[test]
+    fn unit_stop_authorizes_user_profile_launch_through_its_ownership_record() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let user = tempfile::tempdir().expect("user profile");
+        let record = create_ownership_record_in(root.path(), user.path(), std::process::id())
+            .expect("record");
+        assert!(is_managed_profile_path(&record), "{}", record.display());
+        assert!(record.starts_with(root.path()));
+        assert!(
+            !user.path().join(OWNER_PID_MARKER).exists()
+                && !user.path().join(OWNER_START_MARKER).exists(),
+            "a user --profile must never receive an owner marker"
+        );
+
+        let owned = authorize_kill_in(
+            &[root.path().to_path_buf()],
+            std::process::id(),
+            exe_firefox,
+        )
+        .expect("ff-rdp launched it, so stop must be authorised");
+        assert_eq!(owned.profile, record);
+        let expected_user = std::path::absolute(user.path()).expect("absolute");
+        assert_eq!(owned.user_profile(), Some(expected_user.as_path()));
+        assert_eq!(owned.browser_profile(), expected_user.as_path());
+        assert_eq!(
+            stopped_profile_removal_root(&owned, Ok(root.path().to_path_buf())),
+            Ok(root.path().to_path_buf()),
+            "the record itself is removable"
+        );
+
+        let listed = owned_instances_under(root.path(), exe_firefox);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].user_profile(), Some(expected_user.as_path()));
     }
 
     /// Rule 2 (gap (a) from triage): a marker without a start token used to
@@ -3141,6 +3270,7 @@ mod tests {
             pid: 1,
             profile: root.join(format!("ff-rdp-profile-{}", "a".repeat(16))),
             root: root.clone(),
+            user_profile: None,
         };
         assert_eq!(
             stopped_profile_removal_root(&owned, Ok(root.clone())),
@@ -3159,6 +3289,7 @@ mod tests {
             pid: 1,
             profile: root.join("my-profile"),
             root: root.clone(),
+            user_profile: None,
         };
         assert_eq!(
             stopped_profile_removal_root(&unmanaged, Ok(root)),

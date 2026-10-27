@@ -150,6 +150,7 @@ mod live_295_perf_cold;
 mod live_296_triage_easy_batch;
 mod live_304_refs_snapshot_eval;
 mod live_consent_settle;
+mod live_launch_first_run;
 mod live_launch_positional_url;
 mod live_smooth_scroll_measure;
 mod live_stop_command;
