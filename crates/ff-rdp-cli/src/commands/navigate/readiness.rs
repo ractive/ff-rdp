@@ -166,12 +166,31 @@ impl SampledState {
 /// this the wait timed out instead of returning the usable document.
 pub(crate) const AUTO_COMPLETE_GRACE: Duration = Duration::from_millis(3000);
 
-/// When a sampled readiness satisfies a [`WaitLevel`]: `complete` always does,
+/// One readiness observation fed to [`ReadinessGoal::observe`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Sample {
+    /// No reading: the evaluation failed or its result was unusable.
+    Unavailable,
+    /// A reading that says the navigated document is not usable now: still
+    /// `loading`, a transitional/blank href, or no navigation progress.
+    NotReady,
+    /// The navigated document, past `loading`, at this href.
+    Ready(SampledState, String),
+}
+
+/// When readiness satisfies a [`WaitLevel`]: `complete` always does,
 /// `interactive` does at once for `--wait interactive` and, for `--wait auto`,
-/// once it has persisted for [`AUTO_COMPLETE_GRACE`] (or the budget ran out).
+/// once it has persisted for [`AUTO_COMPLETE_GRACE`] (or the final deadline
+/// passed while it held).
 #[derive(Debug)]
 pub(crate) struct ReadinessGoal {
     level: WaitLevel,
+    /// How long `auto` keeps waiting for `complete` after `interactive`.
+    grace: Duration,
+    /// Whether the deadline the current wait runs against ends the whole
+    /// budget. `false` for the events slice of `--wait-strategy both`, whose
+    /// expiry hands over to the readystate fallback.
+    deadline_is_final: bool,
     /// First moment the navigated document was seen `interactive`, with the
     /// href of the latest such sighting.
     interactive: Option<(Instant, String)>,
@@ -181,18 +200,54 @@ impl ReadinessGoal {
     pub(crate) fn new(level: WaitLevel) -> Self {
         Self {
             level,
+            grace: AUTO_COMPLETE_GRACE,
+            deadline_is_final: true,
             interactive: None,
         }
     }
 
-    /// Feed one accepted sample taken at `now`; returns the state and href to
+    #[cfg(test)]
+    pub(crate) fn with_grace(level: WaitLevel, grace: Duration) -> Self {
+        Self {
+            grace,
+            ..Self::new(level)
+        }
+    }
+
+    pub(crate) fn level(&self) -> WaitLevel {
+        self.level
+    }
+
+    pub(crate) fn set_deadline_final(&mut self, is_final: bool) {
+        self.deadline_is_final = is_final;
+    }
+
+    /// Prepare for a `document.readyState` poll that runs to the end of the
+    /// budget: its deadline is final, and `loading` polls for `complete`
+    /// ([`WaitLevel::poll_level`]). An `auto` sighting so far is kept.
+    pub(crate) fn begin_final_poll(&mut self) {
+        self.level = self.level.poll_level();
+        self.deadline_is_final = true;
+    }
+
+    /// Feed one observation taken at `now`; returns the state and href to
     /// report when the wait is satisfied.
     pub(crate) fn observe(
         &mut self,
-        state: SampledState,
-        href: String,
+        sample: Sample,
         now: Instant,
     ) -> Option<(SampledState, String)> {
+        let (state, href) = match sample {
+            Sample::Unavailable => return None,
+            // The document seen `interactive` is gone or not this navigation's
+            // (e.g. a script redirect while the next one loads): the grace
+            // restarts from the next sighting.
+            Sample::NotReady => {
+                self.interactive = None;
+                return None;
+            }
+            Sample::Ready(state, href) => (state, href),
+        };
         match (self.level, state) {
             (WaitLevel::Loading, _) | (WaitLevel::Complete, SampledState::Interactive) => None,
             (_, SampledState::Complete) | (WaitLevel::Interactive, SampledState::Interactive) => {
@@ -215,14 +270,17 @@ impl ReadinessGoal {
     pub(crate) fn settled(&self, now: Instant) -> Option<(SampledState, String)> {
         self.interactive
             .as_ref()
-            .filter(|(since, _)| now.saturating_duration_since(*since) >= AUTO_COMPLETE_GRACE)
+            .filter(|(since, _)| now.saturating_duration_since(*since) >= self.grace)
             .map(|(_, href)| (SampledState::Interactive, href.clone()))
     }
 
-    /// `--wait auto` only: what to report when the budget runs out — the
-    /// document is usable if it was seen `interactive`, so this is not a
-    /// timeout.
+    /// `--wait auto` only: what to report when the final deadline passes —
+    /// the document is usable if it was seen `interactive`, so this is not a
+    /// timeout. `None` before a non-final deadline (see `deadline_is_final`).
     pub(crate) fn on_deadline(&self) -> Option<(SampledState, String)> {
+        if !self.deadline_is_final {
+            return None;
+        }
         self.interactive
             .as_ref()
             .map(|(_, href)| (SampledState::Interactive, href.clone()))
@@ -230,42 +288,49 @@ impl ReadinessGoal {
 }
 
 impl ReadinessCheck<'_> {
-    #[cfg(test)]
-    fn accepted_href(self, grip: &Grip) -> Option<String> {
-        self.accepted_sample(grip)
-            .and_then(|(state, href)| (state == SampledState::Complete).then_some(href))
-    }
-
-    /// The sample's state and href when it describes the navigated document
-    /// past `loading`: a usable href and evidence of navigation progress.
-    fn accepted_sample(self, grip: &Grip) -> Option<(SampledState, String)> {
+    /// Judge one [`READINESS_SAMPLE`] result: [`Sample::Ready`] when it
+    /// describes the navigated document past `loading` (a usable href and
+    /// evidence of navigation progress), [`Sample::NotReady`] when it is a
+    /// well-formed reading that does not, [`Sample::Unavailable`] otherwise.
+    pub(crate) fn judge(self, grip: &Grip) -> Sample {
         let Grip::Value(Value::String(encoded)) = grip else {
-            return None;
+            return Sample::Unavailable;
         };
-        let sample: Value = serde_json::from_str(encoded).ok()?;
-        let state = match sample.get("readyState")?.as_str()? {
+        let Ok(sample) = serde_json::from_str::<Value>(encoded) else {
+            return Sample::Unavailable;
+        };
+        let (Some(ready_state), Some(href)) = (
+            sample.get("readyState").and_then(Value::as_str),
+            sample.get("href").and_then(Value::as_str),
+        ) else {
+            return Sample::Unavailable;
+        };
+        let state = match ready_state {
             "complete" => SampledState::Complete,
             "interactive" => SampledState::Interactive,
-            _ => return None,
+            _ => return Sample::NotReady,
         };
-        let href = sample.get("href")?.as_str()?;
         if href.is_empty()
             || (!self.requested_url.is_empty() && needs_href_fallback(href, self.requested_url))
         {
-            return None;
+            return Sample::NotReady;
         }
         let progressed = match self.pre_epoch {
             // A known epoch remains authoritative, even when href changed.
             Some(before) => sample
-                .get("epoch")?
-                .as_f64()
+                .get("epoch")
+                .and_then(Value::as_f64)
                 .is_some_and(|now| now > before),
             // Missing epoch evidence must not become zero. A known changed href
             // can establish progress under the existing changed-href contract;
             // it does not prove a fresh document or navigation causality.
             None => !self.pre_href.is_empty() && href != self.pre_href,
         };
-        progressed.then(|| (state, href.to_owned()))
+        if progressed {
+            Sample::Ready(state, href.to_owned())
+        } else {
+            Sample::NotReady
+        }
     }
 }
 
@@ -318,10 +383,10 @@ fn probe_readiness(
     transport: &mut RdpTransport,
     console_actor: &ff_rdp_core::ActorId,
     check: ReadinessCheck<'_>,
-) -> Option<(SampledState, String)> {
+) -> Sample {
     match evaluate_readiness_sample(transport, console_actor) {
-        Ok(result) if result.exception.is_none() => check.accepted_sample(&result.result),
-        _ => None,
+        Ok(result) if result.exception.is_none() => check.judge(&result.result),
+        _ => Sample::Unavailable,
     }
 }
 
@@ -625,9 +690,12 @@ pub(crate) fn needs_href_fallback(candidate: &str, requested_url: &str) -> bool 
 /// pumping the transport until the condition is met or the timeout elapses.
 ///
 /// - [`WaitLevel::Loading`]     — resolves on `dom-loading`.
-/// - [`WaitLevel::Interactive`] — resolves on `dom-interactive` (or earlier
-///   `dom-loading` for neterror detection).
-/// - [`WaitLevel::Complete`]    — resolves on `dom-complete` (default).
+/// - [`WaitLevel::Interactive`] — resolves on `dom-interactive`, or on a
+///   readiness sample that is `interactive` or `complete`.
+/// - [`WaitLevel::Complete`]    — resolves on `dom-complete` or a `complete`
+///   sample.
+/// - [`WaitLevel::Auto`]        — (default) `Complete`, or `interactive` once
+///   it has held for the grace period — see [`ReadinessGoal`].
 ///
 /// Always returns `Err(AppError::Navigation { … })` on `about:neterror`
 /// regardless of `wait_level`.
@@ -699,7 +767,7 @@ pub(crate) fn wait_for_doc_complete(
         bus_arc,
         rx,
         timeout_ms,
-        wait_level,
+        &mut ReadinessGoal::new(wait_level),
         nav_start,
         probe,
         requested_url,
@@ -708,13 +776,16 @@ pub(crate) fn wait_for_doc_complete(
     )
 }
 
+/// [`wait_for_doc_complete`] with the caller's [`ReadinessGoal`] (so `auto`'s
+/// interactive sighting survives into a readystate fallback) and optional
+/// retained status evidence for that fallback.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn wait_for_doc_complete_retaining_status(
     transport: &mut RdpTransport,
     bus_arc: &Arc<Mutex<ResourceCommand>>,
     rx: &std::sync::mpsc::Receiver<std::sync::Arc<Resource>>,
     timeout_ms: u64,
-    wait_level: WaitLevel,
+    goal: &mut ReadinessGoal,
     nav_start: Instant,
     mut probe: Option<&mut ReadyStateProbe<'_>>,
     requested_url: &str,
@@ -760,10 +831,9 @@ pub(crate) fn wait_for_doc_complete_retaining_status(
         DocumentStatusTracker::default()
     };
 
-    // `--wait interactive|auto`: which sampled (or, without a polling probe,
-    // event-reported) readiness ends the wait — see `ReadinessGoal`.
-    let mut goal = ReadinessGoal::new(wait_level);
-    let polling_probe = probe.as_ref().is_some_and(|p| p.poll_enabled);
+    // `--wait interactive|auto`: which sampled or event-reported readiness
+    // ends the wait — see `ReadinessGoal`.
+    let wait_level = goal.level();
     let interactive_commit = |href: String| CommitInfo {
         committed_url: href,
         ready_state: SampledState::Interactive.as_str().to_owned(),
@@ -948,21 +1018,20 @@ pub(crate) fn wait_for_doc_complete_retaining_status(
                             commit_url = Some(eff_url.clone());
                         }
                         interactive_url = Some(eff_url.clone());
-                        // --wait auto without a polling probe (`--wait-strategy
-                        // events`): the event is the only interactive evidence,
-                        // so it starts the grace period. With a probe, only a
-                        // sample does: it proves href and navigation progress.
-                        // A replayed outgoing `dom-loading` can precede this
-                        // event (see the backlog), so judge its timestamp here
-                        // too rather than only before the first `dom-loading`.
+                        // --wait auto: a fresh top-document `dom-interactive`
+                        // (the bus drops subframe document-events) starts the
+                        // grace period, as an `interactive` sample does — the
+                        // only evidence under `--wait-strategy events`, and
+                        // the fallback when samples keep failing. A replayed
+                        // outgoing `dom-loading` can precede this event (see
+                        // the backlog), so judge its timestamp here too rather
+                        // than only before the first `dom-loading`.
                         if wait_level == WaitLevel::Auto
-                            && !polling_probe
                             && !is_stale_lifecycle_event(name, v, dispatched_at_ms)
                             && !needs_href_fallback(&eff_url, requested_url)
                         {
                             let _ = goal.observe(
-                                SampledState::Interactive,
-                                eff_url.clone(),
+                                Sample::Ready(SampledState::Interactive, eff_url.clone()),
                                 Instant::now(),
                             );
                         }
@@ -1135,7 +1204,10 @@ pub(crate) fn wait_for_doc_complete_retaining_status(
         // `probe_same_document_commit_safe`, which installs a temporary event
         // sink and replays anything the eval's `recv_reply_from` would
         // otherwise have swallowed.
-        if wait_level.wants_complete()
+        // Every level but `loading` (which resolves on its event): a
+        // same-document commit leaves the document `complete`, which satisfies
+        // `interactive` as well.
+        if wait_level.samples_readiness()
             && let (Some(p), Some(when)) = (probe.as_deref_mut(), same_doc_next_check_at)
             && Instant::now() >= when
             && !p.pre_href.is_empty()
@@ -1204,16 +1276,19 @@ pub(crate) fn wait_for_doc_complete_retaining_status(
                 pre_href: &p.pre_href,
                 requested_url,
             };
-            if let Some(probe_actor) = p.console_actor.clone()
-                && let Some((state, href)) =
+            let sample = match p.console_actor.clone() {
+                Some(probe_actor) => {
                     with_event_replay(transport, bus_arc, retained.as_deref_mut(), |t| {
                         t.with_read_deadline(deadline, |t| {
                             Ok(probe_readiness(t, &probe_actor, check))
                         })
-                        .unwrap_or_default()
+                        .unwrap_or(Sample::Unavailable)
                     })
-                && let Some((state, committed)) = goal.observe(state, href, Instant::now())
-            {
+                }
+                None => Sample::Unavailable,
+            };
+            let accepted = matches!(sample, Sample::Ready(..));
+            if let Some((state, committed)) = goal.observe(sample, Instant::now()) {
                 tracing::debug!(branch = "readiness-sample", ready_state = state.as_str(), committed_url = %committed, console_actor = ?p.console_actor, "navigate: completion selected");
                 let elapsed_ms = u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(u64::MAX);
                 break 'wait CommitInfo {
@@ -1227,7 +1302,10 @@ pub(crate) fn wait_for_doc_complete_retaining_status(
             // Rejected samples may belong to a transitional direct target. A
             // later lookup must evaluate the whole sample on the new actor; it
             // must never combine this actor's readiness with that actor's href.
-            probe_refreshed = false;
+            // An accepted `interactive` sample (`auto`'s grace period) proved
+            // this actor is the navigated document's: keep it, rather than pay
+            // a blocking `getTarget` on every tick of the grace.
+            probe_refreshed = accepted;
             // Re-arm the probe timer regardless of the outcome above.
             next_probe_at = Some(Instant::now() + p.probe_interval);
         }
@@ -1462,12 +1540,11 @@ pub(crate) fn is_readystate_fresh(current_nav_start: f64, pre_epoch: f64) -> boo
         pre_href: "",
         requested_url: "https://new.test/",
     }
-    .accepted_href(&Grip::Value(scripted_readiness(
+    .judge(&Grip::Value(scripted_readiness(
         current_nav_start,
         "https://new.test/",
         "complete",
-    )))
-    .is_some()
+    ))) == Sample::Ready(SampledState::Complete, "https://new.test/".to_owned())
 }
 
 // Declared protocol values for the actual Rust predicate; not Firefox fixtures.
@@ -1477,18 +1554,18 @@ pub(crate) fn scripted_readiness(epoch: f64, href: &str, state: &str) -> Value {
 }
 
 /// Poll `document.readyState` on the current console under one absolute
-/// deadline until it satisfies `level`'s [`WaitLevel::poll_level`] (see
-/// [`ReadinessGoal`]); a zero budget makes exactly one evaluation.
+/// deadline until it satisfies `goal` (see [`ReadinessGoal::begin_final_poll`]);
+/// a zero budget makes exactly one evaluation.
 pub(crate) fn poll_direct_readystate(
     ctx: &mut crate::commands::connect_tab::ConnectedTab,
     check: ReadinessCheck<'_>,
     timeout_ms: u64,
-    level: WaitLevel,
+    goal: &mut ReadinessGoal,
 ) -> Result<(SampledState, String), AppError> {
     use ff_rdp_core::ProtocolError;
     let console = ctx.target().console_actor.clone();
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    let mut goal = ReadinessGoal::new(level.poll_level());
+    goal.begin_final_poll();
     loop {
         let evaluate = |t: &mut RdpTransport| evaluate_readiness_sample(t, &console);
         let result = if timeout_ms == 0 {
@@ -1509,9 +1586,7 @@ pub(crate) fn poll_direct_readystate(
                         ff_rdp_core::sanitize_for_terminal(&message).into_owned(),
                     ));
                 }
-                if let Some((state, href)) = check.accepted_sample(&result.result)
-                    && let Some(done) = goal.observe(state, href, Instant::now())
-                {
+                if let Some(done) = goal.observe(check.judge(&result.result), Instant::now()) {
                     return Ok(done);
                 }
             }
@@ -1533,9 +1608,10 @@ pub(crate) fn poll_direct_readystate(
     }
 }
 
-/// Poll `document.readyState` until it satisfies `level` (`complete`, or for
-/// `interactive`/`auto` the rules of [`ReadinessGoal`]) or the deadline
-/// passes, returning a `CommitInfo` when the condition is met.
+/// Poll `document.readyState` until it satisfies `goal` (`complete`, or for
+/// `interactive`/`auto` the rules of [`ReadinessGoal`]; an `auto` sighting
+/// from a preceding events phase carries over) or the deadline passes,
+/// returning a `CommitInfo` when the condition is met.
 ///
 /// Readiness, epoch and committed href come from one sample. A known baseline
 /// epoch requires a strictly newer epoch; when unavailable, a known changed href
@@ -1549,14 +1625,14 @@ pub(crate) fn wait_for_readystate_complete(
     timeout_ms: u64,
     check: ReadinessCheck<'_>,
     nav_start: Instant,
-    level: WaitLevel,
+    goal: &mut ReadinessGoal,
 ) -> Result<CommitInfo, AppError> {
-    let (state, url) = match poll_direct_readystate(ctx, check, timeout_ms, level) {
+    let (state, url) = match poll_direct_readystate(ctx, check, timeout_ms, goal) {
         Ok(done) => done,
         Err(AppError::Timeout(_)) => {
             let total_elapsed_ms =
                 u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(u64::MAX);
-            let target = level.poll_target_description();
+            let target = goal.level().poll_target_description();
             return Err(AppError::Timeout(format!(
                 "navigate: document.readyState did not reach {target} (with navigation progress) \
                  within {total_elapsed_ms}ms — use --no-wait to skip or increase --timeout"
@@ -1819,7 +1895,7 @@ pub(crate) fn wait_for_navigation_commit(
                         requested_url,
                     },
                     nav_start,
-                    WaitLevel::Complete,
+                    &mut ReadinessGoal::new(WaitLevel::Complete),
                 )
             }
         }

@@ -430,29 +430,34 @@ fn readiness_goal_levels_and_auto_grace() {
     let href = || "https://new.test/".to_owned();
     let interactive = SampledState::Interactive;
     let complete = SampledState::Complete;
+    let ready = |state| Sample::Ready(state, href());
 
     // `complete` always satisfies every sampling level.
     for level in [WaitLevel::Interactive, WaitLevel::Complete, WaitLevel::Auto] {
-        let got = ReadinessGoal::new(level).observe(complete, href(), t0);
+        let got = ReadinessGoal::new(level).observe(ready(complete), t0);
         assert_eq!(got, Some((complete, href())), "{level:?}");
     }
     // `interactive` satisfies `interactive` at once, `complete` never.
     assert_eq!(
-        ReadinessGoal::new(WaitLevel::Interactive).observe(interactive, href(), t0),
+        ReadinessGoal::new(WaitLevel::Interactive).observe(ready(interactive), t0),
         Some((interactive, href()))
     );
     let mut strict = ReadinessGoal::new(WaitLevel::Complete);
-    assert_eq!(strict.observe(interactive, href(), t0), None);
+    assert_eq!(strict.observe(ready(interactive), t0), None);
     assert_eq!(strict.settled(t0 + AUTO_COMPLETE_GRACE * 10), None);
     assert_eq!(
         strict.on_deadline(),
         None,
         "strict complete keeps timing out"
     );
-    // A sample is never `loading`-level evidence.
+    // A sample is never `loading`-level evidence...
+    let mut loading = ReadinessGoal::new(WaitLevel::Loading);
+    assert_eq!(loading.observe(ready(complete), t0), None);
+    // ...but a final readystate poll for `--wait loading` waits for `complete`.
+    loading.begin_final_poll();
     assert_eq!(
-        ReadinessGoal::new(WaitLevel::Loading).observe(complete, href(), t0),
-        None
+        loading.observe(ready(complete), t0),
+        Some((complete, href()))
     );
 
     // `auto`: interactive starts the grace period and is reported once it
@@ -461,22 +466,80 @@ fn readiness_goal_levels_and_auto_grace() {
     let mut auto = ReadinessGoal::new(WaitLevel::Auto);
     assert_eq!(auto.on_deadline(), None, "nothing usable seen yet");
     assert_eq!(
-        auto.observe(interactive, "https://first.test/".into(), t0),
+        auto.observe(Sample::Ready(interactive, "https://first.test/".into()), t0),
         None
     );
     let later = t0 + AUTO_COMPLETE_GRACE.saturating_sub(Duration::from_millis(1));
-    assert_eq!(auto.observe(interactive, href(), later), None);
+    assert_eq!(auto.observe(ready(interactive), later), None);
+    assert_eq!(auto.observe(Sample::Unavailable, later), None);
     assert_eq!(auto.settled(later), None);
     assert_eq!(
         auto.settled(t0 + AUTO_COMPLETE_GRACE),
-        Some((interactive, href()))
+        Some((interactive, href())),
+        "an unavailable sample does not reset the grace"
     );
-    // Budget exhausted before the grace ends: still the usable document.
+    // Budget exhausted before the grace ends: still the usable document —
+    // but only at a final deadline (the `both` events slice is not one).
     assert_eq!(auto.on_deadline(), Some((interactive, href())));
+    auto.set_deadline_final(false);
+    assert_eq!(auto.on_deadline(), None, "events slice of `both`");
+    auto.begin_final_poll();
+    assert_eq!(
+        auto.on_deadline(),
+        Some((interactive, href())),
+        "the sighting carries into the fallback poll"
+    );
     // A `complete` sample inside the grace period wins.
     assert_eq!(
-        auto.observe(complete, href(), later),
+        auto.observe(ready(complete), later),
         Some((complete, href()))
+    );
+
+    // A not-ready reading (the next document of a script redirect still
+    // loading) forgets the sighting: neither the grace nor the deadline may
+    // report the abandoned document.
+    let mut redirected = ReadinessGoal::new(WaitLevel::Auto);
+    assert_eq!(redirected.observe(ready(interactive), t0), None);
+    assert_eq!(redirected.observe(Sample::NotReady, later), None);
+    assert_eq!(redirected.settled(t0 + AUTO_COMPLETE_GRACE * 2), None);
+    assert_eq!(redirected.on_deadline(), None);
+}
+
+/// `ReadinessCheck::judge` sorts a readiness sample into ready / not ready /
+/// unavailable; `NotReady` is what resets `auto`'s grace period.
+#[test]
+fn readiness_check_judges_samples() {
+    let check = ReadinessCheck {
+        pre_epoch: Some(100.0),
+        pre_href: "https://old.test/",
+        requested_url: "https://new.test/",
+    };
+    let judge = |epoch, href: &str, state: &str| {
+        check.judge(&ff_rdp_core::Grip::Value(scripted_readiness(
+            epoch, href, state,
+        )))
+    };
+    assert_eq!(
+        judge(200.0, "https://new.test/", "interactive"),
+        Sample::Ready(SampledState::Interactive, "https://new.test/".into())
+    );
+    assert_eq!(
+        judge(200.0, "https://new.test/", "complete"),
+        Sample::Ready(SampledState::Complete, "https://new.test/".into())
+    );
+    assert_eq!(
+        judge(200.0, "https://new.test/", "loading"),
+        Sample::NotReady
+    );
+    assert_eq!(judge(200.0, "about:blank", "complete"), Sample::NotReady);
+    assert_eq!(
+        judge(100.0, "https://new.test/", "complete"),
+        Sample::NotReady,
+        "no navigation progress"
+    );
+    assert_eq!(
+        check.judge(&ff_rdp_core::Grip::Value(serde_json::json!("not JSON"))),
+        Sample::Unavailable
     );
 }
 
@@ -1011,10 +1074,14 @@ fn unit_navigate_readystate_probe_short_circuits() {
     );
 }
 
+/// Stand-in for [`AUTO_COMPLETE_GRACE`] in the mock wait-loop tests, so they
+/// do not sleep out the real 3 s.
+const TEST_GRACE: Duration = Duration::from_millis(300);
+
 /// 2026-10-27: a document that stays `interactive` (a heavy page under
 /// `--throttle slow-3g`, whose live `dom-interactive` event Firefox 158 never
 /// delivered) resolves `--wait interactive` on the first sample and the
-/// default `--wait auto` after `AUTO_COMPLETE_GRACE`, instead of timing out.
+/// default `--wait auto` after its grace period, instead of timing out.
 #[test]
 fn unit_navigate_interactive_sample_resolves_interactive_and_auto() {
     use std::io::Write as _;
@@ -1041,9 +1108,10 @@ fn unit_navigate_interactive_sample_resolves_interactive_and_auto() {
             writer
                 .write_all(encode_frame(&serde_json::to_string(&greeting).unwrap()).as_bytes())
                 .unwrap();
-            let mut samples = 0_u32;
+            let (mut samples, mut refreshes) = (0_u32, 0_u32);
             while let Ok(req) = recv_from(&mut reader) {
                 let replies = if req["type"] == "getTarget" {
+                    refreshes += 1;
                     vec![serde_json::json!({
                         "from": tab_actor,
                         "frame": { "actor": "conn0/target1", "consoleActor": console_actor },
@@ -1065,11 +1133,11 @@ fn unit_navigate_interactive_sample_resolves_interactive_and_auto() {
                         .write_all(encode_frame(&serde_json::to_string(&reply).unwrap()).as_bytes())
                         .is_err()
                     {
-                        return samples;
+                        return (samples, refreshes);
                     }
                 }
             }
-            samples
+            (samples, refreshes)
         });
 
         let mut transport =
@@ -1091,35 +1159,40 @@ fn unit_navigate_interactive_sample_resolves_interactive_and_auto() {
             trust_event_url: true,
         };
 
-        let result = wait_for_doc_complete(
+        let result = wait_for_doc_complete_retaining_status(
             &mut transport,
             &bus_arc,
             &rx,
             10_000,
-            level,
+            &mut ReadinessGoal::with_grace(level, TEST_GRACE),
             nav_start,
             Some(&mut probe),
             "https://heavy.test/",
             false,
+            None,
         );
         let elapsed = nav_start.elapsed();
         drop(transport);
-        let samples = server_handle.join().unwrap();
+        let (samples, refreshes) = server_handle.join().unwrap();
 
         let ci = result.unwrap_or_else(|e| panic!("{level:?} must resolve, got {e:?}"));
         assert_eq!(ci.ready_state, "interactive", "{level:?}");
         assert_eq!(ci.committed_url, "https://heavy.test/", "{level:?}");
         if level == WaitLevel::Auto {
             assert!(
-                elapsed >= AUTO_COMPLETE_GRACE,
+                elapsed >= TEST_GRACE,
                 "auto must give `complete` the grace period first: {elapsed:?}"
             );
             assert!(samples > 1, "auto keeps sampling for `complete`: {samples}");
+            assert_eq!(
+                refreshes, 1,
+                "an accepted sample keeps its console actor: no getTarget per grace tick"
+            );
         } else {
             assert_eq!(samples, 1, "interactive resolves on the first sample");
         }
         assert!(
-            elapsed < AUTO_COMPLETE_GRACE + Duration::from_secs(2),
+            elapsed < TEST_GRACE + Duration::from_secs(2),
             "{level:?} must return long before the 10 s budget: {elapsed:?}"
         );
     }
@@ -1168,17 +1241,18 @@ fn unit_navigate_auto_without_probe_uses_fresh_dom_interactive_event() {
         let bus_arc = Arc::new(Mutex::new(ResourceCommand::new(
             ff_rdp_core::ActorId::from("conn0/watcher1"),
         )));
-        let budget_ms = if fresh { 10_000 } else { 1_500 };
-        let result = wait_for_doc_complete(
+        let budget_ms = if fresh { 10_000 } else { 1_000 };
+        let result = wait_for_doc_complete_retaining_status(
             &mut transport,
             &bus_arc,
             &rx,
             budget_ms,
-            WaitLevel::Auto,
+            &mut ReadinessGoal::with_grace(WaitLevel::Auto, TEST_GRACE),
             nav_start,
             None,
             "https://heavy.test/",
             false,
+            None,
         );
         let elapsed = nav_start.elapsed();
         drop(transport);
@@ -1188,11 +1262,8 @@ fn unit_navigate_auto_without_probe_uses_fresh_dom_interactive_event() {
             let ci = result.expect("fresh dom-interactive resolves auto");
             assert_eq!(ci.ready_state, "interactive");
             assert_eq!(ci.committed_url, "https://heavy.test/");
-            assert!(elapsed >= AUTO_COMPLETE_GRACE, "{elapsed:?}");
-            assert!(
-                elapsed < AUTO_COMPLETE_GRACE + Duration::from_secs(2),
-                "{elapsed:?}"
-            );
+            assert!(elapsed >= TEST_GRACE, "{elapsed:?}");
+            assert!(elapsed < TEST_GRACE + Duration::from_secs(2), "{elapsed:?}");
         } else {
             assert!(
                 matches!(result, Err(AppError::Timeout(_))),
@@ -2594,7 +2665,7 @@ mod atomic_readiness_tests {
                     requested_url: "https://new.test/",
                 },
                 start,
-                level,
+                &mut ReadinessGoal::new(level),
             );
             let elapsed = start.elapsed();
             drop(ctx);

@@ -1823,11 +1823,14 @@ pub struct NavigateArgs {
     /// Strategy for waiting for navigation readiness.
     /// `both` (default): wait on document-event resources while also probing
     ///         `document.readyState` in-loop, returning as soon as either
-    ///         signals complete — so a page that finished loading is not held
+    ///         satisfies --wait — so a page that finished loading is not held
     ///         up by a `dom-complete` event that never fires (e.g. FF152); a
     ///         readystate poll runs as a final fallback if events time out.
-    /// `events`: wait for document-event resources (dom-complete) only.
-    /// `readystate`: poll `document.readyState == "complete"` until timeout.
+    /// `events`: wait for document-event resources (dom-interactive /
+    ///         dom-complete) only. Firefox may not deliver dom-interactive
+    ///         for a throttled page, so `auto`/`interactive` can time out here.
+    /// `readystate`: poll `document.readyState` until it satisfies --wait or
+    ///         the timeout expires.
     #[arg(long, value_name = "STRATEGY", default_value = "both", value_enum)]
     pub wait_strategy: crate::commands::navigate::WaitStrategy,
     /// After the readiness wait (--wait / --wait-strategy) and before
