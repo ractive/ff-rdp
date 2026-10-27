@@ -1,14 +1,14 @@
-//! Live tests: `a11y summary` and the bare `ff-rdp` home view list only the
-//! interactive elements a user can see.
+//! Live tests: `a11y summary` and the bare `ff-rdp` home view list only what
+//! a user can see.
 //!
-//! The page models the comparis.ch repro: a consent box Consent-O-Matic had
-//! faded to `opacity:0` held hundreds of vendor toggles that filled the
-//! 50-entry cap ahead of the real navigation. The fixture adds the other ways
-//! a subtree disappears — `display:none`, `visibility:hidden`, and a
-//! `display:none` wrapper inside a shadow root that light-DOM links are
-//! slotted through — plus the two cases that must stay: a custom checkbox
-//! whose own `opacity:0` is covered by a visible label, and `aria-hidden`
-//! content that is still on screen.
+//! The page models the comparis.ch repro: a `display:none` consent panel
+//! holding dozens of vendor toggles sits ahead of the real navigation and,
+//! unfiltered, fills the 50-entry cap. The fixture adds the other ways a
+//! subtree disappears — `visibility:hidden`, and a `display:none` wrapper
+//! inside a shadow root that light-DOM links are slotted through — plus the
+//! cases that must stay because a user can see or click them: a hover-reveal
+//! wrapper at `opacity:0`, a custom checkbox whose own `opacity:0` is covered
+//! by a visible label, a `display:contents` link, and `aria-hidden` content.
 //!
 //! # Running
 //!
@@ -58,11 +58,14 @@ fn page() -> String {
     }
     format!(
         "<!doctype html><html lang=en><head><title>Hidden</title></head><body>\
-         <div id=cmp style=\"opacity:0\">{vendors}<button>Hidden accept</button></div>\
-         <div style=\"display:none\"><a href=\"/none\">Display none link</a></div>\
+         <div id=cmp style=\"display:none\"><h2>Hidden panel heading</h2>\
+           <nav aria-label=\"Hidden vendors\">{vendors}</nav><button>Hidden accept</button></div>\
          <div style=\"visibility:hidden\"><a href=\"/vis\">Visibility hidden link</a></div>\
          <shadow-box><a href=\"/slotted\">Slotted hidden link</a></shadow-box>\
-         <nav><a href=\"/home\">Visible home</a><a href=\"/about\">Visible about</a></nav>\
+         <nav aria-label=\"Main\"><h1>Visible heading</h1>\
+           <a href=\"/home\">Visible home</a><a href=\"/about\">Visible about</a></nav>\
+         <div style=\"opacity:0\"><button>Hover action</button></div>\
+         <a href=\"/card\" style=\"display:contents\"><span>Contents card</span></a>\
          <label><input type=checkbox name=terms style=\"opacity:0;position:absolute\">Accept terms</label>\
          <div aria-hidden=true><a href=\"/aria\">Aria hidden link</a></div>\
          <script>customElements.define('shadow-box', class extends HTMLElement {{\
@@ -72,34 +75,39 @@ fn page() -> String {
     )
 }
 
-fn names(view: &Value) -> Vec<String> {
-    view["interactive"]
+fn strings(view: &Value, section: &str, key: &str) -> Vec<String> {
+    view[section]
         .as_array()
-        .unwrap_or_else(|| panic!("no interactive list: {view}"))
+        .unwrap_or_else(|| panic!("no {section} list: {view}"))
         .iter()
-        .map(|e| e["name"].as_str().unwrap_or_default().to_owned())
+        .map(|e| e[key].as_str().unwrap_or_default().to_owned())
         .collect()
 }
 
+const HIDDEN: [&str; 4] = [
+    "Vendor 0",
+    "Hidden accept",
+    "Visibility hidden link",
+    "Slotted hidden link",
+];
+
+const SHOWN: [&str; 6] = [
+    "Visible home",
+    "Visible about",
+    "Hover action",
+    "Contents card",
+    "Accept terms",
+    "Aria hidden link",
+];
+
 fn assert_only_visible(names: &[String], context: &str) {
-    for hidden in [
-        "Vendor 0",
-        "Hidden accept",
-        "Display none link",
-        "Visibility hidden link",
-        "Slotted hidden link",
-    ] {
+    for hidden in HIDDEN {
         assert!(
             !names.iter().any(|n| n == hidden),
             "{context}: hidden {hidden:?} listed: {names:?}"
         );
     }
-    for shown in [
-        "Visible home",
-        "Visible about",
-        "Accept terms",
-        "Aria hidden link",
-    ] {
+    for shown in SHOWN {
         assert!(
             names.iter().any(|n| n == shown),
             "{context}: visible {shown:?} missing: {names:?}"
@@ -122,18 +130,31 @@ fn live_a11y_hidden_interactive_excluded_from_summary_and_home() {
 
     let summary = run_json(port, &["a11y", "summary"]);
     let results = &summary["results"];
-    let listed = names(results);
+    let listed = strings(results, "interactive", "name");
     assert_only_visible(&listed, "a11y summary");
     assert_eq!(
         listed.len(),
-        4,
-        "only the four visible controls: {listed:?}"
+        SHOWN.len(),
+        "only the visible controls: {listed:?}"
     );
     assert!(
         results.get("interactive_truncated").is_none(),
         "hidden vendors must not reach the cap: {summary}"
     );
+    assert_eq!(
+        strings(results, "headings", "text"),
+        ["Visible heading"],
+        "{summary}"
+    );
+    assert_eq!(
+        strings(results, "landmarks", "label"),
+        ["Main"],
+        "{summary}"
+    );
 
     let home = run_json(port, &["home", "--format", "json"]);
-    assert_only_visible(&names(&home["results"]["page"]), "home view");
+    assert_only_visible(
+        &strings(&home["results"]["page"], "interactive", "name"),
+        "home view",
+    );
 }

@@ -207,28 +207,31 @@ const PAGE_VIEW_JS_TEMPLATE: &str = r#"(function() {
   __JSON_WRITER__
   var result = {headings: [], interactive: []};
   var __els = [];
-  // The interactive list is what a user can see. Consent-O-Matic hides a
-  // consent manager it is working through with `opacity:0` on the box, and
-  // that box held 300 vendor toggles that filled the 50-entry cap on
-  // comparis.ch. `checkVisibility` walks the flat tree, so a `display:none`
-  // wrapper inside a shadow root hides the light-DOM links slotted through
-  // it too. Not filtered: `aria-hidden` (the element is still on screen and
-  // clickable) and the element's *own* `opacity:0` — the custom-checkbox
-  // idiom, where a visible label stands in for a transparent input.
+  // The view lists what a user can see. On comparis.ch 148 `display:none`
+  // menu copies and a consent manager's hidden vendor tabs filled the
+  // 50-entry cap ahead of the real navigation. `checkVisibility` walks the
+  // flat tree, so a `display:none` wrapper inside a shadow root hides the
+  // light-DOM links slotted through it too; `visibility:hidden` and
+  // `content-visibility:hidden` count as well — all three also take the
+  // element out of the accessibility tree.
+  // Not filtered: `opacity:0` (anti-flicker snippets fade the whole page in,
+  // hover-revealed row actions sit at 0 until hovered, custom checkboxes are
+  // transparent under a visible label — all clickable) and `aria-hidden`
+  // (still on screen and clickable).
   function __ffrdpFlatParent(n) {
     return n.assignedSlot || n.parentElement ||
       (n.parentNode && n.parentNode.host) || null;
   }
   function __ffrdpShown(el) {
     if (typeof el.checkVisibility !== 'function') return true;
-    if (el.checkVisibility({checkOpacity: true, opacityProperty: true,
-        checkVisibilityCSS: true, visibilityProperty: true})) return true;
-    if (!el.checkVisibility({checkVisibilityCSS: true,
-        visibilityProperty: true})) return false;
-    for (var p = __ffrdpFlatParent(el); p; p = __ffrdpFlatParent(p)) {
-      if (getComputedStyle(p).opacity === '0') return false;
-    }
-    return true;
+    if (el.checkVisibility({checkVisibilityCSS: true,
+        visibilityProperty: true})) return true;
+    // `display:contents` has no box, so checkVisibility says no although its
+    // children render; judge it by its nearest ancestor that has one.
+    var cs = getComputedStyle(el);
+    if (cs.display !== 'contents' || cs.visibility === 'hidden') return false;
+    var p = __ffrdpFlatParent(el);
+    return !p || __ffrdpShown(p);
   }
   function __ffrdpAdd(el, entry) {
     if (!__ffrdpShown(el)) return;
@@ -243,6 +246,7 @@ __LANDMARKS_BLOCK__
   // Headings, in document order (iter-296): one pass, level from the tag.
   var headings = document.querySelectorAll('h1,h2,h3,h4,h5,h6');
   for (var j = 0; j < headings.length; j++) {
+    if (!__ffrdpShown(headings[j])) continue;
     result.headings[result.headings.length] = {
       level: Number(headings[j].tagName.charAt(1)),
       text: __ffrdpAccName(headings[j])
@@ -290,6 +294,7 @@ const LANDMARKS_BLOCK_JS: &str = r#"
   for (var lr = 0; lr < landmarkRoles.length; lr++) {
     var roleEls = document.querySelectorAll('[role="' + landmarkRoles[lr] + '"]');
     for (var ri = 0; ri < roleEls.length; ri++) {
+      if (!__ffrdpShown(roleEls[ri])) { continue; }
       result.landmarks[result.landmarks.length] = {
         role: landmarkRoles[lr],
         label: roleEls[ri].getAttribute('aria-label') || '',
@@ -307,6 +312,7 @@ const LANDMARKS_BLOCK_JS: &str = r#"
     var tagEls = document.getElementsByTagName(landmarkTags[lt]);
     for (var ti = 0; ti < tagEls.length; ti++) {
       if (tagEls[ti].getAttribute('role')) { continue; }
+      if (!__ffrdpShown(tagEls[ti])) { continue; }
       if ((landmarkTags[lt] === 'HEADER' || landmarkTags[lt] === 'FOOTER') &&
           tagEls[ti].parentElement &&
           tagEls[ti].parentElement.closest(sectioningScope)) { continue; }
@@ -744,7 +750,11 @@ mod tests {
             .find("var ref = __ffrdpStampRef(el);")
             .expect("stamp call present");
         assert!(filter < stamp, "filter must run before the stamp");
-        assert!(js.contains("checkOpacity: true"), "ancestor opacity counts");
+        // opacity:0 is a fade-in, a hover reveal or a custom checkbox — all
+        // clickable — so it must never take an element out of the view.
+        assert!(!js.contains("checkOpacity"), "opacity must not hide");
+        assert!(js.contains("if (!__ffrdpShown(headings[j])) continue;"));
+        assert!(js.contains("if (!__ffrdpShown(roleEls[ri])) { continue; }"));
     }
 
     #[test]
