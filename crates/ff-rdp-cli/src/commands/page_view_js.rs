@@ -207,7 +207,31 @@ const PAGE_VIEW_JS_TEMPLATE: &str = r#"(function() {
   __JSON_WRITER__
   var result = {headings: [], interactive: []};
   var __els = [];
+  // The interactive list is what a user can see. Consent-O-Matic hides a
+  // consent manager it is working through with `opacity:0` on the box, and
+  // that box held 300 vendor toggles that filled the 50-entry cap on
+  // comparis.ch. `checkVisibility` walks the flat tree, so a `display:none`
+  // wrapper inside a shadow root hides the light-DOM links slotted through
+  // it too. Not filtered: `aria-hidden` (the element is still on screen and
+  // clickable) and the element's *own* `opacity:0` — the custom-checkbox
+  // idiom, where a visible label stands in for a transparent input.
+  function __ffrdpFlatParent(n) {
+    return n.assignedSlot || n.parentElement ||
+      (n.parentNode && n.parentNode.host) || null;
+  }
+  function __ffrdpShown(el) {
+    if (typeof el.checkVisibility !== 'function') return true;
+    if (el.checkVisibility({checkOpacity: true, opacityProperty: true,
+        checkVisibilityCSS: true, visibilityProperty: true})) return true;
+    if (!el.checkVisibility({checkVisibilityCSS: true,
+        visibilityProperty: true})) return false;
+    for (var p = __ffrdpFlatParent(el); p; p = __ffrdpFlatParent(p)) {
+      if (getComputedStyle(p).opacity === '0') return false;
+    }
+    return true;
+  }
   function __ffrdpAdd(el, entry) {
+    if (!__ffrdpShown(el)) return;
     var ref = __ffrdpStampRef(el);
     if (ref) entry.ref = ref;
     __els[__els.length] = el;
@@ -706,6 +730,21 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Hidden elements are dropped before they are stamped, so a hidden
+    /// consent-manager toggle neither fills the cap nor gets a ref.
+    #[test]
+    fn hidden_elements_are_filtered_before_stamping() {
+        let js = build_page_view_js(true, None);
+        let filter = js
+            .find("if (!__ffrdpShown(el)) return;")
+            .expect("visibility filter present");
+        let stamp = js
+            .find("var ref = __ffrdpStampRef(el);")
+            .expect("stamp call present");
+        assert!(filter < stamp, "filter must run before the stamp");
+        assert!(js.contains("checkOpacity: true"), "ancestor opacity counts");
     }
 
     #[test]

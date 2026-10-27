@@ -3141,6 +3141,11 @@ navigates. `meta.source` names how the view was produced.
 `--limit N` caps the interactive list (default 50); `--all` lifts the cap.
 `interactive_total` and `interactive_truncated` appear when the cap bit.
 
+The interactive list holds only elements a user can see: one under a
+`display:none`, `visibility:hidden` or `opacity:0` ancestor (shadow-root
+wrappers included) is left out and gets no ref. `aria-hidden` content stays
+in. `snapshot` and `dom` still see hidden elements.
+
 The same view is what `--with-page` embeds under `results.page` on
 navigate/click/type/reload/back/forward/scroll — identical keys, so a recipe
 written against one works on the other. Two keys are act-and-see only, because

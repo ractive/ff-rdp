@@ -103,6 +103,7 @@ mod live_95_cascade_computed_agreement;
 mod live_98_media_query_truthfulness;
 mod live_a11y_contrast_wai_bad;
 mod live_a11y_critical;
+mod live_a11y_hidden_interactive;
 mod live_bulk_cap;
 mod live_cascade;
 mod live_cascade_explains_pico_dialog;
