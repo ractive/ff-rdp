@@ -500,10 +500,11 @@ pub enum Command {
     /// List open browser tabs
     #[command(long_about = "List open browser tabs.
 
-The Consent-O-Matic options tab `launch --auto-consent` leaves open
+The options tab Consent-O-Matic opens on its first run in a profile
 (`moz-extension://.../options.html`, title \"Consent-O-Matic Options\" or a
 known localized equivalent) is filtered out of the listing (iter-144) — it
-is never counted in `total` or in `--tab N` indices.
+is never counted in `total` or in `--tab N` indices. `launch --auto-consent`
+closes that tab itself; the filter covers a profile it could not close it in.
 
 Output: {\"results\": [{\"url\": \"...\", \"title\": \"...\", \"actor\": \"...\", \"selected\": true}], \"total\": N, \"meta\": {...}}")]
     Tabs,
@@ -1476,7 +1477,13 @@ kb/iterations/iteration-142-session-hygiene.md). For a real dismiss
 attestation after navigating, use `ff-rdp navigate --auto-consent` or
 `ff-rdp consent accept`, both of which report `results.consent = {\"cmp\":
 ..., \"action\": ...}` (`action` is `\"accepted\"` only when a control was
-actually clicked).
+actually clicked). On the extension's first run in a profile it opens a
+\"Consent-O-Matic Options\" tab; `launch` waits for it and closes it before
+returning, so the startup page is the only tab.
+
+Firefox's first-run Terms-of-Use modal and data-reporting notice are switched
+off (the prefs Firefox's own automation uses), in the temporary profile and,
+where your user.js does not already set them, in a --profile directory.
 
 Output: {\"results\": {\"pid\": N, \"host\": \"...\", \"port\": N, \"headless\": bool, \"profile\": \"...\", \"profile_path\": \"...\", \"temp_profile\": bool, \"auto_consent_extension_installed\": bool, \"window_size\": {\"requested\": {\"width\": N, \"height\": N}, \"below_floor\": bool}|null, \"warnings\"?: [...]}, \"total\": 1, \"meta\": {\"firefox\": \"...\", \"launch_wait_secs\": N, \"replaced\"?: {\"stopped\": bool, \"pid\": N}}}"
     )]
@@ -1501,10 +1508,13 @@ it requires: an owner-PID marker naming the PID in a managed profile under a
 profile root you own that nobody else can write; the process start time ff-rdp
 recorded beside it, matching the live process (so a reused PID is refused);
 and a Firefox executable. A process group is signalled only when the PID leads
-its own group; otherwise the PID alone. There is no --pid flag. A Firefox you
-started yourself, one launched with --profile, or any other process on the
-port is refused with an error naming its PID; under --all such processes are
-simply not candidates.
+its own group; otherwise the PID alone. There is no --pid flag. A Firefox
+launched with --profile is stoppable too: `launch` keeps its owner markers in a
+separate managed directory under the profile root, never in your profile, and
+`stop` keeps your --profile directory (`profile` names it, `profile_removed`
+is false). A Firefox you started yourself, or any other process on the port, is
+refused with an error naming its PID; under --all such processes are simply not
+candidates.
 
 Nothing stops automatically: every ff-rdp command opens its own connection, so
 the browser has to outlive each of them. Stop it when you are done.

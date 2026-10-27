@@ -850,7 +850,7 @@ mod tests {
         // Exact reviewed mode bytes include all original prefs, not a substring.
         assert_eq!(
             crate::util::sha256_hex(format!("{base}{PROFILE_ACTIVATION}").as_bytes()),
-            "8116871929126e8d976ebd4c81af990a72c201ceaa18cef7e61f39bebaf378ba"
+            "d439a3ff4bbd1b752e65d236f8c40e90a531016cbf62248eb0b337b667ac70e9"
         );
     }
 }

@@ -146,25 +146,63 @@ pub(super) fn open_user_js_append(profile: &Path, what: &str) -> Result<std::fs:
         })
 }
 
+/// Prefs that keep Firefox's new-user Terms-of-Use / pre-onboarding modal
+/// ("Welcome to Firefox — By continuing, you agree to the Firefox Terms of
+/// Use…") and the data-reporting notice from covering the first window.
+///
+/// Taken from Firefox's own automation defaults,
+/// `remote/shared/RecommendedPreferences.sys.mjs` (mozilla-firefox/firefox),
+/// which sets exactly these for Marionette / WebDriver BiDi. They are in
+/// [`USER_JS`] for managed profiles and appended to a user-supplied
+/// `--profile` when missing (see `build_command`), because a profile that has
+/// never accepted the Terms of Use shows the modal no matter who created it.
+///
+/// `datareporting.policy.dataSubmissionEnabled = false` rides along on
+/// purpose: `TelemetryReportingPolicy.canUpload()` (toolkit/components/
+/// telemetry/app/TelemetryReportingPolicy.sys.mjs) treats a bypassed notice as
+/// consent, so the two bypass prefs without it would let telemetry upload from
+/// a profile whose user was never told.
+const FIRST_RUN_PREFS: &[(&str, &str)] = &[
+    ("browser.preonboarding.enabled", "false"),
+    ("termsofuse.bypassNotification", "true"),
+    (
+        "datareporting.policy.dataSubmissionPolicyBypassNotification",
+        "true",
+    ),
+    ("datareporting.policy.dataSubmissionEnabled", "false"),
+];
+
 /// Ensure the devtools prefs are present in the profile's `user.js`.
 /// Appends only missing prefs to avoid overwriting user customisations.
 fn ensure_devtools_prefs(profile: &Path) -> Result<(), AppError> {
+    ensure_prefs(profile, DEVTOOLS_PREFS, "devtools prefs")
+}
+
+/// Ensure [`FIRST_RUN_PREFS`] are present in a user-supplied profile's
+/// `user.js`, appending only the ones whose key it does not mention yet — a
+/// value the user set themselves always wins.
+fn ensure_first_run_prefs(profile: &Path) -> Result<(), AppError> {
+    ensure_prefs(profile, FIRST_RUN_PREFS, "first-run prefs")
+}
+
+/// Append each `(key, value)` whose key `user.js` does not mention yet.
+fn ensure_prefs(profile: &Path, prefs: &[(&str, &str)], what: &str) -> Result<(), AppError> {
     use std::fmt::Write as FmtWrite;
     use std::io::Write as IoWrite;
 
     let user_js = profile.join("user.js");
     let existing = std::fs::read_to_string(&user_js).unwrap_or_default();
     let mut additions = String::new();
-    for (key, val) in DEVTOOLS_PREFS {
+    for (key, val) in prefs {
         if !existing.contains(key) {
             let _ = writeln!(additions, "user_pref(\"{key}\", {val});");
         }
     }
     if !additions.is_empty() {
-        let mut f = open_user_js_append(profile, "devtools prefs")?;
+        let mut f = open_user_js_append(profile, what)?;
         f.write_all(additions.as_bytes()).map_err(|e| {
             AppError::User(format!(
-                "failed to write devtools prefs to {}: {e}",
+                "failed to write {what} to {}: {e}",
                 user_js.display()
             ))
         })?;
@@ -203,8 +241,15 @@ user_pref("startup.homepage_welcome_url", "about:blank");
 user_pref("startup.homepage_welcome_url.additional", "");
 user_pref("browser.startup.homepage", "about:blank");
 user_pref("browser.startup.page", 0);
+// Suppress the new-user Terms-of-Use / pre-onboarding modal ("Welcome to Firefox —
+// By continuing, you agree to the Firefox Terms of Use…"). Same prefs as Firefox's own
+// automation defaults in remote/shared/RecommendedPreferences.sys.mjs; kept in sync
+// with FIRST_RUN_PREFS by a unit test.
+user_pref("browser.preonboarding.enabled", false);
+user_pref("termsofuse.bypassNotification", true);
 // Disable telemetry and data reporting prompts
 user_pref("datareporting.policy.dataSubmissionEnabled", false);
+user_pref("datareporting.policy.dataSubmissionPolicyBypassNotification", true);
 user_pref("toolkit.telemetry.reportingpolicy.firstRun", false);
 // Disable default browser check
 user_pref("browser.shell.checkDefaultBrowser", false);
@@ -260,6 +305,9 @@ pub(crate) fn build_command(
         // Ensure the devtools prefs exist so the debugger server starts.
         // We append to any existing user.js rather than overwriting it.
         ensure_devtools_prefs(&path)?;
+        // The Terms-of-Use modal shows for any profile that never accepted
+        // them, including a `--profile` directory created just now.
+        ensure_first_run_prefs(&path)?;
         cmd.arg("--profile").arg(&path);
         Some(path)
     } else {
@@ -712,6 +760,15 @@ pub(crate) struct LaunchHooks {
     /// PID? The fail-closed ownership proof `launch --replace` requires before
     /// it signals a port owner.
     pub(crate) pid_is_ff_rdp_spawned: fn(u32) -> bool,
+    /// `--auto-consent` only: arm the parent-process closer for the options
+    /// tab Consent-O-Matic opens on its first run in a profile
+    /// ([`super::auto_consent::suppress_options_tab`]). Best effort — an
+    /// error becomes a `results.warnings` entry, never a failed launch.
+    pub(crate) suppress_consent_options_tab: fn(u16, Duration) -> Result<String, String>,
+    /// Record that the spawned PID runs against a user `--profile`
+    /// ([`crate::util::profile_dir::create_ownership_record`]); injected so
+    /// unit tests never write under the real profile root.
+    pub(crate) record_user_profile_owner: fn(&Path, u32) -> Result<PathBuf, AppError>,
 }
 
 impl LaunchHooks {
@@ -738,6 +795,8 @@ impl LaunchHooks {
             try_wait: std::process::Child::try_wait,
             locate_firefox: find_firefox,
             pid_is_ff_rdp_spawned: crate::util::profile_dir::pid_is_ff_rdp_spawned,
+            suppress_consent_options_tab: super::auto_consent::suppress_options_tab,
+            record_user_profile_owner: crate::util::profile_dir::create_ownership_record,
         }
     }
 }
@@ -755,6 +814,8 @@ impl LaunchHooks {
         Self {
             pid_is_ff_rdp_spawned: |_pid| false,
             wait_for_tab: |_port, _deadline, _observation| PortWaitOutcome::Opened,
+            suppress_consent_options_tab: |_port, _wait| Ok("closed".to_owned()),
+            record_user_profile_owner: |_profile, _pid| Ok(PathBuf::new()),
             ..Self::real()
         }
     }
@@ -994,6 +1055,45 @@ fn count_tabs(host: &str, port: u16, timeout: Duration) -> Result<usize, String>
         .map_err(|e| e.to_string())
 }
 
+/// How long `launch --auto-consent` waits, on the extension's first run in a
+/// profile, for Consent-O-Matic's options tab to open so it can close it
+/// before returning. Observed at 1–2 s after the first tab is listed (Firefox 158).
+const CONSENT_OPTIONS_TAB_WAIT: Duration = Duration::from_secs(10);
+
+/// How long `launch` blocks on the options-tab closer: the full
+/// [`CONSENT_OPTIONS_TAB_WAIT`] when this launch is the extension's first run
+/// in the profile (`first_run`: a managed profile, or a `--profile` that did
+/// not hold the extension yet), so the tab is certain to come; nothing for a
+/// `--profile` that already ran it (the closer still watches inside Firefox).
+fn consent_options_tab_wait(first_run: bool) -> Duration {
+    if first_run {
+        CONSENT_OPTIONS_TAB_WAIT
+    } else {
+        Duration::ZERO
+    }
+}
+
+/// `results.warnings` entry for the options-tab closer, if any: it could not
+/// be armed, or a wait that expected the tab (`wait > 0`) never saw it.
+fn consent_options_tab_warning(armed: Result<String, String>, wait: Duration) -> Option<String> {
+    match armed {
+        Ok(verdict) if verdict == "closed" || wait.is_zero() => {
+            tracing::debug!("launch: Consent-O-Matic options-tab closer: {verdict}");
+            None
+        }
+        Ok(verdict) => Some(format!(
+            "Consent-O-Matic did not open its first-run options tab within {} s (closer \
+             verdict: {verdict}); ff-rdp keeps watching for 60 s and closes it if it appears",
+            wait.as_secs()
+        )),
+        Err(error) => Some(format!(
+            "could not arm the Consent-O-Matic options-tab closer ({error}); the extension \
+             may open a \"Consent-O-Matic Options\" tab on first run (`tabs` hides it from \
+             its listing)"
+        )),
+    }
+}
+
 /// Whether `launch` should drop an [`OWNER_PID_MARKER`](crate::util::profile_dir::OWNER_PID_MARKER)
 /// into the effective profile after a successful spawn.
 ///
@@ -1147,6 +1247,10 @@ pub(crate) fn run_with_hooks(
         None => (hooks.locate_firefox)()?,
     };
 
+    // Read before `build_command` installs the extension: absent means this
+    // launch is Consent-O-Matic's first run in the profile.
+    let consent_first_run =
+        auto_consent && profile.is_none_or(|p| !super::auto_consent::is_installed(Path::new(p)));
     let (mut cmd, profile_path) = build_command(
         &firefox,
         port,
@@ -1243,6 +1347,16 @@ pub(crate) fn run_with_hooks(
         && let Some(dir) = profile_path.as_deref()
     {
         crate::util::profile_dir::write_owner_pid_marker(dir, child.id());
+    } else if let Some(dir) = profile_path.as_deref() {
+        // A user `--profile` gets no marker; ownership goes into a separate
+        // record under the profile root so `stop` / `--replace` can still
+        // prove ff-rdp launched this Firefox. Warn-not-fail, like the marker.
+        if let Err(error) = (hooks.record_user_profile_owner)(dir, child.id()) {
+            tracing::warn!(
+                "launch: could not record ownership of the --profile launch ({error}); \
+                 `ff-rdp stop` will refuse to stop it"
+            );
+        }
     }
 
     let mut observation = startup::Observation {
@@ -1274,6 +1388,17 @@ pub(crate) fn run_with_hooks(
             if let Some(e) = outcome.into_error(pid, port, port_wait_bound) {
                 return Err(pending.fail(e));
             }
+            // A tab is listed, so the first window exists: arm the closer
+            // for the options tab Consent-O-Matic opens on first run. On a
+            // first run wait for the tab and return only once it is gone; a
+            // `--profile` that already ran the extension gets no tab, so
+            // there the closer just keeps watching.
+            let consent_warning = if auto_consent {
+                let wait = consent_options_tab_wait(consent_first_run);
+                consent_options_tab_warning((hooks.suppress_consent_options_tab)(port, wait), wait)
+            } else {
+                None
+            };
 
             // iter-97 Theme A wrote the owner markers here, after the port
             // probe; iter-171 moved them up to immediately after the spawn so
@@ -1355,20 +1480,23 @@ pub(crate) fn run_with_hooks(
                 // the requested document has loaded.
                 result["requested_url"] = json!(url);
             }
-            if below_floor && let (Some((w, h)), Some(obj)) = (window_size, result.as_object_mut())
-            {
+            let mut warnings: Vec<String> = Vec::new();
+            if below_floor && let Some((w, h)) = window_size {
                 let floor = crate::util::window_size::LIVE_VIEWPORT_FLOOR_PX;
-                obj.insert(
-                    "warnings".to_owned(),
-                    json!([format!(
-                        "requested width {w}px (window-size {w}x{h}) is below the ~{floor}px \
-                         live-viewport floor observed for a headless debugger-server Firefox \
-                         instance; effective innerWidth typically clamps up to ~{floor}px \
-                         (confirm with `ff-rdp eval innerWidth`). For a true sub-{floor}px \
-                         raster, use `ff-rdp screenshot --window-size {w}x{h}` after navigating \
-                         instead of relying on this live session's viewport."
-                    )]),
-                );
+                warnings.push(format!(
+                    "requested width {w}px (window-size {w}x{h}) is below the ~{floor}px \
+                     live-viewport floor observed for a headless debugger-server Firefox \
+                     instance; effective innerWidth typically clamps up to ~{floor}px \
+                     (confirm with `ff-rdp eval innerWidth`). For a true sub-{floor}px \
+                     raster, use `ff-rdp screenshot --window-size {w}x{h}` after navigating \
+                     instead of relying on this live session's viewport."
+                ));
+            }
+            warnings.extend(consent_warning);
+            if !warnings.is_empty()
+                && let Some(obj) = result.as_object_mut()
+            {
+                obj.insert("warnings".to_owned(), json!(warnings));
             }
             let mut meta = json!({
                 "firefox": firefox.to_string_lossy().as_ref().to_owned(),
@@ -1553,6 +1681,85 @@ mod tests {
 
     /// AC: `unit_owner_pid_marker_written_only_for_managed_profiles` — the
     /// owner-PID marker is written only for a managed (auto-created) profile.
+    /// Every managed profile suppresses the Terms-of-Use / pre-onboarding
+    /// modal and the data-reporting notice with exactly the values Firefox's
+    /// `RecommendedPreferences.sys.mjs` uses, and keeps telemetry off.
+    #[test]
+    fn user_js_carries_every_first_run_pref() {
+        for (key, value) in FIRST_RUN_PREFS {
+            let line = format!("user_pref(\"{key}\", {value});");
+            assert!(USER_JS.contains(&line), "USER_JS lacks {line}");
+        }
+        for line in [
+            "user_pref(\"termsofuse.bypassNotification\", true);",
+            "user_pref(\"browser.preonboarding.enabled\", false);",
+            "user_pref(\"datareporting.policy.dataSubmissionPolicyBypassNotification\", true);",
+            "user_pref(\"datareporting.policy.dataSubmissionEnabled\", false);",
+        ] {
+            assert!(USER_JS.contains(line), "USER_JS lacks {line}");
+        }
+    }
+
+    /// `--profile` gets the first-run prefs appended, but a value the user
+    /// already set in their `user.js` is left alone.
+    #[test]
+    fn build_command_explicit_profile_appends_missing_first_run_prefs_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            dir.path().join("user.js"),
+            "user_pref(\"datareporting.policy.dataSubmissionEnabled\", true);\n",
+        )
+        .expect("seed user.js");
+        let firefox = PathBuf::from("/usr/bin/firefox");
+        build_command(
+            &firefox,
+            6000,
+            true,
+            Some(dir.path().to_str().expect("utf-8")),
+            false,
+            None,
+            None,
+        )
+        .expect("build_command");
+        let user_js = std::fs::read_to_string(dir.path().join("user.js")).expect("user.js");
+        assert_eq!(
+            user_js
+                .matches("datareporting.policy.dataSubmissionEnabled\"")
+                .count(),
+            1,
+            "{user_js}"
+        );
+        assert!(
+            user_js.contains("dataSubmissionEnabled\", true);"),
+            "{user_js}"
+        );
+        for line in [
+            "user_pref(\"termsofuse.bypassNotification\", true);",
+            "user_pref(\"browser.preonboarding.enabled\", false);",
+        ] {
+            assert!(user_js.contains(line), "{line} missing:\n{user_js}");
+        }
+    }
+
+    /// Managed profiles wait for (and close) Consent-O-Matic's certain
+    /// first-run tab; a `--profile` never blocks the launch on it.
+    #[test]
+    fn consent_options_tab_wait_and_warning() {
+        assert_eq!(consent_options_tab_wait(true), CONSENT_OPTIONS_TAB_WAIT);
+        assert_eq!(consent_options_tab_wait(false), Duration::ZERO);
+        let wait = CONSENT_OPTIONS_TAB_WAIT;
+        assert_eq!(consent_options_tab_warning(Ok("closed".into()), wait), None);
+        assert_eq!(
+            consent_options_tab_warning(Ok("watching".into()), Duration::ZERO),
+            None
+        );
+        let missed = consent_options_tab_warning(Ok("watching".into()), wait).expect("warn");
+        assert!(missed.contains("did not open"), "{missed}");
+        let failed = consent_options_tab_warning(Err("connect: refused".into()), Duration::ZERO)
+            .expect("warn");
+        assert!(failed.contains("connect: refused"), "{failed}");
+    }
+
     /// A `--profile <user-path>` launch (`profile = Some(_)`) never triggers
     /// a marker write.
     #[test]
@@ -2902,6 +3109,92 @@ mod iter_175_tests {
                 .unwrap_err()
                 .to_string()
                 .contains("initializer refused")
+        );
+    }
+
+    /// A `--profile` launch records ownership (so `stop` can stop it) for the
+    /// PID it spawned, appends the first-run prefs, and — the extension being
+    /// new to this profile — waits on the Consent-O-Matic closer; a closer
+    /// that cannot be armed is a warning, not a failed launch.
+    #[cfg(unix)]
+    #[allow(unsafe_code)]
+    #[test]
+    fn user_profile_launch_records_ownership_and_arms_consent_closer() {
+        static RECORDED: Mutex<Option<(PathBuf, u32)>> = Mutex::new(None);
+        static WAITED: Mutex<Option<Duration>> = Mutex::new(None);
+        static EMITTED: Mutex<Option<serde_json::Value>> = Mutex::new(None);
+
+        let user_profile = tempfile::tempdir().expect("user profile");
+        let mut opts = managed_opts(7631);
+        opts.profile = Some(user_profile.path().to_str().expect("utf-8 tempdir"));
+        opts.auto_consent = true;
+        let hooks = LaunchHooks {
+            locate_firefox: || Ok(PathBuf::from("/unused/firefox")),
+            is_port_in_use: |_| false,
+            spawn: |_| spawn_lingering_child(),
+            probe_port: |_, _, _, _| PortWaitOutcome::Opened,
+            record_user_profile_owner: |profile, pid| {
+                *RECORDED.lock().expect("slot") = Some((profile.to_path_buf(), pid));
+                Ok(PathBuf::from("/record"))
+            },
+            suppress_consent_options_tab: |_port, wait| {
+                *WAITED.lock().expect("slot") = Some(wait);
+                Err("connect: refused".to_owned())
+            },
+            emit_launch: |_cli, envelope| {
+                *EMITTED.lock().expect("slot") = Some(envelope.clone());
+                Ok(())
+            },
+            ..LaunchHooks::none_running()
+        };
+        let launched = run_with_hooks(&bare_launch_cli(), &opts, &hooks);
+        let envelope = EMITTED.lock().expect("slot").take();
+        let pid = envelope
+            .as_ref()
+            .and_then(|e| e["results"]["pid"].as_u64())
+            .and_then(|p| i32::try_from(p).ok());
+        if let Some(pid) = pid {
+            // SAFETY: `pid` is the `sleep` child this test's spawn hook started;
+            // the successful launch handed it over without reaping it.
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+                libc::waitpid(pid, std::ptr::null_mut(), 0);
+            }
+        }
+        launched.expect("the launch must succeed despite the closer failing");
+        let envelope = envelope.expect("envelope emitted");
+
+        let (recorded_profile, recorded_pid) = RECORDED
+            .lock()
+            .expect("slot")
+            .take()
+            .expect("ownership recorded");
+        assert_eq!(recorded_profile, user_profile.path());
+        assert_eq!(Some(i32::try_from(recorded_pid).ok()), Some(pid));
+        assert_eq!(
+            *WAITED.lock().expect("slot"),
+            Some(CONSENT_OPTIONS_TAB_WAIT),
+            "a --profile without the extension is its first run"
+        );
+        let warnings = envelope["results"]["warnings"].to_string();
+        assert!(
+            warnings.contains("could not arm the Consent-O-Matic options-tab closer"),
+            "{envelope}"
+        );
+        let user_js =
+            std::fs::read_to_string(user_profile.path().join("user.js")).expect("user.js");
+        for (key, value) in FIRST_RUN_PREFS {
+            assert!(
+                user_js.contains(&format!("user_pref(\"{key}\", {value});")),
+                "{key} missing from --profile user.js:\n{user_js}"
+            );
+        }
+        assert!(
+            !user_profile
+                .path()
+                .join(crate::util::profile_dir::OWNER_PID_MARKER)
+                .exists(),
+            "a user --profile must never receive an owner marker"
         );
     }
 }
