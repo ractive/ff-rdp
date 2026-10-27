@@ -41,9 +41,10 @@ use status::{FallbackStatusEvidence, StatusUnknown};
 use ff_rdp_core::{NavCause, Resource, ResourceCommand};
 #[cfg(test)]
 use readiness::{
-    READINESS_SAMPLE, classify_neterror, epoch_ms_at, error_page_cause, error_page_failed_url,
-    is_readystate_fresh, is_stale_lifecycle_event, must_reresolve_href, needs_href_fallback,
-    probe_same_document_commit, scripted_readiness, wait_for_doc_complete,
+    AUTO_COMPLETE_GRACE, READINESS_SAMPLE, ReadinessGoal, SampledState, classify_neterror,
+    epoch_ms_at, error_page_cause, error_page_failed_url, is_readystate_fresh,
+    is_stale_lifecycle_event, must_reresolve_href, needs_href_fallback, probe_same_document_commit,
+    scripted_readiness, wait_for_doc_complete,
 };
 #[cfg(test)]
 use status::{
@@ -71,11 +72,50 @@ fn restore_timeout(transport: &mut RdpTransport, original_timeout_ms: u64) {
 pub enum WaitLevel {
     /// Return as soon as `dom-loading` fires (URL committed).
     Loading,
-    /// Return as soon as `dom-interactive` fires (DOM parsed, scripts may still be running).
+    /// Return as soon as the new document is `interactive` (DOM parsed,
+    /// scripts and sub-resources may still be loading) or `complete`.
     Interactive,
-    /// Return as soon as `dom-complete` fires (all resources loaded) — default.
-    #[default]
+    /// Return only once the new document is `complete` (the load event:
+    /// every sub-resource has loaded).
     Complete,
+    /// Default: return at `complete`, or at `interactive` once the document
+    /// has stayed interactive for 3 s (or the budget ran out) without
+    /// completing — a heavy or throttled page is usable long before its last
+    /// sub-resource arrives.
+    #[default]
+    Auto,
+}
+
+impl WaitLevel {
+    /// Whether the wait aims for `complete` (strictly or preferably). These
+    /// levels run the same-document check and the readiness fast path.
+    pub(crate) fn wants_complete(self) -> bool {
+        matches!(self, Self::Complete | Self::Auto)
+    }
+
+    /// Whether a sampled `document.readyState` may resolve this wait — every
+    /// level but `loading`, which resolves on the `dom-loading` event only.
+    pub(crate) fn samples_readiness(self) -> bool {
+        !matches!(self, Self::Loading)
+    }
+
+    /// The level a `document.readyState` poll waits for: a sample is never
+    /// `loading`-level evidence, so that poll has always waited for `complete`.
+    pub(crate) fn poll_level(self) -> Self {
+        match self {
+            Self::Loading => Self::Complete,
+            other => other,
+        }
+    }
+
+    /// The `readyState` values a [`Self::poll_level`] poll is satisfied by,
+    /// for its timeout message.
+    pub(crate) fn poll_target_description(self) -> &'static str {
+        match self.poll_level() {
+            Self::Interactive | Self::Auto => "'interactive' or 'complete'",
+            Self::Loading | Self::Complete => "'complete'",
+        }
+    }
 }
 
 /// Strategy for waiting for navigation readiness.
@@ -119,7 +159,7 @@ pub struct WaitAfterNav<'a> {
     /// Additional wait-for predicates to evaluate after the document commits.
     /// Each element is a raw predicate string: `selector:<css>`, `text:<substr>`, etc.
     pub wait_for: &'a [String],
-    /// Readiness level to wait for (default: `Complete`).
+    /// Readiness level to wait for (default: `Auto`).
     pub wait_level: WaitLevel,
     /// Strategy for waiting for navigation readiness (default: `Both`).
     pub wait_strategy: WaitStrategy,
@@ -253,6 +293,7 @@ pub fn run_core(
                 requested_url: url,
             },
             nav_start,
+            wait_opts.wait_level,
         );
         let ci = reclassify_timeout_as_neterror(&mut ctx, url, rs_result)?;
         // An error page reaches `complete` too: no status is observed on
@@ -453,6 +494,7 @@ pub fn run_core(
                             requested_url: url,
                         },
                         nav_start,
+                        wait_opts.wait_level,
                     )
                 }
             }

@@ -517,6 +517,16 @@ existing policy.
 
 By default, navigate blocks until the new document is committed (URL changes and
 readyState reaches 'interactive' or 'complete'), or the --timeout budget expires.
+This default is --wait auto: it prefers 'complete' (the load event), but once the
+new document has been 'interactive' for 3 s without completing, or the budget runs
+out while it is 'interactive', it returns with ready_state 'interactive' instead of
+timing out — a heavy page under --throttle slow-3g can take minutes to fire its
+load event while its DOM is usable after seconds. Pass --wait complete when the
+load event must have fired (every image, frame and stylesheet loaded); that wait
+fails with a timeout if it does not happen within --timeout. --wait-text,
+--wait-selector, --wait-for and --wait-idle run after this wait. --with-network
+does not use --wait: its capture runs to 'complete' and network quiet, bounded by
+--network-timeout (see below).
 The result includes 'committed_url', 'ready_state', 'elapsed_ms', and 'status' so
 agents can confirm what page actually loaded — including the main document's real
 HTTP status (iter-138): a 404 or 503 page still commits successfully (readyState
@@ -1791,10 +1801,10 @@ pub struct NavigateArgs {
     /// does. Implies the detail view.
     #[arg(long, requires = "with_network")]
     pub security: bool,
-    /// After navigating, wait for this text to appear in the page's visible content. Runs after the navigation load event completes.
+    /// After navigating, wait for this text to appear in the page's visible content. Runs after the readiness wait (--wait), so by default it may start on an `interactive` document; its own --timeout-ms budget is separate from --timeout.
     #[arg(long, conflicts_with = "wait_selector")]
     pub wait_text: Option<String>,
-    /// After navigating, wait for this CSS selector to match an element in the DOM. Runs after the navigation load event completes.
+    /// After navigating, wait for this CSS selector to match an element in the DOM. Runs after the readiness wait (--wait), so by default it may start on an `interactive` document; its own --timeout-ms budget is separate from --timeout.
     #[arg(long, conflicts_with = "wait_text")]
     pub wait_selector: Option<String>,
     /// Timeout for the --wait-text/--wait-selector condition, and the whole budget for --wait-idle, in milliseconds. If the condition is not met within this time, the command fails with an error showing the elapsed time.
@@ -1803,8 +1813,8 @@ pub struct NavigateArgs {
     /// Skip waiting for the new document to commit; return immediately after the navigate request is acknowledged (pre-61g fire-and-forget behaviour).
     #[arg(long)]
     pub no_wait: bool,
-    /// Readiness level to wait for before returning: `loading` (dom-loading), `interactive` (dom-interactive), or `complete` (dom-complete, default). Ignored when `--with-network` is set: that mode uses the network-drain settle as its commit signal.
-    #[arg(long, value_name = "LEVEL", default_value = "complete", value_enum)]
+    /// Readiness level to wait for before returning: `auto` (default), `loading`, `interactive` or `complete`. Use `complete` when the load event must have fired (every image, frame and stylesheet loaded); `auto` may return an `interactive` document that is still loading sub-resources. Ignored when `--with-network` is set: that mode uses the network-drain settle as its commit signal.
+    #[arg(long, value_name = "LEVEL", default_value = "auto", value_enum)]
     pub wait: crate::commands::navigate::WaitLevel,
     /// After the document commits, additionally wait for a predicate. Accepts selector:<css>, text:<substr>, url:<regex>, or gone:<css>.
     /// Uses the --timeout budget. On failure surfaces a descriptive error.

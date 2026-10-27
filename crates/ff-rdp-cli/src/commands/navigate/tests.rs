@@ -407,6 +407,78 @@ fn navigate_clap_default_wait_strategy_is_both() {
     }
 }
 
+/// 2026-10-27: `navigate --help` documents "readyState reaches 'interactive'
+/// or 'complete'" as the default wait; the clap default must be the level
+/// that implements it, not the strict `complete`.
+#[test]
+fn navigate_clap_default_wait_level_is_auto() {
+    use clap::Parser as _;
+    let cli = crate::cli::args::Cli::try_parse_from(["ff-rdp", "navigate", "https://example.com/"])
+        .expect("clap parse navigate");
+    match cli.command {
+        crate::cli::args::Command::Navigate(args) => assert_eq!(args.wait, WaitLevel::Auto),
+        _ => panic!("expected Navigate command variant"),
+    }
+    assert_eq!(WaitLevel::default(), WaitLevel::Auto);
+}
+
+/// `ReadinessGoal`: what each level accepts from a sampled readiness, and the
+/// `auto` grace period measured from the first `interactive` sample.
+#[test]
+fn readiness_goal_levels_and_auto_grace() {
+    let t0 = Instant::now();
+    let href = || "https://new.test/".to_owned();
+    let interactive = SampledState::Interactive;
+    let complete = SampledState::Complete;
+
+    // `complete` always satisfies every sampling level.
+    for level in [WaitLevel::Interactive, WaitLevel::Complete, WaitLevel::Auto] {
+        let got = ReadinessGoal::new(level).observe(complete, href(), t0);
+        assert_eq!(got, Some((complete, href())), "{level:?}");
+    }
+    // `interactive` satisfies `interactive` at once, `complete` never.
+    assert_eq!(
+        ReadinessGoal::new(WaitLevel::Interactive).observe(interactive, href(), t0),
+        Some((interactive, href()))
+    );
+    let mut strict = ReadinessGoal::new(WaitLevel::Complete);
+    assert_eq!(strict.observe(interactive, href(), t0), None);
+    assert_eq!(strict.settled(t0 + AUTO_COMPLETE_GRACE * 10), None);
+    assert_eq!(
+        strict.on_deadline(),
+        None,
+        "strict complete keeps timing out"
+    );
+    // A sample is never `loading`-level evidence.
+    assert_eq!(
+        ReadinessGoal::new(WaitLevel::Loading).observe(complete, href(), t0),
+        None
+    );
+
+    // `auto`: interactive starts the grace period and is reported once it
+    // has lasted AUTO_COMPLETE_GRACE, keeping the first sample's href.
+    let mut auto = ReadinessGoal::new(WaitLevel::Auto);
+    assert_eq!(auto.on_deadline(), None, "nothing usable seen yet");
+    assert_eq!(auto.observe(interactive, href(), t0), None);
+    let later = t0 + AUTO_COMPLETE_GRACE - Duration::from_millis(1);
+    assert_eq!(
+        auto.observe(interactive, "https://other.test/".into(), later),
+        None
+    );
+    assert_eq!(auto.settled(later), None);
+    assert_eq!(
+        auto.settled(t0 + AUTO_COMPLETE_GRACE),
+        Some((interactive, href()))
+    );
+    // Budget exhausted before the grace ends: still the usable document.
+    assert_eq!(auto.on_deadline(), Some((interactive, href())));
+    // A `complete` sample inside the grace period wins.
+    assert_eq!(
+        auto.observe(complete, href(), later),
+        Some((complete, href()))
+    );
+}
+
 // -----------------------------------------------------------------------
 // wait_for_doc_complete — deadline ordering regression test (iter-61w)
 //
@@ -767,7 +839,7 @@ fn answer_get_target_error(
 ///
 /// Used by the iter-124 review-fix tests: when a probe-timer tick's
 /// `getTarget` refresh fails, `wait_for_doc_complete` still attempts
-/// `probe_readystate_complete` with the (still-stale) actor before
+/// `probe_readiness` with the (still-stale) actor before
 /// looping — this answers that attempt so the mock server's expected
 /// request sequence matches the real code path exactly.
 fn answer_one_eval_error(
@@ -938,6 +1010,120 @@ fn unit_navigate_readystate_probe_short_circuits() {
     );
 }
 
+/// 2026-10-27: a document that stays `interactive` (a heavy page under
+/// `--throttle slow-3g`, whose live `dom-interactive` event Firefox 158 never
+/// delivered) resolves `--wait interactive` on the first sample and the
+/// default `--wait auto` after `AUTO_COMPLETE_GRACE`, instead of timing out.
+#[test]
+fn unit_navigate_interactive_sample_resolves_interactive_and_auto() {
+    use std::io::Write as _;
+    use std::net::TcpListener;
+
+    use ff_rdp_core::transport::{RdpTransport, encode_frame, recv_from};
+
+    for level in [WaitLevel::Interactive, WaitLevel::Auto] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let console_actor = "conn0/console1";
+        let tab_actor = "conn0/tabDescriptor1";
+
+        // Mock Firefox: answer every getTarget refresh and every readiness
+        // sample — always `interactive` — until the client hangs up. No
+        // document-event is ever sent.
+        let server_handle = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut writer = stream.try_clone().unwrap();
+            let mut reader = std::io::BufReader::new(stream);
+            let greeting = serde_json::json!({
+                "from": "root", "applicationType": "browser", "traits": {}
+            });
+            writer
+                .write_all(encode_frame(&serde_json::to_string(&greeting).unwrap()).as_bytes())
+                .unwrap();
+            let mut samples = 0_u32;
+            while let Ok(req) = recv_from(&mut reader) {
+                let replies = if req["type"] == "getTarget" {
+                    vec![serde_json::json!({
+                        "from": tab_actor,
+                        "frame": { "actor": "conn0/target1", "consoleActor": console_actor },
+                    })]
+                } else {
+                    samples += 1;
+                    vec![
+                        serde_json::json!({ "from": console_actor, "resultID": "r1" }),
+                        serde_json::json!({
+                            "from": console_actor,
+                            "type": "evaluationResult",
+                            "resultID": "r1",
+                            "result": scripted_readiness(200.0, "https://heavy.test/", "interactive"),
+                        }),
+                    ]
+                };
+                for reply in replies {
+                    if writer
+                        .write_all(encode_frame(&serde_json::to_string(&reply).unwrap()).as_bytes())
+                        .is_err()
+                    {
+                        return samples;
+                    }
+                }
+            }
+            samples
+        });
+
+        let mut transport =
+            RdpTransport::connect("127.0.0.1", port, Duration::from_secs(5)).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel::<std::sync::Arc<Resource>>();
+        drop(tx);
+        let watcher_actor = ff_rdp_core::ActorId::from("conn0/watcher1");
+        let bus_arc = Arc::new(Mutex::new(ResourceCommand::new(watcher_actor)));
+        let tab = ff_rdp_core::ActorId::from(tab_actor);
+        let nav_start = Instant::now();
+        let mut probe = ReadyStateProbe {
+            console_actor: Some(ff_rdp_core::ActorId::from("conn0/stale-console")),
+            tab_actor: &tab,
+            pre_epoch: Some(1.0),
+            first_probe_at: nav_start,
+            probe_interval: Duration::from_millis(50),
+            poll_enabled: true,
+            pre_href: String::new(),
+            trust_event_url: true,
+        };
+
+        let result = wait_for_doc_complete(
+            &mut transport,
+            &bus_arc,
+            &rx,
+            10_000,
+            level,
+            nav_start,
+            Some(&mut probe),
+            "https://heavy.test/",
+            false,
+        );
+        let elapsed = nav_start.elapsed();
+        drop(transport);
+        let samples = server_handle.join().unwrap();
+
+        let ci = result.unwrap_or_else(|e| panic!("{level:?} must resolve, got {e:?}"));
+        assert_eq!(ci.ready_state, "interactive", "{level:?}");
+        assert_eq!(ci.committed_url, "https://heavy.test/", "{level:?}");
+        if level == WaitLevel::Auto {
+            assert!(
+                elapsed >= AUTO_COMPLETE_GRACE,
+                "auto must give `complete` the grace period first: {elapsed:?}"
+            );
+            assert!(samples > 1, "auto keeps sampling for `complete`: {samples}");
+        } else {
+            assert_eq!(samples, 1, "interactive resolves on the first sample");
+        }
+        assert!(
+            elapsed < AUTO_COMPLETE_GRACE + Duration::from_secs(2),
+            "{level:?} must return long before the 10 s budget: {elapsed:?}"
+        );
+    }
+}
+
 /// iter-124 review fix: `unit_navigate_probe_refresh_retries_after_transient_error`
 ///
 /// A `getTarget` failure (e.g. `noSuchActor` because the new docshell
@@ -963,7 +1149,7 @@ fn unit_navigate_probe_refresh_retries_after_transient_error() {
 
     // Mock Firefox: greeting, then a FAILED getTarget (noSuchActor) on the
     // first probe tick. `wait_for_doc_complete` still attempts
-    // `probe_readystate_complete` with the stale actor after a failed
+    // `probe_readiness` with the stale actor after a failed
     // refresh (best-effort — see `refresh_probe_console_actor`'s doc
     // comment), so that stale-actor eval also errors before the loop
     // re-arms and tries again on the SECOND tick: a SUCCESSFUL getTarget,
@@ -2251,13 +2437,20 @@ mod atomic_readiness_tests {
 
     #[test]
     fn direct_poll_preserves_zero_budget_errors_and_deadline() {
-        for case in [
-            "ready",
-            "not-ready",
-            "malformed",
-            "exception",
-            "actor-error",
-            "timeout",
+        for (case, level) in [
+            ("ready", WaitLevel::Complete),
+            ("not-ready", WaitLevel::Complete),
+            ("malformed", WaitLevel::Complete),
+            ("exception", WaitLevel::Complete),
+            ("actor-error", WaitLevel::Complete),
+            ("timeout", WaitLevel::Complete),
+            // 2026-10-27: an `interactive` document satisfies `interactive` at
+            // once and `auto` when the budget runs out, never `complete`.
+            ("interactive", WaitLevel::Complete),
+            ("interactive", WaitLevel::Interactive),
+            ("interactive", WaitLevel::Auto),
+            ("ready", WaitLevel::Auto),
+            ("not-ready", WaitLevel::Auto),
         ] {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let port = listener.local_addr().unwrap().port();
@@ -2292,10 +2485,10 @@ mod atomic_readiness_tests {
                         scripted_readiness(
                             43.0,
                             "https://new.test/",
-                            if case == "not-ready" {
-                                "loading"
-                            } else {
-                                "complete"
+                            match case {
+                                "not-ready" => "loading",
+                                "interactive" => "interactive",
+                                _ => "complete",
                             },
                         )
                     };
@@ -2323,16 +2516,34 @@ mod atomic_readiness_tests {
                     requested_url: "https://new.test/",
                 },
                 start,
+                level,
             );
             let elapsed = start.elapsed();
             drop(ctx);
             server.join().unwrap();
-            match case {
-                "ready" => assert_eq!(result.unwrap().committed_url, "https://new.test/"),
-                "exception" => assert!(
+            match (case, level) {
+                ("ready", _) => {
+                    let ci = result.unwrap();
+                    assert_eq!(ci.committed_url, "https://new.test/");
+                    assert_eq!(ci.ready_state, "complete");
+                }
+                ("interactive", WaitLevel::Interactive | WaitLevel::Auto) => {
+                    let ci = result.unwrap();
+                    assert_eq!(ci.committed_url, "https://new.test/");
+                    assert_eq!(ci.ready_state, "interactive", "{level:?}");
+                }
+                ("interactive", _) => assert!(
+                    matches!(result, Err(AppError::Timeout(ref text)) if text.contains("reach 'complete'")),
+                    "{case}: {result:?}"
+                ),
+                ("not-ready", WaitLevel::Auto) => assert!(
+                    matches!(result, Err(AppError::Timeout(ref text)) if text.contains("'interactive' or 'complete'")),
+                    "{case}: {result:?}"
+                ),
+                ("exception", _) => assert!(
                     matches!(result, Err(AppError::User(ref text)) if text.contains("unsafe") && !text.contains('\u{1b}'))
                 ),
-                "actor-error" => assert!(
+                ("actor-error", _) => assert!(
                     matches!(result, Err(AppError::User(ref text)) if text.contains("wrongState"))
                 ),
                 _ => assert!(
