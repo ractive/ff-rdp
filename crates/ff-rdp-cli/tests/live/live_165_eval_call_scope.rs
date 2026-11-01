@@ -254,8 +254,14 @@ fn live_165_scope_behaviour_table() {
     );
 
     // --no-isolate is the opt-out: it restores the pre-165 shared scope, so
-    // the SECOND identical call is expected to fail with a redeclaration
-    // error. Asserting the failure is what makes the flag's help honest.
+    // the script runs unwrapped in the tab's global lexical environment.
+    // What a SECOND identical declaration does there is Firefox's call:
+    // through Firefox 158 it failed with `redeclaration of const n1`; from
+    // Firefox 159 the debugger evaluation is allowed to redeclare a global
+    // `const`/`let` and returns its value. Either is a shared scope; an
+    // isolated (wrapped) call would never report a redeclaration. The help
+    // promises only that declarations accumulate, which the `typeof n1`
+    // check below pins on every Firefox.
     let first = run(port, &["eval", "--no-isolate", "const n1 = 1; n1"]);
     assert!(
         first.status.success(),
@@ -264,11 +270,20 @@ fn live_165_scope_behaviour_table() {
     );
     let second = run(port, &["eval", "--no-isolate", "const n1 = 1; n1"]);
     let text = combined(&second);
-    assert!(
-        !second.status.success() && text.contains("redeclaration"),
-        "--no-isolate must share one scope, so the second identical call must \
-         fail with a redeclaration error; got: {text}"
-    );
+    if second.status.success() {
+        assert_eq!(
+            parse_json(&second, &["eval", "--no-isolate"])["results"],
+            Value::from(1),
+            "a succeeding second --no-isolate call (Firefox >= 159 allows the \
+             redeclaration) must still return the script's value; got: {text}"
+        );
+    } else {
+        assert!(
+            text.contains("redeclaration"),
+            "a failing second --no-isolate call must be the shared-scope \
+             redeclaration error (Firefox <= 158); got: {text}"
+        );
+    }
     // And the binding it created IS visible to a later call — that is the
     // whole reason the flag exists.
     assert_eq!(
