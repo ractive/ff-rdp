@@ -152,6 +152,18 @@ fn live_165_repeated_const_matches_help() {
         );
     }
 
+    // Repeats returning 1 prove isolation only where Firefox rejects a
+    // redeclaration of a global `const`/`let` (158 and earlier; 159 allows
+    // it). The leak probe holds on every Firefox: a wrapped call never
+    // installs its binding in the tab's global scope.
+    for binding in ["x", "y"] {
+        assert_eq!(
+            eval_ok_in_session(&session, &format!("typeof {binding}"), &[]),
+            Value::from("undefined"),
+            "{binding} leaked out of its call scope"
+        );
+    }
+
     let cleanup = session.finish();
     eprintln!("live_165 isolated cleanup result: {cleanup:?}");
     cleanup.unwrap_or_else(|why| panic!("live_165_repeated_const_matches_help cleanup: {why}"));
@@ -258,7 +270,7 @@ fn live_165_scope_behaviour_table() {
     // What a SECOND identical declaration does there is Firefox's call:
     // through Firefox 158 it failed with `redeclaration of const n1`; from
     // Firefox 159 the debugger evaluation is allowed to redeclare a global
-    // `const`/`let` and returns its value. Either is a shared scope; an
+    // `const` (and `let`, measured on 159.0) and returns its value. Either is a shared scope; an
     // isolated (wrapped) call would never report a redeclaration. The help
     // promises only that declarations accumulate, which the `typeof n1`
     // check below pins on every Firefox.
