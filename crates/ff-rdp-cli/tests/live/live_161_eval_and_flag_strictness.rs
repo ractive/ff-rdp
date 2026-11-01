@@ -282,7 +282,10 @@ fn live_161_build_script_matrix_evaluates() {
                 // const x". That workaround routed around the very defect
                 // iter-165 fixes; with the plain path now wrapped per call
                 // the matrix runs against one long-lived global and still
-                // passes, which is the fix's live proof.
+                // passes. That shows the generated scripts parse; it is no
+                // isolation proof, because Firefox 159 no longer rejects an
+                // unwrapped redeclaration. The `typeof` leak probes in
+                // live_165 and live_167 are that proof.
                 let mut args = vec!["eval", script];
                 if stringify {
                     args.push("--stringify");

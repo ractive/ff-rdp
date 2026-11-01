@@ -250,4 +250,11 @@ fn live_167_commented_declaration_is_still_isolated() {
             "attempt {attempt}: a commented declaration must stay call-local"
         );
     }
+    // Firefox 159 no longer rejects an unwrapped repeat, so the loop above
+    // alone would pass with the wrap gone; the leak probe does not.
+    assert_eq!(
+        eval_ok(port, "typeof scoped", &[]),
+        Value::from("undefined"),
+        "a commented declaration leaked into the tab's global scope"
+    );
 }
