@@ -230,8 +230,7 @@ fn parse_cookie_store_resource(event: &Value) -> Option<CookieStoreResource> {
         let hosts: Vec<String> = item
             .get("hosts")
             .and_then(Value::as_object)
-            .map(|obj| obj.keys().cloned().collect())
-            .unwrap_or_default();
+            .map_or_default(|obj| obj.keys().cloned().collect());
 
         return Some(CookieStoreResource {
             actor: ActorId::from(actor),

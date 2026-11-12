@@ -336,7 +336,7 @@ mod tests {
     }
 
     fn take_call_log() -> Vec<&'static str> {
-        CALL_LOG.lock().map(|v| v.clone()).unwrap_or_default()
+        CALL_LOG.lock().map_or_default(|v| v.clone())
     }
 
     fn always_owned(_pid: u32) -> bool {

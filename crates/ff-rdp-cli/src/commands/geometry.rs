@@ -142,21 +142,18 @@ pub fn run(cli: &Cli, selectors: &[String], include_hidden: bool) -> Result<(), 
         })
         .collect();
 
-    let filtered_overlaps: Vec<Value> = overlaps
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter(|pair| {
-                    pair.as_array().is_some_and(|p| {
-                        p.len() == 2
-                            && p[0].as_str().is_some_and(|a| kept_keys.contains(a))
-                            && p[1].as_str().is_some_and(|b| kept_keys.contains(b))
-                    })
+    let filtered_overlaps: Vec<Value> = overlaps.as_array().map_or_default(|arr| {
+        arr.iter()
+            .filter(|pair| {
+                pair.as_array().is_some_and(|p| {
+                    p.len() == 2
+                        && p[0].as_str().is_some_and(|a| kept_keys.contains(a))
+                        && p[1].as_str().is_some_and(|b| kept_keys.contains(b))
                 })
-                .cloned()
-                .collect()
-        })
-        .unwrap_or_default();
+            })
+            .cloned()
+            .collect()
+    });
 
     let limited = controls.apply_fields(limited);
 

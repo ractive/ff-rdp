@@ -807,8 +807,7 @@ fn parse_single_console_resource(item: &Value) -> Option<ConsoleResource> {
         let message = msg
             .get("arguments")
             .and_then(Value::as_array)
-            .map(|args| format_console_args(args))
-            .unwrap_or_default();
+            .map_or_default(|args| format_console_args(args));
 
         let source = msg
             .get("filename")
@@ -923,8 +922,7 @@ fn parse_single_console_resource(item: &Value) -> Option<ConsoleResource> {
     let message = item
         .get("arguments")
         .and_then(Value::as_array)
-        .map(|args| join_console_args_plain(args))
-        .unwrap_or_default();
+        .map_or_default(|args| join_console_args_plain(args));
 
     let source = item
         .get("filename")

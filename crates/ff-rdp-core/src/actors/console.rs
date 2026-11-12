@@ -106,14 +106,13 @@ impl WebConsoleActor {
         let messages = response
             .get("messages")
             .and_then(Value::as_array)
-            .map(|arr| {
+            .map_or_default(|arr| {
                 arr.iter()
                     .filter_map(|wrapper| {
                         parse_console_message(wrapper).or_else(|| parse_page_error(wrapper))
                     })
                     .collect()
-            })
-            .unwrap_or_default();
+            });
 
         Ok(messages)
     }
@@ -410,7 +409,7 @@ fn parse_console_message(wrapper: &Value) -> Option<ConsoleMessage> {
     let message = msg
         .get("arguments")
         .and_then(Value::as_array)
-        .map(|args| {
+        .map_or_default(|args| {
             args.iter()
                 .map(|a| match a.as_str() {
                     Some(s) => s.to_owned(),
@@ -418,8 +417,7 @@ fn parse_console_message(wrapper: &Value) -> Option<ConsoleMessage> {
                 })
                 .collect::<Vec<_>>()
                 .join(" ")
-        })
-        .unwrap_or_default();
+        });
 
     let source = msg
         .get("filename")

@@ -489,7 +489,7 @@ fn eval_js_value(cli: &Cli, script: &str) -> anyhow::Result<Value> {
 fn eval_js_string(cli: &Cli, script: &str) -> anyhow::Result<String> {
     // The JS template already uses JSON.stringify so we get a plain string back.
     let val = eval_js_internal(cli, script)?;
-    Ok(val.as_str().map(str::to_owned).unwrap_or_default())
+    Ok(val.as_str().map_or_default(str::to_owned))
 }
 
 /// Core eval: connects to Firefox and evaluates the given JS source.
@@ -554,42 +554,41 @@ fn parse_forms_from_json(json_str: &str) -> Vec<Form> {
                 .filter(|s| !s.is_empty())
                 .map(str::to_owned);
 
-            let fields: Vec<Field> = f
-                .get("fields")
-                .and_then(Value::as_array)
-                .map(|fields| {
-                    fields
-                        .iter()
-                        .filter_map(|field| {
-                            let name = field.get("name").and_then(Value::as_str)?.to_owned();
-                            let field_selector =
-                                field.get("selector").and_then(Value::as_str)?.to_owned();
-                            let type_ = field
-                                .get("type")
-                                .and_then(Value::as_str)
-                                .unwrap_or("text")
-                                .to_owned();
-                            let required = field
-                                .get("required")
-                                .and_then(Value::as_bool)
-                                .unwrap_or(false);
-                            let placeholder = field
-                                .get("placeholder")
-                                .and_then(Value::as_str)
-                                .filter(|s| !s.is_empty())
-                                .map(str::to_owned);
-                            Some(Field {
-                                name,
-                                selector: field_selector,
-                                type_,
-                                required,
-                                placeholder,
-                                validation: None,
+            let fields: Vec<Field> =
+                f.get("fields")
+                    .and_then(Value::as_array)
+                    .map_or_default(|fields| {
+                        fields
+                            .iter()
+                            .filter_map(|field| {
+                                let name = field.get("name").and_then(Value::as_str)?.to_owned();
+                                let field_selector =
+                                    field.get("selector").and_then(Value::as_str)?.to_owned();
+                                let type_ = field
+                                    .get("type")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("text")
+                                    .to_owned();
+                                let required = field
+                                    .get("required")
+                                    .and_then(Value::as_bool)
+                                    .unwrap_or(false);
+                                let placeholder = field
+                                    .get("placeholder")
+                                    .and_then(Value::as_str)
+                                    .filter(|s| !s.is_empty())
+                                    .map(str::to_owned);
+                                Some(Field {
+                                    name,
+                                    selector: field_selector,
+                                    type_,
+                                    required,
+                                    placeholder,
+                                    validation: None,
+                                })
                             })
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
+                            .collect()
+                    });
 
             Some(Form {
                 id,
@@ -617,7 +616,7 @@ fn parse_landmarks_from_json(json_str: &str) -> Vec<Landmark> {
             let elements: Vec<LandmarkElement> = l
                 .get("elements")
                 .and_then(Value::as_array)
-                .map(|els| {
+                .map_or_default(|els| {
                     els.iter()
                         .filter_map(|el| {
                             let label = el.get("label").and_then(Value::as_str)?.to_owned();
@@ -630,8 +629,7 @@ fn parse_landmarks_from_json(json_str: &str) -> Vec<Landmark> {
                             })
                         })
                         .collect()
-                })
-                .unwrap_or_default();
+                });
             Some(Landmark {
                 name,
                 region,

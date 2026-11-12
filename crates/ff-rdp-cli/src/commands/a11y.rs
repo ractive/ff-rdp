@@ -600,8 +600,7 @@ fn parse_js_a11y_tree(value: &Value) -> Option<AccessibleNode> {
     let children: Vec<AccessibleNode> = value
         .get("children")
         .and_then(Value::as_array)
-        .map(|arr| arr.iter().filter_map(parse_js_a11y_tree).collect())
-        .unwrap_or_default();
+        .map_or_default(|arr| arr.iter().filter_map(parse_js_a11y_tree).collect());
 
     let truncated = value
         .get("truncated")

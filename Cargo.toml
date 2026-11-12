@@ -8,11 +8,11 @@ version = "0.4.4"
 authors = ["James Bergamin"]
 edition = "2024"
 # MSRV (iter-105 Theme D): pinned to the toolchain CI actually validates
-# (dtolnay/rust-toolchain@stable, 1.95 at branch time).  Declaring it turns an
+# (dtolnay/rust-toolchain@stable, 1.100 since 2026-11-12).  Declaring it turns an
 # MSRV break into a red `msrv` CI check instead of a downstream user report.
 # The point is *declaring* the floor, not supporting old compilers — bump this
 # in lockstep whenever CI's stable toolchain advances.
-rust-version = "1.95"
+rust-version = "1.100"
 license = "MIT"
 repository = "https://github.com/ractive/ff-rdp"
 readme = "README.md"

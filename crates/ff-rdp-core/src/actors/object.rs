@@ -191,14 +191,13 @@ fn parse_prototype_and_properties(response: &Value) -> PrototypeAndProperties {
     let own_properties = response
         .get("ownProperties")
         .and_then(Value::as_object)
-        .map(|obj| {
+        .map_or_default(|obj| {
             obj.iter()
                 .filter_map(|(key, desc)| {
                     parse_property_descriptor(desc).map(|pd| (key.clone(), pd))
                 })
                 .collect()
-        })
-        .unwrap_or_default();
+        });
 
     PrototypeAndProperties {
         prototype,

@@ -408,8 +408,7 @@ fn eval_json(
 fn call_id() -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or_default();
+        .map_or_default(|d| d.subsec_nanos());
     format!("{}-{nanos}", std::process::id())
 }
 

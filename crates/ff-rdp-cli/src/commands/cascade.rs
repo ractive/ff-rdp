@@ -1490,15 +1490,14 @@ mod tests {
             let matched_selectors: Vec<String> = entry
                 .get("matchedSelectorIndexes")
                 .and_then(Value::as_array)
-                .map(|idxs| {
+                .map_or_default(|idxs| {
                     idxs.iter()
                         .filter_map(|v| {
                             let i = usize::try_from(v.as_u64()?).ok()?;
                             selectors.get(i).cloned()
                         })
                         .collect()
-                })
-                .unwrap_or_default();
+                });
             let properties: Vec<RuleProperty> = entry
                 .get("declarations")?
                 .as_array()?

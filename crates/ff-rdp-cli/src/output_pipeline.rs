@@ -168,7 +168,7 @@ impl OutputPipeline {
         // only fail on a `serde`-level bug in `Hint`'s own `Serialize` impl —
         // never on user input — so this stays `Internal`.
         let hints = if self.hints_mode == HintsMode::On {
-            let h = hint_ctx.map(generate_hints).unwrap_or_default();
+            let h = hint_ctx.map_or_default(generate_hints);
             output::inject_hints(&mut envelope, &h).map_err(AppError::Internal)?;
             h
         } else {
