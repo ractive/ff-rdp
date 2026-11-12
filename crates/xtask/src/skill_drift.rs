@@ -70,7 +70,7 @@ fn generated_block() -> Result<String> {
         Command::new(&bin)
             .arg("skill-doc")
             .output()
-            .with_context(|| format!("failed to run {bin:?} skill-doc"))?
+            .with_context(|| format!("failed to run {} skill-doc", Path::new(&bin).display()))?
     } else {
         Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned()))
             .args(["run", "-q", "-p", "ff-rdp-cli", "--", "skill-doc"])
@@ -161,7 +161,7 @@ pub fn drift_report(existing: &str, generated: &str) -> Result<(), String> {
     Err(detail)
 }
 
-pub fn run_gen(args: GenArgs) -> Result<()> {
+pub fn run_gen(args: &GenArgs) -> Result<()> {
     let path = skill_file(args.skill.as_deref());
     let existing = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read {}", path.display()))?;
@@ -186,7 +186,7 @@ pub fn run_gen(args: GenArgs) -> Result<()> {
     Ok(())
 }
 
-pub fn run_check(args: CheckArgs) -> Result<()> {
+pub fn run_check(args: &CheckArgs) -> Result<()> {
     let path = skill_file(args.skill.as_deref());
     let existing = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read {}", path.display()))?;

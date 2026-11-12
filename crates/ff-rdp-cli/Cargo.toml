@@ -1,10 +1,12 @@
 [package]
 name = "ff-rdp-cli"
 version.workspace = true
+authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-readme = "../../README.md"
+readme.workspace = true
 keywords = ["cli", "firefox", "rdp", "devtools"]
 categories = ["command-line-utilities"]
 description = "CLI for Firefox Remote Debugging Protocol"

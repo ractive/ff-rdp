@@ -53,7 +53,7 @@ fn cli_stdout(bin: Option<&PathBuf>, args: &[&str]) -> Result<String> {
         Command::new(&path)
             .args(args)
             .output()
-            .with_context(|| format!("failed to run {path:?} {args:?}"))?
+            .with_context(|| format!("failed to run {} {args:?}", path.display()))?
     } else {
         Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_owned()))
             .args(["run", "-q", "-p", "ff-rdp-cli", "--"])
@@ -205,7 +205,7 @@ pub fn missing<'a>(help: &str, needles: &'a [String]) -> Vec<&'a String> {
         .collect()
 }
 
-pub fn run(args: Args) -> Result<()> {
+pub fn run(args: &Args) -> Result<()> {
     let help = cli_stdout(args.bin.as_ref(), &["--help"])?;
     let skill_block = cli_stdout(args.bin.as_ref(), &["skill-doc"])?;
 

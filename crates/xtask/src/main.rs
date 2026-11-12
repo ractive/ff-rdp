@@ -72,16 +72,16 @@ enum Commands {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::CheckIterationPlan(args) => check_iteration_plan::run(args),
-        Commands::CheckSourceInvariants(args) => check_source_invariants::run(args),
-        Commands::CheckFirefoxRefs(args) => check_firefox_refs::run(args),
-        Commands::CheckActorKbSync(args) => check_actor_kb_sync::run(args),
-        Commands::CheckLiveTestLayout(args) => check_live_test_layout::run(args),
+        Commands::CheckIterationPlan(args) => check_iteration_plan::run(&args),
+        Commands::CheckSourceInvariants(args) => check_source_invariants::run(&args),
+        Commands::CheckFirefoxRefs(args) => check_firefox_refs::run(&args),
+        Commands::CheckActorKbSync(args) => check_actor_kb_sync::run(&args),
+        Commands::CheckLiveTestLayout(args) => check_live_test_layout::run(&args),
         Commands::FindIterationPlan(args) => find_iteration_plan::run(args),
-        Commands::LiveSweep(args) => live_sweep::run(args),
-        Commands::GenSkill(args) => skill_drift::run_gen(args),
-        Commands::CheckSkillDrift(args) => skill_drift::run_check(args),
-        Commands::CheckHelpIdioms(args) => check_help_idioms::run(args),
+        Commands::LiveSweep(args) => live_sweep::run(&args),
+        Commands::GenSkill(args) => skill_drift::run_gen(&args),
+        Commands::CheckSkillDrift(args) => skill_drift::run_check(&args),
+        Commands::CheckHelpIdioms(args) => check_help_idioms::run(&args),
         Commands::CheckVendoredJs(args) => check_vendored_js::run(args),
     }
 }

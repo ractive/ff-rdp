@@ -41,7 +41,7 @@ pub fn scan_rs_files<T>(
     let mut findings = Vec::new();
     let mut entries: Vec<_> = std::fs::read_dir(dir)
         .with_context(|| format!("reading directory {}", dir.display()))?
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .collect();
     entries.sort_by_key(std::fs::DirEntry::path);
 

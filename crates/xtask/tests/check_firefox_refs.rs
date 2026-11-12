@@ -204,7 +204,7 @@ fn missing_firefox_root_fails_clearly() {
 /// rather than silently passing, matching the project convention for live
 /// gates documented in CLAUDE.md.
 #[test]
-#[ignore]
+#[ignore = "live: needs a local Firefox checkout and FF_RDP_LIVE_TESTS=1"]
 fn real_firefox_path_iter73_plan_no_refs_passes() {
     if std::env::var("FF_RDP_LIVE_TESTS").is_err() {
         eprintln!("skipping: set FF_RDP_LIVE_TESTS=1 to run");
