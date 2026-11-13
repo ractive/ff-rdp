@@ -27,8 +27,8 @@ Run `rustup update stable` first. Then run **once, after the last code change**,
 and fix all issues:
 1. `cargo fmt`
 2. `cargo clippy --workspace --all-targets -- -D warnings`
-3. `cargo test --workspace -q`
-4. If help text changed: `FF_RDP_BLESS=1 cargo test -p ff-rdp-cli --test skill_drift`
+3. If help text changed: `FF_RDP_BLESS=1 cargo test -p ff-rdp-cli --test skill_drift`
+4. `cargo test --workspace -q`
 
 Never commit code that fails any of these. Do not re-run them in a later step (PR creation,
 review) when the tree is unchanged since the last green run — `git rev-parse HEAD^{tree}` (or

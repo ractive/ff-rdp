@@ -2576,7 +2576,10 @@ and `crates/xtask/tests/kb_plans.rs` (shrunk from the 980-line
 valid `status`). `FF_RDP_BLESS=1 cargo test -p ff-rdp-cli --test skill_drift`
 replaces `gen-skill`. `find-iteration-plan`, `check-firefox-refs` (needed a
 Firefox checkout no runner has) and `check-actor-kb-sync` (now a CONTRIBUTING
-review rule) are deleted, and so is the `discipline` job.
+review rule) are deleted, and so is the `discipline` job. So is
+`crates/xtask/tests/run_agent_fixtures.rs`, a format test of the
+`rdp-spec-reviewer` example fixture; `tools/agents/fixtures/` stays as a manual
+example and nothing checks it any more.
 
 **Why**: a check that is a test needs no separate job, no binary path
 plumbing (`FF_RDP_BIN`), and no instruction to remember to run it; it runs on

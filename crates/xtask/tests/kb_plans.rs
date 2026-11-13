@@ -87,15 +87,25 @@ fn no_two_plans_share_an_iteration_number() {
 fn every_plan_has_a_valid_status() {
     let mut bad = Vec::new();
     for (name, content) in plans() {
-        let frontmatter = content
+        // Frontmatter must be opened *and* closed: an unterminated block is
+        // what made plan 84 invisible to hyalo (iter-234).
+        let Some(frontmatter) = content
             .trim_start()
             .strip_prefix("---")
-            .and_then(|rest| rest.split("\n---").next())
-            .unwrap_or("");
+            .and_then(|rest| rest.find("\n---").map(|end| &rest[..end]))
+        else {
+            bad.push(format!(
+                "{name}: no frontmatter block delimited by `---` lines"
+            ));
+            continue;
+        };
         let status = frontmatter
             .lines()
             .find_map(|l| l.strip_prefix("status:"))
-            .map(|s| s.trim().trim_matches(['"', '\'']));
+            .map(|s| {
+                let value = s.split(" #").next().unwrap_or(s);
+                value.trim().trim_matches(['"', '\''])
+            });
         match status {
             Some(s) if STATUSES.contains(&s) => {}
             other => bad.push(format!("{name}: status {other:?}")),
