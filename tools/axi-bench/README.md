@@ -149,8 +149,8 @@ list cost was **$0.0397914** (Sonnet $0.0388014, auxiliary Haiku $0.00099); reco
 and owned-browser cleanup both exited zero. It was a no-tools delivery probe,
 **zero matrix runs**, with its own task prompt. The baseline append paragraph
 remained byte-identical. This proves delivery capability, not benchmark adoption.
-Evidence is retained in the supervisor's
-`.git/ralph-loop/20260912-validation-efficiency/iter256-ambient-implementation/runtime-probe/`.
+Evidence was kept in the supervisor's local, uncommitted run directory for that
+session (`20260912-validation-efficiency/iter256-ambient-implementation/runtime-probe/`).
 
 Per invocation, `argv.json` is upstream's original argv and `delivered-argv.json`
 records the actual child argv. `delivery.json` names condition and role. The

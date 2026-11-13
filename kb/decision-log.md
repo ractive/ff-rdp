@@ -2539,3 +2539,24 @@ worth maintaining a second transport and a second actor model now.
 
 **Revisit**: if Mozilla removes or restricts `--start-debugger-server`, or if
 trusted input becomes a blocking requirement for a core use case.
+
+## DEC-058: Remove the ralph-loop tooling from the repository
+
+**Date**: 2026-11-13. **Context**: [[research/step-back-2026-10-02]] §3 (Process),
+[[research/reset-2026-10-execution]].
+
+**Decision**: the in-repo copies of the retired iteration loop —
+`tools/ralph-loop/` and `tools/new-ralph-loop/` — are deleted, together with
+`crates/xtask/tests/iter_162b_scripts_deleted.rs`, which asserted the absence of
+two scripts inside those directories. Live code comments and READMEs no longer
+refer to the loop. Historical kb records (`kb/research/*`, `kb/iterations/*`, this
+log) keep their references unchanged.
+
+**Why**: since the 2026-10 reset, work is driven directly from a Claude Code session
+with one delegated agent per bounded change (root `CLAUDE.md`, "Agents"), not by the
+loop. The directories were unmaintained mirrors of skills nobody runs, and the
+mirror-sync obligation had already been dropped. No xtask subcommand changes.
+
+**Lost with the test file**: its pins on the xtask subcommand list and on the CI
+discipline job's xtask steps. Re-add them in a non-ralph test file if that guard is
+still wanted.

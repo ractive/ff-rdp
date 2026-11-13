@@ -28,8 +28,8 @@ const ALLOW_UNGATED_MARKER: &str = "// allow-ungated-live:";
 /// instead of ~45. A new top-level `tests/live_*.rs` file re-introduces the
 /// per-binary linking cost this iteration removed, so it is a review defect.
 ///
-/// This guard runs in the CI discipline job
-/// so ralph-loop agents can't regress the layout silently. New live tests go
+/// This guard runs in the CI discipline job so a new top-level live test file
+/// fails CI instead of regressing the layout silently. New live tests go
 /// in `tests/live/<slug>.rs` plus a `mod` line in `tests/live/main.rs`.
 ///
 /// Files directly *inside* `tests/live/` (the consolidated modules) are fine —
