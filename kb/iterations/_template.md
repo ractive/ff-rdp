@@ -4,7 +4,7 @@ type: iteration
 date: YYYY-MM-DD
 status: planned
 branch: iter-NN/short-description
-# NN must be free: check-iteration-plan fails when another plan already claims it.
+# NN must be free: `cargo test -p xtask --test kb_plans` fails when another plan claims it.
 # Letter suffixes (61b, 162a) are distinct numbers.
 depends_on: []
 tags: [iteration]

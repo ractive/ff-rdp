@@ -42,7 +42,7 @@ link.
   `tests/e2e/main.rs` (the `e2e` target).
 - **Live-Firefox tests** go in `crates/ff-rdp-cli/tests/live/<slug>.rs` plus a `mod` line in
   `tests/live/main.rs` (the single `live` target). A new top-level `tests/live_*.rs` file fails
-  `cargo run -p xtask -- check-live-test-layout` (CI `discipline` job).
+  `cargo test -p ff-rdp-cli --test test_layout`.
 - **Every `#[test]` under `tests/live/` carries `#[ignore]`** naming its env gate, e.g.
   `#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]`. A plain
   `cargo test` stays Firefox-free and fast. A Firefox-free probe that must run by default carries
@@ -111,30 +111,28 @@ Actor IDs are normalized (`conn\d+` → `conn0`) and written to both `ff-rdp-cor
 and `ff-rdp-cli/tests/fixtures/`. Add a fixture with a live test in
 `crates/ff-rdp-core/tests/live_record_fixtures.rs` using `save_cli_fixture()`/`save_core_fixture()`.
 
-## xtask checks
+## Repo checks
 
-List what exists with `cargo run -q -p xtask -- --help`; do not invent names.
+The repo's own invariants are ordinary integration tests, so `cargo test --workspace` runs them
+on all three CI operating systems (DEC-058). `xtask` keeps only `live-sweep`.
 
-| Command | Where it runs | What it checks |
-|---|---|---|
-| `check-iteration-plan <plan or dir>` | CI `discipline` | `status` vocabulary; no two plans share a number (`dogfood_path`/`first_call_sites` are optional warnings) |
-| `check-live-test-layout` | CI `discipline` | no top-level `tests/live_*.rs`; every live `#[test]` is `#[ignore]`-gated |
-| `check-source-invariants` | CI `discipline` | no `eprintln!` + `AppError::Exit(N)` bypass; every `eprintln!` under `commands/` has `// stderr-ok: <reason>` |
-| `check-skill-drift` / `gen-skill` | CI `discipline` | the generated region of `skills/ff-rdp-debug/SKILL.md` matches the CLI's tables |
-| `check-help-idioms` | CI `discipline` | `ff-rdp --help` still carries the quick-start idioms |
-| `check-vendored-js` | CI `discipline` | vendored Readability bundle matches the hashes in its `VERSION` |
-| `check-firefox-refs <plan>` | local | a plan's `firefox_refs` line ranges exist in `$FF_RDP_FIREFOX_PATH` |
-| `check-actor-kb-sync --since origin/main` | local | a changed `actors/<X>.rs` has its `kb/rdp/actors/<X>.md` updated (or `// allow-actor-kb-skip:`) |
-| `find-iteration-plan --branch <b>` | local | resolves `iter-N/slug` to its plan file |
-| `live-sweep` | nightly CI, local | see [Live tests](#live-tests) |
+| Test | What it checks |
+|---|---|
+| `cargo test -p xtask --test kb_plans` | every `kb/iterations/iteration-*.md` has a valid `status`; no two plans share a number |
+| `cargo test -p ff-rdp-cli --test test_layout` | no top-level `tests/live_*.rs`; every live `#[test]` is `#[ignore]`-gated |
+| `cargo test -p ff-rdp-cli --test source_invariants` | no `eprintln!` + `AppError::Exit(N)` bypass; every `eprintln!` under `commands/` has `// stderr-ok: <reason>` |
+| `cargo test -p ff-rdp-cli --test skill_drift` | the generated region of `skills/ff-rdp-debug/SKILL.md` matches the CLI's tables |
+| `cargo test -p ff-rdp-cli --test help_idioms` | `ff-rdp --help` still carries the quick-start idioms |
+| `cargo test -p ff-rdp-cli --test vendored_js` | vendored Readability bundle matches the hashes in its `VERSION` |
+| `cargo run -p xtask -- live-sweep` | nightly CI, local — see [Live tests](#live-tests) |
 
-Run the CI ones once before opening a PR; CI runs them again.
+Regenerate SKILL.md's generated region with
+`FF_RDP_BLESS=1 cargo test -p ff-rdp-cli --test skill_drift`.
 
 Validate the whole plan directory:
 
 ```sh
-cargo run -p xtask -- check-iteration-plan kb/iterations
-# expected: check-iteration-plan: swept N plan(s) in kb/iterations: 0 failed, M with warnings only
+cargo test -p xtask --test kb_plans
 ```
 
 The two historical number collisions (44 and 73) are exempt by exact file-name pair.
@@ -151,6 +149,7 @@ installed on the runners.
 - **Spec drift** — a field or method ff-rdp sends that the published Firefox spec does not
   declare — needs `// allow-spec-drift: bug NNNN` on the call site.
 - Commit-message claims must be backed by the diff.
+- A changed `crates/ff-rdp-core/src/actors/<X>.rs` should update `kb/rdp/actors/<X>.md`.
 
 These were once xtask gates; `kb/discipline-rationale.md` records why they are review rules now.
 
@@ -217,7 +216,7 @@ parser, then check the input into `fuzz/seeds/<target>/` as a regression seed. S
 ## Branch protection
 
 If protection is (re)configured, pick required contexts from the jobs in
-`.github/workflows/ci.yml` that run on `pull_request` — `fmt`, `clippy`, `test`, `discipline`, … —
+`.github/workflows/ci.yml` that run on `pull_request` — `fmt`, `clippy`, `test`, … —
 never `live-tests`, which no longer runs per PR. Verify with
 `gh api repos/ractive/ff-rdp/branches/main/protection`.
 

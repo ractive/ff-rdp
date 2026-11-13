@@ -4,7 +4,7 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 publish = false
-description = "Iteration discipline tooling for ff-rdp"
+description = "Live-Firefox test sweep for ff-rdp"
 
 [[bin]]
 name = "xtask"
@@ -13,10 +13,9 @@ path = "src/main.rs"
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
+
+[dev-dependencies]
 regex = { workspace = true }
-serde = { workspace = true }
-serde_norway = { workspace = true }
-sha2 = { workspace = true }
 tempfile = { workspace = true }
 
 [lints]

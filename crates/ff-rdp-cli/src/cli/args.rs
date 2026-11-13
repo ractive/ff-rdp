@@ -141,7 +141,7 @@ BUNDLED CODE:
   behind Firefox Reader View. Injected into the live page by --with-page so the
   article can be told apart from the site chrome. Source and licence ship with
   the repository under crates/ff-rdp-cli/js/readability/; the committed bytes
-  are pinned by `cargo run -p xtask -- check-vendored-js`.
+  are pinned by `cargo test -p ff-rdp-cli --test vendored_js`.
 
 AI AGENT TIPS:
   - Use --format text instead of JSON for 3-10x fewer tokens
@@ -329,7 +329,7 @@ pub fn build_version_string() -> &'static str {
 /// the home view use (iter-219 Theme E). All 42 runs of the axi benchmark
 /// opened with `ff-rdp --help`, several of them `| head -50`, and `--query`
 /// appeared nowhere in it; a flag an agent cannot see is a flag that does not
-/// exist. `cargo run -p xtask -- check-help-idioms` fails when this block and
+/// exist. `cargo test -p ff-rdp-cli --test help_idioms` fails when this block and
 /// the idiom table disagree.
 fn long_about() -> String {
     format!(
@@ -1618,9 +1618,9 @@ Output: {\"results\": {\"target\": \"...\", \"scope\": \"...\", \"path\": \"...\
 
     /// Print the generated section of the bundled skill's SKILL.md
     ///
-    /// Hidden: its callers are `cargo run -p xtask -- gen-skill` and
-    /// `... check-skill-drift`, which need the generator's output without
-    /// linking this binary crate as a library.
+    /// Hidden: its callers are ff-rdp-cli's `skill_drift` and `help_idioms`
+    /// tests, which need the generator's output without linking this binary
+    /// crate as a library.
     #[command(hide = true)]
     SkillDoc,
 

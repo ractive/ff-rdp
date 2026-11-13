@@ -156,7 +156,7 @@ fn e2e_212_named_home_and_hook_flag_both_run() {
     }
 }
 
-/// `skill-doc` is what `cargo run -p xtask -- check-skill-drift` shells out to;
+/// `skill-doc` is what the `skill_drift` test shells out to;
 /// if it stops emitting the marked region, that gate silently stops checking
 /// anything.
 #[test]

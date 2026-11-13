@@ -28,7 +28,7 @@ and fix all issues:
 1. `cargo fmt`
 2. `cargo clippy --workspace --all-targets -- -D warnings`
 3. `cargo test --workspace -q`
-4. If help text changed: `cargo run -p xtask -- gen-skill`, `check-skill-drift`, `check-help-idioms`
+4. If help text changed: `FF_RDP_BLESS=1 cargo test -p ff-rdp-cli --test skill_drift`
 
 Never commit code that fails any of these. Do not re-run them in a later step (PR creation,
 review) when the tree is unchanged since the last green run — `git rev-parse HEAD^{tree}` (or
@@ -122,8 +122,7 @@ delegated prompts.
   out wrong, leave it unticked and say why.
 - Acceptance criteria describe user-visible behaviour.
 - Iteration plans use a number no other plan claims. Validate:
-  `cargo run -p xtask -- check-iteration-plan <plan>` (`dogfood_path` / `first_call_sites` are
-  optional).
+  `cargo test -p xtask --test kb_plans`.
 - Plan `status:` is `planned | in-progress | in-review | done | obsolete` — `done`, never
   `completed`.
 - Follow-up work goes in `kb/backlog.md` (one line per item, with the PR it came from), ticked in the same commit as the fix; file a new plan only for product work that needs design. Reports from other projects land in `kb/backlog/issues/` — triage them per its `CLAUDE.md`.

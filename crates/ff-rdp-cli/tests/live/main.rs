@@ -18,7 +18,7 @@
 //!
 //! New live tests go in `tests/live/<slug>.rs` + a `mod` line below — never a
 //! new top-level `tests/live_*.rs` file (enforced by
-//! `cargo run -p xtask -- check-live-test-layout`).
+//! `cargo test -p ff-rdp-cli --test test_layout`).
 
 // iter-105 Theme D: several live suites call `libc::kill` via FFI for
 // process-lifecycle assertions.  The CLI crate default is

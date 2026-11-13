@@ -60,6 +60,7 @@ product work that needs design. Keep items to one line — if an item needs more
 - [ ] `cargo install ff-rdp-cli` on Windows still links the CRT dynamically: `.cargo/config.toml` is not packaged to crates.io — document it, or move the flag into a build-time mechanism (#356)
 - [x] Remaining wall-clock bounds in live tests measure the laptop, not the product: live_113, 129, 145, 158, 174, 237, 272, `live_bulk_cap`, `live_navigate_default_fast` — delete the bounds, keep the functional assertions (#290)
 - [ ] Live-sweep post-phase leak check was deleted with the real-root scan; leaked test Firefoxes are now only caught on the watchdog path — run `managed_firefox_pids()` after every phase (#291)
+- [ ] evaluate cargo-nextest as a partial replacement for xtask live-sweep (from chore/xtask-to-tests, DEC-058)
 - [ ] `clippy::assert_is_empty` is allowed in the lint tables rather than fixed at ~30 test sites (#286)
 - [ ] `kb/iterations/dogfood-lib.sh` and the historical `*.dogfood.sh` scripts remain only because `tools/axi-bench` sources the lib; move the lib under `tools/axi-bench/` and drop the scripts (#286)
 - [ ] `count_tabs` in `launch` does not reuse `connect_tab`'s list helper because that helper takes `&Cli` (#291)

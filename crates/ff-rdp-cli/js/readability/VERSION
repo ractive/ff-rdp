@@ -7,7 +7,7 @@
 # alone, and executing remote code in a user's browser session is not something
 # a debugging CLI should do.
 #
-# `cargo run -p xtask -- check-vendored-js` recomputes the hashes below and
+# `cargo test -p ff-rdp-cli --test vendored_js` recomputes the hashes below and
 # fails on any mismatch, so an upgrade is a deliberate, reviewable commit.
 #
 # To upgrade:

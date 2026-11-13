@@ -96,7 +96,7 @@ closed-in: iter-61v
 
 All three now route through `specs::types::resolve_long_string_slot`, which dispatches inline strings without a round-trip and `longString` grips through the typed `LongString` decoder (`specs/types.rs`) — the same path console/network/object/watcher already used.
 
-**Rule: any new spec consumer reading a slot Firefox declares `longstring` MUST use the typed decoder (`resolve_long_string_slot` / `LongString::fetch_full`), never a bare `Value::as_str()`.** A bare `.as_str()` on a `longstring` slot silently yields `None`/empty once the value crosses the ~10 KB threshold — a confidently-wrong answer. The source-scan test `unit_no_production_expect_in_core` (iter-102) and the grip round-trip unit tests in each module guard against regressions; `check-firefox-refs` pins the spec line ranges.
+**Rule: any new spec consumer reading a slot Firefox declares `longstring` MUST use the typed decoder (`resolve_long_string_slot` / `LongString::fetch_full`), never a bare `Value::as_str()`.** A bare `.as_str()` on a `longstring` slot silently yields `None`/empty once the value crosses the ~10 KB threshold — a confidently-wrong answer. The source-scan test `unit_no_production_expect_in_core` (iter-102) and the grip round-trip unit tests in each module guard against regressions; the `rdp-spec-reviewer` agent checks the spec line ranges.
 
 ## frame-size-cap
 
