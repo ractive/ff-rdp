@@ -1,7 +1,7 @@
 //! `xtask` holds only what cannot be a plain `cargo test`: the live-Firefox
 //! sweep (watchdog, process-group kill, leftover-Firefox cleanup, stack
 //! capture, preexisting-instance routing, quarantine). Every other repo check
-//! is an ordinary test since DEC-058.
+//! is an ordinary test since DEC-059.
 
 mod live_sweep;
 

@@ -95,7 +95,7 @@ jobs:
           New-NetFirewallRule -DisplayName "ff-rdp-e2e" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 1024-65535 -ErrorAction SilentlyContinue
 
       # Also runs the repo checks that used to be xtask subcommands in a
-      # separate `discipline` job (DEC-058): source invariants, live-test
+      # separate `discipline` job (DEC-059): source invariants, live-test
       # layout, vendored-JS pins, SKILL.md drift, --help idioms (ff-rdp-cli
       # tests) and the kb/iterations plan lint (xtask's kb_plans test).
       - name: Run tests

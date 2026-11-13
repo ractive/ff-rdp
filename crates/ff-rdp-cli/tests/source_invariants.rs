@@ -1,7 +1,7 @@
 //! Two source-scanning invariants over `crates/ff-rdp-cli/src/commands/`.
 //!
 //! Formerly `cargo run -p xtask -- check-source-invariants` (iter-145 and
-//! iter-148, merged in iter-162a); a plain `cargo test` since DEC-058.
+//! iter-148, merged in iter-162a); a plain `cargo test` since DEC-059.
 //!
 //! - **error-envelope-paths** — no `eprintln!` followed within a few lines by
 //!   `AppError::Exit(N)`. `main` treats that variant as "already printed, just

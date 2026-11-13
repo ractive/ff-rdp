@@ -1,5 +1,5 @@
 //! Lints over `kb/iterations/iteration-*.md` (formerly `xtask
-//! check-iteration-plan`, shrunk to a test by DEC-058).
+//! check-iteration-plan`, shrunk to a test by DEC-059).
 //!
 //! 1. No two plans share an iteration id. The id is `<digits><letters>` up to
 //!    the first `-`, so `162a` and `162b` are distinct while two `61b` collide.

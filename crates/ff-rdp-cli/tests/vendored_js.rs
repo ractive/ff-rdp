@@ -1,7 +1,7 @@
 //! The vendored Readability bundle is byte-for-byte the pinned release.
 //!
 //! Formerly `cargo run -p xtask -- check-vendored-js` (iter-219); a plain
-//! `cargo test` since DEC-058.
+//! `cargo test` since DEC-059.
 //!
 //! `crates/ff-rdp-cli/js/readability/` is injected into the live page by
 //! `--with-page`. It is committed rather than downloaded so the output is a

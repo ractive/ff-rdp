@@ -1,7 +1,7 @@
 //! The generated region of the bundled skill matches the CLI's own tables.
 //!
 //! Formerly `cargo run -p xtask -- gen-skill` and `check-skill-drift`
-//! (iter-212); a plain `cargo test` since DEC-058.
+//! (iter-212); a plain `cargo test` since DEC-059.
 //!
 //! `crates/ff-rdp-cli/skills/ff-rdp-debug/SKILL.md` is hand-written prose
 //! except for the region between the two marker comments, which restates the

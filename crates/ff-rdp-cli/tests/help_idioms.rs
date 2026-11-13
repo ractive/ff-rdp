@@ -1,7 +1,7 @@
 //! `ff-rdp --help` carries the idioms and quick-start lines the skill teaches.
 //!
 //! Formerly `cargo run -p xtask -- check-help-idioms` (iter-219); a plain
-//! `cargo test` since DEC-058.
+//! `cargo test` since DEC-059.
 //!
 //! All 42 runs of the axi benchmark opened with `ff-rdp --help` and `--query`
 //! appeared nowhere in it. `skill_drift.rs` pins SKILL.md against

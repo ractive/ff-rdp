@@ -114,7 +114,7 @@ and `ff-rdp-cli/tests/fixtures/`. Add a fixture with a live test in
 ## Repo checks
 
 The repo's own invariants are ordinary integration tests, so `cargo test --workspace` runs them
-on all three CI operating systems (DEC-058). `xtask` keeps only `live-sweep`.
+on all three CI operating systems (DEC-059). `xtask` keeps only `live-sweep`.
 
 | Test | What it checks |
 |---|---|

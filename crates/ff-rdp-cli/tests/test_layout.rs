@@ -1,7 +1,7 @@
 //! Layout rules for this crate's live-Firefox tests.
 //!
 //! Formerly `cargo run -p xtask -- check-live-test-layout` (iter-100b,
-//! iter-113); a plain `cargo test` since DEC-058. This file must not be named
+//! iter-113); a plain `cargo test` since DEC-059. This file must not be named
 //! `live_*.rs` — rule 1 forbids exactly that.
 //!
 //! 1. No top-level `tests/live_*.rs`. Every live suite is a `mod` of the
