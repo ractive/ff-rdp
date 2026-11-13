@@ -27,30 +27,22 @@ struct FirefoxRefsFrontmatter {
 /// Parse the `lines` field as `"<start>-<end>"` (inclusive, 1-based).
 /// Returns `(start, end)` on success.
 pub fn parse_line_range(lines: &str) -> Result<(usize, usize)> {
-    let (start_str, end_str) = lines.split_once('-').with_context(|| {
-        format!(
-            "malformed lines range {:?}: expected \"<start>-<end>\"",
-            lines
-        )
-    })?;
+    let (start_str, end_str) = lines
+        .split_once('-')
+        .with_context(|| format!("malformed lines range {lines:?}: expected \"<start>-<end>\""))?;
     let start: usize = start_str
         .trim()
         .parse()
-        .with_context(|| format!("malformed start in lines range {:?}", lines))?;
+        .with_context(|| format!("malformed start in lines range {lines:?}"))?;
     let end: usize = end_str
         .trim()
         .parse()
-        .with_context(|| format!("malformed end in lines range {:?}", lines))?;
+        .with_context(|| format!("malformed end in lines range {lines:?}"))?;
     if start == 0 {
-        bail!("lines range {:?}: start must be >= 1 (1-based)", lines);
+        bail!("lines range {lines:?}: start must be >= 1 (1-based)");
     }
     if start > end {
-        bail!(
-            "lines range {:?}: start {} > end {} (range is empty)",
-            lines,
-            start,
-            end
-        );
+        bail!("lines range {lines:?}: start {start} > end {end} (range is empty)");
     }
     Ok((start, end))
 }
@@ -83,24 +75,24 @@ fn validate_ref(firefox_root: &std::path::Path, r: &FirefoxRef) -> Result<()> {
     Ok(())
 }
 
-pub fn run(args: Args) -> Result<()> {
+pub fn run(args: &Args) -> Result<()> {
     let content = std::fs::read_to_string(&args.plan)
-        .with_context(|| format!("failed to read {:?}", args.plan))?;
+        .with_context(|| format!("failed to read {}", args.plan.display()))?;
 
     let refs_fm = extract_firefox_refs_frontmatter(&content)?;
 
     let firefox_refs = match refs_fm.firefox_refs {
         None => {
             println!(
-                "check-firefox-refs: OK (no firefox_refs key in {:?})",
-                args.plan
+                "check-firefox-refs: OK (no firefox_refs key in {})",
+                args.plan.display()
             );
             return Ok(());
         }
         Some(refs) if refs.is_empty() => {
             println!(
-                "check-firefox-refs: OK (no firefox_refs key in {:?})",
-                args.plan
+                "check-firefox-refs: OK (no firefox_refs key in {})",
+                args.plan.display()
             );
             return Ok(());
         }
@@ -127,9 +119,9 @@ pub fn run(args: Args) -> Result<()> {
             eprintln!("  - {e}");
         }
         bail!(
-            "check-firefox-refs: {} ref(s) failed validation in {:?}",
+            "check-firefox-refs: {} ref(s) failed validation in {}",
             errors.len(),
-            args.plan
+            args.plan.display()
         );
     }
 }
@@ -163,9 +155,8 @@ fn resolve_firefox_root() -> Result<PathBuf> {
             return Ok(root);
         }
         bail!(
-            "FF_RDP_FIREFOX_PATH={:?} does not exist. \
-             Point it at the root of your Firefox checkout.",
-            root
+            "FF_RDP_FIREFOX_PATH={path} does not exist. \
+             Point it at the root of your Firefox checkout."
         );
     }
 

@@ -92,12 +92,11 @@ impl SecurityInfo {
         let weakness_reasons = v
             .get("weaknessReasons")
             .and_then(Value::as_array)
-            .map(|arr| {
+            .map_or_default(|arr| {
                 arr.iter()
                     .filter_map(|r| r.as_str().map(str::to_owned))
                     .collect()
-            })
-            .unwrap_or_default();
+            });
         let cert = v.get("cert").map(parse_cert_summary);
 
         Self {
@@ -294,7 +293,7 @@ fn parse_headers(response: &Value) -> Vec<Header> {
     response
         .get("headers")
         .and_then(Value::as_array)
-        .map(|arr| {
+        .map_or_default(|arr| {
             arr.iter()
                 .filter_map(|h| {
                     let name = h.get("name").and_then(Value::as_str)?;
@@ -306,7 +305,6 @@ fn parse_headers(response: &Value) -> Vec<Header> {
                 })
                 .collect()
         })
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

@@ -145,7 +145,7 @@ fn resolve_dir(repo_root: &Path, dir: &Path) -> Result<PathBuf> {
     Ok(resolved)
 }
 
-pub fn run(args: Args) -> Result<()> {
+pub fn run(args: &Args) -> Result<()> {
     let repo_root = locate_repo_root()?;
     let commands_dir = resolve_dir(&repo_root, &args.commands_dir)?;
 

@@ -284,8 +284,7 @@ fn parse_applied_entry(entry: &Value) -> Option<AppliedRule> {
     let selectors: Vec<&str> = rule
         .get("selectors")
         .and_then(Value::as_array)
-        .map(|arr| arr.iter().filter_map(Value::as_str).collect())
-        .unwrap_or_default();
+        .map_or_default(|arr| arr.iter().filter_map(Value::as_str).collect());
     let selector = selectors.join(", ");
 
     let source = rule
@@ -311,7 +310,7 @@ fn parse_applied_entry(entry: &Value) -> Option<AppliedRule> {
         .get("declarations")
         .or_else(|| rule.get("declarations"))
         .and_then(Value::as_array)
-        .map(|arr| {
+        .map_or_default(|arr| {
             arr.iter()
                 .filter_map(|decl| {
                     let name = decl.get("name")?.as_str()?.to_string();
@@ -328,8 +327,7 @@ fn parse_applied_entry(entry: &Value) -> Option<AppliedRule> {
                     })
                 })
                 .collect()
-        })
-        .unwrap_or_default();
+        });
 
     // Resolve `matchedSelectors` from the canonical spec shape:
     // `appliedstyle.matchedSelectorIndexes: nullable:array:number` indexes
@@ -339,15 +337,14 @@ fn parse_applied_entry(entry: &Value) -> Option<AppliedRule> {
     let matched_selectors: Vec<String> = entry
         .get("matchedSelectorIndexes")
         .and_then(Value::as_array)
-        .map(|idxs| {
+        .map_or_default(|idxs| {
             idxs.iter()
                 .filter_map(|v| {
                     let idx = usize::try_from(v.as_u64()?).ok()?;
                     selectors.get(idx).map(|s| (*s).to_string())
                 })
                 .collect()
-        })
-        .unwrap_or_default();
+        });
 
     // Media queries live in `rule.ancestorData[]` entries where
     // `type === "media"`; `value` is the joined media text.  See
@@ -355,7 +352,7 @@ fn parse_applied_entry(entry: &Value) -> Option<AppliedRule> {
     let media: Vec<String> = rule
         .get("ancestorData")
         .and_then(Value::as_array)
-        .map(|arr| {
+        .map_or_default(|arr| {
             arr.iter()
                 .filter_map(|d| {
                     let ty = d.get("type").and_then(Value::as_str)?;
@@ -365,8 +362,7 @@ fn parse_applied_entry(entry: &Value) -> Option<AppliedRule> {
                     d.get("value").and_then(Value::as_str).map(String::from)
                 })
                 .collect()
-        })
-        .unwrap_or_default();
+        });
 
     // Extract the rule actor ID (`rule.actor`).  Firefox populates this with a
     // stable actor path like `conn0/styleRuleActor1`.  Used downstream for

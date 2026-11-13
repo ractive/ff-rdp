@@ -1,10 +1,12 @@
 [package]
 name = "ff-rdp-core"
 version.workspace = true
+authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-readme = "../../README.md"
+readme.workspace = true
 keywords = ["firefox", "rdp", "devtools", "remote-debugging"]
 categories = ["network-programming"]
 description = "Core library for Firefox Remote Debugging Protocol over TCP"

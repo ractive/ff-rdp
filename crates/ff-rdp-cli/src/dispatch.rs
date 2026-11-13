@@ -573,14 +573,13 @@ fn dispatch_inner(
                     };
                     let style_props: Vec<String> = include_style
                         .as_deref()
-                        .map(|s| {
+                        .map_or_default(|s| {
                             s.split(',')
                                 .map(str::trim)
                                 .filter(|p| !p.is_empty())
                                 .map(str::to_owned)
                                 .collect()
-                        })
-                        .unwrap_or_default();
+                        });
                     commands::dom::run(
                         cli,
                         sel,

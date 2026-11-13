@@ -612,12 +612,8 @@ fn fetch_headers(
             .map(|h| json!({"name": h.name, "value": h.value}))
             .collect()
     }
-    let req = NetworkEventActor::get_request_headers(transport, actor)
-        .map(to_json)
-        .unwrap_or_default();
-    let resp = NetworkEventActor::get_response_headers(transport, actor)
-        .map(to_json)
-        .unwrap_or_default();
+    let req = NetworkEventActor::get_request_headers(transport, actor).map_or_default(to_json);
+    let resp = NetworkEventActor::get_response_headers(transport, actor).map_or_default(to_json);
     (req, resp)
 }
 

@@ -91,21 +91,20 @@ pub fn run(args: Args) -> Result<()> {
         )
     })?;
 
-    let repo_root = match args.repo_root {
-        Some(r) => r,
-        None => {
-            // Detect from git rev-parse.
-            let output = std::process::Command::new("git")
-                .args(["rev-parse", "--show-toplevel"])
-                .output()
-                .map_err(|e| anyhow!("running git rev-parse: {e}"))?;
-            if !output.status.success() {
-                bail!("git rev-parse --show-toplevel failed");
-            }
-            let s = String::from_utf8(output.stdout)
-                .map_err(|e| anyhow!("non-utf8 git output: {e}"))?;
-            PathBuf::from(s.trim())
+    let repo_root = if let Some(r) = args.repo_root {
+        r
+    } else {
+        // Detect from git rev-parse.
+        let output = std::process::Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .output()
+            .map_err(|e| anyhow!("running git rev-parse: {e}"))?;
+        if !output.status.success() {
+            bail!("git rev-parse --show-toplevel failed");
         }
+        let s =
+            String::from_utf8(output.stdout).map_err(|e| anyhow!("non-utf8 git output: {e}"))?;
+        PathBuf::from(s.trim())
     };
 
     let plan_path = resolve_plan(&iter_id, &repo_root)?;

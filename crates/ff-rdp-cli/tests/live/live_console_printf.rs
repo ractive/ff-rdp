@@ -104,8 +104,7 @@ fn live_console_printf_e2e() {
         "m{}",
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or_default()
+            .map_or_default(|d| d.as_nanos())
     );
 
     // Emit a printf-style console.log.  The format specifiers %s and %d must be

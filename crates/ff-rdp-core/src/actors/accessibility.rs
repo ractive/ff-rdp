@@ -366,13 +366,12 @@ fn parse_accessible_node(value: &Value) -> Option<AccessibleNode> {
     let states = value
         .get("states")
         .and_then(Value::as_array)
-        .map(|arr| {
+        .map_or_default(|arr| {
             arr.iter()
                 .filter_map(Value::as_str)
                 .map(String::from)
                 .collect()
-        })
-        .unwrap_or_default();
+        });
 
     Some(AccessibleNode {
         actor,

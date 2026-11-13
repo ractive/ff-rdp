@@ -29,8 +29,7 @@ fn xtask_bin() -> PathBuf {
     let target_dir = manifest_dir
         .ancestors()
         .find(|p| p.join("target").is_dir())
-        .map(|p| p.join("target"))
-        .unwrap_or_else(|| manifest_dir.join("../../target"));
+        .map_or_else(|| manifest_dir.join("../../target"), |p| p.join("target"));
     let debug = target_dir.join("debug").join("xtask");
     let release = target_dir.join("release").join("xtask");
     if debug.exists() { debug } else { release }
@@ -78,8 +77,7 @@ fn find_iteration_plan_letter_suffix() {
     assert!(
         resolved_path
             .file_name()
-            .map(|n| n == "iteration-61b-recorder-cli-wiring.md")
-            .unwrap_or(false),
+            .is_some_and(|n| n == "iteration-61b-recorder-cli-wiring.md"),
         "expected filename iteration-61b-recorder-cli-wiring.md, got: {resolved}"
     );
 }

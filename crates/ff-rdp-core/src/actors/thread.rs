@@ -54,8 +54,7 @@ impl ThreadActor {
         let sources = response
             .get("sources")
             .and_then(Value::as_array)
-            .map(|arr| arr.iter().filter_map(parse_source_info).collect())
-            .unwrap_or_default();
+            .map_or_default(|arr| arr.iter().filter_map(parse_source_info).collect());
         Ok(sources)
     }
 

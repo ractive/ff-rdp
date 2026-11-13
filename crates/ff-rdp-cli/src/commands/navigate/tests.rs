@@ -750,8 +750,7 @@ fn navigate_subscribes_before_navigateto() {
     );
     let res_types = p2["resourceTypes"]
         .as_array()
-        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
-        .unwrap_or_default();
+        .map_or_default(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>());
     assert!(
         res_types.contains(&"document-event"),
         "watchResources must include 'document-event', got: {p2}"

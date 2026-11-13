@@ -1090,8 +1090,7 @@ pub(crate) fn assert_no_managed_profiles(root: &Path) {
 fn chrono_now_rfc3339() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or_default();
+        .map_or_default(|d| d.as_secs());
     format!("epoch={secs}")
 }
 

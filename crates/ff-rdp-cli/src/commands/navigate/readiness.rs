@@ -2027,8 +2027,7 @@ pub(crate) fn check_real_tab_url_for_neterror(
         .iter()
         .find(|t| t.actor == own)
         .or_else(|| tabs.iter().find(|t| t.selected))
-        .map(|t| t.url.clone())
-        .unwrap_or_default();
+        .map_or_default(|t| t.url.clone());
 
     if !is_neterror_url(&tab_url) {
         return None;

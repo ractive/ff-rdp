@@ -212,7 +212,7 @@ pub fn parse_capture_response(response: &Value) -> Result<String, ProtocolError>
     let messages: Vec<(&str, &str)> = value
         .get("messages")
         .and_then(Value::as_array)
-        .map(|arr| {
+        .map_or_default(|arr| {
             arr.iter()
                 .map(|m| {
                     (
@@ -221,8 +221,7 @@ pub fn parse_capture_response(response: &Value) -> Result<String, ProtocolError>
                     )
                 })
                 .collect()
-        })
-        .unwrap_or_default();
+        });
 
     Err(capture_no_image_data_error(messages))
 }
@@ -392,8 +391,7 @@ impl ScreenshotActor {
         let pid = std::process::id();
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or_default();
+            .map_or_default(|d| d.as_nanos());
         let tmp_dir = std::env::temp_dir();
         // Forward-slashes work on all platforms in Firefox's IOUtils.
         let tmp_path = tmp_dir.join(format!("ff-rdp-screenshot-{pid}-{nonce}.png"));

@@ -1,10 +1,12 @@
 [package]
 name = "ff-rdp-cli"
 version.workspace = true
+authors.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-readme = "../../README.md"
+readme.workspace = true
 keywords = ["cli", "firefox", "rdp", "devtools"]
 categories = ["command-line-utilities"]
 description = "CLI for Firefox Remote Debugging Protocol"
@@ -29,7 +31,7 @@ fs2 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_norway = { workspace = true }
-toml = { version = "1.1", default-features = false, features = ["parse", "serde", "std"] }
+toml = { version = "1.2", default-features = false, features = ["parse", "serde", "std"] }
 tempfile = { workspace = true }
 url = { workspace = true }
 ureq = { workspace = true }
@@ -77,7 +79,7 @@ serde_json = { workspace = true }
 tempfile = { workspace = true }
 dirs = { workspace = true }
 filetime = { workspace = true }
-jsonschema = "0.59"
+jsonschema = "0.61"
 sha2 = { workspace = true }
 # iter-144 Theme D: live_144_full_page_no_duplicate_header decodes captured
 # PNG pixel rows to detect a repeated header band — test-only, never shipped.

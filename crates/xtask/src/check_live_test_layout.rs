@@ -35,7 +35,7 @@ const ALLOW_UNGATED_MARKER: &str = "// allow-ungated-live:";
 /// Files directly *inside* `tests/live/` (the consolidated modules) are fine —
 /// only files matching `tests/<top-level>/live_*.rs` are the regression this
 /// scans for.
-pub fn run(args: Args) -> Result<()> {
+pub fn run(args: &Args) -> Result<()> {
     let dir = &args.dir;
 
     // Non-recursive read of the tests dir: only the top-level entries become
@@ -54,11 +54,10 @@ pub fn run(args: Args) -> Result<()> {
         if !ft.is_file() {
             continue;
         }
-        let name = match path.file_name().and_then(|n| n.to_str()) {
-            Some(n) => n,
-            None => continue,
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
         };
-        if name.starts_with("live_") && name.ends_with(".rs") {
+        if name.starts_with("live_") && path.extension().is_some_and(|ext| ext == "rs") {
             stray.push(path.display().to_string());
         }
     }
@@ -230,7 +229,7 @@ mod tests {
         let args = Args {
             dir: dir.path().to_path_buf(),
         };
-        assert!(run(args).is_ok());
+        assert!(run(&args).is_ok());
     }
 
     #[test]
@@ -244,7 +243,7 @@ mod tests {
         let args = Args {
             dir: dir.path().to_path_buf(),
         };
-        let err = run(args).unwrap_err();
+        let err = run(&args).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("live_regression.rs"),
@@ -273,7 +272,7 @@ mod tests {
         let args = Args {
             dir: dir.path().to_path_buf(),
         };
-        assert!(run(args).is_ok());
+        assert!(run(&args).is_ok());
     }
 
     // ── iter-113 Theme B: mandatory #[ignore] gating under tests/live/ ────────
@@ -300,7 +299,7 @@ mod tests {
             dir: dir.path().to_path_buf(),
         };
         assert!(
-            run(args).is_ok(),
+            run(&args).is_ok(),
             "guard must pass when every #[test] is #[ignore]-gated"
         );
 
@@ -309,7 +308,7 @@ mod tests {
         let args = Args {
             dir: dir.path().to_path_buf(),
         };
-        let err = run(args).unwrap_err();
+        let err = run(&args).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("live_bad.rs"),
@@ -336,7 +335,7 @@ mod tests {
             dir: dir.path().to_path_buf(),
         };
         assert!(
-            run(args).is_ok(),
+            run(&args).is_ok(),
             "an allow-ungated-live marker must exempt the test from #[ignore]"
         );
     }
@@ -356,7 +355,7 @@ mod tests {
             dir: dir.path().to_path_buf(),
         };
         assert!(
-            run(args).is_ok(),
+            run(&args).is_ok(),
             "an #[ignore] after an intervening #[cfg] must still count as gated"
         );
     }
@@ -379,7 +378,7 @@ mod tests {
         }
         let args = Args { dir: tests_dir };
         assert!(
-            run(args).is_ok(),
+            run(&args).is_ok(),
             "the real tests/live/ tree must satisfy the #[ignore] gating check"
         );
     }

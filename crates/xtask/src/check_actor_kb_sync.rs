@@ -119,7 +119,7 @@ fn actor_stem_for(path: &str) -> Option<&'static str> {
         .map(|(k, _)| *k)
 }
 
-pub fn run(args: Args) -> Result<()> {
+pub fn run(args: &Args) -> Result<()> {
     let changed = changed_files(&args.since)?;
 
     // Collect the set of changed kb paths for quick lookup.
@@ -141,8 +141,7 @@ pub fn run(args: Args) -> Result<()> {
         let kb_paths = ACTOR_KB_MAP
             .iter()
             .find(|(k, _)| *k == stem)
-            .map(|(_, v)| *v)
-            .unwrap_or(&[]);
+            .map_or(&[][..], |(_, v)| *v);
 
         // Pass if any of the kb paths was touched in the diff.
         let any_kb_touched = kb_paths.iter().any(|kp| changed_set.contains(*kp));

@@ -265,10 +265,7 @@ pub const MAX_SWEEP_JOBS: usize = 6;
 /// with Firefox processes is how launch timeouts get manufactured.
 pub fn default_jobs() -> usize {
     std::thread::available_parallelism()
-        .map(std::num::NonZeroUsize::get)
-        // `unwrap_or(1)` already floors this, so `min` alone is the whole
-        // clamp — spelling it as `clamp(1, ..)` trips `clippy::manual_clamp`.
-        .unwrap_or(1)
+        .map_or(1, std::num::NonZeroUsize::get)
         .min(MAX_SWEEP_JOBS)
 }
 
@@ -759,7 +756,7 @@ struct TargetPhasePlan {
 
 fn plan_target_phase(
     target: &SweepTarget,
-    gates: &EnvGates,
+    gates: EnvGates,
     probe_now: bool,
     requested_jobs: usize,
 ) -> TargetPhasePlan {
@@ -895,7 +892,7 @@ impl Partition {
     }
 }
 
-pub fn partition(tests: &[GatedTest], gates: &EnvGates) -> Partition {
+pub fn partition(tests: &[GatedTest], gates: EnvGates) -> Partition {
     let mut p = Partition::default();
     for t in tests {
         let ok_live = !t.needs_live || gates.live;
@@ -999,20 +996,20 @@ pub fn summarize(part: &Partition) -> SweepSummary {
 /// no-op returning the original partition, so the common case costs one TCP
 /// connect per target.
 pub fn repartition_for_probe(
-    gated: &[GatedTest],
-    gates: &EnvGates,
+    tests: &[GatedTest],
+    gates: EnvGates,
     probe_now: bool,
 ) -> (Partition, Vec<String>) {
     if probe_now || !gates.preexisting_available {
         // Nothing changed since classification (or the browser was already
         // absent, in which case `partition` has already bucketed these).
-        return (partition(gated, gates), Vec::new());
+        return (partition(tests, gates), Vec::new());
     }
     let gone = EnvGates {
         preexisting_available: false,
-        ..*gates
+        ..gates
     };
-    let repart = partition(gated, &gone);
+    let repart = partition(tests, gone);
     let vanished = repart.preexisting.clone();
     (repart, vanished)
 }
@@ -1294,8 +1291,7 @@ fn kill_phase_tree(child: &mut std::process::Child) {
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
+                .is_ok_and(|s| s.success());
             if landed {
                 break;
             }
@@ -1803,13 +1799,13 @@ pub fn descendant_pids(listing: &str, root: u32) -> Vec<u32> {
     let mut edges: Vec<(u32, u32)> = Vec::new();
     for line in listing.lines() {
         let mut fields = line.split_whitespace();
-        let (Some(pid), Some(ppid)) = (fields.next(), fields.next()) else {
+        let (Some(child), Some(parent)) = (fields.next(), fields.next()) else {
             continue;
         };
-        let (Ok(pid), Ok(ppid)) = (pid.parse::<u32>(), ppid.parse::<u32>()) else {
+        let (Ok(child), Ok(parent)) = (child.parse::<u32>(), parent.parse::<u32>()) else {
             continue;
         };
-        edges.push((pid, ppid));
+        edges.push((child, parent));
     }
     let mut frontier = vec![root];
     let mut out: Vec<u32> = Vec::new();
@@ -1834,6 +1830,10 @@ pub fn descendant_pids(listing: &str, root: u32) -> Vec<u32> {
 /// machine to try it on is exactly the untested-Windows-code problem Part C
 /// exists to stop repeating.
 #[cfg(target_os = "macos")]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "signature shared with the Linux/other cfg variants, which can return None"
+)]
 fn stack_sampler(pid: u32, out: &Path) -> Option<Command> {
     let mut cmd = Command::new("sample");
     cmd.args([&pid.to_string(), "5", "-f"]).arg(out);
@@ -1902,8 +1902,7 @@ fn capture_stacks(cargo_pid: u32, dir: &Path) -> Vec<PathBuf> {
         let ran = cmd
             .stderr(std::process::Stdio::null())
             .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
+            .is_ok_and(|s| s.success());
         if ran && std::fs::metadata(&out).is_ok_and(|m| m.len() > 0) {
             written.push(out);
         } else {
@@ -1917,7 +1916,7 @@ fn capture_stacks(cargo_pid: u32, dir: &Path) -> Vec<PathBuf> {
 // run()
 // ---------------------------------------------------------------------------
 
-pub fn run(args: Args) -> Result<()> {
+pub fn run(args: &Args) -> Result<()> {
     let mut targets = default_targets(&args.workspace_root)?;
     let total_gated: usize = targets.iter().map(|t| t.gated.len()).sum();
     if total_gated == 0 {
@@ -1932,7 +1931,7 @@ pub fn run(args: Args) -> Result<()> {
     }
     verify_compiled_corpora(&args.workspace_root, &mut targets)?;
     let gates = EnvGates::from_process_env();
-    let bounds = PhaseBounds::from_args(&args);
+    let bounds = PhaseBounds::from_args(args);
 
     if !gates.preexisting_available {
         eprintln!(
@@ -1986,7 +1985,7 @@ pub fn run(args: Args) -> Result<()> {
             summary,
             jobs,
             command,
-        } = plan_target_phase(target, &gates, probe_now, args.jobs);
+        } = plan_target_phase(target, gates, probe_now, args.jobs);
         if !vanished_before_tier.is_empty() {
             eprintln!(
                 "live-sweep: the Firefox on 127.0.0.1:{PREEXISTING_PORT} was there at \
@@ -2387,7 +2386,7 @@ fn unrelated() {}
             sites: false,
             preexisting_available: true,
         };
-        let summary = summarize(&partition(&tests, &none_set));
+        let summary = summarize(&partition(&tests, none_set));
         assert_eq!(
             summary.executed, 0,
             "with both env gates unset, executed must be 0"
@@ -2401,7 +2400,7 @@ fn unrelated() {}
             sites: false,
             preexisting_available: true,
         };
-        let summary = summarize(&partition(&tests, &live_only));
+        let summary = summarize(&partition(&tests, live_only));
         assert_eq!(
             summary.executed, 1,
             "only the live-only test qualifies with FF_RDP_LIVE_TESTS=1 alone"
@@ -2414,7 +2413,7 @@ fn unrelated() {}
             sites: false,
             preexisting_available: true,
         };
-        let summary = summarize(&partition(&tests, &both_set));
+        let summary = summarize(&partition(&tests, both_set));
         assert_eq!(summary.executed, 3);
         assert_eq!(summary.skipped, 0);
     }
@@ -2428,7 +2427,7 @@ fn unrelated() {}
             sites: false,
             preexisting_available: true,
         };
-        let part = partition(&tests, &gates);
+        let part = partition(&tests, gates);
         assert_eq!(part.qualified, vec!["a".to_owned(), "z".to_owned()]);
     }
 
@@ -2453,7 +2452,7 @@ fn live_on_bbc() {}
             preexisting_available: true,
         };
         assert_eq!(
-            partition(&tests, &nightly).unqualified,
+            partition(&tests, nightly).unqualified,
             vec!["m::live_on_bbc"]
         );
 
@@ -2461,7 +2460,7 @@ fn live_on_bbc() {}
             sites: true,
             ..nightly
         };
-        assert_eq!(partition(&tests, &weekly).qualified, vec!["m::live_on_bbc"]);
+        assert_eq!(partition(&tests, weekly).qualified, vec!["m::live_on_bbc"]);
     }
 
     // -----------------------------------------------------------------------
@@ -2516,7 +2515,7 @@ fn live_on_bbc() {}
             sites: false,
             preexisting_available: false,
         };
-        let part = partition(&tests, &no_instance);
+        let part = partition(&tests, no_instance);
         let summary = summarize(&part);
         assert_eq!(summary.executed, 1, "only the self-launching test executes");
         assert_eq!(summary.preexisting, 2);
@@ -2533,7 +2532,7 @@ fn live_on_bbc() {}
             preexisting_available: true,
             ..no_instance
         };
-        let summary = summarize(&partition(&tests, &with_instance));
+        let summary = summarize(&partition(&tests, with_instance));
         assert_eq!(summary.executed, 3);
         assert_eq!(summary.preexisting, 0);
     }
@@ -2550,7 +2549,7 @@ fn live_on_bbc() {}
             sites: false,
             preexisting_available: false,
         };
-        let summary = summarize(&partition(&tests, &gates));
+        let summary = summarize(&partition(&tests, gates));
         assert_eq!(summary.skipped, 1);
         assert_eq!(summary.preexisting, 0);
     }
@@ -2669,11 +2668,11 @@ fn live_172_published_record_is_complete() {
             preexisting_available: true,
         };
 
-        let (still_there, none_gone) = repartition_for_probe(&tests, &gates, true);
+        let (still_there, none_gone) = repartition_for_probe(&tests, gates, true);
         assert!(none_gone.is_empty());
         assert_eq!(still_there.qualified, vec!["live_connect_and_list_tabs"]);
 
-        let (after, vanished) = repartition_for_probe(&tests, &gates, false);
+        let (after, vanished) = repartition_for_probe(&tests, gates, false);
         assert_eq!(
             vanished,
             vec!["live_connect_and_list_tabs".to_owned()],
@@ -2695,7 +2694,7 @@ fn live_172_published_record_is_complete() {
             sites: false,
             preexisting_available: true,
         };
-        let (part, vanished) = repartition_for_probe(&tests, &gates, false);
+        let (part, vanished) = repartition_for_probe(&tests, gates, false);
         assert!(vanished.is_empty());
         assert_eq!(part.qualified, vec!["cli::t1"]);
     }
@@ -3028,9 +3027,7 @@ failures:
             (1..=MAX_SWEEP_JOBS).contains(&jobs),
             "default concurrency {jobs} must be in 1..={MAX_SWEEP_JOBS}"
         );
-        let cores = std::thread::available_parallelism()
-            .map(std::num::NonZeroUsize::get)
-            .unwrap_or(1);
+        let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
         assert!(
             jobs <= cores,
             "default concurrency {jobs} must not oversubscribe {cores} core(s)"
@@ -3088,7 +3085,7 @@ failures:
             phase_stall_secs: DEFAULT_PHASE_STALL_SECS,
             phase_build_secs: DEFAULT_PHASE_BUILD_SECS,
         };
-        let err = run(args).unwrap_err();
+        let err = run(&args).unwrap_err();
         assert!(
             err.to_string().contains("found 0 gated live tests"),
             "expected the empty-scan guard to fire, got: {err}"
@@ -3231,8 +3228,8 @@ failures:
         let mut target = parity_fixture();
         let compiled = vec!["live_a".into(), "live_b".into(), "live_network".into()];
         filter_compiled_target(&mut target, &compiled).unwrap();
-        let dry = plan_target_phase(&target, &gates, true, 6);
-        let real = plan_target_phase(&target, &gates, true, 6);
+        let dry = plan_target_phase(&target, gates, true, 6);
+        let real = plan_target_phase(&target, gates, true, 6);
         let command = real.command.unwrap();
         assert_eq!(command.get_program(), "cargo");
         let args = arg_strings(&command);
@@ -3282,9 +3279,9 @@ failures:
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let workspace_root = manifest_dir.join("..").join("..");
         let cli_live_dir = workspace_root.join("crates/ff-rdp-cli/tests/live");
-        let (gated, _quarantined) = scan_modules_dir(&cli_live_dir).expect("scan_modules_dir");
+        let (scanned, _quarantined) = scan_modules_dir(&cli_live_dir).expect("scan_modules_dir");
         let target_name = "live_109_throttle_block::live_navigate_throttle_slow3g_slows_load";
-        let target = gated
+        let target = scanned
             .iter()
             .find(|t| t.full_name == target_name)
             .unwrap_or_else(|| panic!("{target_name} must be discovered by the scanner"));
@@ -3299,7 +3296,7 @@ failures:
             sites: false,
             preexisting_available: true,
         };
-        let part = partition(&gated, &gates);
+        let part = partition(&scanned, gates);
         assert!(
             part.unqualified.contains(&target.full_name),
             "with FF_RDP_LIVE_NETWORK_TESTS unset, {target_name} must be unqualified"
@@ -3519,8 +3516,7 @@ failures:
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
+                .is_ok_and(|s| s.success());
             if gone {
                 alive = false;
                 break;

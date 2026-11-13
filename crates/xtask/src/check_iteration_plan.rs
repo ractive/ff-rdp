@@ -145,14 +145,12 @@ pub fn validate_plan(plan: &ParsedPlan) -> (Vec<String>, Vec<String>) {
                 for (i, entry) in entries.iter().enumerate() {
                     if !entry.contains_key("primitive") {
                         warnings.push(format!(
-                            "advisory: first_call_sites[{}] is missing required key: primitive",
-                            i
+                            "advisory: first_call_sites[{i}] is missing required key: primitive"
                         ));
                     }
                     if !entry.contains_key("site") {
                         warnings.push(format!(
-                            "advisory: first_call_sites[{}] is missing required key: site",
-                            i
+                            "advisory: first_call_sites[{i}] is missing required key: site"
                         ));
                     }
                 }
@@ -166,15 +164,13 @@ pub fn validate_plan(plan: &ParsedPlan) -> (Vec<String>, Vec<String>) {
         .frontmatter
         .dogfood_path
         .as_deref()
-        .map(|s| !s.trim().is_empty())
-        .unwrap_or(false);
+        .is_some_and(|s| !s.trim().is_empty());
 
     let has_dogfood_script = plan
         .frontmatter
         .dogfood_script
         .as_deref()
-        .map(|s| !s.trim().is_empty())
-        .unwrap_or(false);
+        .is_some_and(|s| !s.trim().is_empty());
 
     let has_dogfood_section = plan.body.lines().any(|l| {
         let lower = l.to_lowercase();
@@ -416,17 +412,17 @@ fn check_plan_content(
 /// *what* it covers. `_template.md` is deliberately outside it: it is a skeleton
 /// with placeholder frontmatter, not a filed plan.
 fn plan_files_in(dir: &Path) -> Result<Vec<PathBuf>> {
-    let entries =
-        std::fs::read_dir(dir).with_context(|| format!("failed to read directory {dir:?}"))?;
+    let entries = std::fs::read_dir(dir)
+        .with_context(|| format!("failed to read directory {}", dir.display()))?;
     let mut out = Vec::new();
     for entry in entries {
         let path = entry
-            .with_context(|| format!("failed to read an entry of {dir:?}"))?
+            .with_context(|| format!("failed to read an entry of {}", dir.display()))?
             .path();
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        if name.starts_with("iteration-") && name.ends_with(".md") {
+        if name.starts_with("iteration-") && path.extension().is_some_and(|ext| ext == "md") {
             out.push(path);
         }
     }
@@ -442,7 +438,7 @@ fn plan_files_in(dir: &Path) -> Result<Vec<PathBuf>> {
 fn run_sweep(dir: &Path) -> Result<()> {
     let files = plan_files_in(dir)?;
     if files.is_empty() {
-        anyhow::bail!("no iteration-*.md plans found in {dir:?}");
+        anyhow::bail!("no iteration-*.md plans found in {}", dir.display());
     }
 
     // Every plan in the sweep has the same siblings, so the directory scan the
@@ -452,8 +448,8 @@ fn run_sweep(dir: &Path) -> Result<()> {
     let mut failed = 0usize;
     let mut warned = 0usize;
     for path in &files {
-        let content =
-            std::fs::read_to_string(path).with_context(|| format!("failed to read {path:?}"))?;
+        let content = std::fs::read_to_string(path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
         let (findings, warnings) = check_plan_content(path, &content, &siblings);
         if !warnings.is_empty() {
             warned += 1;
@@ -492,13 +488,13 @@ fn run_sweep(dir: &Path) -> Result<()> {
     std::process::exit(1);
 }
 
-pub fn run(args: Args) -> Result<()> {
+pub fn run(args: &Args) -> Result<()> {
     if args.path.is_dir() {
         return run_sweep(&args.path);
     }
 
     let content = std::fs::read_to_string(&args.path)
-        .with_context(|| format!("failed to read {:?}", args.path))?;
+        .with_context(|| format!("failed to read {}", args.path.display()))?;
 
     let plan = parse_plan(&content)?;
     let (mut findings, warnings) = validate_plan(&plan);
@@ -520,9 +516,9 @@ pub fn run(args: Args) -> Result<()> {
     }
 
     eprintln!(
-        "check-iteration-plan: {} finding(s) in {:?}",
+        "check-iteration-plan: {} finding(s) in {}",
         findings.len(),
-        args.path
+        args.path.display()
     );
     for f in &findings {
         eprintln!("  - {f}");

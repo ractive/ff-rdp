@@ -680,7 +680,7 @@ mod tests {
             assert!(
                 parsed.is_ok(),
                 "hint `{hint}` does not parse: {}",
-                parsed.err().map(|e| e.to_string()).unwrap_or_default()
+                parsed.err().map_or_default(|e| e.to_string())
             );
         }
     }
