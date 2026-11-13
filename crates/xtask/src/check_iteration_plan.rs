@@ -326,7 +326,8 @@ fn duplicate_id_findings(target: &Path, candidates: &[PathBuf]) -> Vec<String> {
 /// sit in — is what owns iteration numbers: a draft written to a scratch path
 /// still collides with a filed plan. Missing or unreadable directories are
 /// skipped silently; a path outside `kb/iterations/` must be validated, not
-/// rejected, or the ralph-loop preflight would red-line on it.
+/// rejected, so a draft plan kept in a scratch directory can be checked before
+/// it is filed.
 fn collect_sibling_plans(target: &Path) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = Vec::new();
     if let Some(parent) = target.parent() {
@@ -846,7 +847,7 @@ mod tests {
     #[test]
     fn non_plan_paths_are_handled_not_rejected() {
         // A path outside kb/iterations that is not named like a plan must be
-        // silently accepted — the ralph-loop hands arbitrary paths to this check.
+        // silently accepted — callers may hand arbitrary paths to this check.
         assert!(duplicate_id_findings(&PathBuf::from("/tmp/notes.md"), &[]).is_empty());
         assert!(duplicate_id_findings(&PathBuf::from("kb/iterations"), &[]).is_empty());
         assert!(duplicate_id_findings(&PathBuf::from("/"), &[]).is_empty());

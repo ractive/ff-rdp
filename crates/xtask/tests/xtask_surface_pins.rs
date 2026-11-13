@@ -1,25 +1,15 @@
-//! iter-162b: `ac-fidelity-check.sh` and `claims-vs-code.sh` are deleted from
-//! every copy — the two skill directories and their two in-repo mirrors.
+//! Pins on the xtask surface and on what CI runs from it.
 //!
-//! This asserts absence, which is the one shape of assertion that passes
-//! vacuously when its path is wrong. iter-158's
-//! `unit_158_source_scan_covers_the_live_suites` shipped exactly that bug: it
-//! matched a literal `tests/live` that never occurs in a Windows path, scanned
-//! zero files, and passed. So every directory here is asserted to exist and to
-//! be non-empty *before* the absence check runs.
+//! - The subcommand list is pinned, so adding a gate (or re-adding one that
+//!   iter-162a/162b removed) has to be a deliberate edit here.
+//! - The CI discipline job's xtask steps are pinned, so a `ci.yml` edit cannot
+//!   silently stop running a guard.
+//! - `ac-fidelity-check.sh` and `claims-vs-code.sh`, deleted in iter-162b, must
+//!   not be invoked from anywhere that could still run them.
 
 use std::path::{Path, PathBuf};
 
 const DELETED: &[&str] = &["ac-fidelity-check.sh", "claims-vs-code.sh"];
-
-/// The two in-repo mirrors, relative to the workspace root.
-const MIRRORS: &[&str] = &["tools/ralph-loop/scripts", "tools/new-ralph-loop/scripts"];
-
-/// The two canonical skill directories, relative to `$HOME`.
-const SKILLS: &[&str] = &[
-    ".claude/skills/ralph-loop/scripts",
-    ".claude/skills/new-ralph-loop/scripts",
-];
 
 fn workspace_root() -> PathBuf {
     // CARGO_MANIFEST_DIR is crates/xtask.
@@ -30,88 +20,23 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// Assert the directory exists and holds at least one entry, then assert none
-/// of the deleted scripts is among them.
-fn assert_scripts_absent(dir: &Path) {
-    assert!(
-        dir.is_dir(),
-        "{} is not a directory — the absence check below would pass vacuously",
-        dir.display()
-    );
-    let entries: Vec<String> = std::fs::read_dir(dir)
-        .unwrap_or_else(|e| panic!("reading {}: {e}", dir.display()))
-        .map(|e| {
-            e.expect("dir entry")
-                .file_name()
-                .to_string_lossy()
-                .into_owned()
-        })
-        .collect();
-    assert!(
-        !entries.is_empty(),
-        "{} is empty — an empty directory is not proof of deletion",
-        dir.display()
-    );
-    for name in DELETED {
-        assert!(
-            !entries.iter().any(|e| e == name),
-            "{} still contains {name}; iter-162b deletes it from all four copies",
-            dir.display()
-        );
-    }
-}
-
-#[test]
-fn unit_162b_both_scripts_absent_from_mirrors() {
-    let root = workspace_root();
-    for rel in MIRRORS {
-        assert_scripts_absent(&root.join(rel));
-    }
-}
-
-#[test]
-fn unit_162b_both_scripts_absent_from_skills() {
-    // The skill directories live outside the repo, so a machine that has never
-    // installed the skills has nothing to check. Skip rather than fail — but
-    // only when the parent is genuinely absent, never when it is merely empty.
-    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
-        eprintln!("HOME unset — skipping skill-directory check");
-        return;
-    };
-    for rel in SKILLS {
-        let dir = home.join(rel);
-        if !dir.exists() {
-            eprintln!("{} not installed — skipping", dir.display());
-            continue;
-        }
-        assert_scripts_absent(&dir);
-    }
-}
-
-/// Every tree that could invoke the deleted scripts. The skill directories are
-/// included because that is where the surviving live invocation was found in
-/// review: `~/.claude/skills/create-pr/SKILL.md` still ran ac-fidelity-check.sh
-/// while the first version of this test — which scanned only the two mirrors —
-/// passed. Scanning too narrowly is its own kind of vacuous.
+/// Every in-repo tree that could invoke the deleted scripts.
 const INVOCATION_SCAN_ROOTS: &[&str] =
     &["tools", "crates", ".github", "CLAUDE.md", "CONTRIBUTING.md"];
 
-const SKILL_SCAN_ROOTS: &[&str] = &[
-    ".claude/skills/ralph-loop",
-    ".claude/skills/new-ralph-loop",
-    ".claude/skills/create-pr",
-];
+/// Global skill directories, relative to `$HOME`. `create-pr` is where the
+/// surviving invocation was found when iter-162b first scanned only the repo.
+const SKILL_SCAN_ROOTS: &[&str] = &[".claude/skills/create-pr"];
 
 /// A mention inside prose or a comment is fine — this repo documents what it
 /// deleted. An *invocation* is not. Match the shapes that actually run a
-/// script: `bash foo.sh`, `./foo.sh`, `"$dir/foo.sh"`, `path/to/foo.sh …`.
+/// script: `bash <name>`, `sh <name>`, `./<name>`, `<dir>/<name>`.
 fn invocations_in(body: &str, name: &str) -> bool {
     body.lines().any(|line| {
         let Some(pos) = line.find(name) else {
             return false;
         };
         let before = &line[..pos];
-        // `bash <name>` / `sh <name>` / `./<name>` / `<anything>/<name>`
         before.ends_with('/')
             || before.trim_end().ends_with("bash")
             || before.trim_end().ends_with("sh")
@@ -155,7 +80,7 @@ fn scan_tree(root: &Path, scanned: &mut usize, offenders: &mut Vec<String>) {
 }
 
 #[test]
-fn unit_162b_no_script_is_invoked_anywhere() {
+fn deleted_discipline_scripts_are_not_invoked_anywhere() {
     let root = workspace_root();
     let mut scanned = 0usize;
     let mut offenders = Vec::new();
@@ -202,7 +127,7 @@ const EXPECTED_SUBCOMMANDS: &[&str] = &[
 ];
 
 #[test]
-fn unit_162b_xtask_help_matches_the_pinned_list() {
+fn xtask_help_matches_the_pinned_subcommand_list() {
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_xtask"))
         .arg("--help")
         .output()
@@ -212,8 +137,7 @@ fn unit_162b_xtask_help_matches_the_pinned_list() {
 
     // Parse the `Commands:` block rather than substring-matching, so an
     // unlisted subcommand — a re-added gate under a new name — fails here
-    // instead of
-    // slipping through a set of `contains` checks.
+    // instead of slipping through a set of `contains` checks.
     let listed = parse_subcommands(&help);
     let mut expected: Vec<&str> = EXPECTED_SUBCOMMANDS.to_vec();
     expected.sort_unstable();
@@ -253,7 +177,7 @@ fn parse_subcommands(help: &str) -> Vec<String> {
 }
 
 #[test]
-fn ci_162b_discipline_job_xtask_steps_are_pinned() {
+fn ci_discipline_job_xtask_steps_are_pinned() {
     let ci = std::fs::read_to_string(workspace_root().join(".github/workflows/ci.yml"))
         .expect("reading ci.yml");
     let invocations: Vec<&str> = ci

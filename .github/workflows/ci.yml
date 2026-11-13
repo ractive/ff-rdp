@@ -193,7 +193,7 @@ jobs:
         # frontmatter stopped matching the schema is exactly as much a regression
         # as a stale SKILL.md, and this repo removed its one advisory PR lane
         # for exactly this reason: an advisory (continue-on-error) check still
-        # reads as a failing check to the loop's review agent and stalls it, so
+        # reads as a failing check to an automated PR reviewer and stalls it, so
         # `live.yml` was taken off `pull_request` before iteration 117.
         # Not a new subcommand (iteration 162a's decision stands): the same check,
         # given a directory instead of a file, so CI runs one cross-platform

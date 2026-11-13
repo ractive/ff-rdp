@@ -68,6 +68,8 @@ product work that needs design. Keep items to one line — if an item needs more
 - [ ] `kb/dogfooding/*` session logs still mention `--wait-timeout`; historical, leave or annotate (#291)
 - [ ] `english_language_pack.rs`'s hand-written ZIP pre-parser (`ordinary_zip_entries` / `construct_bounded_zip`) was written to bound zip 0.6.6's footer-count allocation; zip 9 caps that itself and picks footers differently (skips unparseable ones) — decide whether to drop the pre-parser or align its footer choice (#338)
 - [ ] `live_record_fixtures::live_page_style_get_layout` fails on FF157 (walker `querySelector h1` returns no node after the reconnect), so `page_style_get_layout_response.json` still holds the old unit-less shape; Firefox now sends `"margin-top": "7.03906px"` — re-record once the recorder works (fix/easy-batch-2)
+- [ ] `kb/discipline-rationale.md` § "Why nothing detects mirror drift" still describes the skills-to-`tools/*/scripts/` mirror obligation and a `diff -r` against `tools/<skill>/scripts/`, which no longer exists — rewrite or drop that section (#367)
+- [ ] **flaky** e2e `consent_selection::initial_tab_controls::initial_tab_request_cap_stops_always_empty_replies` failed once in a local `cargo test --workspace -q` on macOS (panic at `consent_selection.rs:61`, `recv_from` "one actual observer request"), passed on re-run (#367)
 
 ## Global skills (edit by hand in `~/.claude/skills/`, shared with other repos)
 
