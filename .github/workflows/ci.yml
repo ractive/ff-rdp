@@ -94,6 +94,10 @@ jobs:
         run: |
           New-NetFirewallRule -DisplayName "ff-rdp-e2e" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 1024-65535 -ErrorAction SilentlyContinue
 
+      # Also runs the repo checks that used to be xtask subcommands in a
+      # separate `discipline` job (DEC-059): source invariants, live-test
+      # layout, vendored-JS pins, SKILL.md drift, --help idioms (ff-rdp-cli
+      # tests) and the kb/iterations plan lint (xtask's kb_plans test).
       - name: Run tests
         timeout-minutes: 10
         run: cargo test --workspace
@@ -156,89 +160,6 @@ jobs:
             fuzz/artifacts/
             fuzz/corpus/
 
-  discipline:
-    needs: changes
-    if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
-    # These default-target paths belong to the fresh build in this Ubuntu job.
-    env:
-      CARGO_TARGET_DIR: ${{ github.workspace }}/target
-      FF_RDP_BIN: ${{ github.workspace }}/target/debug/ff-rdp
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - name: Build CLI and xtask for discipline checks
-        run: cargo build -p ff-rdp-cli -p xtask --bins
-      # iter-162a cut this job from 10 xtask invocations to 3; iter-162b to 2.
-      # What went, and why:
-      # check-dead-primitives (induced a decoy, missed 425 lines of dead API),
-      # check-todo-annotations (guarded an empty set; its pre-commit-hook twin
-      # went too), check-oneway-conformance (its own step name said "no-op in CI"),
-      # check-discipline-regression (iter-162b — it existed only to keep four
-      # copies of two scripts in sync, and those scripts are gone),
-      # check-firefox-refs (same — it needs a Firefox checkout no runner has; kept
-      # as a local gate, it is the best one in the repo), and check-actor-kb-sync
-      # (a docs-sync reminder, now local-only). check-error-envelope-paths and
-      # check-stderr-annotations were merged into check-source-invariants — same
-      # scans, one step, named results.
-      - name: Check every iteration plan lints (iter-233)
-        # `check-iteration-plan` has been required by CLAUDE.md before filing a
-        # plan since long before anything ran it — "required by a document" means
-        # "runs when an agent remembers". Iteration 195 took the directory sweep
-        # from 85 failures to zero precisely so this step could exist; it took
-        # iteration 233 to add it. Blocking, in this job, because a plan whose
-        # frontmatter stopped matching the schema is exactly as much a regression
-        # as a stale SKILL.md, and this repo removed its one advisory PR lane
-        # for exactly this reason: an advisory (continue-on-error) check still
-        # reads as a failing check to an automated PR reviewer and stalls it, so
-        # `live.yml` was taken off `pull_request` before iteration 117.
-        # Not a new subcommand (iteration 162a's decision stands): the same check,
-        # given a directory instead of a file, so CI runs one cross-platform
-        # command instead of the Bash `for` loop CONTRIBUTING documents.
-        run: ./target/debug/xtask check-iteration-plan kb/iterations
-
-      - name: Check live-test layout (single consolidated target)
-        # iter-100b: fails if any top-level crates/ff-rdp-cli/tests/live_*.rs
-        # binary reappears. Live suites must be modules of tests/live/main.rs so
-        # a plain `cargo test` links one live target instead of ~45.
-        run: ./target/debug/xtask check-live-test-layout
-      - name: Check source invariants (error envelope, stderr annotations)
-        # Two regex scans of product source, each with its own named result line:
-        #   error-envelope-paths (iter-145) — no eprintln! immediately followed by
-        #                                     AppError::Exit(N), the bypass that let
-        #                                     click-time JS exceptions skip the JSON
-        #                                     error envelope.
-        #   stderr-annotations (iter-148)   — every eprintln! under commands/ carries
-        #                                     a `// stderr-ok: <reason>` comment.
-        run: ./target/debug/xtask check-source-invariants
-      - name: Check the bundled skill is not stale (iter-212)
-        # The command-reference region of skills/ff-rdp-debug/SKILL.md is
-        # generated from crates/ff-rdp-cli/src/commands/skill_doc.rs — the same
-        # tables the no-args home view reads. This fails when the committed
-        # region and the generator disagree, so the agent-facing skill cannot
-        # quietly describe a CLI that no longer exists.
-        # Fix: cargo run -p xtask -- gen-skill
-        run: ./target/debug/xtask check-skill-drift
-      - name: Check --help still carries the idioms (iter-219)
-        # `check-skill-drift`'s sibling for the other agent-facing surface.
-        # All 42 runs of the axi benchmark opened with `ff-rdp --help` and
-        # several piped it through `head -50`; `--query` appeared nowhere in
-        # it. The Quick start block is rendered from the same IDIOMS table
-        # SKILL.md uses, and this fails the day someone hand-writes it again
-        # and drops a line.
-        run: ./target/debug/xtask check-help-idioms
-      - name: Check the vendored Readability bundle is unmodified (iter-219)
-        # ff-rdp injects Mozilla's Readability.js into the live page so
-        # `--with-page` can tell the article from the site chrome. The files
-        # are committed, never downloaded, which is only worth anything if the
-        # committed bytes are the released ones: this recomputes the SHA-256 of
-        # each against crates/ff-rdp-cli/js/readability/VERSION.
-        # An upgrade is a deliberate commit that updates those hashes.
-        run: ./target/debug/xtask check-vendored-js
-
   # iter-75c: PR-time smoke that proves `gh attestation verify` will succeed
   # against a freshly built artifact. Builds the Linux x86_64 CLI, runs
   # actions/attest-build-provenance against it, then re-runs the same
@@ -291,7 +212,7 @@ jobs:
   ci:
     # The single required status check on `main`. Green when every job that
     # ran succeeded; skipped jobs (docs-only PRs, fork PRs) count as fine.
-    needs: [changes, fmt, clippy, msrv, test, supply-chain, fuzz, discipline, verify-attestation]
+    needs: [changes, fmt, clippy, msrv, test, supply-chain, fuzz, verify-attestation]
     if: always()
     runs-on: ubuntu-latest
     steps:

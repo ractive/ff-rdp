@@ -133,7 +133,8 @@ letter-suffixed siblings (`iteration-162a-`, `iteration-162b-`) are distinct num
 boundary and on `*.md` only.
 
 The two pre-existing collisions (44 and 73, all four plans terminal) are exempt by **exact
-file-name pair**, recorded in `LEGACY_COLLISIONS` in `crates/xtask/src/check_iteration_plan.rs`.
+file-name pair**, recorded in `LEGACY_COLLISIONS` in `crates/xtask/tests/kb_plans.rs` (the
+`check-iteration-plan` subcommand became that test under DEC-059).
 Renumbering terminal plans would break inbound links in merged PR bodies to no benefit; keying
 the exemption on the pair rather than the number means a third plan claiming 44 still fails, so
 the check is grandfathered rather than weakened.

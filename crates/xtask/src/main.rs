@@ -1,45 +1,22 @@
-mod check_actor_kb_sync;
-mod check_firefox_refs;
-mod check_help_idioms;
-mod check_iteration_plan;
-mod check_live_test_layout;
-mod check_source_invariants;
-mod check_vendored_js;
-mod find_iteration_plan;
+//! `xtask` holds only what cannot be a plain `cargo test`: the live-Firefox
+//! sweep (watchdog, process-group kill, leftover-Firefox cleanup, stack
+//! capture, preexisting-instance routing, quarantine). Every other repo check
+//! is an ordinary test since DEC-059.
+
 mod live_sweep;
-mod skill_drift;
-mod stderr_scan;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "xtask", about = "Iteration discipline tooling for ff-rdp")]
+#[command(name = "xtask", about = "Live-Firefox test sweep for ff-rdp")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
 }
 
 #[derive(Subcommand)]
-#[allow(clippy::enum_variant_names)]
 enum Commands {
-    /// Validate an iteration plan's frontmatter and required sections. Given a
-    /// directory instead of a file, sweep every `iteration-*.md` in it and exit 1
-    /// if any one fails — this is what CI's discipline job runs (iter-233).
-    CheckIterationPlan(check_iteration_plan::Args),
-    /// Scan product source for two defect shapes: `eprintln!` +
-    /// `AppError::Exit(N)` that bypasses the JSON envelope, and any
-    /// `eprintln!` under commands/ without a `// stderr-ok: <reason>` justification.
-    CheckSourceInvariants(check_source_invariants::Args),
-    /// Validate firefox_refs line ranges in an iteration plan against the local Firefox checkout.
-    CheckFirefoxRefs(check_firefox_refs::Args),
-    /// Fail if an actor source file was changed without a corresponding kb/rdp/actors/*.md update.
-    CheckActorKbSync(check_actor_kb_sync::Args),
-    /// Fail if any top-level crates/ff-rdp-cli/tests/live_*.rs binary exists
-    /// (live suites must be modules of the consolidated tests/live/ target).
-    CheckLiveTestLayout(check_live_test_layout::Args),
-    /// Resolve a branch name (iter-N/slug) to the absolute path of its iteration plan.
-    FindIterationPlan(find_iteration_plan::Args),
     /// Run the live-Firefox test suite so an unmet env gate reports `ignored`
     /// (libtest's own vocabulary) instead of a fake `ok` (iter-155). Prints a
     /// machine-readable `LIVE_SWEEP_SUMMARY executed=N skipped=M preexisting=K
@@ -50,38 +27,11 @@ enum Commands {
     /// phase the watchdog killed before libtest reported a verdict, and is
     /// always a red (iter-197).
     LiveSweep(live_sweep::Args),
-    /// Regenerate the marked region of the bundled skill's SKILL.md from the
-    /// CLI's own command tables (`ff_rdp_cli::commands::skill_doc`).
-    GenSkill(skill_drift::GenArgs),
-    /// Fail when the committed SKILL.md's generated region no longer matches
-    /// what the CLI would generate. Wired into CI so the agent-facing skill
-    /// cannot silently drift from the command surface it documents.
-    CheckSkillDrift(skill_drift::CheckArgs),
-    /// Fail when `ff-rdp --help` no longer carries the idioms and quick-start
-    /// lines the generated skill block lists. `--help` is the surface every
-    /// benchmark agent actually reads (iter-219 Theme E); this is
-    /// `check-skill-drift`'s sibling for it.
-    CheckHelpIdioms(check_help_idioms::Args),
-    /// Recompute the SHA-256 of every vendored JavaScript file against the
-    /// hashes pinned in its VERSION manifest. ff-rdp injects Mozilla's
-    /// Readability bundle into the live page; this is what makes "the output
-    /// is a function of the ff-rdp version alone" true rather than hoped for.
-    CheckVendoredJs(check_vendored_js::Args),
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::CheckIterationPlan(args) => check_iteration_plan::run(&args),
-        Commands::CheckSourceInvariants(args) => check_source_invariants::run(&args),
-        Commands::CheckFirefoxRefs(args) => check_firefox_refs::run(&args),
-        Commands::CheckActorKbSync(args) => check_actor_kb_sync::run(&args),
-        Commands::CheckLiveTestLayout(args) => check_live_test_layout::run(&args),
-        Commands::FindIterationPlan(args) => find_iteration_plan::run(args),
         Commands::LiveSweep(args) => live_sweep::run(&args),
-        Commands::GenSkill(args) => skill_drift::run_gen(&args),
-        Commands::CheckSkillDrift(args) => skill_drift::run_check(&args),
-        Commands::CheckHelpIdioms(args) => check_help_idioms::run(&args),
-        Commands::CheckVendoredJs(args) => check_vendored_js::run(args),
     }
 }

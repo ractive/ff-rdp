@@ -13,7 +13,7 @@
 //! output, so a future refactor that hand-writes the help block again fails
 //! here rather than silently costing turns in a benchmark nobody re-runs.
 //!
-//! `cargo run -p xtask -- check-help-idioms` is the CI-side sibling; it
+//! `cargo test -p ff-rdp-cli --test help_idioms` is the CI-side sibling; it
 //! compares `--help` against the *generated* skill block rather than against
 //! this hard-coded list.
 
@@ -100,7 +100,8 @@ fn cli_help_page_text_one_liner_mentions_the_cap_and_query() {
 /// iter-230 AC: `ff-rdp --help | head -50` contains a `navigate` line carrying
 /// both `--with-page` and `--query`.
 ///
-/// The e2e half of `xtask check-help-idioms`' new assertion. iter-228 read six
+/// Formerly the e2e half of `xtask check-help-idioms`; now the only copy of
+/// this rule (`tests/help_idioms.rs` covers the idiom table). iter-228 read six
 /// benchmark trajectories: the one run that spelled
 /// `navigate … --with-page --query` answered in 4 turns, the five that ran bare
 /// `navigate` and then hunted for a ref took 9-11 — and all five read only

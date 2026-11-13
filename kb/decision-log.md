@@ -2561,3 +2561,34 @@ with one delegated agent per bounded change (root `CLAUDE.md`, "Agents"), not by
 loop. The directories were unmaintained mirrors of skills nobody runs, and the
 mirror-sync obligation had already been dropped
 ([[research/reset-2026-10-execution]]). No xtask subcommand changes.
+
+## DEC-059: Repo checks are `cargo test` tests; `xtask` keeps only `live-sweep`
+
+**Date**: 2026-11-13. **Context**: after the 2026-10 reset, `xtask` still carried
+ten subcommands besides `live-sweep`, eight of them run only by a Ubuntu-only CI
+`discipline` job and the rest by nobody.
+
+**Decision**: the checks still worth having are ordinary integration tests, run
+by `cargo test --workspace` on all three CI operating systems:
+`crates/ff-rdp-cli/tests/{source_invariants,test_layout,vendored_js,skill_drift,help_idioms}.rs`
+and `crates/xtask/tests/kb_plans.rs` (shrunk from the 980-line
+`check-iteration-plan` to the two rules anyone relied on: unique plan numbers,
+valid `status`). `FF_RDP_BLESS=1 cargo test -p ff-rdp-cli --test skill_drift`
+replaces `gen-skill`. `find-iteration-plan`, `check-firefox-refs` (needed a
+Firefox checkout no runner has) and `check-actor-kb-sync` (now a CONTRIBUTING
+review rule) are deleted, and so is the `discipline` job. So is
+`crates/xtask/tests/run_agent_fixtures.rs`, a format test of the
+`rdp-spec-reviewer` example fixture; `tools/agents/fixtures/` stays as a manual
+example and nothing checks it any more.
+
+**Why**: a check that is a test needs no separate job, no binary path
+plumbing (`FF_RDP_BIN`), and no instruction to remember to run it; it runs on
+Windows and macOS too, which the Ubuntu-only job never proved.
+
+**Why `live-sweep` stays**: it is a process supervisor, not a check. It runs
+each live phase under a watchdog and kills the whole process group on timeout,
+cleans up leftover Firefox processes, captures stacks of hung tests, routes
+tests that need a preexisting port-6000 Firefox, and reports quarantined and
+unmet-gate tests as `ignored` rather than a fake `ok`. libtest has none of
+that. `cargo-nextest` covers part of it (timeouts, process groups) and is a
+backlog item to evaluate.

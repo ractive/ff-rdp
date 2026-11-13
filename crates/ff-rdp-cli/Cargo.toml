@@ -64,7 +64,7 @@ path = "tests/playbook_evals.rs"
 # All live-Firefox suites are consolidated into one gated target (iter-100b).
 # Sibling files under tests/live/ are `mod`-declared from main.rs and are NOT
 # separate test binaries. Adding a new top-level tests/live_*.rs file is a
-# review defect — enforced by `cargo run -p xtask -- check-live-test-layout`.
+# review defect — enforced by `cargo test -p ff-rdp-cli --test test_layout`.
 [[test]]
 name = "live"
 path = "tests/live/main.rs"

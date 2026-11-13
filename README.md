@@ -612,10 +612,10 @@ ff-rdp install-skill --claude
 The skill's command reference — its one-line description, quick start, command
 groups, and the `--ref` / `--query` / `--with-page` idioms — is *generated* from
 the CLI's own tables (`crates/ff-rdp-cli/src/commands/skill_doc.rs`), the same
-ones the no-args home view reads. Regenerate the marked region with
-`cargo run -p xtask -- gen-skill`; `cargo run -p xtask -- check-skill-drift`
-fails CI when the committed file and the generator disagree, so the skill cannot
-quietly describe a CLI that no longer exists.
+ones the no-args home view reads. The `skill_drift` test fails CI when the
+committed file and the generator disagree, so the skill cannot quietly describe
+a CLI that no longer exists. Regenerate the marked region with
+`FF_RDP_BLESS=1 cargo test -p ff-rdp-cli --test skill_drift`.
 
 Inside Claude Code, trigger it with `/ff-rdp-debug` or natural-language
 prompts like "debug this page", "login doesn't work", "why is X
@@ -746,8 +746,8 @@ Test and tooling gates (contributors only — see `CONTRIBUTING.md`):
 | `FF_RDP_TEST_KILL_WAIT_TIMEOUT_MS` | live harness | How long teardown waits for a killed Firefox. |
 | `FF_RDP_LIVE_TEST_NAME` | live harness → `launch` | Set by the harness so a launched profile records which test owns it. |
 | `FF_RDP_LIVE_SUITE_CHECK` | `live_151` | `1` opts into the nested whole-chunk orphan check. |
-| `FF_RDP_BIN` | `xtask` | Built `ff-rdp` binary to use instead of `cargo run`. |
-| `FF_RDP_FIREFOX_PATH` | `xtask check-firefox-refs` | Path to a Firefox **source** checkout. |
+| `FF_RDP_BLESS` | `skill_drift` test | `1` rewrites SKILL.md's generated region instead of failing. |
+| `FF_RDP_FIREFOX_PATH` | `rdp-spec-reviewer` agent | Path to a Firefox **source** checkout. |
 | `CARGO_FF_RDP_FORCE_NO_GIT` | `build.rs` | Build without embedding the git SHA/date. |
 
 ## Security
@@ -814,8 +814,8 @@ confidence.
 (`@mozilla/readability` 0.6.0, Apache-2.0) — the algorithm behind Firefox Reader
 View — in `crates/ff-rdp-cli/js/readability/`. It is injected into the live page
 so `--with-page` can tell the article apart from the site chrome. The files are
-committed rather than downloaded at runtime, and `cargo run -p xtask --
-check-vendored-js` pins each one's SHA-256 against the `VERSION` manifest beside
+committed rather than downloaded at runtime, and the `vendored_js` test pins
+each one's SHA-256 against the `VERSION` manifest beside
 them, so an upgrade is a deliberate, reviewable commit. Upstream's licence text
 ships alongside the code as `js/readability/LICENSE`.
 

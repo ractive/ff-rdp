@@ -2862,9 +2862,6 @@ dependencies = [
  "anyhow",
  "clap",
  "regex",
- "serde",
- "serde_norway",
- "sha2",
  "tempfile",
 ]
 

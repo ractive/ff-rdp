@@ -1,9 +1,7 @@
-//! Pins on the xtask surface and on what CI runs from it.
+//! Pins on the xtask surface.
 //!
-//! - The subcommand list is pinned, so adding a gate (or re-adding one that
-//!   iter-162a/162b removed) has to be a deliberate edit here.
-//! - The CI discipline job's xtask steps are pinned, so a `ci.yml` edit cannot
-//!   silently stop running a guard.
+//! - The subcommand list is pinned to `live-sweep`, so adding a subcommand has
+//!   to be a deliberate edit here (DEC-059: checks are tests).
 //! - `ac-fidelity-check.sh` and `claims-vs-code.sh`, deleted in iter-162b, must
 //!   not be invoked from anywhere that could still run them.
 
@@ -104,27 +102,10 @@ fn deleted_discipline_scripts_are_not_invoked_anywhere() {
     assert!(offenders.is_empty(), "{}", offenders.join("\n"));
 }
 
-/// The subcommand list after iter-162a (16 → 9), iter-162b (9 → 8), iter-212
-/// (8 → 10: `gen-skill` + `check-skill-drift`, which keep the bundled skill's
-/// command reference generated from the CLI's own tables rather than
-/// hand-written and unchecked) and iter-219 (10 → 12: `check-help-idioms`,
-/// which extends that guarantee to `ff-rdp --help` — the surface every
-/// benchmark agent actually reads — and `check-vendored-js`, which pins the
-/// SHA-256 of the Readability bundle ff-rdp injects into the live page).
-/// Pinned so a re-added gate has to be a deliberate edit here, not a drive-by.
-const EXPECTED_SUBCOMMANDS: &[&str] = &[
-    "check-iteration-plan",
-    "check-source-invariants",
-    "check-firefox-refs",
-    "check-actor-kb-sync",
-    "check-live-test-layout",
-    "find-iteration-plan",
-    "live-sweep",
-    "gen-skill",
-    "check-skill-drift",
-    "check-help-idioms",
-    "check-vendored-js",
-];
+/// Since DEC-059 every repo check is a `cargo test` test and `xtask` holds only
+/// the live sweep. Pinned so a new subcommand has to be a deliberate edit here:
+/// a check belongs in a test, not back in xtask.
+const EXPECTED_SUBCOMMANDS: &[&str] = &["live-sweep"];
 
 #[test]
 fn xtask_help_matches_the_pinned_subcommand_list() {
@@ -174,29 +155,4 @@ fn parse_subcommands(help: &str) -> Vec<String> {
         }
     }
     names
-}
-
-#[test]
-fn ci_discipline_job_xtask_steps_are_pinned() {
-    let ci = std::fs::read_to_string(workspace_root().join(".github/workflows/ci.yml"))
-        .expect("reading ci.yml");
-    let invocations: Vec<&str> = ci
-        .lines()
-        .map(str::trim)
-        .filter_map(|line| line.strip_prefix("run: ./target/debug/xtask "))
-        .collect();
-    // Pin the semantic gates and their arguments, not repeated Cargo startup.
-    assert_eq!(
-        invocations,
-        [
-            "check-iteration-plan kb/iterations",
-            "check-live-test-layout",
-            "check-source-invariants",
-            "check-skill-drift",
-            "check-help-idioms",
-            "check-vendored-js",
-        ]
-    );
-    assert!(ci.contains("run: cargo build -p ff-rdp-cli -p xtask --bins"));
-    assert!(ci.contains("FF_RDP_BIN: ${{ github.workspace }}/target/debug/ff-rdp"));
 }

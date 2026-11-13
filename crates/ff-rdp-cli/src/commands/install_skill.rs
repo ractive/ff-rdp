@@ -65,7 +65,7 @@ fn build_content(raw: &[u8], skill_name: &str, ext: &str) -> anyhow::Result<Vec<
     // iter-212 Theme C: the command-reference region of a markdown skill file
     // is generated from `commands::skill_doc`'s tables, so what lands in
     // `~/.claude/skills/` describes *this* binary. In a healthy tree this is a
-    // no-op (`cargo run -p xtask -- check-skill-drift` keeps the committed
+    // no-op (`cargo test -p ff-rdp-cli --test skill_drift` keeps the committed
     // file equal to the generated one); it matters when installing from a
     // working tree that is mid-edit, where a stale skill is worst.
     let refreshed;
@@ -127,8 +127,8 @@ fn has_any_managed_by(content: &[u8]) -> bool {
 /// set `.env("HOME", tmp)` but the files still landed in the real profile
 /// (`C:\Users\runneradmin\...`) and leaked state across tests in the same
 /// binary. We resolve `HOME` first (Unix convention), then `USERPROFILE`
-/// (Windows convention), then the platform API — matching the `xtask`
-/// discipline checks so a single override works on every platform.
+/// (Windows convention), then the platform API, so a single override works on
+/// every platform.
 fn resolve_home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .filter(|h| !h.is_empty())
