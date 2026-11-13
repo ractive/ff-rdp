@@ -149,8 +149,11 @@ list cost was **$0.0397914** (Sonnet $0.0388014, auxiliary Haiku $0.00099); reco
 and owned-browser cleanup both exited zero. It was a no-tools delivery probe,
 **zero matrix runs**, with its own task prompt. The baseline append paragraph
 remained byte-identical. This proves delivery capability, not benchmark adoption.
-Evidence was kept in the supervisor's local, uncommitted run directory for that
-session (`20260912-validation-efficiency/iter256-ambient-implementation/runtime-probe/`).
+Its evidence lived in an untracked run directory under the supervisor's `.git/`
+(`…/20260912-validation-efficiency/iter256-ambient-implementation/runtime-probe/`).
+That directory was deleted in the 2026-10 cleanup and can no longer be
+inspected; `kb/iterations/iteration-256-act-and-see-benchmark-rerun.md` records
+the full evidence root of the same run.
 
 Per invocation, `argv.json` is upstream's original argv and `delivered-argv.json`
 records the actual child argv. `delivery.json` names condition and role. The

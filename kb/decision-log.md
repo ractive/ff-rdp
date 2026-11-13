@@ -2548,15 +2548,16 @@ trusted input becomes a blocking requirement for a core use case.
 **Decision**: the in-repo copies of the retired iteration loop —
 `tools/ralph-loop/` and `tools/new-ralph-loop/` — are deleted, together with
 `crates/xtask/tests/iter_162b_scripts_deleted.rs`, which asserted the absence of
-two scripts inside those directories. Live code comments and READMEs no longer
-refer to the loop. Historical kb records (`kb/research/*`, `kb/iterations/*`, this
-log) keep their references unchanged.
+two scripts inside those directories. Its other guards — the xtask subcommand pin,
+the CI discipline-job step pin and the scan for invocations of the deleted scripts —
+move unchanged in substance to `crates/xtask/tests/xtask_surface_pins.rs`. Code
+comments, `ci.yml` and `tools/axi-bench/README.md` no longer refer to the loop.
+Historical kb records (`kb/research/*`, `kb/iterations/*`, this log) keep their
+references unchanged; `kb/discipline-rationale.md`'s mirror-drift section is stale
+and tracked in `kb/backlog.md`.
 
 **Why**: since the 2026-10 reset, work is driven directly from a Claude Code session
 with one delegated agent per bounded change (root `CLAUDE.md`, "Agents"), not by the
 loop. The directories were unmaintained mirrors of skills nobody runs, and the
-mirror-sync obligation had already been dropped. No xtask subcommand changes.
-
-**Lost with the test file**: its pins on the xtask subcommand list and on the CI
-discipline job's xtask steps. Re-add them in a non-ralph test file if that guard is
-still wanted.
+mirror-sync obligation had already been dropped
+([[research/reset-2026-10-execution]]). No xtask subcommand changes.
