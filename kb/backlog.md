@@ -74,7 +74,7 @@ product work that needs design. Keep items to one line — if an item needs more
 
 ## Global skills (edit by hand in `~/.claude/skills/`, shared with other repos)
 
-- [ ] `create-pr`: drop the `xtask find-iteration-plan` call and the "run every xtask `check-*`" step — both were removed by DEC-059 (chore/xtask-to-tests); `cargo test --workspace` now runs those checks
+- [x] `create-pr`: drop the `xtask find-iteration-plan` call and the "run every xtask `check-*`" step — both were removed by DEC-059 (chore/xtask-to-tests); `cargo test --workspace` now runs those checks
 
 - [x] `create-pr`: drop `check-dogfood-script`; run the xtask `check-*` enumeration and the fmt/clippy/test gates only when `git rev-parse HEAD^{tree}` differs from the last green run (see [[reset-2026-10-execution]] "Global skill follow-ups")
 - [x] `review-pr`: one local review pass per PR; no re-review for style-only fixes
