@@ -157,6 +157,16 @@ product work that needs design. Keep items to one line — if an item needs more
 - [x] **bug** `ff-rdp launch --headless <URL>` (the `home` hint's own form) failed with "unexpected argument"; `launch` now takes a positional URL as shorthand for `--url`, same validation, conflicts with `--url` (fix/launch-positional-url)
 - [ ] **polish** a `data:` startup URL (`launch --allow-unsafe-urls --url data:…`) is accepted and reported as `requested_url`, but Firefox 158 leaves the tab on about:blank (found in fix/launch-positional-url)
 
+## From a docker-sandbox session (2026-11-14)
+
+Reporter: an agent driving ff-rdp 0.4.3 (aarch64 musl) against Firefox ESR in a Docker sandbox. Reproduced on Firefox 158 desktop.
+
+- [ ] **bug** `navigate` to a redirect loop exits 0 with `{"status":302,"ready_state":"complete"}` while the tab sits on `about:neterror?e=redirectLoop` ("Problem loading page"); every later `eval`/`page-text` silently runs against the error page. Detect a committed `about:neterror`/`about:certerror`/`about:blocked` document and return a nav error naming the `e=` code (the `deniedPortAccess` case already errors) (sandbox feedback 2026-11-14)
+- [ ] **gap** `eval` gives no hint which document it ran in: on an error page or the JSON viewer (`document.contentType` = `application/json`, DOM is the viewer's), `document.title` returns `""` and selectors return `null`, exit 0. Add a stderr warning plus a `meta` field when the location is an `about:` error page or the content type is not HTML. The reporter's "no document at all" on ESR was not reproduced (the 158 JSON viewer supplies one) (sandbox feedback 2026-11-14)
+- [ ] **gap** `cookies` is read-only: add `cookies set NAME=VALUE --domain … [--path --secure --http-only --same-site --expires]` and `cookies delete`, usable before the origin was ever visited (StorageActor `addItem`/`editItem`/`removeItem`, or `Services.cookies.add` from the chrome console). Today's workaround is `document.cookie` from a blank page served on another localhost port — cost the reporter ~30 min (sandbox feedback 2026-11-14)
+- [ ] **polish** `console` is flooded by `level:"timeStamp"` entries (React dev builds call `console.timeStamp` for each render): a page that makes 30 `timeStamp` calls and 1 `console.error` gives 30 of 32 results as `timeStamp`. Hide `timeStamp` by default, keep it counted in `summary.by_level`, and show it with `--level timeStamp` (sandbox feedback 2026-11-14)
+- [ ] **polish** `eval` output for scalars: by default `1+1` prints a 4-line pretty envelope; `--format text` prints a bare `2` but adds the generic `-> ff-rdp console --level error` hint, and for an object it prints the raw grip (actor id, preview, propertyNames) instead of the value. Drop the hint from eval text output, print text-mode objects as plain JSON like `--stringify` does, and mention `--format text` in `eval --help` (sandbox feedback 2026-11-14)
+
 ## Done
 
 - [x] Global skills `create-pr`/`review-pr`/`merge-pr` edited 2026-10-03: gates run once per tree hash, one review pass per PR, no status-flip commit (`ralph-loop` skills left untouched — retired)
