@@ -17,10 +17,21 @@
 //! two flags are independent so a user opting into JS evaluation does not
 //! implicitly also expose the local filesystem. `vbscript:` and other
 //! unknown schemes are always rejected, regardless of either flag.
+//!
+//! `moz-extension:` is allowed by default. It reaches only add-ons installed
+//! in the Firefox being driven (each has a random per-profile UUID host), and
+//! a client on the debug port can already read everything in that browser,
+//! extension storage included, so opening an add-on's page discloses nothing
+//! new. Unlike `file:`, a content-tab load of it is safe: Firefox accepts an
+//! extension principal from any content process (`ProcessIsolation.cpp`,
+//! `ValidatePrincipalCouldPotentiallyBeLoadedBy`) and moves the tab into the
+//! extension process; measured round trips http → moz-extension → http on
+//! Firefox 160 kept `eval`/`dom`/`console` working (kb/research/
+//! extension-development-kept-profile.md, "Opening an extension page").
 
 use crate::error::AppError;
 
-const ALWAYS_ALLOWED_SCHEMES: &[&str] = &["http", "https", "about"];
+const ALWAYS_ALLOWED_SCHEMES: &[&str] = &["http", "https", "about", "moz-extension"];
 const FILE_SCHEME: &str = "file";
 const UNSAFE_SCHEMES: &[&str] = &["javascript", "data"];
 
@@ -121,7 +132,7 @@ pub fn validate_url_with_opts(
     }
 
     Err(AppError::User(format!(
-        "URL scheme '{scheme}:' is not allowed; permitted schemes: http, https, about. Use --allow-file-urls for file:, or --allow-unsafe-urls for javascript:/data:"
+        "URL scheme '{scheme}:' is not allowed; permitted schemes: http, https, about, moz-extension. Use --allow-file-urls for file:, or --allow-unsafe-urls for javascript:/data:"
     )))
 }
 
@@ -260,6 +271,39 @@ mod tests {
     fn vbscript_always_rejected_even_with_both_flags() {
         let err = validate_url_with_opts("vbscript:MsgBox(1)", true, true).unwrap_err();
         assert!(matches!(err, AppError::User(_)));
+    }
+
+    #[test]
+    fn moz_extension_allowed_without_flags_on_every_route() {
+        for url in [
+            "moz-extension://87e500ce-8b5c-40e3-bc04-764cfcb0046f/page.html",
+            "MOZ-EXTENSION://87e500ce-8b5c-40e3-bc04-764cfcb0046f/options.html?x=1#y",
+        ] {
+            validate_url(url).unwrap();
+            validate_content_navigation_url(url, false, false).unwrap();
+            validate_startup_url_with_opts(url, false, false).unwrap();
+        }
+    }
+
+    #[test]
+    fn moz_extension_leaves_the_other_scheme_policies_unchanged() {
+        for url in ["javascript:alert(1)", "data:text/html,<h1>hi</h1>"] {
+            let err = validate_content_navigation_url(url, true, false).unwrap_err();
+            assert!(err.to_string().contains("--allow-unsafe-urls"), "{err}");
+            validate_content_navigation_url(url, false, true).unwrap();
+        }
+        let err = validate_content_navigation_url("file:///etc/hosts", true, true).unwrap_err();
+        assert!(
+            err.to_string().contains("launch --allow-file-urls"),
+            "{err}"
+        );
+        for url in [
+            "chrome://browser/content/browser.xhtml",
+            "resource://gre/x.js",
+        ] {
+            let err = validate_content_navigation_url(url, true, true).unwrap_err();
+            assert!(err.to_string().contains("moz-extension"), "{err}");
+        }
     }
 
     #[test]

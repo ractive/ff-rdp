@@ -119,6 +119,33 @@ fn e2e_296_file_navigation_rejected_before_connect() {
     }
 }
 
+/// An installed add-on's page (`moz-extension://<uuid>/…`) passes the scheme
+/// policy without any flag and reaches Firefox as a plain `navigateTo`.
+#[test]
+fn e2e_navigate_moz_extension_url_is_sent_without_a_flag() {
+    let url = "moz-extension://87e500ce-8b5c-40e3-bc04-764cfcb0046f/page.html";
+    let server = navigate_server();
+    let requests = server.request_log();
+    let port = server.port();
+    let peer = std::thread::spawn(move || server.serve_one());
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(base_args(port))
+        .args(["navigate", url])
+        .output()
+        .expect("spawn navigate");
+    peer.join().expect("mock peer returned");
+    let requests = requests.lock().unwrap();
+    let sent: Vec<_> = requests
+        .iter()
+        .filter(|r| r["type"] == "navigateTo")
+        .collect();
+    assert_eq!(sent.len(), 1, "{requests:?}");
+    assert_eq!(sent[0]["url"], url, "{requests:?}");
+    assert!(output.status.success(), "{}", support::output_note(&output));
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["results"]["navigated"], url, "{json}");
+}
+
 fn base_args(port: u16) -> Vec<String> {
     vec![
         "--host".to_owned(),

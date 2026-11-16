@@ -154,5 +154,6 @@ mod live_304_refs_snapshot_eval;
 mod live_consent_settle;
 mod live_launch_first_run;
 mod live_launch_positional_url;
+mod live_moz_extension_navigate;
 mod live_smooth_scroll_measure;
 mod live_stop_command;
