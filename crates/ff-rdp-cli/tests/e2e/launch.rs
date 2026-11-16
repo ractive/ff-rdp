@@ -38,6 +38,42 @@ fn e2e_147_launch_url_validation_precedes_replace_and_profile_creation() {
     }
 }
 
+/// iter-297: a `--temporary-addon` path that does not exist, or a directory
+/// without `manifest.json`, is a `User` error before any side effect —
+/// `--replace` stops nothing, no profile is created, no Firefox starts.
+#[test]
+fn e2e_297_temporary_addon_path_validation_precedes_side_effects() {
+    let home = tempfile::tempdir().unwrap();
+    let profile = home.path().join("must-not-exist");
+    let no_manifest = home.path().join("empty-extension");
+    std::fs::create_dir(&no_manifest).unwrap();
+    for (addon, needle) in [
+        (home.path().join("missing-extension"), "cannot read path"),
+        (no_manifest, "no manifest.json"),
+    ] {
+        let output = std::process::Command::new(ff_rdp_bin())
+            .env("FF_RDP_HOME", home.path())
+            .args(["launch", "--headless", "--replace", "--temporary-addon"])
+            .arg(&addon)
+            .arg("--profile")
+            .arg(&profile)
+            .output()
+            .expect("run launch with a bad --temporary-addon");
+        assert!(!output.status.success(), "{addon:?} must be rejected");
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .unwrap_or_else(|_| panic!("{addon:?}: {}", support::output_note(&output)));
+        assert_eq!(json["error_type"], "User", "{json}");
+        let message = json["error"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("--temporary-addon") && message.contains(needle),
+            "{json}"
+        );
+        assert!(!profile.exists());
+        assert!(!home.path().join(".ff-rdp").exists());
+        assert!(!home.path().join("ff-rdp").exists());
+    }
+}
+
 /// `launch <URL>` is shorthand for `launch --url <URL>`: the positional form
 /// parses (no clap "unexpected argument") and reaches the same validation, so
 /// the same rejected URLs fail as `User` errors before any side effect.

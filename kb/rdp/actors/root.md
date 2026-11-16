@@ -34,7 +34,7 @@ Not a regular RDP request — emitted spontaneously on connect. Returns:
 | Method | Args | Returns | Notes |
 |---|---|---|---|
 | `connect` | `frontendVersion` (opt, Fx 133+) | `{}` | Negotiation handshake. |
-| `getRoot` | — | json | Returns the global actor inventory (preferenceActor, deviceActor, perfActor, screenshotActor, …) for the top-level singletons. |
+| `getRoot` | — | json | Returns the global actor inventory (preferenceActor, deviceActor, perfActor, screenshotActor, `addonsActor`, …) for the top-level singletons. `addonsActor` is the [[addons]] actor that installs temporary add-ons (`launch --temporary-addon`). |
 | `listTabs` | — | `array:tabDescriptor` | One TabDescriptor per browser tab. |
 | `getTab` | `{browserId}` | `tabDescriptor` | Look up by stable browserId. |
 | `listAddons` | `{iconDataURL}` | `array:webExtensionDescriptor` | |
