@@ -1,10 +1,10 @@
 use crate::cli::args::{
-    A11yArgs, A11yCommand, BackForwardArgs, CascadeArgs, Cli, ClickArgs, Command, ComputedArgs,
-    ConsentCommand, ConsoleArgs, CookiesArgs, DomArgs, DomCommand, EvalArgs, GeometryArgs,
-    HomeArgs, IndexArgs, InspectArgs, InstallHookArgs, LaunchArgs, NavigateArgs, NetworkArgs,
-    NetworkConditionsArgs, PerfArgs, PerfCommand, ProfilesCommand, RecordCommand, ReloadArgs,
-    ResponsiveArgs, RunArgs, ScreenshotArgs, ScrollCommand, SnapshotArgs, SourcesArgs, StopArgs,
-    StorageArgs, StylesArgs, TypeArgs, WaitArgs,
+    A11yArgs, A11yCommand, AddonCommand, BackForwardArgs, CascadeArgs, Cli, ClickArgs, Command,
+    ComputedArgs, ConsentCommand, ConsoleArgs, CookiesArgs, DomArgs, DomCommand, EvalArgs,
+    GeometryArgs, HomeArgs, IndexArgs, InspectArgs, InstallHookArgs, LaunchArgs, NavigateArgs,
+    NetworkArgs, NetworkConditionsArgs, PerfArgs, PerfCommand, ProfilesCommand, RecordCommand,
+    ReloadArgs, ResponsiveArgs, RunArgs, ScreenshotArgs, ScrollCommand, SnapshotArgs, SourcesArgs,
+    StopArgs, StorageArgs, StylesArgs, TypeArgs, WaitArgs,
 };
 use crate::commands;
 use crate::commands::index::IndexOpts;
@@ -348,6 +348,7 @@ fn command_to_step(cmd: &Command, resolved_selector: Option<&str>) -> Option<Ste
         | Command::Profiles { .. }
         | Command::Index(IndexArgs { .. })
         | Command::Consent { .. }
+        | Command::Addon { .. }
         | Command::Completions { .. } => None,
     }
 }
@@ -1242,6 +1243,12 @@ fn dispatch_inner(
         }
         Command::Consent { consent_command } => match consent_command {
             ConsentCommand::Accept { allow_no_cmp } => commands::consent::run(cli, *allow_no_cmp),
+        },
+        Command::Addon { addon_command } => match addon_command {
+            AddonCommand::Install { path } => commands::addon::run_install(cli, path),
+            AddonCommand::List { include_hidden } => commands::addon::run_list(cli, *include_hidden),
+            AddonCommand::Reload { target } => commands::addon::run_reload(cli, target),
+            AddonCommand::Uninstall { id } => commands::addon::run_uninstall(cli, id),
         },
         Command::Completions { shell } => commands::completions::run(*shell),
     }

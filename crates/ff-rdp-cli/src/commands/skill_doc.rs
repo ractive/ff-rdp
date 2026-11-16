@@ -50,8 +50,9 @@ pub(crate) const BLOCK_END: &str = "<!-- ff-rdp:generated:end -->";
 pub(crate) const COMMAND_GROUPS: &[(&str, &str, &[&str])] = &[
     (
         "Get a browser",
-        "start Firefox with the debug port open, check the stack end to end, stop it when done",
-        &["launch", "doctor", "tabs", "stop"],
+        "start Firefox with the debug port open, check the stack end to end, load or reload \
+         temporary add-ons, stop it when done",
+        &["launch", "doctor", "tabs", "addon", "stop"],
     ),
     (
         "Go somewhere",

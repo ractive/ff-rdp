@@ -1,4 +1,5 @@
-//! Operations on the Firefox `AddonsActor` — temporary WebExtension installs.
+//! Operations on the Firefox `AddonsActor` — temporary WebExtension installs
+//! and uninstalls.
 //!
 //! The same RDP path about:debugging and `web-ext run` use: the extension
 //! needs no signing (`XPIDatabase.sys.mjs` `isCorrectlySigned` returns `true`
@@ -54,6 +55,24 @@ impl AddonsActor {
             open_dev_tools: Some(false),
         };
         call::<spec::InstallTemporaryAddon>(transport, addons_actor, &args).map(|reply| reply.addon)
+    }
+
+    /// Uninstall the temporary add-on `addon_id` (Firefox 113+).
+    ///
+    /// Firefox refuses anything that is not temporarily installed — an unknown
+    /// id included — with an `Error` packet whose message is
+    /// `Could not uninstall add-on "<id>"` (`addons.js:78-88`), surfaced as
+    /// [`ProtocolError::ActorError`]. Firefox before 113 answers
+    /// `unrecognizedPacketType`.
+    pub fn uninstall_addon(
+        transport: &mut RdpTransport,
+        addons_actor: &ActorId,
+        addon_id: &str,
+    ) -> Result<(), ProtocolError> {
+        let args = spec::request::UninstallAddon {
+            addon_id: addon_id.to_owned(),
+        };
+        call::<spec::UninstallAddon>(transport, addons_actor, &args).map(|_| ())
     }
 }
 
@@ -158,6 +177,42 @@ mod tests {
                 assert!(
                     message.starts_with("Could not install add-on at '"),
                     "{message}"
+                );
+            }
+            other => panic!("expected ActorError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn uninstall_sends_spec_request_and_accepts_recorded_success() {
+        let reply = fixture("uninstall_addon_response.json");
+        let actor = ActorId::from(reply["from"].as_str().unwrap());
+        let (port, server) = serve_one(reply);
+        let mut transport =
+            RdpTransport::connect_raw("127.0.0.1", port, Duration::from_secs(2)).unwrap();
+        AddonsActor::uninstall_addon(&mut transport, &actor, "a@b").unwrap();
+        assert_eq!(
+            server.join().unwrap(),
+            json!({"to": actor.as_ref(), "type": "uninstallAddon", "addonId": "a@b"})
+        );
+    }
+
+    #[test]
+    fn uninstall_surfaces_recorded_unknown_id_error() {
+        let reply = fixture("uninstall_addon_unknown_id_error_response.json");
+        let actor = ActorId::from(reply["from"].as_str().unwrap());
+        let (port, server) = serve_one(reply);
+        let mut transport =
+            RdpTransport::connect_raw("127.0.0.1", port, Duration::from_secs(2)).unwrap();
+        let err = AddonsActor::uninstall_addon(&mut transport, &actor, "no-such-addon@ff-rdp.test")
+            .expect_err("an unknown id is refused");
+        server.join().unwrap();
+        match err {
+            ProtocolError::ActorError { error, message, .. } => {
+                assert_eq!(error, "Error");
+                assert_eq!(
+                    message,
+                    "Could not uninstall add-on \"no-such-addon@ff-rdp.test\""
                 );
             }
             other => panic!("expected ActorError, got {other:?}"),

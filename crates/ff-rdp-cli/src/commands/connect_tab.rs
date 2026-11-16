@@ -31,6 +31,16 @@ pub fn connect_and_get_target(cli: &Cli) -> Result<ConnectedTab, AppError> {
     handshake_and_resolve_tab(connection, cli)
 }
 
+/// Connect to Firefox for a command that talks to browser-wide actors only
+/// (root, add-ons) and needs no tab. Same connection errors as
+/// [`connect_and_get_target`].
+pub(crate) fn connect_browser(cli: &Cli) -> Result<RdpConnection, AppError> {
+    let connection =
+        connect_to_firefox(&cli.host, cli.port, cli).map_err(ConnectFailure::into_app_error)?;
+    crate::connection_meta::remember_version(connection.firefox_version());
+    Ok(connection)
+}
+
 /// Establish a TCP connection to Firefox and produce user-friendly errors on
 /// failure.
 fn connect_to_firefox(host: &str, port: u16, cli: &Cli) -> Result<RdpConnection, ConnectFailure> {

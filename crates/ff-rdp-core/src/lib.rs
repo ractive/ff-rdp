@@ -68,6 +68,7 @@ pub use actors::watcher::{
     enumerate_frame_targets, parse_console_resources, parse_network_resource_updates,
     parse_network_resources, parse_target_event,
 };
+pub use actors::webextension_descriptor::{AddonDescriptor, WebExtensionDescriptorActor};
 pub use connection::{COMPATIBLE_FIREFOX_MAX, COMPATIBLE_FIREFOX_MIN, RdpConnection};
 pub use error::{ActorErrorKind, NavCause, ProtocolError, RdpError, RdpResult};
 pub use registry::{Front, FrontKind, Registry};

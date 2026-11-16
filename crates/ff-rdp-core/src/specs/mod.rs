@@ -25,6 +25,7 @@ pub mod target_configuration;
 pub mod types;
 pub mod walker;
 pub mod watcher;
+pub mod webextension_descriptor;
 
 // ---------------------------------------------------------------------------
 // Sealed trait — prevents external crates from implementing `Method`.

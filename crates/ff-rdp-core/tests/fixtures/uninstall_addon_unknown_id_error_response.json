@@ -1,0 +1,9 @@
+{
+  "from": "server1.conn0.addonsActor2",
+  "error": "Error",
+  "message": "Could not uninstall add-on \"no-such-addon@ff-rdp.test\"",
+  "fileName": "resource://devtools/server/actors/addon/addons.js",
+  "lineNumber": 84,
+  "columnNumber": 13,
+  "stack": "uninstallAddon@resource://devtools/server/actors/addon/addons.js:84:13\n"
+}

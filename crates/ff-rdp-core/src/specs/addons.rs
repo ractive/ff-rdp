@@ -5,8 +5,8 @@
 //! `getRoot` reply (`devtools/server/actors/utils/actor-registry.js:129-133`
 //! registers it as a global actor with prefix `addons`).
 //!
-//! `uninstallAddon` (spec lines 24-29, Firefox 113+) is not mirrored: nothing in
-//! ff-rdp calls it yet — a temporary add-on goes away when Firefox exits.
+//! `uninstallAddon` (spec lines 24-29, Firefox 113+) removes a temporary add-on
+//! by id; `ff-rdp addon uninstall` calls it.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -33,6 +33,18 @@ pub mod request {
     pub struct InstallTemporaryAddon {
         pub addon_path: String,
         pub open_dev_tools: Option<bool>,
+    }
+
+    /// Args for `uninstallAddon` (spec lines 24-29, Firefox 113+).
+    ///
+    /// The server only uninstalls an add-on whose `temporarilyInstalled` is
+    /// true; any other id, known or not, throws
+    /// `Could not uninstall add-on "<id>"`
+    /// (`devtools/server/actors/addon/addons.js:78-88`).
+    #[derive(Debug, Clone, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct UninstallAddon {
+        pub addon_id: String,
     }
 }
 
@@ -61,6 +73,10 @@ pub mod response {
     pub struct InstallTemporaryAddon {
         pub addon: InstalledAddon,
     }
+
+    /// Reply for `uninstallAddon` (spec line 28: `response: {}`).
+    #[derive(Debug, Clone, Deserialize)]
+    pub struct UninstallAddon {}
 }
 
 // ---------------------------------------------------------------------------
@@ -76,6 +92,15 @@ impl Method for InstallTemporaryAddon {
     type Reply = response::InstallTemporaryAddon;
 }
 
+/// `uninstallAddon` method marker.
+pub struct UninstallAddon;
+impl sealed::Sealed for UninstallAddon {}
+impl Method for UninstallAddon {
+    const NAME: &'static str = "uninstallAddon";
+    type Args = request::UninstallAddon;
+    type Reply = response::UninstallAddon;
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -87,6 +112,27 @@ mod tests {
     #[test]
     fn method_name_is_correct() {
         assert_eq!(InstallTemporaryAddon::NAME, "installTemporaryAddon");
+        assert_eq!(UninstallAddon::NAME, "uninstallAddon");
+    }
+
+    #[test]
+    fn uninstall_request_serializes_addon_id() {
+        let args = request::UninstallAddon {
+            addon_id: "a@b".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&args).unwrap(),
+            serde_json::json!({"addonId": "a@b"})
+        );
+    }
+
+    /// Recorded from Firefox by `live_298_record_addon_commands`.
+    #[test]
+    fn uninstall_reply_deserializes_recorded_success() {
+        let raw = include_str!("../../tests/fixtures/uninstall_addon_response.json");
+        let v: Value = serde_json::from_str(raw).unwrap();
+        assert_eq!(v.as_object().map(serde_json::Map::len), Some(1), "{v}");
+        let _: response::UninstallAddon = serde_json::from_value(v).unwrap();
     }
 
     #[test]

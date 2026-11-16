@@ -339,7 +339,7 @@ Command groups (use `ff-rdp <cmd> --help` for details on any command):
   Inspect    dom, styles, computed, cascade, a11y, snapshot, page-text, perf
   Navigate   navigate, reload, click, type, screenshot
   Trace      console, network, eval
-  Lifecycle  launch, stop, doctor
+  Lifecycle  launch, stop, doctor, addon
 
 {}
 'ff-rdp launch' starts a separate Firefox process that won't interfere with
@@ -352,7 +352,7 @@ the -no-remote flag automatically.",
 #[derive(Parser)]
 #[command(
     name = "ff-rdp",
-    about = "Firefox Remote Debugging Protocol CLI\n\nCommand groups (see `ff-rdp <cmd> --help` for details):\n  Inspect    dom, styles, computed, cascade, a11y, snapshot, page-text, perf\n  Navigate   navigate, reload, click, type, screenshot\n  Trace      console, network, eval\n  Lifecycle  launch, stop, doctor\n\nQuick start:  ff-rdp launch --headless   # start Firefox with debugging enabled\n              ff-rdp navigate <URL> --with-page --query \"<text>\"   # open a page and read it",
+    about = "Firefox Remote Debugging Protocol CLI\n\nCommand groups (see `ff-rdp <cmd> --help` for details):\n  Inspect    dom, styles, computed, cascade, a11y, snapshot, page-text, perf\n  Navigate   navigate, reload, click, type, screenshot\n  Trace      console, network, eval\n  Lifecycle  launch, stop, doctor, addon\n\nQuick start:  ff-rdp launch --headless   # start Firefox with debugging enabled\n              ff-rdp navigate <URL> --with-page --query \"<text>\"   # open a page and read it",
     long_about = long_about(),
     after_help = "Tip: Run 'ff-rdp launch' first to start Firefox with remote debugging.\n     It won't affect any existing Firefox windows — safe to run alongside\n     your normal browser.",
     after_long_help = AFTER_LONG_HELP,
@@ -1460,7 +1460,7 @@ profiles left by *earlier* failed launches: an unmarked one holding nothing but
 `user.js` proves no Firefox ever opened it, so it goes without waiting out
 FF_RDP_PROFILE_PRUNE_DAYS.
 
---temporary-addon PATH (iter-297, repeatable) loads an unsigned WebExtension
+--temporary-addon PATH (repeatable) loads an unsigned WebExtension
 into the launched Firefox over RDP — the about:debugging / `web-ext run` path —
 so release Firefox runs it without signing; it is gone when Firefox exits. PATH
 is an extension directory containing manifest.json, or an .xpi; a missing path
@@ -1479,6 +1479,8 @@ only `<all_urls>` in `matches` did not run in a top-level data: page (Firefox
 160): serve test pages over http. Each install is reported in `results.temporary_addons` as
 {path, id, actor} (`actor` is false: Firefox returns none). If Firefox rejects
 an add-on, launch fails with Firefox's message and stops the Firefox it started.
+To install, reload or remove add-ons in a Firefox that is already running, see
+`ff-rdp addon --help`.
 
 Examples:
   ff-rdp launch                          # launch with temp profile on port 6000
@@ -1786,6 +1788,31 @@ See also: `ff-rdp navigate --auto-consent` to run this automatically after navig
     Consent {
         #[command(subcommand)]
         consent_command: ConsentCommand,
+    },
+
+    /// Install, list, reload and uninstall temporary add-ons in a running Firefox
+    #[command(
+        long_about = "Install, list, reload and uninstall temporary WebExtensions in a
+Firefox that is already running — about:debugging's \"Load Temporary Add-on\",
+Reload and Remove buttons over RDP. No signing needed; a temporary add-on is
+gone when Firefox exits. To load add-ons while starting Firefox, use
+`ff-rdp launch --temporary-addon PATH`.
+
+Subcommands:
+  addon install <PATH>       Install a directory with manifest.json, or an .xpi
+  addon list                 List add-ons (as about:debugging does)
+  addon reload <ID|PATH>     Reload an add-on in place; open tabs stay open
+  addon uninstall <ID>       Remove a temporary add-on
+
+Examples:
+  ff-rdp addon install ./dist
+  ff-rdp addon list --jq '.results[] | select(.temporarily_installed) | .id'
+  ff-rdp addon reload ./dist                  # after rebuilding ./dist
+  ff-rdp addon uninstall my-ext@example.com"
+    )]
+    Addon {
+        #[command(subcommand)]
+        addon_command: AddonCommand,
     },
 
     /// Generate shell completions
@@ -3067,6 +3094,99 @@ Output: {\"results\": {\"cmp\": \"sourcepoint\"|\"bbc\"|\"consentmanager\"|null,
         /// go away and it is still there.
         #[arg(long)]
         allow_no_cmp: bool,
+    },
+}
+
+/// Subcommands for `ff-rdp addon`.
+#[derive(Subcommand)]
+pub enum AddonCommand {
+    /// Install a temporary add-on (directory with manifest.json, or .xpi)
+    #[command(
+        long_about = "Install an unsigned WebExtension as a temporary add-on in the running
+Firefox, like about:debugging's \"Load Temporary Add-on\". PATH is an
+extension directory containing manifest.json, or an .xpi; it is checked before
+Firefox is contacted and sent as an absolute path. Installing an add-on whose
+id is already installed replaces it in place.
+
+If Firefox rejects the add-on (e.g. an invalid manifest) the command fails with
+Firefox's own message.
+
+Output: {\"results\": {\"path\": \"/abs/ext\", \"id\": \"my-ext@example.com\", \"actor\": false}, \"total\": 1}
+`actor` is always false: Firefox's install reply carries no actor."
+    )]
+    Install {
+        /// Extension directory (with manifest.json) or .xpi file
+        path: std::path::PathBuf,
+    },
+    /// List installed add-ons
+    #[command(
+        long_about = "List installed add-ons with Firefox's `listAddons`, the request
+about:debugging fills its Extensions section from. By default only what
+about:debugging shows: debuggable add-ons that are not hidden. --include-hidden
+lists everything Firefox reports — system add-ons, built-in themes and GMP
+plugins too.
+
+Each entry: id, name, temporarily_installed, uuid (the moz-extension:// host),
+url (where the add-on was installed from; a file: URL for a temporary add-on),
+manifest_url, debuggable, hidden, system, warnings (manifest warnings), actor
+(valid only on this command's connection). A field Firefox does not send is
+null. Firefox reports no version.
+
+Output: {\"results\": [{\"id\": \"...\", \"name\": \"...\", \"temporarily_installed\": true, \"uuid\": \"...\", ...}], \"total\": N}"
+    )]
+    List {
+        /// Include hidden, system and non-debuggable add-ons (about:debugging hides them)
+        #[arg(long)]
+        include_hidden: bool,
+    },
+    /// Reload an add-on in place, keeping open tabs
+    #[command(
+        long_about = "Reload an add-on the way about:debugging's Reload button does (the
+WebExtension descriptor's `reload`). For a temporary add-on Firefox re-reads it
+from the directory or .xpi it was installed from and replaces the running
+version in place: open tabs stay open (their pages are not reloaded) and the
+add-on keeps its id and UUID. Firefox injects the new version's content scripts
+into matching open pages as well as into pages loaded afterwards, and tears
+down the old version's — objects the old scripts handed to a page become dead
+(\"can't access dead object\"). That is the update case this command lets you
+test without a relaunch.
+
+ID|PATH: an add-on id, or the directory/.xpi a temporary add-on was installed
+from. Anything containing a path separator, ending in .xpi, or existing on disk
+is a path. A non-temporary add-on is disabled and re-enabled.
+
+Uninstalling and installing again is not a reload: a real uninstall throws away
+the add-on's UUID (its moz-extension:// origin) and its storage, unless the
+profile sets these prefs in user.js before Firefox starts:
+  user_pref(\"extensions.webextensions.keepUuidOnUninstall\", true);
+  user_pref(\"extensions.webextensions.keepStorageOnUninstall\", true);
+ff-rdp does not write them; use `launch --profile DIR` with a kept profile
+whose user.js has them.
+
+If Firefox cannot reload the add-on (e.g. its manifest is now invalid) the
+command fails with Firefox's message and the running version stays installed.
+
+Output: {\"results\": {\"id\": \"...\", \"name\": \"...\", \"url\": \"file:///...\", \"temporarily_installed\": true, \"uuid\": \"...\", \"previous_uuid\": \"...\"}, \"total\": 1}"
+    )]
+    Reload {
+        /// Add-on id, or the path a temporary add-on was installed from
+        #[arg(value_name = "ID|PATH")]
+        target: String,
+    },
+    /// Uninstall a temporary add-on
+    #[command(
+        long_about = "Uninstall a temporarily installed add-on by id (Firefox 113+), like
+about:debugging's Remove button. Firefox uninstalls only temporary add-ons over
+RDP; an unknown id or a regular add-on is an error that says which. The add-on's
+UUID and storage are removed with it unless the profile sets
+extensions.webextensions.keepUuidOnUninstall / keepStorageOnUninstall (see
+`ff-rdp addon reload --help`).
+
+Output: {\"results\": {\"id\": \"my-ext@example.com\", \"uninstalled\": true}, \"total\": 1}"
+    )]
+    Uninstall {
+        /// Add-on id, as `ff-rdp addon list` shows it
+        id: String,
     },
 }
 
