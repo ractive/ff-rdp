@@ -1466,9 +1466,11 @@ so release Firefox runs it without signing; it is gone when Firefox exits. PATH
 is an extension directory containing manifest.json, or an .xpi; a missing path
 fails before Firefox starts. With a URL, Firefox starts on a blank tab, every
 add-on is installed, and only then is the URL opened, so `document_start`
-content scripts already run on the first page; launch then waits up to
---timeout for that navigation to commit, so the next command reaches the new
-document (not committed by then: a results.warnings entry). MV3 host permissions and
+content scripts already run on the first page. The URL opens in the selected
+tab, and launch waits up to --timeout for it to load (Firefox 140+; older
+Firefox: until it commits), so the next command reaches the new document. A
+URL that fails or does not load in time (an error page can take the full
+--timeout) is a results.warnings entry, never a failed launch. MV3 host permissions and
 content-script origins are granted at install on Firefox 127+ (default
 extensions.originControls.grantByDefault=true); on older Firefox add
 `granted_host_permissions: true` to manifest.json, which Firefox honours for

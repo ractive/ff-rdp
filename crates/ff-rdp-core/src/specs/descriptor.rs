@@ -38,6 +38,18 @@ pub mod request {
     pub struct GetProcess {
         pub id: u32,
     }
+
+    /// Args for the tab descriptor's `navigateTo(url, waitForLoad)`
+    /// (`devtools/shared/specs/descriptors/tab.js:37-43`, Firefox 140+, bug
+    /// 1937738). With `waitForLoad` the reply comes only once the top-level
+    /// load of `url` (matched by the channel's `originalURI`, so redirects
+    /// count) reaches `STATE_STOP` (`devtools/server/actors/descriptors/tab.js:258-333`).
+    #[derive(Debug, Clone, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct NavigateTo {
+        pub url: String,
+        pub wait_for_load: bool,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -87,6 +99,10 @@ pub mod response {
     pub struct GetWatcher {
         pub actor: ActorId,
     }
+
+    /// Reply for the tab descriptor's `navigateTo` — empty (`response: {}`).
+    #[derive(Debug, Clone, Default, Deserialize)]
+    pub struct NavigateTo {}
 
     /// A process descriptor form returned inside a `getProcess` reply.
     ///
@@ -147,6 +163,16 @@ impl Method for GetTarget {
     type Reply = response::GetTarget;
 }
 
+/// Tab descriptor `navigateTo` method marker (distinct from the
+/// WindowGlobalTarget method of the same name in [`super::target`]).
+pub struct NavigateTo;
+impl sealed::Sealed for NavigateTo {}
+impl Method for NavigateTo {
+    const NAME: &'static str = "navigateTo";
+    type Args = request::NavigateTo;
+    type Reply = response::NavigateTo;
+}
+
 /// `getWatcher` method marker.
 pub struct GetWatcher;
 impl sealed::Sealed for GetWatcher {}
@@ -188,6 +214,21 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn tab_navigate_to_request_serializes_wait_for_load() {
+        assert_eq!(NavigateTo::NAME, "navigateTo");
+        let args = request::NavigateTo {
+            url: "http://127.0.0.1:8297/".into(),
+            wait_for_load: true,
+        };
+        assert_eq!(
+            serde_json::to_value(&args).unwrap(),
+            json!({"url": "http://127.0.0.1:8297/", "waitForLoad": true})
+        );
+        let _: response::NavigateTo =
+            serde_json::from_value(json!({"from": "server1.conn0.tabDescriptor1"})).unwrap();
+    }
 
     #[test]
     fn get_target_response_deserializes_frame() {

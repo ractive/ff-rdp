@@ -94,10 +94,16 @@ is `navigate` (no reload); the local server saw one `GET /`.
 `navigateTo` replies as soon as the load starts. Returning then handed the
 caller a tab mid target-switch: a `dom` run right after `launch` failed 5 of 5
 times (`noSuchActor` on the old console actor, `tabDestroyed` from the tab
-descriptor, or a 10 s recv timeout). `launch` now polls `listTabs` until the tab
-reports a URL other than the pre-navigation one (bounded by `--timeout`; on
-expiry a `results.warnings` entry, not a failure); afterwards 5 of 5 immediate
-`dom` calls succeeded.
+descriptor, or a 10 s recv timeout). `launch` now uses the tab descriptor's
+`navigateTo(url, waitForLoad: true)` (Firefox 140+, bug 1937738,
+`devtools/server/actors/descriptors/tab.js:258-333`), which replies when the
+load of the requested URL (matched by `originalURI`, so redirects count) stops.
+On older Firefox it falls back to the WindowGlobalTarget `navigateTo` plus a
+`listTabs` poll for the requested URL (or any URL other than the start and
+`about:blank`). Afterwards 5 of 5 immediate `dom` calls succeeded. Every
+navigation failure or timeout is a `results.warnings` entry, not a failed launch;
+an error page (`deniedPortAccess`) never resolves `waitForLoad`, so it costs the
+full `--timeout`.
 
 ## `data:` pages
 

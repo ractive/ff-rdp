@@ -53,6 +53,7 @@ Represents one Firefox tab (`<xul:browser>` or `<iframe mozbrowser>`). Returned 
 ## Gotchas for ff-rdp
 
 - **`navigateTo` matches the URL exactly via `originalURI.spec`**. If Firefox normalizes the URL (e.g. adds trailing `/`), the listener won't fire and the promise hangs. Always pre-normalize.
+- **Used by `launch --temporary-addon`** (iter-297, `TabActor::navigate_to`, `waitForLoad: true`; Firefox 140+, bug 1937738). On Firefox 160 a load that ends in an error page (`http://127.0.0.1:1/` → `about:neterror?e=deniedPortAccess`) never resolves the promise: the caller sees its recv timeout, which launch reports as a warning.
 - **Targets created by `getTarget` are NOT created via JSWindowActors** — they use the legacy message-manager path. Watcher targets created by `watchTargets` use the new JSWindowActor path. The same WindowGlobal can have two co-existing target actors briefly during transition.
 - `traits.supportsNavigation: true` — tab descriptor is the **only** descriptor that supports navigate.
 - The triggering principal is `systemPrincipal` — `navigateTo` can load `chrome://` URLs (use with caution).
