@@ -597,6 +597,85 @@ is fabricated/flushed, no signatures bypassed, and no extra preferences are adde
 
 The `.deb`/`.rpm` packages already install bash/zsh/fish completions system-wide, so `completions` is mainly for other shells or for refreshing the script after an upgrade.
 
+## Developing and testing a WebExtension
+
+ff-rdp loads an unsigned extension into release Firefox the way about:debugging's
+"Load Temporary Add-on" does: over the debug port, with no signing. The add-on is
+gone when Firefox exits.
+
+```bash
+ff-rdp launch --temporary-addon ./dist https://example.com   # install first, then open the page
+ff-rdp addon install ./dist          # into a Firefox that is already running (dir or .xpi)
+ff-rdp addon list                    # id, name, uuid (the moz-extension:// host), source url
+ff-rdp addon reload ./dist           # or the add-on id; tabs stay open
+ff-rdp addon uninstall my-ext@example.com
+ff-rdp navigate moz-extension://<uuid>/options.html   # open the extension's own pages
+```
+
+What to rely on (measured on Firefox 160):
+
+- **The first page already has the extension.** With a URL, `launch` installs every
+  `--temporary-addon` first and opens the URL afterwards, so a `document_start` content
+  script runs on that first page, and `launch` returns only once the page has loaded.
+- **MV3 host access is granted at install** on Firefox 127+ (`host_permissions` and
+  content-script matches), so a headless run needs no click. Access an extension only
+  requests at run time (`optional_host_permissions`) needs a user gesture that a script
+  cannot give; declare it in `host_permissions` for development and test builds.
+- **`addon reload` replaces the extension in place.** Open tabs keep their documents,
+  Firefox injects the new content scripts into pages that are already open, and the
+  UUID, `storage.local` and IndexedDB stay. This is the way to test what an update does
+  to pages your old version already touched.
+- **An uninstall drops the UUID and storage** unless the profile sets
+  `extensions.webextensions.keepUuidOnUninstall` / `keepStorageOnUninstall`. `ff-rdp stop`
+  and `launch --replace` end Firefox without uninstalling, so they keep both.
+- **A broken manifest:** `addon install` and `launch` report Firefox's exact error
+  (`Reading manifest: Property "version" is required`); a failed install fails `launch`
+  and stops the Firefox it started. `addon reload` only gets "Extension is invalid" and
+  leaves the running version in place, so run `addon install <path>` to see why.
+- **Content scripts do not run on `data:` pages**, even with `<all_urls>`. Test on
+  http(s) pages, e.g. a local server.
+
+### The development loop
+
+Keep one profile, so the extension's UUID, storage and your sign-ins survive restarts,
+and reload instead of relaunching:
+
+```bash
+# once per session
+ff-rdp launch --profile ~/.cache/my-ext/profile --debug-port 6010 --replace \
+  --temporary-addon ./dist https://example.com
+# after every rebuild
+ff-rdp --port 6010 addon reload ./dist
+ff-rdp --port 6010 eval "document.documentElement.dataset.myExt"     # what the content script did
+ff-rdp --port 6010 console --level error                             # page errors after the update
+ff-rdp --port 6010 navigate "moz-extension://$(ff-rdp --port 6010 addon list \
+  --jq '.results[] | select(.id == "my-ext@example.com") | .uuid' | tr -d '"')/options.html"
+ff-rdp --port 6010 eval 'await browser.storage.local.get()' --stringify   # the extension's storage
+```
+
+`--replace` stops the Firefox ff-rdp started on that port before launching, so the same
+command restarts cleanly. Add the two `keepUuidOnUninstall` / `keepStorageOnUninstall`
+prefs to the profile's `user.js` if you also remove and re-add the extension.
+
+### In CI
+
+Use a fresh profile per job, headless, on a port of its own, and always stop the browser:
+
+```bash
+set -euo pipefail
+ff-rdp launch --headless --temp-profile --debug-port 6011 \
+  --temporary-addon ./dist/my-ext.xpi http://127.0.0.1:8080/fixture.html
+trap 'ff-rdp --port 6011 stop' EXIT
+test "$(ff-rdp --port 6011 eval 'document.documentElement.dataset.myExt' --jq .results)" = '"ready"'
+```
+
+- Each command exits non-zero on failure and prints a JSON error, so `set -e` turns
+  a bad manifest or a missing path into a failed job.
+- Serve test pages yourself (any local http server) rather than depending on third-party
+  sites, and use `data-*` attributes or `console` messages the content script writes as the
+  thing you assert on.
+- `stop` also removes the temporary profile. Give parallel jobs different ports.
+
 ## Using ff-rdp from Claude Code
 
 ff-rdp ships a Claude Code skill, **`ff-rdp-debug`**, that turns
