@@ -83,7 +83,7 @@ Specs live in parallel under `devtools/shared/specs/`.
 - `actors/process.js` — legacy process actor.
 - `actors/webbrowser.js` — legacy hooks for live tab/addon lists used by RootActor.
 - `actors/emulation/` — touch/responsive emulation.
-- `actors/addon/`, `actors/worker/` — addon and worker support.
+- `actors/addon/`, `actors/worker/` — addon and worker support. [[addons]] — `actors/addon/addons.js` — global `addonsActor`: `installTemporaryAddon`, `uninstallAddon` (used by `launch --temporary-addon`).
 - `actors/events/` — devtools internal events.
 
 ## Watcher infrastructure

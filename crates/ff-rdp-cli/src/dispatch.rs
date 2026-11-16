@@ -887,6 +887,7 @@ fn dispatch_inner(
             replace,
             force,
             launch_timeout,
+            temporary_addon,
         }) => commands::launch::run(
             cli,
             &commands::launch::LaunchOpts {
@@ -901,6 +902,7 @@ fn dispatch_inner(
                 replace: *replace || *force,
                 window_size: window_size.as_deref(),
                 launch_timeout: *launch_timeout,
+                temporary_addons: temporary_addon,
             },
         ),
         Command::Computed(ComputedArgs {

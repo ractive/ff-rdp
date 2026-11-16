@@ -12,6 +12,7 @@ use crate::error::ProtocolError;
 use crate::transport::RdpTransport;
 use crate::types::ActorId;
 
+pub mod addons;
 pub mod console;
 pub mod descriptor;
 pub mod manifest;

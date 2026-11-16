@@ -139,6 +139,27 @@ impl TargetInfo {
 }
 
 impl TabActor {
+    /// Call the tab descriptor's `navigateTo(url, waitForLoad)` (Firefox 140+).
+    ///
+    /// With `wait_for_load`, Firefox replies only after the top-level load of
+    /// `url` has stopped (`devtools/server/actors/descriptors/tab.js:258-333`),
+    /// so a later command sees the new document rather than a target switch in
+    /// progress. Older Firefox answers `unrecognizedPacketType`; the caller
+    /// then falls back to [`crate::WindowGlobalTarget::navigate_to`].
+    pub fn navigate_to(
+        transport: &mut RdpTransport,
+        tab_actor: &ActorId,
+        url: &str,
+        wait_for_load: bool,
+    ) -> Result<(), ProtocolError> {
+        use crate::specs::{call, descriptor as spec};
+        let args = spec::request::NavigateTo {
+            url: url.to_owned(),
+            wait_for_load,
+        };
+        call::<spec::NavigateTo>(transport, tab_actor, &args).map(|_| ())
+    }
+
     /// Call `getTarget` on a tab descriptor to obtain the WindowGlobalTarget
     /// and associated actor IDs (console, thread, inspector).
     pub fn get_target(

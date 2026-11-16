@@ -1,6 +1,7 @@
 mod language_initialization;
 pub(crate) mod replace;
 mod startup;
+mod temporary_addon;
 
 use std::net::ToSocketAddrs as _;
 use std::path::{Path, PathBuf};
@@ -746,8 +747,19 @@ type InitializeLanguagePack = fn(
     AppError,
 >;
 
+/// `--temporary-addon`: install the resolved add-ons into the Firefox on the
+/// given port, then open the startup URL — see
+/// [`temporary_addon::install_and_navigate`].
+type InstallTemporaryAddons = fn(
+    u16,
+    &[temporary_addon::TemporaryAddon],
+    Option<&str>,
+    Duration,
+) -> Result<temporary_addon::Installed, AppError>;
+
 pub(crate) struct LaunchHooks {
     initialize_language_pack: InitializeLanguagePack,
+    install_temporary_addons: InstallTemporaryAddons,
     emit_launch: fn(&Cli, &serde_json::Value) -> Result<(), AppError>,
     /// Fast probe: does *anything* accept TCP on `port` right now?
     pub(crate) is_port_in_use: fn(u16) -> bool,
@@ -794,6 +806,7 @@ impl LaunchHooks {
     pub(crate) fn real() -> Self {
         Self {
             initialize_language_pack: language_initialization::run,
+            install_temporary_addons: temporary_addon::install_and_navigate,
             emit_launch: |cli, envelope| {
                 let mut hint_ctx = HintContext::new(HintSource::Launch);
                 if let Some(port) = envelope["results"]["port"]
@@ -1143,6 +1156,9 @@ pub(crate) struct LaunchOpts<'a> {
     /// `--launch-timeout <secs>`: how long to wait for Firefox to open its
     /// debug port. See [`resolve_port_wait_bound`].
     pub(crate) launch_timeout: Option<u64>,
+    /// `--temporary-addon <path>` (repeatable): unsigned extensions installed
+    /// over RDP before the startup URL opens. See [`temporary_addon`].
+    pub(crate) temporary_addons: &'a [PathBuf],
 }
 
 /// Launch Firefox with remote debugging.
@@ -1171,6 +1187,7 @@ pub(crate) fn run_with_hooks(
         replace,
         window_size,
         launch_timeout,
+        temporary_addons,
     } = opts;
     language_initialization::validate_options(
         restart_after_language_pack_install,
@@ -1184,6 +1201,9 @@ pub(crate) fn run_with_hooks(
             cli.allow_unsafe_urls,
         )?;
     }
+    // iter-297: a missing add-on path fails here, before any port check,
+    // replacement or profile creation — never with a browser already running.
+    let temporary_addons = temporary_addon::resolve(temporary_addons)?;
     // Validate immutable local input and binary compatibility before housekeeping,
     // port replacement/stop, or profile creation. The default path is unchanged.
     let mut preflight_firefox = None;
@@ -1241,11 +1261,14 @@ pub(crate) fn run_with_hooks(
             // `--profile` too: the running instance may use another profile
             // (or a managed one), and answering `already_running` would let
             // the caller drive it as if it were the profile they named.
-            if url.is_some() || pack.is_some() || profile.is_some() {
+            if url.is_some() || pack.is_some() || profile.is_some() || !temporary_addons.is_empty()
+            {
                 return Err(AppError::User(format!(
                     "{} requires a new Firefox launch; the owned port is already running. Choose a free --debug-port or explicitly use --replace",
                     if pack.is_some() {
                         "--english-language-pack"
+                    } else if !temporary_addons.is_empty() {
+                        "--temporary-addon"
                     } else if url.is_some() {
                         "A startup URL (--url or positional)"
                     } else {
@@ -1276,6 +1299,15 @@ pub(crate) fn run_with_hooks(
     // launch is Consent-O-Matic's first run in the profile.
     let consent_first_run =
         auto_consent && profile.is_none_or(|p| !super::auto_consent::is_installed(Path::new(p)));
+    // iter-297: with --temporary-addon the URL is opened over RDP only after
+    // every add-on is installed, so the first document already runs their
+    // `document_start` content scripts. Without it, Firefox gets the URL at
+    // startup exactly as before.
+    let startup_url = if temporary_addons.is_empty() {
+        url
+    } else {
+        None
+    };
     let (mut cmd, profile_path) = build_command(
         &firefox,
         port,
@@ -1283,7 +1315,7 @@ pub(crate) fn run_with_hooks(
         profile,
         auto_consent,
         window_size,
-        url,
+        startup_url,
     )?;
 
     // iter-175: `build_command` handed the managed profile directory back
@@ -1447,6 +1479,21 @@ pub(crate) fn run_with_hooks(
                     "operational Firefox identity is unqualified".into(),
                 )));
             }
+            // iter-297: install every --temporary-addon, then open the URL.
+            // A rejected install stops the Firefox this command started.
+            let installed_addons = if temporary_addons.is_empty() {
+                None
+            } else {
+                match (hooks.install_temporary_addons)(
+                    port,
+                    &temporary_addons,
+                    url,
+                    Duration::from_millis(cli.timeout),
+                ) {
+                    Ok(installed) => Some(installed),
+                    Err(error) => return Err(pending.fail(error)),
+                }
+            };
             // `temp_profile` is true when the caller requested --temp-profile
             // OR when we auto-created one because no profile flag was given.
             let effective_temp_profile = temp_profile || profile.is_none();
@@ -1511,6 +1558,10 @@ pub(crate) fn run_with_hooks(
                 result["requested_url"] = json!(url);
             }
             let mut warnings: Vec<String> = Vec::new();
+            if let Some(installed) = installed_addons {
+                result["temporary_addons"] = json!(installed.addons);
+                warnings.extend(installed.warning);
+            }
             if below_floor && let Some((w, h)) = window_size {
                 let floor = crate::util::window_size::LIVE_VIEWPORT_FLOOR_PX;
                 warnings.push(format!(
@@ -1960,6 +2011,7 @@ mod tests {
             replace: false,
             window_size: None,
             launch_timeout: None,
+            temporary_addons: &[],
         };
 
         let err = run_with_hooks(&cli, &opts, &hooks).expect_err("an occupied port must fail");
@@ -2412,6 +2464,7 @@ mod iter_175_tests {
             replace: false,
             window_size: None,
             launch_timeout: Some(0),
+            temporary_addons: &[],
         }
     }
 
@@ -2752,6 +2805,176 @@ mod iter_175_tests {
     #[test]
     fn unit_282_unwinding_launch_reaps_the_owned_child() {
         assert_failed_launch_reaps_child(false, true, true);
+    }
+
+    /// A temporary-addon fixture directory: just enough for `resolve`.
+    fn addon_dir(root: &Path) -> PathBuf {
+        let dir = root.join("extension");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("manifest.json"), "{}").unwrap();
+        dir
+    }
+
+    /// iter-297: a missing `--temporary-addon` path fails before the port
+    /// check, `--replace`, Firefox lookup or spawn.
+    #[test]
+    fn unit_297_missing_temporary_addon_precedes_side_effects() {
+        let root = tempfile::tempdir().unwrap();
+        let addons = [root.path().join("missing")];
+        let hooks = LaunchHooks {
+            is_port_in_use: |_| panic!("bad add-on path reached the port check"),
+            locate_firefox: || panic!("bad add-on path reached Firefox lookup"),
+            spawn: |_| panic!("bad add-on path reached spawn"),
+            ..LaunchHooks::none_running()
+        };
+        let opts = LaunchOpts {
+            replace: true,
+            temporary_addons: &addons,
+            ..managed_opts(7297)
+        };
+        let err = run_with_hooks(&bare_launch_cli(), &opts, &hooks).unwrap_err();
+        assert!(err.to_string().contains("--temporary-addon"), "{err}");
+    }
+
+    /// iter-297: with `--temporary-addon` the startup URL is withheld from
+    /// Firefox's command line and handed to the install step instead, which
+    /// opens it after the installs; the install results reach the envelope.
+    #[cfg(unix)]
+    #[test]
+    #[allow(unsafe_code)]
+    fn unit_297_url_is_opened_after_install_not_at_startup() {
+        /// (Firefox argv, URL handed to the install hook, add-on paths sent).
+        type Seen = (Vec<String>, Option<String>, Vec<String>);
+        static SEEN: Mutex<Option<Seen>> = Mutex::new(None);
+        static ENVELOPE: Mutex<Option<serde_json::Value>> = Mutex::new(None);
+        let root = tempfile::tempdir().unwrap();
+        let addons = [addon_dir(root.path())];
+        let hooks = LaunchHooks {
+            locate_firefox: || Ok(PathBuf::from("/unused/firefox")),
+            is_port_in_use: |_| false,
+            spawn: |cmd| {
+                let args = cmd
+                    .get_args()
+                    .map(|a| a.to_string_lossy().into_owned())
+                    .collect();
+                SEEN.lock().unwrap().replace((args, None, Vec::new()));
+                spawn_lingering_child()
+            },
+            probe_port: |_, _, _, _| PortWaitOutcome::Opened,
+            install_temporary_addons: |_port, addons, url, _timeout| {
+                let mut seen = SEEN.lock().unwrap();
+                let seen = seen.as_mut().unwrap();
+                seen.1 = url.map(str::to_owned);
+                seen.2 = addons.iter().map(|a| a.absolute.clone()).collect();
+                Ok(temporary_addon::Installed {
+                    addons: vec![
+                        json!({"path": addons[0].absolute, "id": "x@test", "actor": false}),
+                    ],
+                    warning: Some("not committed".to_owned()),
+                })
+            },
+            emit_launch: |_cli, envelope| {
+                ENVELOPE.lock().unwrap().replace(envelope.clone());
+                Ok(())
+            },
+            ..LaunchHooks::none_running()
+        };
+        let opts = LaunchOpts {
+            url: Some("https://example.com/"),
+            temporary_addons: &addons,
+            ..managed_opts(7298)
+        };
+        run_with_hooks(&bare_launch_cli(), &opts, &hooks).unwrap();
+        let envelope = ENVELOPE.lock().unwrap().take().unwrap();
+        let pid = i32::try_from(envelope["results"]["pid"].as_u64().unwrap()).unwrap();
+        let mut status = 0;
+        // SAFETY: pid is the direct child this test's spawn hook started and
+        // the successful launch handed over; kill and reap it.
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+            libc::waitpid(pid, &raw mut status, 0);
+        }
+        if let Some(profile) = envelope["results"]["profile"].as_str() {
+            let _ = std::fs::remove_dir_all(profile);
+        }
+        let (args, url, sent) = SEEN.lock().unwrap().take().unwrap();
+        assert!(
+            !args.iter().any(|a| a.contains("example.com")),
+            "URL must not be a Firefox startup argument: {args:?}"
+        );
+        assert_eq!(url.as_deref(), Some("https://example.com/"));
+        assert_eq!(sent.len(), 1);
+        assert!(Path::new(&sent[0]).is_absolute(), "{sent:?}");
+        assert_eq!(envelope["results"]["requested_url"], "https://example.com/");
+        assert_eq!(envelope["results"]["temporary_addons"][0]["id"], "x@test");
+        assert_eq!(envelope["results"]["warnings"][0], "not committed");
+    }
+
+    /// iter-297: a rejected install fails the launch with Firefox's message and
+    /// stops (and reaps) the Firefox this launch started; its managed profile
+    /// goes with it.
+    #[cfg(unix)]
+    #[test]
+    #[allow(unsafe_code)]
+    fn unit_297_rejected_install_fails_launch_and_reaps_child() {
+        static SPAWNED: Mutex<Option<(u32, PathBuf)>> = Mutex::new(None);
+        let root = tempfile::tempdir().unwrap();
+        let addons = [addon_dir(root.path())];
+        let hooks = LaunchHooks {
+            locate_firefox: || Ok(PathBuf::from("/unused/firefox")),
+            is_port_in_use: |_| false,
+            spawn: |cmd| {
+                use std::os::unix::process::CommandExt;
+                let child = std::process::Command::new("/bin/sleep")
+                    .arg("30")
+                    .process_group(0)
+                    .spawn()?;
+                SPAWNED
+                    .lock()
+                    .unwrap()
+                    .replace((child.id(), profile_arg_of(cmd).unwrap()));
+                Ok(child)
+            },
+            probe_port: |_, _, _, _| PortWaitOutcome::Opened,
+            install_temporary_addons: |_, _, _, _| {
+                Err(AppError::User(
+                    "--temporary-addon ./bad: Firefox rejected the temporary install: \
+                     Reading manifest: Property \"version\" is required"
+                        .to_owned(),
+                ))
+            },
+            ..LaunchHooks::none_running()
+        };
+        let opts = LaunchOpts {
+            temporary_addons: &addons,
+            ..managed_opts(7299)
+        };
+        let result = run_with_hooks(&bare_launch_cli(), &opts, &hooks);
+        let (pid, profile) = SPAWNED.lock().unwrap().take().unwrap();
+        let native_pid = i32::try_from(pid).unwrap();
+        let mut status = 0;
+        // SAFETY: pid is the direct child this test's spawn hook started.
+        // WNOHANG never blocks and never signals.
+        let waited = unsafe { libc::waitpid(native_pid, &raw mut status, libc::WNOHANG) };
+        let wait_error = std::io::Error::last_os_error().raw_os_error();
+        if waited == 0 {
+            // SAFETY: as above; clean up the still-owned child before failing.
+            unsafe {
+                libc::kill(native_pid, libc::SIGKILL);
+                libc::waitpid(native_pid, &raw mut status, 0);
+            }
+        }
+        let err = result.expect_err("a rejected install must fail the launch");
+        assert!(
+            err.to_string().contains("Property \"version\" is required"),
+            "{err}"
+        );
+        assert_eq!(waited, -1, "launch left the child uncollected");
+        assert_eq!(wait_error, Some(libc::ECHILD));
+        assert!(
+            !profile.exists(),
+            "managed profile survived the failed launch"
+        );
     }
 
     /// AC 2 (`unit_175_failed_spawn_leaves_no_profile_dir`): `build_command`

@@ -1460,6 +1460,26 @@ profiles left by *earlier* failed launches: an unmarked one holding nothing but
 `user.js` proves no Firefox ever opened it, so it goes without waiting out
 FF_RDP_PROFILE_PRUNE_DAYS.
 
+--temporary-addon PATH (iter-297, repeatable) loads an unsigned WebExtension
+into the launched Firefox over RDP — the about:debugging / `web-ext run` path —
+so release Firefox runs it without signing; it is gone when Firefox exits. PATH
+is an extension directory containing manifest.json, or an .xpi; a missing path
+fails before Firefox starts. With a URL, Firefox starts on a blank tab, every
+add-on is installed, and only then is the URL opened, so `document_start`
+content scripts already run on the first page. The URL opens in the selected
+tab, and launch waits up to --timeout for it to load (Firefox 140+; older
+Firefox: until it commits), so the next command reaches the new document. A
+URL that fails or does not load in time (an error page can take the full
+--timeout) is a results.warnings entry, never a failed launch. MV3 host permissions and
+content-script origins are granted at install on Firefox 127+ (default
+extensions.originControls.grantByDefault=true); on older Firefox add
+`granted_host_permissions: true` to manifest.json, which Firefox honours for
+temporary installs. A content script declared with
+only `<all_urls>` in `matches` did not run in a top-level data: page (Firefox
+160): serve test pages over http. Each install is reported in `results.temporary_addons` as
+{path, id, actor} (`actor` is false: Firefox returns none). If Firefox rejects
+an add-on, launch fails with Firefox's message and stops the Firefox it started.
+
 Examples:
   ff-rdp launch                          # launch with temp profile on port 6000
   ff-rdp launch --headless               # headless mode (no visible window)
@@ -1469,6 +1489,7 @@ Examples:
   ff-rdp launch --port 9222              # use a different debug port
   ff-rdp launch --launch-timeout 45      # allow 45 s for the debug port to open
   ff-rdp launch --auto-consent           # install the Consent-O-Matic extension
+  ff-rdp launch --headless --temporary-addon ./ext https://example.com   # unsigned add-on first
   ff-rdp launch --profile ~/my-prof      # reuse an existing profile
   ff-rdp launch --headless --window-size 600x800   # true viewport, >= floor
   ff-rdp launch --headless --window-size 390x844   # below floor — clamps to ~500, warns
@@ -2878,6 +2899,11 @@ pub struct LaunchArgs {
     /// `meta.launch_wait_secs`.
     #[arg(long, value_name = "SECS")]
     pub launch_timeout: Option<u64>,
+    /// Load an unsigned WebExtension (a directory with manifest.json, or an
+    /// .xpi) as a temporary add-on over RDP, like about:debugging. Repeatable.
+    /// Installed before the startup URL opens; gone when Firefox exits.
+    #[arg(long, value_name = "PATH", action = clap::ArgAction::Append)]
+    pub temporary_addon: Vec<std::path::PathBuf>,
 }
 
 #[derive(clap::Args)]

@@ -1,0 +1,7 @@
+{
+  "addon": {
+    "id": "temporary-addon-fixture@ff-rdp.test",
+    "actor": false
+  },
+  "from": "server1.conn0.addonsActor2"
+}

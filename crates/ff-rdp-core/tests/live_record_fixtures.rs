@@ -4031,3 +4031,71 @@ fn live_screenshot_viewport_evals() {
     );
     assert_eq!(removed["result"], 1, "{removed}");
 }
+
+// ===========================================================================
+// iter-297: `addonsActor.installTemporaryAddon` success and error replies
+// ===========================================================================
+
+/// Record the reply to a temporary install of the MV3 fixture extension and
+/// the error reply to installing a manifest with no `version`, then uninstall
+/// the fixture so the shared Firefox serves later recordings unmarked.
+///
+/// The error message and stack name the absolute fixture path; it is replaced
+/// by `<FIXTURES>` before saving so the fixture is machine-independent.
+///
+/// Run to record:
+///   FF_RDP_LIVE_TESTS_RECORD=1 cargo test -p ff-rdp-core \
+///     --test live_record_fixtures -- --ignored live_297_record_install_temporary_addon --nocapture
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_297_record_install_temporary_addon() {
+    if !should_run_live() {
+        return;
+    }
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../ff-rdp-cli/tests/fixtures")
+        .canonicalize()
+        .expect("CLI fixtures dir");
+    let fixtures_str = fixtures.to_str().expect("UTF-8 fixtures path").to_owned();
+    let mut conn = connect();
+    let transport = conn.transport_mut();
+
+    let root = send_raw(transport, &json!({"to": "root", "type": "getRoot"}));
+    let addons = root["addonsActor"]
+        .as_str()
+        .unwrap_or_else(|| panic!("getRoot has no addonsActor: {root}"))
+        .to_owned();
+
+    let install = |transport: &mut RdpTransport, dir: &str| {
+        let path = fixtures.join(dir);
+        transport
+            .send(&json!({
+                "to": addons,
+                "type": "installTemporaryAddon",
+                "addonPath": path.to_str().expect("UTF-8 path"),
+                "openDevTools": false,
+            }))
+            .expect("send installTemporaryAddon");
+        recv_from_actor(transport, &addons)
+    };
+
+    let ok = install(transport, "temporary_addon_mv3");
+    assert_eq!(
+        ok["addon"]["id"], "temporary-addon-fixture@ff-rdp.test",
+        "{ok}"
+    );
+    let bad = install(transport, "temporary_addon_bad_manifest");
+    assert_eq!(bad["error"], "Error", "{bad}");
+
+    let uninstall = send_raw(
+        transport,
+        &json!({"to": addons, "type": "uninstallAddon", "addonId": "temporary-addon-fixture@ff-rdp.test"}),
+    );
+    assert!(uninstall.get("error").is_none(), "{uninstall}");
+
+    let bad: Value = serde_json::from_str(&bad.to_string().replace(&fixtures_str, "<FIXTURES>"))
+        .expect("re-parse normalized error reply");
+    println!("  success reply: {ok}\n  error reply: {bad}");
+    save_core_fixture("install_temporary_addon_response.json", &ok);
+    save_core_fixture("install_temporary_addon_error_response.json", &bad);
+}

@@ -1,4 +1,5 @@
 pub mod accessibility;
+pub mod addons;
 pub mod console;
 pub mod device;
 pub mod dom_walker;

@@ -1,0 +1,5 @@
+{
+  "manifest_version": 3,
+  "name": "ff-rdp invalid temporary add-on fixture",
+  "description": "Test data: no `version`, so Firefox rejects the temporary install."
+}

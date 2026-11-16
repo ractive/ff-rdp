@@ -23,6 +23,7 @@ pub mod types;
 pub mod util;
 
 pub use actors::accessibility::{AccessibilityActor, AccessibleNode, filter_interactive};
+pub use actors::addons::{AddonsActor, InstalledAddon};
 pub use actors::console::{
     ConsoleMessage, EvalException, EvalResult, EvaluateScope, WebConsoleActor,
     parse_console_notification,
