@@ -516,6 +516,13 @@ content navigation safely on Firefox156. Start a new instance with
 `ff-rdp launch --url about:support` instead. Other about: URLs keep their
 existing policy.
 
+moz-extension:// URLs open an installed add-on's own pages (options, popup or
+any HTML file in the add-on; it need not be in web_accessible_resources) with
+no flag. Take the UUID from `ff-rdp addon list`. eval, dom and console then run
+in the extension page, with the browser.* APIs its manifest grants:
+`ff-rdp navigate moz-extension://<uuid>/options.html` then
+`ff-rdp eval --stringify 'await browser.storage.local.get()'`.
+
 By default, navigate blocks until the new document is committed (URL changes and
 readyState reaches 'interactive' or 'complete'), or the --timeout budget expires.
 This default is --wait auto: it prefers 'complete' (the load event), but once the
@@ -614,7 +621,7 @@ Output: {\"results\": {\"navigated\": \"...\", \"status\": 200|null, \"status_re
   Capture runs until the document's readyState is 'complete' (then until the network is quiet), bounded by
   --network-timeout. partial: true means the document was still loading when the budget ran out (requests it
   had yet to issue are missing); timeout_reached is then true as well.
-  status is null with status_reason \"no_document_request\" for data:/blob:/file: documents — no HTTP response exists.
+  status is null with status_reason \"no_document_request\" for data:/blob:/file:/moz-extension: documents — no HTTP response exists.
   --headers adds {\"headers\": {\"request\": [{\"name\": \"...\", \"value\": \"...\"}], \"response\": [...]}} to each shown entry and
   --security adds a per-entry \"security\" object plus network.insecure_requests — the same shapes as `network --headers`/`--security`.
   Both imply the detail view and are fetched before this command's connection closes: Firefox drops a request's headers with
@@ -1407,8 +1414,11 @@ debug port; use tabs and page commands to verify that the requested document is
 ready. results.requested_url is present only when a URL was supplied and means
 forwarded, not loaded.
 
-URL schemes follow the normal policy: http, https and about are allowed;
+URL schemes follow the normal policy: http, https, about and moz-extension are allowed;
 file requires --allow-file-urls, and data/javascript require --allow-unsafe-urls.
+A moz-extension startup URL only resolves when the UUID is already known: a kept
+--profile keeps it, a fresh temporary profile assigns a new one at install
+(read it with `ff-rdp addon list`, then `ff-rdp navigate`).
 Invalid URLs fail before profile creation or --replace side effects. If an
 owned instance is already running, --url requires a free --debug-port or explicit
 --replace; it is never silently ignored or applied as content navigation.
@@ -3126,7 +3136,8 @@ about:debugging shows: debuggable add-ons that are not hidden. --include-hidden
 lists everything Firefox reports — system add-ons, built-in themes and GMP
 plugins too.
 
-Each entry: id, name, temporarily_installed, uuid (the moz-extension:// host),
+Each entry: id, name, temporarily_installed, uuid (the moz-extension:// host;
+`ff-rdp navigate moz-extension://<uuid>/<page>.html` opens the add-on's pages),
 url (where the add-on was installed from; a file: URL for a temporary add-on),
 manifest_url, debuggable, hidden, system, warnings (manifest warnings), actor
 (valid only on this command's connection). A field Firefox does not send is

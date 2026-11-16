@@ -756,7 +756,7 @@ ff-rdp has the same power as Firefox DevTools — it can read httpOnly cookies, 
 
 **Transport:** Firefox RDP uses plaintext TCP with no TLS. By default ff-rdp connects to `localhost` only. For remote debugging, use SSH tunneling (`ssh -L 6000:localhost:6000 remote-host`) rather than exposing the debug port directly.
 
-**URL validation:** The `navigate` command rejects `javascript:` and `data:` URLs by default to prevent accidental code execution in the page context. Allowed schemes are `http:`, `https:`, `file:`, and `about:`. Use `--allow-unsafe-urls` to bypass this check if needed.
+**URL validation:** The `navigate` command rejects `javascript:` and `data:` URLs by default to prevent accidental code execution in the page context; `--allow-unsafe-urls` opts in. Allowed by default are `http:`, `https:`, `about:` and `moz-extension:` (pages of add-ons installed in that Firefox). `file:` needs `--allow-file-urls` and opens only through `launch --url`, since loading it into an existing tab crashes Firefox.
 
 **Regex limits:** The `--pattern` flag (used by `console` and `sources` commands) applies a 1 MiB NFA size limit to prevent denial-of-service from pathological regular expressions.
 

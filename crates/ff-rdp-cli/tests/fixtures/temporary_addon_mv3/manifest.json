@@ -2,7 +2,8 @@
   "manifest_version": 3,
   "name": "ff-rdp temporary add-on fixture",
   "version": "1.0",
-  "description": "Test data for `ff-rdp launch --temporary-addon`: marks every page at document_start.",
+  "description": "Test data for `ff-rdp launch --temporary-addon`: marks every page at document_start; page.html is an extension page for `ff-rdp navigate moz-extension://…`.",
+  "permissions": ["storage"],
   "browser_specific_settings": {
     "gecko": {
       "id": "temporary-addon-fixture@ff-rdp.test"

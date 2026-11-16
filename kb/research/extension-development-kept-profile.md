@@ -110,9 +110,66 @@ example.com.
 - So the prefs matter only for a real uninstall (Remove, BiDi `webExtension.uninstall`,
   presumably a normal quit), not for `addon reload`, `stop` or `--replace`.
 - tab-mcp's `scripts/firefox-dev.ts --reload` uses it: rebuild, then `ff-rdp addon reload`.
-- `ff-rdp navigate` refuses `moz-extension:` URLs (also with `--allow-unsafe-urls`), so an
-  extension page's storage cannot be read through `eval`; a content script reporting into a
-  web page, as above, works.
+- `ff-rdp navigate` refused `moz-extension:` URLs (also with `--allow-unsafe-urls`), so an
+  extension page's storage could not be read through `eval`; a content script reporting into
+  a web page, as above, worked. Since backlog/navigate-moz-extension it is allowed, see
+  "Opening an extension page" below.
+
+## Opening an extension page (ff-rdp, 2026-11-16)
+
+`ff-rdp navigate moz-extension://<uuid>/page.html` is allowed by default since
+backlog/navigate-moz-extension. Checked first because content-tab navigation to `file:` and
+`about:support` crashes Firefox.
+
+**How the load happens.** `navigate` sends the `WindowGlobalTarget`'s `navigateTo`, which sets
+`this.window.location = request.url` from the DevTools server in the tab's content process
+(`devtools/server/actors/targets/window-global.js:1418`, mozilla-firefox/firefox `f612f4a7`), so
+the triggering principal is the DevTools code's (system), not the page's — inferred, not traced:
+the page below is not web-accessible, which a page-triggered load would refuse.
+(`launch --temporary-addon --url` uses the tab descriptor's `navigateTo` instead:
+`browsingContext.loadURI` from the parent with the system principal, `descriptors/tab.js:325`.)
+
+**Why `file:` crashes and `moz-extension:` does not.** A load requested by a content process is
+checked in the parent (`nsDocShellLoadState.cpp`, `ContentTriggeredURILoadIsAllowed`, line 55);
+a failure is an IPC `FatalError` ("Illegal load attempt of %s URL from %s"), which is the
+`file:` crash. For a URI a null principal may not link to, the check falls through to
+`ValidatePrincipalCouldPotentiallyBeLoadedBy` (`dom/ipc/ProcessIsolation.cpp:1496`), which
+returns true for any `moz-extension` origin from any content process ("Web content can contain
+extension content frames and contain extension content scripts, so any content process may
+send us an extension's principal", line 1611), while `file:` is only allowed for the file
+process (line 1633).
+
+**`web_accessible_resources`.** Not needed: the fixture's `page.html` is not listed and loads.
+The privileged triggering principal passes `CheckLoadURI`; a web page could not do this load.
+
+**Measured** (Firefox 160.0, macOS, headless, the MV3 fixture with `page.html` and the
+`storage` permission, a local `http:` page):
+
+| Step | Result |
+|---|---|
+| `navigate moz-extension://<uuid>/page.html` | `committed_url` the extension page, `ready_state: complete`, `status: null` (`no_document_request`) |
+| `tabs` | same tab, new `browsingContextID` (11 → 13): the tab changed process |
+| `eval --stringify '[location.protocol, typeof browser.runtime.id, browser.runtime.id]'` | `["moz-extension:", "string", "temporary-addon-fixture@ff-rdp.test"]` |
+| `eval --stringify 'await browser.storage.local.set({…}); await browser.storage.local.get()'` | the stored object |
+| `dom '#extension-page' --text` | the page's heading |
+| `console` | the page script's `console.log`, source `moz-extension://<uuid>/page.js` |
+| `navigate moz-extension://<uuid>/missing.html` | commits a blank document (title `""`, `status: null`), exit 0, no crash |
+| `navigate moz-extension://<unknown uuid>/page.html` | exit 124 after 10 s: "document.readyState did not reach 'interactive' or 'complete'"; the tab stays on the previous page, no crash |
+| `navigate moz-extension://<uuid>/page.html --with-network` | exit 0, `network.total: 0` |
+| `perf compare moz-extension://<uuid>/page.html http://…/` | exit 0, both entries returned |
+| `navigate http://127.0.0.1:…/`, then `eval`, `dom` | work; the content script's mark is set |
+| a second round trip | the same |
+
+Firefox stayed up through all of it. Live test: `live_moz_extension_navigate.rs` (two round
+trips, `console` and a missing page included). The fixture's `page.html` loads `page.js`, which
+logs the console message.
+
+**Why by default, not behind a flag.** It reaches only add-ons installed in the Firefox being
+driven (random per-profile UUID host), and a client on the debug port can already read
+everything in that browser, extension storage included, so nothing new is disclosed.
+
+Not checked: Windows and Linux (the policy check above is platform-independent); an add-on
+page opened while its add-on is reloaded or uninstalled.
 
 ## Not checked
 
