@@ -152,6 +152,20 @@ fn describe(addon: &AddonDescriptor) -> Value {
     })
 }
 
+/// `path` as one shell argument in a suggested command: double-quoted when it
+/// holds anything beyond plain path characters (spaces, quotes, `$`, …).
+/// Double quotes keep a space-containing path whole in sh, PowerShell and cmd.
+fn shell_arg(path: &str) -> String {
+    let plain = path
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "/\\._-:@+,=~".contains(c));
+    if plain && !path.is_empty() {
+        path.to_owned()
+    } else {
+        format!("\"{}\"", path.replace('"', "\\\""))
+    }
+}
+
 /// What `addon reload` was pointed at.
 #[derive(Debug, PartialEq, Eq)]
 enum ReloadTarget {
@@ -206,7 +220,9 @@ fn find_target<'a>(
                 AppError::User(format!(
                     "addon reload {}: no add-on is installed from {}; install it first \
                      with `ff-rdp addon install {}`",
-                    path.given, path.absolute, path.given
+                    path.given,
+                    path.absolute,
+                    shell_arg(&path.given)
                 ))
             }),
     }
@@ -230,11 +246,14 @@ pub(crate) fn run_reload(cli: &Cli, arg: &str) -> Result<(), AppError> {
     // reload, next to the one before it.
     let after = RootActor::list_addons(transport)?;
     let reloaded = after.iter().find(|a| a.id == addon.id);
+    // Describe the add-on as it runs now (a reload can change its name);
+    // fall back to the pre-reload entry if it vanished from the list.
+    let current = reloaded.unwrap_or(addon);
     let result = json!({
-        "id": addon.id,
-        "name": addon.name,
-        "url": addon.url,
-        "temporarily_installed": addon.temporarily_installed,
+        "id": current.id,
+        "name": current.name,
+        "url": current.url,
+        "temporarily_installed": current.temporarily_installed,
         "uuid": reloaded.and_then(AddonDescriptor::uuid),
         "previous_uuid": previous_uuid,
     });
@@ -243,14 +262,22 @@ pub(crate) fn run_reload(cli: &Cli, arg: &str) -> Result<(), AppError> {
 
 /// Firefox's reload error is only `Extension is invalid` (the descriptor does
 /// not append the manifest details `installTemporaryAddon` does), so point at
-/// the command that names the problem.
+/// the command that names the problem. That holds only for a temporary
+/// add-on, whose reload is a fresh `installTemporaryAddon` that validates
+/// first; any other add-on's reload is disable + enable, so pass Firefox's
+/// message through as is.
 fn reload_error(arg: &str, addon: &AddonDescriptor, message: &str) -> String {
-    let detail = match source_path(addon) {
-        Some(path) => format!(
-            "; the running version stays installed, and `ff-rdp addon install {path}` names \
-             the manifest problem"
-        ),
-        None => "; the running version stays installed".to_owned(),
+    let detail = if addon.temporarily_installed == Some(true) {
+        match source_path(addon) {
+            Some(path) => format!(
+                "; the running version stays installed, and `ff-rdp addon install {}` names \
+                 the manifest problem",
+                shell_arg(&path)
+            ),
+            None => "; the running version stays installed".to_owned(),
+        }
+    } else {
+        String::new()
     };
     format!(
         "addon reload {arg}: Firefox could not reload {}: {message}{detail}",
@@ -274,21 +301,23 @@ pub(crate) fn run_uninstall(cli: &Cli, id: &str) -> Result<(), AppError> {
         Err(ProtocolError::ActorError { message, .. }) => {
             // Firefox says the same thing for an unknown id and for an add-on
             // that is not temporary (addons.js:83-85); the list tells which.
-            let known = RootActor::list_addons(transport)
-                .ok()
-                .and_then(|all| all.into_iter().find(|a| a.id == id));
+            // `None` when the list itself failed: then the cause is unknown.
+            let listed = RootActor::list_addons(transport).ok();
             Err(AppError::User(uninstall_refusal(
                 id,
                 &message,
-                known.as_ref(),
+                listed.as_deref(),
             )))
         }
         Err(other) => Err(AppError::from(other)),
     }
 }
 
-fn uninstall_refusal(id: &str, message: &str, known: Option<&AddonDescriptor>) -> String {
-    let why = match known {
+fn uninstall_refusal(id: &str, message: &str, listed: Option<&[AddonDescriptor]>) -> String {
+    let Some(listed) = listed else {
+        return format!("addon uninstall {id}: Firefox refused to uninstall it ({message})");
+    };
+    let why = match listed.iter().find(|a| a.id == id) {
         None => "Firefox has no add-on with this id; `ff-rdp addon list` shows the installed ones",
         Some(a) if a.temporarily_installed != Some(true) => {
             "the add-on is not temporarily installed, and Firefox uninstalls only temporary \
@@ -449,7 +478,9 @@ mod tests {
     fn reload_error_points_at_install_for_the_details() {
         let root = tempfile::tempdir().unwrap();
         let url = url::Url::from_directory_path(root.path()).unwrap();
-        let addon = form(json!({"actor": "a", "id": "x@y", "url": url.as_str()}));
+        let addon = form(json!({
+            "actor": "a", "id": "x@y", "url": url.as_str(), "temporarilyInstalled": true
+        }));
         let text = reload_error("x@y", &addon, "Extension is invalid");
         assert!(
             text.starts_with(
@@ -458,17 +489,44 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("`ff-rdp addon install "), "{text}");
-        let no_source = form(json!({"actor": "a", "id": "x@y"}));
+        let no_source = form(json!({"actor": "a", "id": "x@y", "temporarilyInstalled": true}));
         assert!(!reload_error("x@y", &no_source, "boom").contains("addon install"));
+        // A non-temporary add-on's reload is disable + enable: no install hint,
+        // no claim that the running version stays.
+        let permanent = form(json!({
+            "actor": "a", "id": "x@y", "url": url.as_str(), "temporarilyInstalled": false
+        }));
+        assert_eq!(
+            reload_error("x@y", &permanent, "boom"),
+            "addon reload x@y: Firefox could not reload x@y: boom"
+        );
+    }
+
+    #[test]
+    fn suggested_paths_are_quoted_when_needed() {
+        assert_eq!(shell_arg("/home/u/dist"), "/home/u/dist");
+        assert_eq!(shell_arg(r"C:\ext\dist.xpi"), r"C:\ext\dist.xpi");
+        assert_eq!(
+            shell_arg("/Users/Jane Doe/dist"),
+            "\"/Users/Jane Doe/dist\""
+        );
+        assert_eq!(shell_arg("a\"b"), "\"a\\\"b\"");
     }
 
     #[test]
     fn uninstall_refusal_says_why() {
         let msg = "Could not uninstall add-on \"x\"";
-        assert!(uninstall_refusal("x", msg, None).contains("no add-on with this id"));
-        let installed = form(json!({"actor": "a", "id": "x", "temporarilyInstalled": false}));
+        assert!(uninstall_refusal("x", msg, Some(&[])).contains("no add-on with this id"));
+        let installed = [form(
+            json!({"actor": "a", "id": "x", "temporarilyInstalled": false}),
+        )];
         assert!(
             uninstall_refusal("x", msg, Some(&installed)).contains("not temporarily installed")
+        );
+        // The follow-up list failed: no guessed cause.
+        assert_eq!(
+            uninstall_refusal("x", msg, None),
+            format!("addon uninstall x: Firefox refused to uninstall it ({msg})")
         );
     }
 }
