@@ -4099,3 +4099,110 @@ fn live_297_record_install_temporary_addon() {
     save_core_fixture("install_temporary_addon_response.json", &ok);
     save_core_fixture("install_temporary_addon_error_response.json", &bad);
 }
+
+// ===========================================================================
+// iter-298: `ff-rdp addon` — listAddons, descriptor reload, uninstallAddon
+// ===========================================================================
+
+/// Record every reply `ff-rdp addon install|list|reload|uninstall` reads:
+/// install of the MV3 fixture (and the bad-manifest error) into the CLI
+/// fixtures, then `listAddons`, the fixture's WebExtension descriptor
+/// `reload`, `uninstallAddon` of the fixture and of an unknown id. The fixture
+/// is uninstalled, so the shared Firefox serves later recordings unmarked.
+///
+/// The absolute fixtures directory (in the error message and the add-on's
+/// `file:` source URL) is replaced by `<FIXTURES>`, so the recordings are
+/// machine-independent.
+///
+/// Run to record:
+///   FF_RDP_LIVE_TESTS_RECORD=1 cargo test -p ff-rdp-core \
+///     --test live_record_fixtures -- --ignored live_298_record_addon_commands --nocapture
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_298_record_addon_commands() {
+    const ID: &str = "temporary-addon-fixture@ff-rdp.test";
+    if !should_run_live() {
+        return;
+    }
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../ff-rdp-cli/tests/fixtures")
+        .canonicalize()
+        .expect("CLI fixtures dir");
+    let fixtures_str = fixtures.to_str().expect("UTF-8 fixtures path").to_owned();
+    let normalized = |value: &Value| -> Value {
+        serde_json::from_str(&value.to_string().replace(&fixtures_str, "<FIXTURES>"))
+            .expect("re-parse normalized reply")
+    };
+    let mut conn = connect();
+    let transport = conn.transport_mut();
+
+    let root = send_raw(transport, &json!({"to": "root", "type": "getRoot"}));
+    let addons = root["addonsActor"]
+        .as_str()
+        .unwrap_or_else(|| panic!("getRoot has no addonsActor: {root}"))
+        .to_owned();
+    let install = |transport: &mut RdpTransport, dir: &str| {
+        let path = fixtures.join(dir);
+        transport
+            .send(&json!({
+                "to": addons,
+                "type": "installTemporaryAddon",
+                "addonPath": path.to_str().expect("UTF-8 path"),
+                "openDevTools": false,
+            }))
+            .expect("send installTemporaryAddon");
+        recv_from_actor(transport, &addons)
+    };
+
+    let installed = install(transport, "temporary_addon_mv3");
+    assert_eq!(installed["addon"]["id"], ID, "{installed}");
+    let rejected = install(transport, "temporary_addon_bad_manifest");
+    assert_eq!(rejected["error"], "Error", "{rejected}");
+
+    let listed = send_raw(transport, &json!({"to": "root", "type": "listAddons"}));
+    let descriptor = listed["addons"]
+        .as_array()
+        .and_then(|all| all.iter().find(|a| a["id"] == ID))
+        .unwrap_or_else(|| panic!("fixture add-on not listed: {listed}"));
+    assert_eq!(descriptor["temporarilyInstalled"], true, "{descriptor}");
+    let descriptor_actor = descriptor["actor"].as_str().expect("actor").to_owned();
+
+    // After a `listAddons`, root pushes `addonListChanged` events; read each
+    // reply by its own actor rather than taking the next packet.
+    let request = |transport: &mut RdpTransport, packet: Value| {
+        let to = packet["to"].as_str().expect("to").to_owned();
+        transport.send(&packet).expect("send");
+        recv_from_actor(transport, &to)
+    };
+    let reloaded = request(transport, json!({"to": descriptor_actor, "type": "reload"}));
+    assert!(reloaded.get("error").is_none(), "{reloaded}");
+
+    let uninstalled = request(
+        transport,
+        json!({"to": addons, "type": "uninstallAddon", "addonId": ID}),
+    );
+    assert!(uninstalled.get("error").is_none(), "{uninstalled}");
+    let unknown = request(
+        transport,
+        json!({"to": addons, "type": "uninstallAddon", "addonId": "no-such-addon@ff-rdp.test"}),
+    );
+    assert_eq!(unknown["error"], "Error", "{unknown}");
+
+    let listed = normalized(&listed);
+    let rejected = normalized(&rejected);
+    println!(
+        "  listAddons: {listed}\n  reload: {reloaded}\n  uninstall: {uninstalled}\n  unknown: {unknown}"
+    );
+    save_cli_fixture("get_root_addons_response.json", &root);
+    save_cli_fixture("install_temporary_addon_response.json", &installed);
+    save_cli_fixture("install_temporary_addon_error_response.json", &rejected);
+    for (name, value) in [
+        ("list_addons_response.json", &listed),
+        ("webextension_reload_response.json", &reloaded),
+        ("uninstall_addon_response.json", &uninstalled),
+        ("uninstall_addon_unknown_id_error_response.json", &unknown),
+    ] {
+        save_cli_fixture(name, value);
+        save_core_fixture(name, value);
+    }
+}

@@ -1,6 +1,7 @@
 pub(crate) mod a11y;
 pub(crate) mod a11y_contrast;
 pub(crate) mod a11y_summary;
+pub(crate) mod addon;
 pub(crate) mod auto_consent;
 pub(crate) mod cascade;
 pub(crate) mod click;

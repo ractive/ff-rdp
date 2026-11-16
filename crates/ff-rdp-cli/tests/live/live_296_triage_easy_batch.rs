@@ -56,7 +56,7 @@ const BANNER_PAGE: &str = "<!doctype html><html lang=en><head><title>Banner</tit
 /// A page-level `<header>`/`<footer>` are the banner/contentinfo landmarks;
 /// the ones scoped to `nav`/`section`/`article` are not (HTML-AAM).
 #[test]
-#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+#[ignore = "flaky: see kb/backlog.md"]
 fn live_296_a11y_summary_one_banner_for_nested_headers() {
     if !live_tests_enabled() {
         eprintln!("live_296_a11y_summary_one_banner_for_nested_headers: set FF_RDP_LIVE_TESTS=1");

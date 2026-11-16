@@ -9,6 +9,7 @@ mod cli_version;
 mod dom_help_mentions_styles;
 
 mod a11y;
+mod addon;
 mod click;
 mod closing_284;
 mod completions;

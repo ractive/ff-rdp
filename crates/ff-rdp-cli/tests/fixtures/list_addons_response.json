@@ -1,0 +1,218 @@
+{
+  "addons": [
+    {
+      "actor": "server1.conn0.webExtensionDescriptor8",
+      "debuggable": true,
+      "hidden": true,
+      "iconURL": null,
+      "id": "formautofill@mozilla.org",
+      "isSystem": true,
+      "isWebExtension": true,
+      "manifestURL": "moz-extension://744ab897-18d0-4fb2-8ed2-c37264875f23/manifest.json",
+      "name": "Form Autofill",
+      "persistentBackgroundScript": true,
+      "temporarilyInstalled": false,
+      "traits": {
+        "supportsReloadDescriptor": true,
+        "watcher": true
+      },
+      "warnings": []
+    },
+    {
+      "actor": "server1.conn0.webExtensionDescriptor9",
+      "debuggable": true,
+      "hidden": true,
+      "iconURL": null,
+      "id": "ipp-activator@mozilla.com",
+      "isSystem": true,
+      "isWebExtension": true,
+      "manifestURL": "moz-extension://0cca426b-e92c-4330-b256-e839002183f5/manifest.json",
+      "name": "IPP Activator",
+      "persistentBackgroundScript": true,
+      "temporarilyInstalled": false,
+      "traits": {
+        "supportsReloadDescriptor": true,
+        "watcher": true
+      },
+      "warnings": []
+    },
+    {
+      "actor": "server1.conn0.webExtensionDescriptor10",
+      "debuggable": true,
+      "hidden": true,
+      "iconURL": null,
+      "id": "newtab@mozilla.org",
+      "isSystem": true,
+      "isWebExtension": true,
+      "manifestURL": "moz-extension://e494ad87-cb23-49e1-b2c3-f84f87ca6018/manifest.json",
+      "name": "New Tab",
+      "persistentBackgroundScript": true,
+      "temporarilyInstalled": false,
+      "traits": {
+        "supportsReloadDescriptor": true,
+        "watcher": true
+      },
+      "warnings": []
+    },
+    {
+      "actor": "server1.conn0.webExtensionDescriptor11",
+      "debuggable": true,
+      "hidden": true,
+      "iconURL": null,
+      "id": "pictureinpicture@mozilla.org",
+      "isSystem": true,
+      "isWebExtension": true,
+      "manifestURL": "moz-extension://4280559e-daec-4032-98a1-5bef980d1426/manifest.json",
+      "name": "Picture-In-Picture",
+      "persistentBackgroundScript": true,
+      "temporarilyInstalled": false,
+      "traits": {
+        "supportsReloadDescriptor": true,
+        "watcher": true
+      },
+      "warnings": []
+    },
+    {
+      "actor": "server1.conn0.webExtensionDescriptor12",
+      "debuggable": true,
+      "hidden": true,
+      "iconURL": null,
+      "id": "addons-search-detection@mozilla.com",
+      "isSystem": true,
+      "isWebExtension": true,
+      "manifestURL": "moz-extension://5da7d8cd-7dcd-498c-9f6f-7846d459685e/manifest.json",
+      "name": "Add-ons Search Detection",
+      "persistentBackgroundScript": true,
+      "temporarilyInstalled": false,
+      "traits": {
+        "supportsReloadDescriptor": true,
+        "watcher": true
+      },
+      "warnings": []
+    },
+    {
+      "actor": "server1.conn0.webExtensionDescriptor13",
+      "debuggable": true,
+      "hidden": true,
+      "iconURL": null,
+      "id": "webcompat@mozilla.org",
+      "isSystem": true,
+      "isWebExtension": true,
+      "manifestURL": "moz-extension://9a310967-e580-48bf-b3e8-4eafebbc122d/manifest.json",
+      "name": "Web Compatibility Interventions",
+      "persistentBackgroundScript": true,
+      "temporarilyInstalled": false,
+      "traits": {
+        "supportsReloadDescriptor": true,
+        "watcher": true
+      },
+      "warnings": []
+    },
+    {
+      "actor": "server1.conn0.webExtensionDescriptor14",
+      "debuggable": true,
+      "hidden": false,
+      "iconURL": "resource://default-theme/icon.svg",
+      "id": "default-theme@mozilla.org",
+      "isSystem": false,
+      "isWebExtension": true,
+      "manifestURL": "moz-extension://f3dff34c-09e9-489d-ae5e-b2205190f2f9/manifest.json",
+      "name": "Default",
+      "temporarilyInstalled": false,
+      "traits": {
+        "supportsReloadDescriptor": true,
+        "watcher": true
+      },
+      "warnings": []
+    },
+    {
+      "actor": "server1.conn0.webExtensionDescriptor15",
+      "hidden": false,
+      "iconURL": "resource://builtin-themes/light/icon.svg",
+      "id": "firefox-compact-light@mozilla.org",
+      "isSystem": false,
+      "isWebExtension": true,
+      "manifestURL": null,
+      "name": "Light",
+      "temporarilyInstalled": false,
+      "traits": {
+        "supportsReloadDescriptor": true,
+        "watcher": true
+      },
+      "warnings": []
+    },
+    {
+      "actor": "server1.conn0.webExtensionDescriptor16",
+      "hidden": false,
+      "iconURL": "resource://builtin-themes/dark/icon.svg",
+      "id": "firefox-compact-dark@mozilla.org",
+      "isSystem": false,
+      "isWebExtension": true,
+      "manifestURL": null,
+      "name": "Dark",
+      "temporarilyInstalled": false,
+      "traits": {
+        "supportsReloadDescriptor": true,
+        "watcher": true
+      },
+      "warnings": []
+    },
+    {
+      "actor": "server1.conn0.webExtensionDescriptor17",
+      "hidden": false,
+      "iconURL": "resource://builtin-themes/alpenglow/icon.svg",
+      "id": "firefox-alpenglow@mozilla.org",
+      "isSystem": false,
+      "isWebExtension": true,
+      "manifestURL": null,
+      "name": "Firefox Alpenglow",
+      "temporarilyInstalled": false,
+      "traits": {
+        "supportsReloadDescriptor": true,
+        "watcher": true
+      },
+      "warnings": []
+    },
+    {
+      "actor": "server1.conn0.webExtensionDescriptor18",
+      "debuggable": true,
+      "hidden": false,
+      "iconURL": null,
+      "id": "temporary-addon-fixture@ff-rdp.test",
+      "isSystem": false,
+      "isWebExtension": true,
+      "manifestURL": "moz-extension://6d369cf1-827f-4e2f-941b-8662090f636f/manifest.json",
+      "name": "ff-rdp temporary add-on fixture",
+      "temporarilyInstalled": true,
+      "traits": {
+        "supportsReloadDescriptor": true,
+        "watcher": true
+      },
+      "url": "file://<FIXTURES>/temporary_addon_mv3/",
+      "warnings": []
+    },
+    {
+      "actor": "server1.conn0.webExtensionDescriptor19",
+      "id": "gmp-gmpopenh264",
+      "manifestURL": null,
+      "name": "OpenH264 Video Codec provided by Cisco Systems, Inc.",
+      "traits": {
+        "supportsReloadDescriptor": true,
+        "watcher": true
+      },
+      "warnings": []
+    },
+    {
+      "actor": "server1.conn0.webExtensionDescriptor20",
+      "id": "gmp-widevinecdm",
+      "manifestURL": null,
+      "name": "Widevine Content Decryption Module provided by Google Inc.",
+      "traits": {
+        "supportsReloadDescriptor": true,
+        "watcher": true
+      },
+      "warnings": []
+    }
+  ],
+  "from": "root"
+}

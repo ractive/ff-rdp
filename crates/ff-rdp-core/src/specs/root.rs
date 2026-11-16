@@ -2,7 +2,7 @@
 //!
 //! Mirrors <https://searchfox.org/mozilla-central/source/devtools/shared/specs/root.js>
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::{Method, NoArgs, sealed};
 
@@ -15,7 +15,7 @@ pub use crate::actors::tab::TabInfo;
 // ---------------------------------------------------------------------------
 
 pub mod request {
-    use super::NoArgs;
+    use super::{NoArgs, Serialize};
 
     /// Args for `listTabs` — no parameters needed.
     pub type ListTabs = NoArgs;
@@ -25,6 +25,17 @@ pub mod request {
 
     /// Args for `listProcesses` — no parameters needed.
     pub type ListProcesses = NoArgs;
+
+    /// Args for `listAddons` (`root.js:54-61`: `iconDataURL: Option(0, "boolean")`).
+    ///
+    /// `true` makes the server fetch every add-on icon into a `data:` URL
+    /// before replying (`devtools/server/actors/root.js:372-374`); left out
+    /// when `None`, which the server treats as `false`.
+    #[derive(Debug, Clone, Default, Serialize)]
+    pub struct ListAddons {
+        #[serde(rename = "iconDataURL", skip_serializing_if = "Option::is_none")]
+        pub icon_data_url: Option<bool>,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -33,7 +44,17 @@ pub mod request {
 
 pub mod response {
     use super::{Deserialize, TabInfo};
+    use crate::specs::webextension_descriptor::response::AddonDescriptor;
     use crate::types::ActorId;
+
+    /// Reply for `listAddons` (`root.js:58-60`: `addons: array:webExtensionDescriptor`).
+    ///
+    /// Every add-on the AddonManager knows — system, hidden, themes and GMP
+    /// plugins included (`devtools/server/actors/webbrowser.js:688-699`).
+    #[derive(Debug, Clone, Deserialize)]
+    pub struct ListAddons {
+        pub addons: Vec<AddonDescriptor>,
+    }
 
     /// Reply for `listTabs`.
     #[derive(Debug, Clone, Default, Deserialize)]
@@ -100,6 +121,15 @@ impl Method for ListProcesses {
     const NAME: &'static str = "listProcesses";
     type Args = NoArgs;
     type Reply = response::ListProcesses;
+}
+
+/// `listAddons` method marker (`root.js:54-61`).
+pub struct ListAddons;
+impl sealed::Sealed for ListAddons {}
+impl Method for ListAddons {
+    const NAME: &'static str = "listAddons";
+    type Args = request::ListAddons;
+    type Reply = response::ListAddons;
 }
 
 // ---------------------------------------------------------------------------
@@ -182,5 +212,46 @@ mod tests {
         assert_eq!(ListTabs::NAME, "listTabs");
         assert_eq!(GetRoot::NAME, "getRoot");
         assert_eq!(ListProcesses::NAME, "listProcesses");
+        assert_eq!(ListAddons::NAME, "listAddons");
+    }
+
+    #[test]
+    fn list_addons_request_sends_icon_data_url_only_when_set() {
+        let none = serde_json::to_value(request::ListAddons::default()).unwrap();
+        assert_eq!(none, json!({}));
+        let some = serde_json::to_value(request::ListAddons {
+            icon_data_url: Some(false),
+        })
+        .unwrap();
+        assert_eq!(some, json!({"iconDataURL": false}));
+    }
+
+    /// Recorded from Firefox by `live_298_record_addon_commands`: the fixture
+    /// add-on is temporary, has a UUID and a `file:` source URL; GMP plugins
+    /// come without the boolean flags.
+    #[test]
+    fn list_addons_reply_deserializes_recorded_reply() {
+        let raw = include_str!("../../tests/fixtures/list_addons_response.json");
+        let reply: response::ListAddons = serde_json::from_str(raw).unwrap();
+        let fixture = reply
+            .addons
+            .iter()
+            .find(|a| a.id == "temporary-addon-fixture@ff-rdp.test")
+            .expect("fixture add-on listed");
+        assert_eq!(fixture.temporarily_installed, Some(true));
+        assert_eq!(fixture.debuggable, Some(true));
+        assert_eq!(fixture.hidden, Some(false));
+        assert!(fixture.uuid().is_some(), "{fixture:?}");
+        assert!(
+            fixture
+                .url
+                .as_deref()
+                .is_some_and(|u| u.starts_with("file://")),
+            "{fixture:?}"
+        );
+        assert!(
+            reply.addons.iter().any(|a| a.hidden.is_none()),
+            "a GMP plugin without flags is in the recording"
+        );
     }
 }

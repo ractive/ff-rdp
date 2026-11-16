@@ -22,6 +22,7 @@ Specs live in parallel under `devtools/shared/specs/`.
 - [[rdp/actors/descriptors/tab-descriptor]] — `actors/descriptors/tab.js` — `getTarget`, `getWatcher`, `navigateTo`, `reloadDescriptor`, `goBack/goForward`, `getFavicon`.
 - [[rdp/actors/descriptors/process-descriptor]] — `actors/descriptors/process.js` — content/parent process descriptor; spawns ContentProcessTarget.
 - [[rdp/actors/descriptors/worker-descriptor]] — `actors/descriptors/worker.js`.
+- [[rdp/actors/descriptors/webextension-descriptor]] — `actors/descriptors/webextension.js` — one per add-on from `listAddons`; `reload` (about:debugging's Reload, used by `addon reload`).
 - [[rdp/actors/targets/window-global-target]] — `actors/targets/window-global.js` — per-WindowGlobal target (top-level frames). 2055 lines. Hosts most child actors.
 - [[rdp/actors/targets/content-process-target]] — `actors/targets/content-process.js`.
 - [[rdp/actors/targets/parent-process-target]] — `actors/targets/parent-process.js` — Browser Toolbox.
@@ -83,7 +84,7 @@ Specs live in parallel under `devtools/shared/specs/`.
 - `actors/process.js` — legacy process actor.
 - `actors/webbrowser.js` — legacy hooks for live tab/addon lists used by RootActor.
 - `actors/emulation/` — touch/responsive emulation.
-- `actors/addon/`, `actors/worker/` — addon and worker support. [[addons]] — `actors/addon/addons.js` — global `addonsActor`: `installTemporaryAddon`, `uninstallAddon` (used by `launch --temporary-addon`).
+- `actors/addon/`, `actors/worker/` — addon and worker support. [[addons]] — `actors/addon/addons.js` — global `addonsActor`: `installTemporaryAddon`, `uninstallAddon` (used by `launch --temporary-addon` and `addon install|uninstall`).
 - `actors/events/` — devtools internal events.
 
 ## Watcher infrastructure

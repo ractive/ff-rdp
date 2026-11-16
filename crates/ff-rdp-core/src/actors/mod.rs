@@ -21,3 +21,4 @@ pub mod target;
 pub mod target_configuration;
 pub mod thread;
 pub mod watcher;
+pub mod webextension_descriptor;

@@ -120,3 +120,14 @@ first load).
   `addon reload` would cause, so they get documented with that command, not a flag.
 - **`stop --graceful`:** declined for now. The only motivating case (a normal quit uninstalls
   temporary add-ons) is untested here, and the prefs above already cover it.
+- **Reload checked against Firefox source (iter-298, [[iteration-298-addon-command]]):**
+  about:debugging's Reload is the WebExtension descriptor's `reload`
+  (`debug-targets.js:161-175`), which for a temporary add-on re-runs
+  `AddonManager.installTemporaryAddon` on the add-on's own source
+  (`XPIDatabase.sys.mjs:1505-1519`) — so both readings above were right, they are the same
+  call. It is an upgrade, not an uninstall (`XPIProvider.sys.mjs:2305-2311`): on Firefox 160
+  `ff-rdp addon reload` kept the UUID **without** the prefs, which contradicts the
+  hand-observed "new UUID" for about:debugging's Reload above (not re-checked by hand; a
+  Remove + Load would give exactly that). Storage across a reload was not checked. An
+  uninstall followed by an install gave a new UUID without `keepUuidOnUninstall` and the
+  same UUID with it. Details: [[rdp/actors/descriptors/webextension-descriptor]].

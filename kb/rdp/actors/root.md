@@ -34,10 +34,10 @@ Not a regular RDP request — emitted spontaneously on connect. Returns:
 | Method | Args | Returns | Notes |
 |---|---|---|---|
 | `connect` | `frontendVersion` (opt, Fx 133+) | `{}` | Negotiation handshake. |
-| `getRoot` | — | json | Returns the global actor inventory (preferenceActor, deviceActor, perfActor, screenshotActor, `addonsActor`, …) for the top-level singletons. `addonsActor` is the [[addons]] actor that installs temporary add-ons (`launch --temporary-addon`). |
+| `getRoot` | — | json | Returns the global actor inventory (preferenceActor, deviceActor, perfActor, screenshotActor, `addonsActor`, …) for the top-level singletons. `addonsActor` is the [[addons]] actor that installs and uninstalls temporary add-ons (`launch --temporary-addon`, `addon install`, `addon uninstall`). |
 | `listTabs` | — | `array:tabDescriptor` | One TabDescriptor per browser tab. |
 | `getTab` | `{browserId}` | `tabDescriptor` | Look up by stable browserId. |
-| `listAddons` | `{iconDataURL}` | `array:webExtensionDescriptor` | |
+| `listAddons` | `{iconDataURL}` | `array:webExtensionDescriptor` | Every add-on (system, themes, GMP plugins included); one [[rdp/actors/descriptors/webextension-descriptor]] per id, pooled per connection. `RootActor::list_addons` (`addon list`, `addon reload`); `iconDataURL` not sent. |
 | `listWorkers` | — | `{workers: array:workerDescriptor}` | Shared/dedicated/service workers. |
 | `listServiceWorkerRegistrations` | — | `{registrations}` | |
 | `listProcesses` | — | `array:processDescriptor` | One per content/parent process. |

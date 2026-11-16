@@ -102,6 +102,24 @@ impl RootActor {
         actor_send(transport, "root", "clearResources", Some(&params))
     }
 
+    /// List every add-on Firefox knows, as WebExtension descriptor forms.
+    ///
+    /// `listAddons` (`devtools/shared/specs/root.js:54-61`) — the same request
+    /// about:debugging sends to fill its Extensions list. `iconDataURL` is not
+    /// sent, so no icon is fetched. The descriptor actors live in a pool the
+    /// next `listAddons` on the same connection replaces
+    /// (`devtools/server/actors/root.js:357-385`). A root actor without add-on
+    /// support answers `noAddons` (line 360).
+    pub fn list_addons(
+        transport: &mut RdpTransport,
+    ) -> Result<Vec<crate::specs::webextension_descriptor::response::AddonDescriptor>, ProtocolError>
+    {
+        let root = ActorId::from("root");
+        let args = crate::specs::root::request::ListAddons::default();
+        crate::specs::call::<crate::specs::root::ListAddons>(transport, &root, &args)
+            .map(|reply| reply.addons)
+    }
+
     /// Get root actor metadata (device, preferences, addons actor IDs).
     pub fn get_root(transport: &mut RdpTransport) -> Result<Value, ProtocolError> {
         actor_request(transport, "root", "getRoot", None)
@@ -215,6 +233,27 @@ mod tests {
         let writer = client.try_clone().unwrap();
         let reader = BufReader::new(client);
         RdpTransport::from_parts(reader, writer)
+    }
+
+    /// Recorded `listAddons` reply (`live_298_record_addon_commands`), parsed
+    /// through `RootActor::list_addons`.
+    #[test]
+    fn list_addons_parses_recorded_reply() {
+        let raw = include_str!("../../tests/fixtures/list_addons_response.json");
+        let mut transport = make_transport_with_response(serde_json::from_str(raw).unwrap());
+        let addons = RootActor::list_addons(&mut transport).unwrap();
+        let fixture = addons
+            .iter()
+            .find(|a| a.id == "temporary-addon-fixture@ff-rdp.test")
+            .expect("fixture add-on listed");
+        assert!(
+            fixture.actor.as_ref().contains("webExtensionDescriptor"),
+            "{fixture:?}"
+        );
+        assert_eq!(
+            fixture.name.as_deref(),
+            Some("ff-rdp temporary add-on fixture")
+        );
     }
 
     #[test]

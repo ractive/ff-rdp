@@ -1,0 +1,9 @@
+{
+  "from": "server1.conn0.addonsActor2",
+  "error": "Error",
+  "message": "Could not install add-on at '<FIXTURES>/temporary_addon_bad_manifest': Error: Extension is invalid\nReading manifest: Property \"version\" is required",
+  "fileName": "resource://devtools/server/actors/addon/addons.js",
+  "lineNumber": 41,
+  "columnNumber": 13,
+  "stack": "installTemporaryAddon@resource://devtools/server/actors/addon/addons.js:41:13\n"
+}
