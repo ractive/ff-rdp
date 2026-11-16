@@ -75,8 +75,11 @@ uninstall, and its UUID (`extensions.webextensions.uuids` in `prefs.js`) and sto
 
 The prefs matter when the add-on is really uninstalled:
 
-- **Reload in about:debugging** (uninstall and install in one session): a new UUID and empty
-  storage without the prefs, the same with them (seen by hand in Firefox 160, tab-mcp).
+- **Remove, then Load Temporary Add-on again** (a real uninstall): a new UUID without
+  `keepUuidOnUninstall`, the same with it (ff-rdp `addon uninstall` + `install`, iter-298).
+  Not **Reload**: an earlier version of this note said Reload gave a new UUID and empty
+  storage without the prefs; measured, it keeps both (see "Reload keeps UUID and storage"
+  below). The hand observation was most likely a Remove and Load.
 - **WebDriver BiDi `webExtension.uninstall`, then `install` again**: with
   `keepUuidOnUninstall` the UUID stayed (tab-mcp's Firefox end-to-end test).
 - **A normal quit** (closing the window, Cmd-Q) is expected to uninstall temporary add-ons
@@ -88,6 +91,28 @@ Also seen: an extension that registers its content scripts at run time
 to `launch`: launch installs first and navigates after, and the registration was done by
 then (tab-mcp's `document_start` script defined `document.modelContext` on example.com's
 first load).
+
+## Reload keeps UUID and storage (tab-mcp, 2026-11-16)
+
+ff-rdp 0.4.4 (94a73d11), Firefox 160, macOS, headless, a fresh profile **without** the two
+prefs. A probe extension adds 1 at every background start to a counter in `storage.local`
+and to one in IndexedDB; its content script writes both and `runtime.getURL("")` into
+example.com.
+
+| Step | `storage.local` | IndexedDB | UUID |
+|---|---|---|---|
+| `addon install` | 1 | 1 | `716c216b…` |
+| `addon reload <id>` | 2 | 2 | the same (`previous_uuid` too) |
+
+- tab-mcp itself, reloaded the same way: the same UUID. A page that had registered a WebMCP
+  tool kept it with no page reload (the same `document.modelContext` object, the tool
+  listed and run), which is the "dead object" case above, fixed in tab-mcp.
+- So the prefs matter only for a real uninstall (Remove, BiDi `webExtension.uninstall`,
+  presumably a normal quit), not for `addon reload`, `stop` or `--replace`.
+- tab-mcp's `scripts/firefox-dev.ts --reload` uses it: rebuild, then `ff-rdp addon reload`.
+- `ff-rdp navigate` refuses `moz-extension:` URLs (also with `--allow-unsafe-urls`), so an
+  extension page's storage cannot be read through `eval`; a content script reporting into a
+  web page, as above, works.
 
 ## Not checked
 
@@ -128,6 +153,7 @@ first load).
   call. It is an upgrade, not an uninstall (`XPIProvider.sys.mjs:2305-2311`): on Firefox 160
   `ff-rdp addon reload` kept the UUID **without** the prefs, which contradicts the
   hand-observed "new UUID" for about:debugging's Reload above (not re-checked by hand; a
-  Remove + Load would give exactly that). Storage across a reload was not checked. An
+  Remove + Load would give exactly that). Storage across a reload: kept (measured, see
+  "Reload keeps UUID and storage"). An
   uninstall followed by an install gave a new UUID without `keepUuidOnUninstall` and the
   same UUID with it. Details: [[rdp/actors/descriptors/webextension-descriptor]].
