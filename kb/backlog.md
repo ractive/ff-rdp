@@ -74,7 +74,7 @@ product work that needs design. Keep items to one line — if an item needs more
 - [ ] `live_record_fixtures::live_page_style_get_layout` fails on FF157 (walker `querySelector h1` returns no node after the reconnect), so `page_style_get_layout_response.json` still holds the old unit-less shape; Firefox now sends `"margin-top": "7.03906px"` — re-record once the recorder works (fix/easy-batch-2)
 - [ ] `kb/discipline-rationale.md` § "Why nothing detects mirror drift" still describes the skills-to-`tools/*/scripts/` mirror obligation and a `diff -r` against `tools/<skill>/scripts/`, which no longer exists — rewrite or drop that section (#367)
 - [ ] **flaky** e2e `consent_selection::initial_tab_controls::initial_tab_request_cap_stops_always_empty_replies` failed once in a local `cargo test --workspace -q` on macOS (panic at `consent_selection.rs:61`, `recv_from` "one actual observer request"), passed on re-run (#367)
-- [ ] **flaky** `live_296_a11y_summary_one_banner_for_nested_headers` failed once locally on macOS (Firefox 160) during the iter-298 live run: `navigate data:text/html,…` timed out after 20007 ms ("readyState did not reach 'interactive' or 'complete'"), passed on re-run; not quarantined — iter-298 does not own that file (iter-298)
+- [ ] **flaky** `live_296_a11y_summary_one_banner_for_nested_headers` failed once locally on macOS (Firefox 160) during the iter-298 live run: `navigate data:text/html,…` timed out after 20007 ms ("readyState did not reach 'interactive' or 'complete'"), passed on re-run; quarantined with `#[ignore = "flaky: see kb/backlog.md"]` (iter-298)
 
 ## Global skills (edit by hand in `~/.claude/skills/`, shared with other repos)
 
