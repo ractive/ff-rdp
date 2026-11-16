@@ -621,7 +621,7 @@ Output: {\"results\": {\"navigated\": \"...\", \"status\": 200|null, \"status_re
   Capture runs until the document's readyState is 'complete' (then until the network is quiet), bounded by
   --network-timeout. partial: true means the document was still loading when the budget ran out (requests it
   had yet to issue are missing); timeout_reached is then true as well.
-  status is null with status_reason \"no_document_request\" for data:/blob:/file: documents — no HTTP response exists.
+  status is null with status_reason \"no_document_request\" for data:/blob:/file:/moz-extension: documents — no HTTP response exists.
   --headers adds {\"headers\": {\"request\": [{\"name\": \"...\", \"value\": \"...\"}], \"response\": [...]}} to each shown entry and
   --security adds a per-entry \"security\" object plus network.insecure_requests — the same shapes as `network --headers`/`--security`.
   Both imply the detail view and are fetched before this command's connection closes: Firefox drops a request's headers with
@@ -1416,6 +1416,9 @@ forwarded, not loaded.
 
 URL schemes follow the normal policy: http, https, about and moz-extension are allowed;
 file requires --allow-file-urls, and data/javascript require --allow-unsafe-urls.
+A moz-extension startup URL only resolves when the UUID is already known: a kept
+--profile keeps it, a fresh temporary profile assigns a new one at install
+(read it with `ff-rdp addon list`, then `ff-rdp navigate`).
 Invalid URLs fail before profile creation or --replace side effects. If an
 owned instance is already running, --url requires a free --debug-port or explicit
 --replace; it is never silently ignored or applied as content navigation.

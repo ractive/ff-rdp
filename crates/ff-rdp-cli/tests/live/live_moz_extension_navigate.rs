@@ -82,45 +82,66 @@ fn live_moz_extension_page_navigate_eval_and_back() {
     ok_json(port, &["navigate", &web]);
 
     let page = format!("moz-extension://{uuid}/page.html");
-    let nav = ok_json(port, &["navigate", &page]);
-    eprintln!("navigate {page}: {nav}");
-    assert_eq!(nav["results"]["committed_url"], page.as_str(), "{nav}");
+    // Two round trips: the second checks that leaving the extension process
+    // did not leave the tab or the debug server in a state the next entry
+    // trips over.
+    for round in 1..=2 {
+        let nav = ok_json(port, &["navigate", &page]);
+        eprintln!("round {round}: navigate {page}: {nav}");
+        assert_eq!(nav["results"]["committed_url"], page.as_str(), "{nav}");
 
-    let context = eval_json(
-        port,
-        "[location.protocol, typeof browser.runtime.id, browser.runtime.id, document.title]",
-    );
-    assert_eq!(
-        context,
-        serde_json::json!([
-            "moz-extension:",
-            "string",
-            FIXTURE_ID,
-            "ff-rdp extension page"
-        ]),
-        "eval did not run in the extension page"
-    );
-    let stored = eval_json(
-        port,
-        "await browser.storage.local.set({ ffRdp: 'stored' }); await browser.storage.local.get()",
-    );
-    assert_eq!(stored["ffRdp"], "stored", "{stored}");
-    let heading = ok_json(port, &["dom", "#extension-page", "--text"]);
-    assert_eq!(heading["results"][0], "extension page", "{heading}");
+        let context = eval_json(
+            port,
+            "[location.protocol, typeof browser.runtime.id, browser.runtime.id, document.title]",
+        );
+        assert_eq!(
+            context,
+            serde_json::json!([
+                "moz-extension:",
+                "string",
+                FIXTURE_ID,
+                "ff-rdp extension page"
+            ]),
+            "eval did not run in the extension page"
+        );
+        let stored = eval_json(
+            port,
+            "await browser.storage.local.set({ ffRdp: 'stored' }); await browser.storage.local.get()",
+        );
+        assert_eq!(stored["ffRdp"], "stored", "{stored}");
+        let heading = ok_json(port, &["dom", "#extension-page", "--text"]);
+        assert_eq!(heading["results"][0], "extension page", "{heading}");
+        let console = ok_json(port, &["console"]);
+        let page_script = format!("moz-extension://{uuid}/page.js");
+        assert!(
+            console["results"]
+                .as_array()
+                .is_some_and(|all| all.iter().any(|m| {
+                    m["message"] == "ff-rdp extension page loaded"
+                        && m["source"] == page_script.as_str()
+                })),
+            "console does not show the extension page's message: {console}"
+        );
 
-    // Back to the web: the tab leaves the extension process again and every
-    // command follows it.
-    let back = ok_json(port, &["navigate", &web]);
-    assert_eq!(back["results"]["committed_url"], web.as_str(), "{back}");
-    let after = eval_json(
-        port,
-        "[location.href, document.documentElement.getAttribute('data-ff-rdp-temporary-addon')]",
-    );
-    assert_eq!(
-        after,
-        serde_json::json!([web, "loaded"]),
-        "eval after leaving the extension page"
-    );
-    let web_heading = ok_json(port, &["dom", "#web", "--text"]);
-    assert_eq!(web_heading["results"][0], "web page", "{web_heading}");
+        // A page the add-on does not have: Firefox shows an error document
+        // and stays up.
+        let missing = format!("moz-extension://{uuid}/missing.html");
+        ok_json(port, &["navigate", &missing]);
+
+        // Back to the web: the tab leaves the extension process again and
+        // every command follows it.
+        let back = ok_json(port, &["navigate", &web]);
+        assert_eq!(back["results"]["committed_url"], web.as_str(), "{back}");
+        let after = eval_json(
+            port,
+            "[location.href, document.documentElement.getAttribute('data-ff-rdp-temporary-addon')]",
+        );
+        assert_eq!(
+            after,
+            serde_json::json!([web, "loaded"]),
+            "eval after leaving the extension page"
+        );
+        let web_heading = ok_json(port, &["dom", "#web", "--text"]);
+        assert_eq!(web_heading["results"][0], "web page", "{web_heading}");
+    }
 }

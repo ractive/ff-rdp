@@ -153,11 +153,16 @@ The privileged triggering principal passes `CheckLoadURI`; a web page could not 
 | `eval --stringify 'await browser.storage.local.set({…}); await browser.storage.local.get()'` | the stored object |
 | `dom '#extension-page' --text` | the page's heading |
 | `console` | the page script's `console.log`, source `moz-extension://<uuid>/page.js` |
-| `navigate moz-extension://<uuid>/missing.html` | commits, no crash |
+| `navigate moz-extension://<uuid>/missing.html` | commits a blank document (title `""`, `status: null`), exit 0, no crash |
+| `navigate moz-extension://<unknown uuid>/page.html` | exit 124 after 10 s: "document.readyState did not reach 'interactive' or 'complete'"; the tab stays on the previous page, no crash |
+| `navigate moz-extension://<uuid>/page.html --with-network` | exit 0, `network.total: 0` |
+| `perf compare moz-extension://<uuid>/page.html http://…/` | exit 0, both entries returned |
 | `navigate http://127.0.0.1:…/`, then `eval`, `dom` | work; the content script's mark is set |
 | a second round trip | the same |
 
-Firefox stayed up through all of it. Live test: `live_moz_extension_navigate.rs`.
+Firefox stayed up through all of it. Live test: `live_moz_extension_navigate.rs` (two round
+trips, `console` and a missing page included). The fixture's `page.html` loads `page.js`, which
+logs the console message.
 
 **Why by default, not behind a flag.** It reaches only add-ons installed in the Firefox being
 driven (random per-profile UUID host), and a client on the debug port can already read
