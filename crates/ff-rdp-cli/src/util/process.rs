@@ -24,9 +24,9 @@ pub(crate) type Pgid = i32;
 
 /// Return `true` if a process with `pid` is currently alive.
 ///
-/// On Unix this sends signal 0 (no-op) to the process; on Windows it tries
-/// to open a handle with `PROCESS_QUERY_LIMITED_INFORMATION`.  On other
-/// platforms it conservatively returns `true`.
+/// On Unix this sends signal 0 (no-op) to the process; on Windows it checks
+/// that the process has not signalled its exit (see the comment there).  On
+/// other platforms it conservatively returns `true`.
 pub fn is_process_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
@@ -42,21 +42,51 @@ pub fn is_process_alive(pid: u32) -> bool {
 
     #[cfg(windows)]
     {
-        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE, WAIT_TIMEOUT};
         use windows_sys::Win32::System::Threading::{
-            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+            PROCESS_SYNCHRONIZE, WaitForSingleObject,
         };
 
-        // SAFETY: `OpenProcess` is an FFI call whose only side effect is
-        // returning a handle (or NULL on failure).  We close the handle
-        // immediately after checking it.
+        // "Openable" is not "alive": a process that has exited stays openable
+        // for as long as anyone holds a handle to it, and Firefox's content
+        // processes hold one to the browser. `stop` then saw a terminated
+        // browser as still running (iter-299). So ask whether the process
+        // object has signalled its exit.
+        //
+        // SAFETY: `OpenProcess` only returns a handle (or NULL on failure);
+        // the handle is closed on every path below.
+        let handle = unsafe {
+            OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+                0,
+                pid,
+            )
+        };
+        if !handle.is_null() {
+            // SAFETY: `handle` is a valid process handle opened with
+            // SYNCHRONIZE; a zero timeout only polls its signalled state.
+            let running = unsafe { WaitForSingleObject(handle, 0) } == WAIT_TIMEOUT;
+            // SAFETY: `handle` is the valid handle opened above, not used again.
+            unsafe { CloseHandle(handle) };
+            return running;
+        }
+        // SYNCHRONIZE can be refused where a limited query is not (another
+        // account's or an elevated process). Fall back to the exit code; a
+        // process that really exited with code 259 reads as alive here, the
+        // conservative direction for every caller (prune keeps, stop waits).
+        //
+        // SAFETY: as above.
         let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
         if handle.is_null() {
             return false;
         }
-        // SAFETY: `handle` is a valid, non-null handle we just obtained.
+        let mut code: u32 = 0;
+        // SAFETY: `handle` is valid and `code` is a live `u32` out-parameter.
+        let ok = unsafe { GetExitCodeProcess(handle, &raw mut code) };
+        // SAFETY: `handle` is the valid handle opened above, not used again.
         unsafe { CloseHandle(handle) };
-        true
+        ok != 0 && code == STILL_ACTIVE.cast_unsigned()
     }
 
     #[cfg(not(any(unix, windows)))]
@@ -282,6 +312,86 @@ pub fn process_executable_name(pid: u32) -> Option<String> {
     {
         let _ = pid;
         None
+    }
+}
+
+/// The parent PID the OS records for `pid` (a Toolhelp32 process snapshot).
+///
+/// `None` when `pid` is not in the snapshot or the snapshot fails. Windows
+/// never re-parents an orphan, so a recorded parent PID may since have been
+/// reused; callers pair it with a liveness check on the parent they expect.
+#[cfg(windows)]
+pub fn parent_pid(pid: u32) -> Option<u32> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS,
+    };
+
+    // SAFETY: `CreateToolhelp32Snapshot` only returns a snapshot handle (or
+    // INVALID_HANDLE_VALUE); it is closed below on every path that got one.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return None;
+    }
+    // SAFETY: PROCESSENTRY32W is plain old data, for which all-zero is valid.
+    let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+    let found = u32::try_from(std::mem::size_of::<PROCESSENTRY32W>())
+        .ok()
+        .and_then(|size| {
+            entry.dwSize = size;
+            // SAFETY: `snapshot` is a valid snapshot handle and `entry` is a
+            // live PROCESSENTRY32W whose `dwSize` is its own size, as required.
+            let mut ok = unsafe { Process32FirstW(snapshot, &raw mut entry) };
+            while ok != 0 {
+                if entry.th32ProcessID == pid {
+                    return Some(entry.th32ParentProcessID);
+                }
+                // SAFETY: as above.
+                ok = unsafe { Process32NextW(snapshot, &raw mut entry) };
+            }
+            None
+        });
+    // SAFETY: `snapshot` is the valid handle opened above, not used again.
+    unsafe { CloseHandle(snapshot) };
+    found
+}
+
+/// Stop every process ff-rdp spawns from inheriting ff-rdp's own standard
+/// handles (iter-299).
+///
+/// `std::process::Command` on Windows creates the child with handle
+/// inheritance on, so a child receives every *inheritable* handle in this
+/// process — including the stdout pipe of a caller running
+/// `out=$(ff-rdp launch …)`, not just the null/pipe handles the command set up.
+/// Firefox's launcher process keeps such a handle for the browser's whole
+/// lifetime, so the caller's capture never saw EOF and `launch` never
+/// returned. Clearing `HANDLE_FLAG_INHERIT` on the three standard handles
+/// removes them from what a child can inherit. A later child that asks for
+/// `Stdio::inherit()` is unaffected: std duplicates an inheritable copy for it.
+///
+/// Best effort: a handle that is absent, invalid or a console pseudo-handle
+/// that refuses the call is left as it was.
+#[cfg(windows)]
+pub fn disinherit_std_handles() {
+    use windows_sys::Win32::Foundation::{
+        HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation,
+    };
+    use windows_sys::Win32::System::Console::{
+        GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    };
+
+    for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+        // SAFETY: `GetStdHandle` only reads this process's standard handle
+        // slot; it returns NULL or INVALID_HANDLE_VALUE when there is none.
+        let handle = unsafe { GetStdHandle(which) };
+        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+            continue;
+        }
+        // SAFETY: `handle` is this process's own standard handle, which
+        // outlives the call; changing only its inherit flag cannot invalidate
+        // it, and a failure leaves the handle untouched.
+        unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) };
     }
 }
 
@@ -743,5 +853,44 @@ mod tests {
             "two concurrently-live processes must not share a start token — \
              otherwise the token cannot distinguish a recycled PID"
         );
+    }
+
+    /// iter-299: a process that has exited reads as dead even while a handle
+    /// to it is still open — here the `Child`, which keeps its process handle
+    /// until dropped, exactly as Firefox's content processes hold the browser's.
+    #[cfg(windows)]
+    #[test]
+    fn unit_299_exited_process_held_open_reads_dead() {
+        let mut child = Command::new("cmd")
+            .args(["/C", "ping -n 31 127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn ping");
+        let pid = child.id();
+        assert!(is_process_alive(pid), "a running child must read alive");
+        child.kill().expect("kill");
+        child.wait().expect("wait");
+        assert!(
+            !is_process_alive(pid),
+            "an exited process must read dead while its handle is still open"
+        );
+        drop(child);
+    }
+
+    /// iter-299: the Toolhelp32 parent lookup names the process that spawned
+    /// the child, and nothing for a PID that does not exist.
+    #[cfg(windows)]
+    #[test]
+    fn unit_299_parent_pid_of_a_child_is_this_process() {
+        let mut child = Command::new("cmd")
+            .args(["/C", "ping -n 31 127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn ping");
+        let parent = parent_pid(child.id());
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(parent, Some(std::process::id()));
+        assert_eq!(parent_pid(999_999_999), None);
     }
 }

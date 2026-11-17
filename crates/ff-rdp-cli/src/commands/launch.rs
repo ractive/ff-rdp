@@ -1,4 +1,5 @@
 mod language_initialization;
+mod launcher_process;
 pub(crate) mod replace;
 mod startup;
 mod temporary_addon;
@@ -466,6 +467,14 @@ fn browser_command(
     if headless {
         cmd.arg("--headless");
     }
+    // iter-299: on Windows the spawned firefox.exe is the launcher process,
+    // which starts the real browser as its child. Keep the launcher alive as
+    // the browser's parent for the browser's lifetime (headless implies this;
+    // a headed launcher otherwise exits 0 at once and orphans the browser),
+    // so `launch` can find the browser behind it — see `launcher_process`.
+    // The launcher strips the flag before starting the browser.
+    #[cfg(windows)]
+    cmd.arg("-wait-for-browser");
 
     // iter-133 Theme A: `-width`/`-height` are real Firefox window-feature
     // flags (not the headless-shell `--window-size` arg, which a
@@ -515,6 +524,13 @@ fn browser_command(
     }
     #[cfg(target_os = "macos")]
     crate::util::child_fds::exclude_inherited(&mut cmd);
+    // iter-299: the Windows counterpart. The launcher process outlives this
+    // command, so an inherited stdout of ours kept a caller's
+    // `out=$(ff-rdp launch …)` waiting for as long as Firefox ran. This acts
+    // on ff-rdp's own handles, not on `cmd`, so it is done once per command
+    // built — every Firefox ff-rdp spawns is built here.
+    #[cfg(windows)]
+    crate::util::process::disinherit_std_handles();
 
     cmd
 }
@@ -799,6 +815,10 @@ pub(crate) struct LaunchHooks {
     /// ([`crate::util::profile_dir::create_ownership_record`]); injected so
     /// unit tests never write under the real profile root.
     pub(crate) record_user_profile_owner: fn(&Path, u32) -> Result<PathBuf, AppError>,
+    /// iter-299: once a tab is listed, the browser PID the spawned PID (a
+    /// Windows launcher process) handed the debug port to, if any
+    /// ([`launcher_process::find_browser`]; always `None` off Windows).
+    pub(crate) find_browser: fn(u32, u16) -> Option<u32>,
 }
 
 impl LaunchHooks {
@@ -828,6 +848,7 @@ impl LaunchHooks {
             pid_is_ff_rdp_spawned: crate::util::profile_dir::pid_is_ff_rdp_spawned,
             suppress_consent_options_tab: super::auto_consent::suppress_options_tab,
             record_user_profile_owner: crate::util::profile_dir::create_ownership_record,
+            find_browser: launcher_process::find_browser,
         }
     }
 }
@@ -849,6 +870,7 @@ impl LaunchHooks {
             record_user_profile_owner: |_profile, _pid| {
                 Err(AppError::User("unit tests record no ownership".into()))
             },
+            find_browser: |_spawned, _port| None,
             ..Self::real()
         }
     }
@@ -1400,10 +1422,15 @@ pub(crate) fn run_with_hooks(
     // See `should_write_owner_marker` — a `--profile <path>` dir the user owns
     // never receives a marker. Warn-not-fail inside the helpers: a marker
     // write must never fail a launch.
+    //
+    // `owner_marker` remembers where ownership went (the managed profile or
+    // the --profile ownership record) for the iter-299 re-mark below.
+    let mut owner_marker: Option<PathBuf> = None;
     if should_write_owner_marker(profile)
         && let Some(dir) = profile_path.as_deref()
     {
         crate::util::profile_dir::write_owner_pid_marker(dir, child.id());
+        owner_marker = Some(dir.to_path_buf());
     } else if let Some(dir) = profile_path.as_deref() {
         // A user `--profile` gets no marker; ownership goes into a separate
         // record under the profile root so `stop` / `--replace` can still
@@ -1413,6 +1440,7 @@ pub(crate) fn run_with_hooks(
         match (hooks.record_user_profile_owner)(dir, child.id()) {
             Ok(record) => {
                 pending.profile = crate::util::profile_dir::ManagedProfileGuard::armed(&record);
+                owner_marker = Some(record);
             }
             Err(error) => tracing::warn!(
                 "launch: could not record ownership of the --profile launch ({error}); \
@@ -1437,7 +1465,7 @@ pub(crate) fn run_with_hooks(
             // Still running — verify the debug port is actually reachable
             // before reporting success. Always probe localhost since we
             // just spawned a local Firefox, regardless of --host.
-            let pid = observation.child.id();
+            let mut pid = observation.child.id();
             let deadline = std::time::Instant::now() + port_wait_bound;
             let outcome = (hooks.probe_port)("localhost", port, port_wait_bound, &mut observation);
             if let Some(e) = outcome.into_error(pid, port, port_wait_bound) {
@@ -1450,6 +1478,20 @@ pub(crate) fn run_with_hooks(
             if let Some(e) = outcome.into_error(pid, port, port_wait_bound) {
                 return Err(pending.fail(e));
             }
+            // iter-299: on Windows the spawned PID is Firefox's launcher
+            // process and the browser it started holds the port; `stop` and
+            // `--replace` look the port's listener up, so the owner marker
+            // must name the browser. Re-mark it (PID and start token) and
+            // report the browser as `results.pid`. The launcher-PID marker
+            // written above stays the fallback for an interrupted launch:
+            // killing the launcher takes the browser down with it. `pending`
+            // still owns the launcher, so a failure below stops both.
+            let launcher_pid = (hooks.find_browser)(pid, port).map(|browser| {
+                if let Some(dir) = owner_marker.as_deref() {
+                    crate::util::profile_dir::write_owner_pid_marker(dir, browser);
+                }
+                std::mem::replace(&mut pid, browser)
+            });
             // A tab is listed, so the first window exists: arm the closer
             // for the options tab Consent-O-Matic opens on first run. On a
             // first run wait for the tab and return only once it is gone; a
@@ -1543,6 +1585,10 @@ pub(crate) fn run_with_hooks(
                 "auto_consent_extension_installed": auto_consent,
                 "window_size": window_size_json,
             });
+            if let Some(launcher) = launcher_pid {
+                // iter-299: the Windows launcher process behind `pid`.
+                result["launcher_pid"] = json!(launcher);
+            }
             if let Some(pack) = &pack {
                 result["english_language_pack"] = pack.staged_result();
                 if let Some(receipt) = &initialization {
@@ -1676,6 +1722,17 @@ mod tests {
                 USER_JS
             );
             std::fs::remove_dir_all(profile).unwrap();
+        }
+    }
+
+    /// iter-299: `-wait-for-browser` keeps Windows' launcher process alive as
+    /// the browser's parent; it is passed there only, headless or not.
+    #[test]
+    fn unit_299_wait_for_browser_is_passed_on_windows_only() {
+        for headless in [true, false] {
+            let cmd = browser_command(Path::new("firefox"), 7347, headless, None, None);
+            let count = cmd.get_args().filter(|a| *a == "-wait-for-browser").count();
+            assert_eq!(count, usize::from(cfg!(windows)), "headless={headless}");
         }
     }
 
@@ -3492,6 +3549,157 @@ mod iter_175_tests {
                 .path()
                 .join(crate::util::profile_dir::OWNER_PID_MARKER)
                 .exists(),
+            "a user --profile must never receive an owner marker"
+        );
+        assert!(
+            envelope["results"].get("launcher_pid").is_none(),
+            "no launcher hand-over, no launcher_pid: {envelope}"
+        );
+    }
+
+    // ── iter-299: Windows launcher process ──────────────────────────────────
+
+    /// The owner pair (PID, start token) recorded in `dir`.
+    #[cfg(unix)]
+    fn owner_pair(dir: &Path) -> (Option<String>, Option<String>) {
+        let read = |name: &str| {
+            std::fs::read_to_string(dir.join(name))
+                .ok()
+                .map(|s| s.trim().to_owned())
+        };
+        (
+            read(crate::util::profile_dir::OWNER_PID_MARKER),
+            read(".ff-rdp-owner-start"),
+        )
+    }
+
+    /// Kill and reap the lingering child a hand-over test spawned as the
+    /// "launcher". Never this test process, which plays the browser.
+    #[cfg(unix)]
+    #[allow(unsafe_code)]
+    fn reap_launcher(results: &serde_json::Value) {
+        let Some(pid) = results["launcher_pid"]
+            .as_u64()
+            .and_then(|p| u32::try_from(p).ok())
+            .filter(|p| *p != std::process::id())
+            .and_then(|p| i32::try_from(p).ok())
+        else {
+            return;
+        };
+        // SAFETY: `pid` is the lingering child this test's spawn hook started
+        // (not this process); the successful launch handed it over unreaped.
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+            libc::waitpid(pid, std::ptr::null_mut(), 0);
+        }
+    }
+
+    /// When the probe finds a browser behind the spawned launcher, `launch`
+    /// reports the browser as `results.pid`, the spawned PID as
+    /// `results.launcher_pid`, and re-marks the managed profile with the
+    /// browser's PID *and* its start token — the pair `stop` checks. This test
+    /// process plays the browser, so its start token is real.
+    #[cfg(unix)]
+    #[test]
+    fn unit_299_launcher_handover_remarks_the_managed_profile() {
+        static EMITTED: Mutex<Option<serde_json::Value>> = Mutex::new(None);
+        let hooks = LaunchHooks {
+            locate_firefox: || Ok(PathBuf::from("/unused/firefox")),
+            is_port_in_use: |_| false,
+            spawn: |_| spawn_lingering_child(),
+            probe_port: |_, _, _, _| PortWaitOutcome::Opened,
+            find_browser: |_spawned, _port| Some(std::process::id()),
+            emit_launch: |_cli, envelope| {
+                *EMITTED.lock().expect("slot") = Some(envelope.clone());
+                Ok(())
+            },
+            ..LaunchHooks::none_running()
+        };
+        let launched = run_with_hooks(&bare_launch_cli(), &managed_opts(7329), &hooks);
+        let results = EMITTED
+            .lock()
+            .expect("slot")
+            .take()
+            .map(|e| e["results"].clone())
+            .unwrap_or_default();
+        reap_launcher(&results);
+        launched.expect("the launch must succeed");
+        let profile = PathBuf::from(results["profile"].as_str().expect("managed profile"));
+        let pair = owner_pair(&profile);
+        let _ = std::fs::remove_dir_all(&profile);
+
+        let me = std::process::id();
+        assert_eq!(results["pid"], json!(me), "{results}");
+        let launcher = results["launcher_pid"].as_u64().expect("launcher_pid");
+        assert_ne!(launcher, u64::from(me), "{results}");
+        assert_eq!(
+            pair,
+            (
+                Some(me.to_string()),
+                crate::util::process::process_start_token(me)
+            ),
+            "the marker must name the browser, with the browser's start token"
+        );
+    }
+
+    /// The same hand-over for a user `--profile`: the ownership *record* is
+    /// re-marked (the record path is kept), and the user's directory still
+    /// never receives a marker.
+    #[cfg(unix)]
+    #[test]
+    fn unit_299_launcher_handover_remarks_the_profile_ownership_record() {
+        static EMITTED: Mutex<Option<serde_json::Value>> = Mutex::new(None);
+        static RECORD: Mutex<Option<PathBuf>> = Mutex::new(None);
+        let user_profile = tempfile::tempdir().expect("user profile");
+        let mut opts = managed_opts(7330);
+        opts.profile = Some(user_profile.path().to_str().expect("utf-8 tempdir"));
+        let hooks = LaunchHooks {
+            locate_firefox: || Ok(PathBuf::from("/unused/firefox")),
+            is_port_in_use: |_| false,
+            spawn: |_| spawn_lingering_child(),
+            probe_port: |_, _, _, _| PortWaitOutcome::Opened,
+            record_user_profile_owner: |_profile, pid| {
+                let record = tempfile::tempdir()
+                    .map_err(|e| AppError::User(e.to_string()))?
+                    .keep();
+                crate::util::profile_dir::write_owner_pid_marker(&record, pid);
+                *RECORD.lock().expect("slot") = Some(record.clone());
+                Ok(record)
+            },
+            find_browser: |_spawned, _port| Some(std::process::id()),
+            emit_launch: |_cli, envelope| {
+                *EMITTED.lock().expect("slot") = Some(envelope.clone());
+                Ok(())
+            },
+            ..LaunchHooks::none_running()
+        };
+        let launched = run_with_hooks(&bare_launch_cli(), &opts, &hooks);
+        let results = EMITTED
+            .lock()
+            .expect("slot")
+            .take()
+            .map(|e| e["results"].clone())
+            .unwrap_or_default();
+        reap_launcher(&results);
+        let record = RECORD.lock().expect("slot").take().expect("record created");
+        let pair = owner_pair(&record);
+        let _ = std::fs::remove_dir_all(&record);
+        launched.expect("the launch must succeed");
+
+        let me = std::process::id();
+        assert_eq!(results["pid"], json!(me), "{results}");
+        assert!(results["launcher_pid"].is_u64(), "{results}");
+        assert_eq!(
+            pair,
+            (
+                Some(me.to_string()),
+                crate::util::process::process_start_token(me)
+            ),
+            "the ownership record must name the browser"
+        );
+        assert_eq!(
+            owner_pair(user_profile.path()),
+            (None, None),
             "a user --profile must never receive an owner marker"
         );
     }
