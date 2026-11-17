@@ -29,7 +29,7 @@ returned. Found by the setup-ff-rdp smoke (run 44042813450); diagnosed on window
 
 ## Acceptance Criteria [6/6]
 
-Proof: windows-launch run [44163797355](https://github.com/ractive/ff-rdp/actions/runs/44163797355)
+Proof: windows-launch run [44166867816](https://github.com/ractive/ff-rdp/actions/runs/44166867816)
 (windows-latest, built from the PR head; each line below is an asserted step).
 
 - [x] Windows, headless: `ff-rdp --port N stop` after `launch --headless --temp-profile` exits 0
