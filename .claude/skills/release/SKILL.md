@@ -93,9 +93,17 @@ Dispatch setup-ff-rdp's smoke workflow and confirm it passes for `latest` (its `
 install the new release on Linux x64/arm64, macOS and Windows and drive Firefox with it):
 
 ```bash
+since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 gh workflow run smoke.yml -R ractive/setup-ff-rdp
-gh run list -R ractive/setup-ff-rdp --workflow smoke.yml --event workflow_dispatch --limit 1   # the new run's id
-gh run watch -R ractive/setup-ff-rdp <id> --exit-status
+# The dispatch is asynchronous: a `gh run list` straight after it can still show the
+# previous run. Poll until a run created after the dispatch appears.
+id=""
+while [ -z "$id" ]; do
+  sleep 5
+  id="$(gh run list -R ractive/setup-ff-rdp --workflow smoke.yml --event workflow_dispatch \
+    --json databaseId,createdAt --jq "[.[] | select(.createdAt >= \"$since\")] | last | .databaseId // empty")"
+done
+gh run watch -R ractive/setup-ff-rdp "$id" --exit-status
 ```
 
 Report: tag, release URL, pipeline run URL, which distribution channels succeeded, installed
