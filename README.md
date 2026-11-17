@@ -505,9 +505,10 @@ ff-rdp launch --headless https://example.com
 
 # Open a browser-owned diagnostic page at startup, keeping managed profile prefs
 ff-rdp launch --headless --url about:support
-# Launch waits for the debug port; use tabs to verify the requested page is ready.
-# requested_url means forwarded, not loaded. On an already-owned busy port,
-# --url requires a free --debug-port or explicit --replace.
+# With a URL, launch returns once the page has loaded (up to --timeout), so the
+# next command reads it; a page that fails or loads too slowly is a
+# results.warnings entry. On an already-owned busy port, --url requires a free
+# --debug-port or explicit --replace.
 
 # Launch with a specific profile and debug port
 # (a --profile directory that does not exist yet is created)
