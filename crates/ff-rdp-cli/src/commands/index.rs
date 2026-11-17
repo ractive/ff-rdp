@@ -9,7 +9,6 @@ use std::collections::{BTreeMap, VecDeque};
 use std::path::Path;
 
 use anyhow::Context as _;
-use chrono::Utc;
 use regex::Regex;
 use serde_json::Value;
 
@@ -213,7 +212,7 @@ fn run_crawl(cli: &Cli, opts: &IndexOpts<'_>) -> Result<(), AppError> {
     let map = PageMap {
         schema: Some(PAGE_MAP_SCHEMA_URL.to_owned()),
         version: PAGE_MAP_VERSION,
-        generated_at: Some(Utc::now()),
+        generated_at: Some(jiff::Timestamp::now()),
         base_url,
         pages,
         api_routes: BTreeMap::new(),
