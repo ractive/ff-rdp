@@ -25,7 +25,7 @@ jaq-core = { workspace = true }
 jaq-json = { workspace = true }
 jaq-std = { workspace = true }
 regex = { workspace = true }
-chrono = { workspace = true }
+jiff = { workspace = true }
 dirs = { workspace = true }
 fs2 = { workspace = true }
 serde = { workspace = true }
