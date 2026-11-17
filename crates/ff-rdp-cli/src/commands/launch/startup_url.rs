@@ -230,10 +230,15 @@ impl DocumentState {
 /// `about:neterror?e=dnsNotFound` from an error page's `documentURI`, without
 /// the failed URL that follows.
 fn error_page(document_uri: &str) -> Option<&str> {
-    ["about:neterror", "about:certerror", "about:blocked"]
-        .iter()
-        .any(|page| document_uri.starts_with(page))
-        .then(|| document_uri.split('&').next().unwrap_or(document_uri))
+    [
+        "about:neterror",
+        "about:certerror",
+        "about:blocked",
+        "about:httpsonlyerror",
+    ]
+    .iter()
+    .any(|page| document_uri.starts_with(page))
+    .then(|| document_uri.split('&').next().unwrap_or(document_uri))
 }
 
 /// Has the tab committed the requested navigation? It has when it shows the
@@ -295,6 +300,10 @@ mod tests {
         assert_eq!(
             failed.verdict("http://127.0.0.1:1/", "about:blank"),
             Verdict::ErrorPage("about:neterror?e=connectionFailure".to_owned())
+        );
+        assert_eq!(
+            error_page("about:httpsonlyerror?e=httpsOnlyErrorPage&u=http%3A//a/"),
+            Some("about:httpsonlyerror?e=httpsOnlyErrorPage")
         );
         assert_eq!(error_page("http://127.0.0.1:1/"), None);
     }

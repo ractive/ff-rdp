@@ -1412,8 +1412,9 @@ shorthand for --url: same validation, and giving both is an error. This retains
 the temporary profile's English locale preferences. With a URL, launch returns
 once the selected tab — the one the next command uses — shows that document
 with readyState complete (a redirect's target counts), waiting up to --timeout
-after the first tab is listed. A URL that shows an error page or does not load
-in time is a results.warnings entry, never a failed launch.
+once its other startup waits (first tab, --auto-consent options tab) are done.
+A URL that shows an error page or does not load in time is a results.warnings
+entry, never a failed launch.
 results.requested_url is present only when a URL was supplied. Without a URL,
 launch waits only for the debug port and the first tab.
 

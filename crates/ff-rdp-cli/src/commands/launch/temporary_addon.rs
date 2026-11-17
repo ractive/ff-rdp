@@ -98,9 +98,22 @@ fn open_url(
     let tabs = RootActor::list_tabs(transport)?;
     let tab = crate::tab_target::resolve_tab_with_context(&tabs, None, None, "127.0.0.1", port)?;
     let (tab_actor, before) = (tab.actor.clone(), tab.url.clone());
-    navigate(transport, &tab_actor, url, deadline)?;
-    let mut renavigate = || navigate(transport, &tab_actor, url, deadline);
+    if navigate(transport, &tab_actor, url, deadline)? == Navigated::Started {
+        // Pre-140: the old page stays up, loaded, while the request is in
+        // flight, so a settled old page is no sign of a dropped load.
+        return startup_url::wait_for_document(port, url, &before, deadline, None);
+    }
+    let mut renavigate = || navigate(transport, &tab_actor, url, deadline).map(drop);
     startup_url::wait_for_document(port, url, &before, deadline, Some(&mut renavigate))
+}
+
+/// Which `navigateTo` [`navigate`] used.
+#[derive(Debug, PartialEq, Eq)]
+enum Navigated {
+    /// The descriptor's (Firefox 140+): replied on a `STATE_STOP` of the URL.
+    Stopped,
+    /// The WindowGlobalTarget's (older Firefox): replied once the load began.
+    Started,
 }
 
 /// One `navigateTo` of `tab` to `url`: the descriptor's, waiting for the load
@@ -110,7 +123,7 @@ fn navigate(
     tab: &ff_rdp_core::ActorId,
     url: &str,
     deadline: Instant,
-) -> Result<(), AppError> {
+) -> Result<Navigated, AppError> {
     let started = Instant::now();
     let navigated =
         transport.with_read_deadline(deadline, |t| TabActor::navigate_to(t, tab, url, true));
@@ -126,9 +139,9 @@ fn navigate(
         }) => {
             let target = TabActor::get_target(transport, tab)?;
             ff_rdp_core::WindowGlobalTarget::navigate_to(transport, &target.actor, url)?;
-            Ok(())
+            Ok(Navigated::Started)
         }
-        other => Ok(other?),
+        other => other.map(|()| Navigated::Stopped).map_err(AppError::from),
     }
 }
 

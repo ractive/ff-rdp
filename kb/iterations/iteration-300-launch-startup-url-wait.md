@@ -30,7 +30,7 @@ there.
       route), then wait within `--timeout`; a failed wait is a `results.warnings` entry
 - [x] `--temporary-addon` path: the same wait after `navigateTo` (replaces the pre-140
       `listTabs` commit poll); when the tab settles back on its old page, open the URL again
-      (at most twice)
+      (at most twice; Firefox 140+ only, where `navigateTo` replied at the load's stop)
 - [x] Help text, `--url` doc, README; skill_drift snapshot
 - [x] Live test `live_300_launch_startup_url` (plain and `--temporary-addon`, immediate read);
       `live_launch_positional_url` reads once instead of polling
