@@ -659,7 +659,18 @@ prefs to the profile's `user.js` if you also remove and re-add the extension.
 
 ### In CI
 
-Use a fresh profile per job, headless, on a port of its own, and always stop the browser:
+On GitHub Actions, install ff-rdp with [`ractive/setup-ff-rdp`](https://github.com/ractive/setup-ff-rdp).
+It checks the release archive's `SHA256SUMS` and build-provenance attestation and puts `ff-rdp`
+on `PATH` on Linux (x64, arm64), macOS (arm64) and Windows runners. All four GitHub-hosted
+runner images it is tested on ship Firefox.
+
+```yaml
+- uses: ractive/setup-ff-rdp@v1
+  # with:
+  #   version: v0.5.0   # default: latest
+```
+
+Then use a fresh profile per job, headless, on a port of its own, and always stop the browser:
 
 ```bash
 set -euo pipefail
@@ -675,6 +686,10 @@ test "$(ff-rdp --port 6011 eval 'document.documentElement.dataset.myExt' --jq .r
   sites, and use `data-*` attributes or `console` messages the content script writes as the
   thing you assert on.
 - `stop` also removes the temporary profile. Give parallel jobs different ports.
+- On Windows, `stop` currently fails to stop the Firefox `launch` started: the debug port is
+  held by a `firefox.exe` with another PID than the one `launch` spawned (presumably Firefox's
+  launcher-process hand-off; see `kb/backlog.md`). Hosted runners end the job's processes
+  anyway, so tolerate that failure there.
 
 ## Using ff-rdp from Claude Code
 

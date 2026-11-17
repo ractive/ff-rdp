@@ -87,8 +87,19 @@ brew update && brew info ff-rdp | head -3        # tap picked up the version (ma
 Run a two-minute smoke with the installed binary (`launch --headless`, `navigate`, `page-text`,
 `screenshot`, `network --follow` for one navigation; kill the Firefox by pid). Add one line to
 the `## Log` of `kb/research/reset-2026-10-execution.md` (or the current tracker) with the tag,
-the release URL and the date, via a docs PR. Report: tag, release URL, pipeline run URL, which
-distribution channels succeeded, installed version.
+the release URL and the date, via a docs PR.
+
+Dispatch setup-ff-rdp's smoke workflow and confirm it passes for `latest` (its `latest` jobs
+install the new release on Linux x64/arm64, macOS and Windows and drive Firefox with it):
+
+```bash
+gh workflow run smoke.yml -R ractive/setup-ff-rdp
+gh run list -R ractive/setup-ff-rdp --workflow smoke.yml --event workflow_dispatch --limit 1   # the new run's id
+gh run watch -R ractive/setup-ff-rdp <id> --exit-status
+```
+
+Report: tag, release URL, pipeline run URL, which distribution channels succeeded, installed
+version, setup-ff-rdp smoke run URL.
 
 ## Ground rules
 
