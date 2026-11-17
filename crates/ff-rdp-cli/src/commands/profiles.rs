@@ -554,15 +554,19 @@ mod tests {
     /// `+00:00` offset, nanosecond fraction, no fraction for whole seconds.
     /// The trailing-zero cases pin chrono's `SecondsFormat::AutoSi` widths
     /// (3/6/9 digits, zeros kept), which jiff alone would trim.
+    ///
+    /// Windows' `SystemTime` has 100 ns resolution, so every nanosecond value
+    /// here is a multiple of 100 except the macOS-captured one, which is
+    /// checked only where `SystemTime` can represent it.
     #[test]
     fn unit_rfc3339_utc_matches_pre_jiff_output() {
         let at = |secs: u64, nanos: u32| SystemTime::UNIX_EPOCH + Duration::new(secs, nanos);
+        #[cfg(not(windows))]
+        assert_eq!(
+            rfc3339_utc(at(1_794_945_372, 421_481_528)).as_deref(),
+            Some("2026-11-17T19:56:12.421481528+00:00")
+        );
         let cases = [
-            (
-                1_794_945_372,
-                421_481_528,
-                "2026-11-17T19:56:12.421481528+00:00",
-            ),
             (1_794_904_215, 0, "2026-11-17T08:30:15+00:00"),
             (
                 1_794_945_372,
