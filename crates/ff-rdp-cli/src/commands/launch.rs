@@ -524,13 +524,7 @@ fn browser_command(
     }
     #[cfg(target_os = "macos")]
     crate::util::child_fds::exclude_inherited(&mut cmd);
-    // iter-299: the Windows counterpart. The launcher process outlives this
-    // command, so an inherited stdout of ours kept a caller's
-    // `out=$(ff-rdp launch …)` waiting for as long as Firefox ran. This acts
-    // on ff-rdp's own handles, not on `cmd`, so it is done once per command
-    // built — every Firefox ff-rdp spawns is built here.
-    #[cfg(windows)]
-    crate::util::process::disinherit_std_handles();
+    // Windows: see `run`, which stops Firefox inheriting our std handles.
 
     cmd
 }
@@ -817,8 +811,8 @@ pub(crate) struct LaunchHooks {
     pub(crate) record_user_profile_owner: fn(&Path, u32) -> Result<PathBuf, AppError>,
     /// iter-299: once a tab is listed, the browser PID the spawned PID (a
     /// Windows launcher process) handed the debug port to, if any
-    /// ([`launcher_process::find_browser`]; always `None` off Windows).
-    pub(crate) find_browser: fn(u32, u16) -> Option<u32>,
+    /// ([`launcher_process::find_browser`]; always `NotNeeded` off Windows).
+    pub(crate) find_browser: fn(u32, u16) -> launcher_process::Handover,
 }
 
 impl LaunchHooks {
@@ -870,7 +864,7 @@ impl LaunchHooks {
             record_user_profile_owner: |_profile, _pid| {
                 Err(AppError::User("unit tests record no ownership".into()))
             },
-            find_browser: |_spawned, _port| None,
+            find_browser: |_spawned, _port| launcher_process::Handover::NotNeeded,
             ..Self::real()
         }
     }
@@ -1188,6 +1182,13 @@ pub(crate) struct LaunchOpts<'a> {
 /// `opts.replace` — if `true` and the port is already in use, stop the prior
 /// instance before launching (implements `--replace` / `--force`).
 pub(crate) fn run(cli: &Cli, opts: &LaunchOpts<'_>) -> Result<(), AppError> {
+    // iter-299: the Windows counterpart of `child_fds::exclude_inherited`.
+    // Firefox's launcher process outlives this command, so an inherited
+    // stdout of ours kept a caller's `out=$(ff-rdp launch …)` waiting for as
+    // long as Firefox ran. Done once, before any Firefox (the language-pack
+    // initializer included) is spawned.
+    #[cfg(windows)]
+    crate::util::process::disinherit_std_handles();
     run_with_hooks(cli, opts, &LaunchHooks::real())
 }
 
@@ -1482,16 +1483,30 @@ pub(crate) fn run_with_hooks(
             // process and the browser it started holds the port; `stop` and
             // `--replace` look the port's listener up, so the owner marker
             // must name the browser. Re-mark it (PID and start token) and
-            // report the browser as `results.pid`. The launcher-PID marker
-            // written above stays the fallback for an interrupted launch:
-            // killing the launcher takes the browser down with it. `pending`
+            // report the browser as `results.pid`. Until then the marker names
+            // the launcher: an interrupted launch is then reachable through
+            // `stop --all` and the profile prune (both go by the marker PID;
+            // killing the launcher takes the browser down with it), not
+            // through `stop --port`, which goes by the listener. `pending`
             // still owns the launcher, so a failure below stops both.
-            let launcher_pid = (hooks.find_browser)(pid, port).map(|browser| {
-                if let Some(dir) = owner_marker.as_deref() {
-                    crate::util::profile_dir::write_owner_pid_marker(dir, browser);
+            let mut launcher_pid = None;
+            let mut handover_warning = None;
+            match (hooks.find_browser)(pid, port) {
+                launcher_process::Handover::NotNeeded => {}
+                launcher_process::Handover::Browser(browser) => {
+                    if let Some(dir) = owner_marker.as_deref() {
+                        crate::util::profile_dir::write_owner_pid_marker(dir, browser);
+                    }
+                    launcher_pid = Some(std::mem::replace(&mut pid, browser));
                 }
-                std::mem::replace(&mut pid, browser)
-            });
+                launcher_process::Handover::Unidentified(reason) => {
+                    handover_warning = Some(format!(
+                        "could not identify the browser behind Firefox's launcher process \
+                         (pid {pid}): {reason}. `ff-rdp stop` may refuse this instance; \
+                         `ff-rdp stop --all` stops it by the launcher's PID."
+                    ));
+                }
+            }
             // A tab is listed, so the first window exists: arm the closer
             // for the options tab Consent-O-Matic opens on first run. On a
             // first run wait for the tab and return only once it is gone; a
@@ -1620,6 +1635,7 @@ pub(crate) fn run_with_hooks(
                 ));
             }
             warnings.extend(consent_warning);
+            warnings.extend(handover_warning);
             if !warnings.is_empty()
                 && let Some(obj) = result.as_object_mut()
             {
@@ -3608,7 +3624,7 @@ mod iter_175_tests {
             is_port_in_use: |_| false,
             spawn: |_| spawn_lingering_child(),
             probe_port: |_, _, _, _| PortWaitOutcome::Opened,
-            find_browser: |_spawned, _port| Some(std::process::id()),
+            find_browser: |_spawned, _port| launcher_process::Handover::Browser(std::process::id()),
             emit_launch: |_cli, envelope| {
                 *EMITTED.lock().expect("slot") = Some(envelope.clone());
                 Ok(())
@@ -3641,6 +3657,58 @@ mod iter_175_tests {
         );
     }
 
+    /// A launcher whose browser cannot be identified keeps the spawned PID as
+    /// owner and says so in `results.warnings` instead of failing silently.
+    #[cfg(unix)]
+    #[test]
+    fn unit_299_unidentified_handover_keeps_the_spawned_pid_and_warns() {
+        static EMITTED: Mutex<Option<serde_json::Value>> = Mutex::new(None);
+        let hooks = LaunchHooks {
+            locate_firefox: || Ok(PathBuf::from("/unused/firefox")),
+            is_port_in_use: |_| false,
+            spawn: |_| spawn_lingering_child(),
+            probe_port: |_, _, _, _| PortWaitOutcome::Opened,
+            find_browser: |_spawned, _port| {
+                launcher_process::Handover::Unidentified("no listener found on port 7331".into())
+            },
+            emit_launch: |_cli, envelope| {
+                *EMITTED.lock().expect("slot") = Some(envelope.clone());
+                Ok(())
+            },
+            ..LaunchHooks::none_running()
+        };
+        let launched = run_with_hooks(&bare_launch_cli(), &managed_opts(7331), &hooks);
+        let results = EMITTED
+            .lock()
+            .expect("slot")
+            .take()
+            .map_or(serde_json::Value::Null, |e| e["results"].clone());
+        let spawned = results["pid"]
+            .as_u64()
+            .and_then(|p| u32::try_from(p).ok())
+            .filter(|p| *p != std::process::id());
+        // Reap the lingering child: here it is `results.pid` itself.
+        reap_launcher(&json!({ "launcher_pid": spawned }));
+        launched.expect("the launch must succeed");
+        let profile = PathBuf::from(results["profile"].as_str().expect("managed profile"));
+        let pair = owner_pair(&profile);
+        let _ = std::fs::remove_dir_all(&profile);
+
+        let spawned = spawned.expect("results.pid is the spawned child");
+        assert!(results.get("launcher_pid").is_none(), "{results}");
+        assert_eq!(
+            pair.0,
+            Some(spawned.to_string()),
+            "marker keeps the spawned PID"
+        );
+        let warnings = results["warnings"].to_string();
+        assert!(
+            warnings.contains("could not identify the browser")
+                && warnings.contains("no listener found on port 7331"),
+            "{results}"
+        );
+    }
+
     /// The same hand-over for a user `--profile`: the ownership *record* is
     /// re-marked (the record path is kept), and the user's directory still
     /// never receives a marker.
@@ -3665,7 +3733,7 @@ mod iter_175_tests {
                 *RECORD.lock().expect("slot") = Some(record.clone());
                 Ok(record)
             },
-            find_browser: |_spawned, _port| Some(std::process::id()),
+            find_browser: |_spawned, _port| launcher_process::Handover::Browser(std::process::id()),
             emit_launch: |_cli, envelope| {
                 *EMITTED.lock().expect("slot") = Some(envelope.clone());
                 Ok(())

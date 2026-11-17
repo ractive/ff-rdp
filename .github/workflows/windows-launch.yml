@@ -14,6 +14,9 @@ on:
       - 'crates/ff-rdp-cli/src/commands/launch**'
       - 'crates/ff-rdp-cli/src/commands/stop**'
       - 'crates/ff-rdp-cli/src/util/process**'
+      - 'crates/ff-rdp-cli/src/util/profile_dir**'
+      - 'crates/ff-rdp-cli/src/port_owner**'
+      - 'crates/ff-rdp-cli/Cargo.toml'
       - '.github/workflows/windows-launch.yml'
   workflow_dispatch:
 
@@ -84,6 +87,14 @@ jobs:
             $l = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
             if ($l) { [int]$l.OwningProcess } else { 0 }
           }
+          # Hosted runner only: no Firefox runs here but the ones these steps
+          # launch, so the teardown safety net may go by image name. Leaks are
+          # caught first by No-Firefox-Left.
+          function No-Firefox-Left([int]$sec = 15) {
+            $deadline = (Get-Date).AddSeconds($sec)
+            while ((Get-Process firefox -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $deadline)) { Start-Sleep -Milliseconds 250 }
+            -not (Get-Process firefox -ErrorAction SilentlyContinue)
+          }
           function Kill-All() {
             Get-Process firefox -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
             Start-Sleep 2
@@ -111,6 +122,7 @@ jobs:
             Expect (Wait-Dead $browser) 'A: the browser exited'
             Expect (Wait-Dead $launcher) 'A: the launcher exited with it'
             Expect ((Port-Owner 6123) -eq 0) 'A: port 6123 released'
+            Expect (No-Firefox-Left) 'A: no firefox.exe left running'
             $r = FF @('stop', '--all')
             Expect ($r.Code -eq 0 -and @($r.Json.results).Count -eq 0) 'A: a later stop --all finds nothing left'
           } finally { Kill-All }
@@ -161,6 +173,7 @@ jobs:
             $r = FF @('--port', '6123', 'stop')
             Expect ($r.Code -eq 0 -and $r.Json.results.stopped -eq $true -and $r.Json.results.profile_removed -eq $true) 'C: stop -> stopped:true, profile_removed:true'
             Expect ((Wait-Dead $browser) -and (Wait-Dead $launcher) -and (Port-Owner 6123) -eq 0) 'C: browser and launcher gone, port released'
+            Expect (No-Firefox-Left) 'C: no firefox.exe left running'
           } finally { Kill-All }
 
       - name: "F: pipe-captured launch returns"
@@ -202,4 +215,5 @@ jobs:
             Expect ((Test-Path $prof) -and (Test-Path (Join-Path $prof 'user.js'))) "G: the user's profile is kept"
             Expect (-not (Test-Path (Join-Path $prof '.ff-rdp-owner-pid'))) "G: the user's profile never received an owner marker"
             Expect ((Wait-Dead $browser) -and (Port-Owner 6123) -eq 0) 'G: browser gone, port released'
+            Expect (No-Firefox-Left) 'G: no firefox.exe left running'
           } finally { Kill-All }

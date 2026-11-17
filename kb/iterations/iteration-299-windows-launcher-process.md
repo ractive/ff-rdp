@@ -29,6 +29,9 @@ returned. Found by the setup-ff-rdp smoke (run 44042813450); diagnosed on window
 
 ## Acceptance Criteria [6/6]
 
+Proof: windows-launch run [44163797355](https://github.com/ractive/ff-rdp/actions/runs/44163797355)
+(windows-latest, built from the PR head; each line below is an asserted step).
+
 - [x] Windows, headless: `ff-rdp --port N stop` after `launch --headless --temp-profile` exits 0
       with `stopped:true`, `profile_removed:true`.
 - [x] Windows: `ff-rdp stop --all` stops a headless launch.
@@ -43,12 +46,15 @@ returned. Found by the setup-ff-rdp smoke (run 44042813450); diagnosed on window
 - The hand-over is adopted only when the port's listener is not the spawned PID, its parent is
   the spawned PID, the spawned PID is still running, and the listener is a Firefox executable
   (`launcher_process::browser_behind`, a pure function over a `ProcessView` trait).
-- The early launcher-PID marker stays as the interrupted-launch fallback: killing the launcher
-  takes the browser down through its job object.
+- The early launcher-PID marker stays for an interrupted launch: `stop --all` and the profile
+  prune go by the marker PID, and killing the launcher takes the browser down through its job
+  object. `stop --port` goes by the listener, so it cannot reach that window.
+- A browser that cannot be identified (after ~2 s of retries) keeps the spawned PID as owner and
+  becomes a `results.warnings` entry.
 - Disabling the launcher process was rejected: its state lives in
   `HKCU\SOFTWARE\Mozilla\Firefox\Launcher`, keyed by binary path and shared with the user's
   desktop Firefox.
-- Linux and macOS are unchanged: `find_browser` returns `None` there, `-wait-for-browser` and
+- Linux and macOS are unchanged: `find_browser` answers `NotNeeded` there, `-wait-for-browser` and
   the handle change are `#[cfg(windows)]`.
 
 ## Out of scope

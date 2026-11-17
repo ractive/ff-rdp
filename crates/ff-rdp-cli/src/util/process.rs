@@ -74,7 +74,8 @@ pub fn is_process_alive(pid: u32) -> bool {
         // SYNCHRONIZE can be refused where a limited query is not (another
         // account's or an elevated process). Fall back to the exit code; a
         // process that really exited with code 259 reads as alive here, the
-        // conservative direction for every caller (prune keeps, stop waits).
+        // conservative direction for every caller (prune keeps, stop waits), as is
+        // a failed query.
         //
         // SAFETY: as above.
         let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
@@ -86,7 +87,9 @@ pub fn is_process_alive(pid: u32) -> bool {
         let ok = unsafe { GetExitCodeProcess(handle, &raw mut code) };
         // SAFETY: `handle` is the valid handle opened above, not used again.
         unsafe { CloseHandle(handle) };
-        ok != 0 && code == STILL_ACTIVE.cast_unsigned()
+        // A failed exit-code query proves nothing: keep the old openable-means-alive
+        // answer rather than declare a running process dead.
+        ok == 0 || code == STILL_ACTIVE.cast_unsigned()
     }
 
     #[cfg(not(any(unix, windows)))]
@@ -861,8 +864,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn unit_299_exited_process_held_open_reads_dead() {
-        let mut child = Command::new("cmd")
-            .args(["/C", "ping -n 31 127.0.0.1"])
+        let mut child = Command::new("ping")
+            .args(["-n", "31", "127.0.0.1"])
             .stdout(std::process::Stdio::null())
             .spawn()
             .expect("spawn ping");
@@ -882,8 +885,8 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn unit_299_parent_pid_of_a_child_is_this_process() {
-        let mut child = Command::new("cmd")
-            .args(["/C", "ping -n 31 127.0.0.1"])
+        let mut child = Command::new("ping")
+            .args(["-n", "31", "127.0.0.1"])
             .stdout(std::process::Stdio::null())
             .spawn()
             .expect("spawn ping");
