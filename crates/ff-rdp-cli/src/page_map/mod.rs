@@ -40,10 +40,14 @@ pub struct PageMap {
     /// Format version — must be [`PAGE_MAP_VERSION`].
     pub version: u32,
 
-    /// Timestamp when the map was generated, as RFC 3339 in UTC (`…Z`).
-    /// Accepts any RFC 3339 offset on input, so maps written by the
-    /// pre-jiff (chrono) builds still load.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Timestamp when the map was generated, as RFC 3339 in UTC (`…Z`) with
+    /// the fraction width the pre-jiff (chrono) builds wrote — see
+    /// [`auto_si_digits`]. Accepts any RFC 3339 offset on input, so maps
+    /// written by those builds still load.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_generated_at"
+    )]
     pub generated_at: Option<Timestamp>,
 
     /// Base URL the map was crawled from.
@@ -60,6 +64,34 @@ pub struct PageMap {
     /// Named reusable script bodies (iter-61 script minus top-level metadata).
     #[serde(default)]
     pub flows: BTreeMap<String, FlowBody>,
+}
+
+/// Number of fraction digits chrono's `SecondsFormat::AutoSi` printed for
+/// `ts` — none for whole seconds, else the shortest of 3, 6 or 9 that is
+/// exact. jiff on its own trims trailing zeros (`.5` where chrono wrote
+/// `.500`); formatting with this precision keeps ff-rdp's timestamps
+/// byte-identical to the pre-jiff builds.
+pub(crate) fn auto_si_digits(ts: Timestamp) -> usize {
+    match ts.subsec_nanosecond().unsigned_abs() {
+        0 => 0,
+        n if n % 1_000_000 == 0 => 3,
+        n if n % 1_000 == 0 => 6,
+        _ => 9,
+    }
+}
+
+#[allow(
+    clippy::ref_option,
+    reason = "serde's serialize_with passes the field as &Option<T>"
+)]
+fn serialize_generated_at<S: serde::Serializer>(
+    ts: &Option<Timestamp>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    match ts {
+        Some(ts) => serializer.collect_str(&format_args!("{:.*}", auto_si_digits(*ts), ts)),
+        None => serializer.serialize_none(),
+    }
 }
 
 impl PageMap {
@@ -733,7 +765,7 @@ mod tests {
     /// the switch to jiff) must still load. The `generated_at` values are
     /// verbatim from `ff-rdp index` output of the chrono build (JSON and
     /// `--format yaml`); only `base_url` was shortened. Re-serialising yields
-    /// the identical string.
+    /// the identical string, including chrono's trailing-zero fractions.
     #[test]
     fn test_chrono_written_generated_at_still_loads() {
         let json = r#"{
@@ -757,13 +789,29 @@ mod tests {
         let ts = map.generated_at.expect("generated_at present");
         assert_eq!(ts.to_string(), "2026-11-17T19:56:43.380835Z");
 
-        // An explicit `+00:00` offset (hand-edited maps) is accepted too.
+        // chrono kept trailing zeros (3/6/9-digit fraction); a load + save
+        // must reproduce them rather than trimming to jiff's shortest form.
+        for chrono_written in [
+            "2026-11-17T19:56:36.791950Z",
+            "2026-11-17T19:56:36.500Z",
+            "2026-11-17T19:56:36.421481500Z",
+            "2026-11-17T19:56:36Z",
+        ] {
+            let json = serde_json::json!({
+                "version": 1, "generated_at": chrono_written, "base_url": "https://x.com"
+            })
+            .to_string();
+            let map = parse_page_map_str(&json, PageMapFormat::Json).expect("chrono-era map loads");
+            let out = serde_json::to_value(&map).expect("serialise");
+            assert_eq!(out["generated_at"], chrono_written);
+        }
+
+        // An explicit `+00:00` offset (hand-edited maps) is accepted too and
+        // normalised to `Z` on save.
         let json = r#"{"version": 1, "generated_at": "2026-11-17T19:56:36+00:00", "base_url": "https://x.com"}"#;
         let map = parse_page_map_str(json, PageMapFormat::Json).expect("offset form loads");
-        assert_eq!(
-            map.generated_at.map(|t| t.to_string()).as_deref(),
-            Some("2026-11-17T19:56:36Z")
-        );
+        let out = serde_json::to_value(&map).expect("serialise");
+        assert_eq!(out["generated_at"], "2026-11-17T19:56:36Z");
     }
 
     #[test]

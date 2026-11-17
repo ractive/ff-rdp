@@ -422,12 +422,17 @@ pub(crate) fn parse_older_than(input: &str) -> Result<Duration, AppError> {
 }
 
 /// Render `t` as RFC 3339 in UTC with an explicit `+00:00` offset — the form
-/// `profiles list` has always emitted for `oldest_mtime`. Fractional seconds
-/// are printed with trailing zeros trimmed (none for whole seconds).
+/// `profiles list` has always emitted for `oldest_mtime`, with chrono's
+/// 0/3/6/9-digit fraction width ([`crate::page_map::auto_si_digits`]).
 /// `None` only for a time outside jiff's supported range (years -9999..=9999).
 fn rfc3339_utc(t: SystemTime) -> Option<String> {
     let ts = jiff::Timestamp::try_from(t).ok()?;
-    Some(ts.display_with_offset(jiff::tz::Offset::UTC).to_string())
+    let digits = crate::page_map::auto_si_digits(ts);
+    Some(format!(
+        "{:.*}",
+        digits,
+        ts.display_with_offset(jiff::tz::Offset::UTC)
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -547,17 +552,33 @@ mod tests {
     /// `oldest_mtime` keeps the exact strings the chrono build printed for
     /// these mtimes (captured from `ff-rdp profiles list` before the switch):
     /// `+00:00` offset, nanosecond fraction, no fraction for whole seconds.
+    /// The trailing-zero cases pin chrono's `SecondsFormat::AutoSi` widths
+    /// (3/6/9 digits, zeros kept), which jiff alone would trim.
     #[test]
     fn unit_rfc3339_utc_matches_pre_jiff_output() {
         let at = |secs: u64, nanos: u32| SystemTime::UNIX_EPOCH + Duration::new(secs, nanos);
-        assert_eq!(
-            rfc3339_utc(at(1_794_945_372, 421_481_528)).as_deref(),
-            Some("2026-11-17T19:56:12.421481528+00:00")
-        );
-        assert_eq!(
-            rfc3339_utc(at(1_794_904_215, 0)).as_deref(),
-            Some("2026-11-17T08:30:15+00:00")
-        );
+        let cases = [
+            (
+                1_794_945_372,
+                421_481_528,
+                "2026-11-17T19:56:12.421481528+00:00",
+            ),
+            (1_794_904_215, 0, "2026-11-17T08:30:15+00:00"),
+            (
+                1_794_945_372,
+                421_481_500,
+                "2026-11-17T19:56:12.421481500+00:00",
+            ),
+            (
+                1_794_945_372,
+                791_950_000,
+                "2026-11-17T19:56:12.791950+00:00",
+            ),
+            (1_794_945_372, 500_000_000, "2026-11-17T19:56:12.500+00:00"),
+        ];
+        for (secs, nanos, want) in cases {
+            assert_eq!(rfc3339_utc(at(secs, nanos)).as_deref(), Some(want));
+        }
     }
 
     // -----------------------------------------------------------------
