@@ -1,0 +1,219 @@
+name: windows-launch
+
+# iter-299: real-Firefox guard for Firefox's Windows launcher process. On
+# Windows the firefox.exe ff-rdp spawns is a launcher that starts the real
+# browser as its child, and every Windows-only path that handles that —
+# `-wait-for-browser`, the owner-marker hand-over to the browser PID, exited-
+# process liveness, std-handle inheritance — is invisible to the Linux/macOS
+# live suite. Each scenario asserts its outcome through exit codes and the
+# JSON envelope; a failed assertion fails the step.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'crates/ff-rdp-cli/src/commands/launch**'
+      - 'crates/ff-rdp-cli/src/commands/stop**'
+      - 'crates/ff-rdp-cli/src/util/process**'
+      - 'crates/ff-rdp-cli/src/util/profile_dir**'
+      - 'crates/ff-rdp-cli/src/port_owner**'
+      - 'crates/ff-rdp-cli/Cargo.toml'
+      - '.github/workflows/windows-launch.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  scenarios:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Build ff-rdp from this commit
+        shell: pwsh
+        run: |
+          cargo build -q -p ff-rdp-cli
+          "$env:GITHUB_WORKSPACE\target\debug" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+
+      - name: Write helpers
+        shell: pwsh
+        run: |
+          $env:FF_RDP_HOME = Join-Path $env:RUNNER_TEMP 'ffhome'
+          New-Item -ItemType Directory -Force $env:FF_RDP_HOME | Out-Null
+          "FF_RDP_HOME=$env:FF_RDP_HOME" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          $h = @'
+          $ErrorActionPreference = 'Stop'
+          # Runs ff-rdp with its output in files, never a pipe (scenario F is
+          # the pipe check). Returns the exit code and the parsed stdout.
+          function FF([string[]]$a, [int]$timeoutSec = 120) {
+            $o = Join-Path $env:RUNNER_TEMP ("o-" + [guid]::NewGuid() + ".txt"); $e = "$o.err"
+            Write-Host ">>> ff-rdp $($a -join ' ')"
+            $exe = (Get-Command ff-rdp).Source
+            $p = Start-Process -FilePath $exe -ArgumentList $a -RedirectStandardOutput $o -RedirectStandardError $e -NoNewWindow -PassThru
+            $null = $p.Handle
+            if (-not $p.WaitForExit($timeoutSec * 1000)) { $p.Kill(); throw "FAIL: ff-rdp $($a -join ' ') did not return within $timeoutSec s" }
+            $p.WaitForExit()
+            $raw = Get-Content $o -Raw -ErrorAction SilentlyContinue
+            $err = Get-Content $e -Raw -ErrorAction SilentlyContinue
+            if ($raw) { Write-Host $raw }
+            if ($err) { Write-Host "[stderr] $err" }
+            Write-Host "<<< exit=$($p.ExitCode)"
+            $json = if ($raw) { $raw | ConvertFrom-Json } else { $null }
+            [pscustomobject]@{ Code = $p.ExitCode; Json = $json }
+          }
+          function Expect([bool]$cond, [string]$what) {
+            if (-not $cond) { "- FAIL: $what" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY; throw "FAIL: $what" }
+            Write-Host "PASS: $what"
+            "- PASS: $what" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+          }
+          function Wait-Dead([int]$id, [int]$sec = 15) {
+            $deadline = (Get-Date).AddSeconds($sec)
+            while ((Get-Process -Id $id -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $deadline)) { Start-Sleep -Milliseconds 200 }
+            -not (Get-Process -Id $id -ErrorAction SilentlyContinue)
+          }
+          function Port-Owner([int]$port) {
+            $l = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($l) { [int]$l.OwningProcess } else { 0 }
+          }
+          # Hosted runner only: no Firefox runs here but the ones these steps
+          # launch, so the teardown safety net may go by image name. Leaks are
+          # caught first by No-Firefox-Left.
+          function No-Firefox-Left([int]$sec = 15) {
+            $deadline = (Get-Date).AddSeconds($sec)
+            while ((Get-Process firefox -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $deadline)) { Start-Sleep -Milliseconds 250 }
+            -not (Get-Process firefox -ErrorAction SilentlyContinue)
+          }
+          function Kill-All() {
+            Get-Process firefox -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            Start-Sleep 2
+          }
+          '@
+          Set-Content -Path "$env:RUNNER_TEMP\h.ps1" -Value $h
+          ff-rdp --version
+          (Get-Item 'C:\Program Files\Mozilla Firefox\firefox.exe').VersionInfo.ProductVersion
+          "### Windows launcher-process scenarios" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+
+      - name: "A: headless launch, stop, then stop --all"
+        shell: pwsh
+        run: |
+          . "$env:RUNNER_TEMP\h.ps1"
+          try {
+            $r = FF @('launch', '--headless', '--temp-profile', '--port', '6123')
+            Expect ($r.Code -eq 0) 'A: headless launch exits 0'
+            $browser = [int]$r.Json.results.pid; $launcher = [int]$r.Json.results.launcher_pid
+            Expect ($launcher -gt 0 -and $launcher -ne $browser) "A: launch reports browser $browser and launcher $launcher"
+            Expect ((Port-Owner 6123) -eq $browser) 'A: results.pid owns the debug port'
+            $r = FF @('--port', '6123', 'stop', '--dry-run')
+            Expect ($r.Code -eq 0 -and $r.Json.results.would_stop -eq $true) 'A: stop --dry-run would stop it'
+            $r = FF @('--port', '6123', 'stop')
+            Expect ($r.Code -eq 0 -and $r.Json.results.stopped -eq $true -and $r.Json.results.profile_removed -eq $true) 'A: stop -> stopped:true, profile_removed:true'
+            Expect (Wait-Dead $browser) 'A: the browser exited'
+            Expect (Wait-Dead $launcher) 'A: the launcher exited with it'
+            Expect ((Port-Owner 6123) -eq 0) 'A: port 6123 released'
+            Expect (No-Firefox-Left) 'A: no firefox.exe left running'
+            $r = FF @('stop', '--all')
+            Expect ($r.Code -eq 0 -and @($r.Json.results).Count -eq 0) 'A: a later stop --all finds nothing left'
+          } finally { Kill-All }
+
+      - name: "A2: headless launch, then stop --all only"
+        shell: pwsh
+        run: |
+          . "$env:RUNNER_TEMP\h.ps1"
+          try {
+            $r = FF @('launch', '--headless', '--temp-profile', '--port', '6123')
+            Expect ($r.Code -eq 0) 'A2: headless launch exits 0'
+            $browser = [int]$r.Json.results.pid
+            $r = FF @('stop', '--all')
+            $stopped = @($r.Json.results)
+            Expect ($r.Code -eq 0 -and $stopped.Count -eq 1) 'A2: stop --all exits 0 with one entry'
+            Expect ($stopped[0].stopped -eq $true -and $stopped[0].profile_removed -eq $true -and [int]$stopped[0].pid -eq $browser) 'A2: stop --all stopped the browser and removed its profile'
+            Expect ((Wait-Dead $browser) -and (Port-Owner 6123) -eq 0) 'A2: browser gone, port released'
+          } finally { Kill-All }
+
+      - name: "B: headless launch, then launch --replace"
+        shell: pwsh
+        run: |
+          . "$env:RUNNER_TEMP\h.ps1"
+          try {
+            $r = FF @('launch', '--headless', '--temp-profile', '--port', '6123')
+            Expect ($r.Code -eq 0) 'B: first launch exits 0'
+            $first = [int]$r.Json.results.pid
+            $r = FF @('launch', '--headless', '--temp-profile', '--port', '6123', '--replace')
+            Expect ($r.Code -eq 0) 'B: launch --replace exits 0'
+            Expect ($r.Json.meta.replaced.stopped -eq $true -and [int]$r.Json.meta.replaced.pid -eq $first) 'B: replaced.stopped:true names the first browser'
+            $second = [int]$r.Json.results.pid
+            Expect ($second -gt 0 -and $second -ne $first -and (Port-Owner 6123) -eq $second) 'B: a new browser owns the port'
+            Expect (Wait-Dead $first) 'B: the first browser exited'
+            $r = FF @('--port', '6123', 'stop')
+            Expect ($r.Code -eq 0 -and $r.Json.results.stopped -eq $true -and $r.Json.results.profile_removed -eq $true) 'B: stop the replacement -> stopped:true'
+          } finally { Kill-All }
+
+      - name: "C: headed launch (no --headless), then stop"
+        shell: pwsh
+        run: |
+          . "$env:RUNNER_TEMP\h.ps1"
+          try {
+            $r = FF @('launch', '--temp-profile', '--port', '6123', '--launch-timeout', '60')
+            Expect ($r.Code -eq 0 -and $r.Json.results.headless -eq $false) 'C: headed launch exits 0'
+            $browser = [int]$r.Json.results.pid; $launcher = [int]$r.Json.results.launcher_pid
+            Expect ($launcher -gt 0 -and (Port-Owner 6123) -eq $browser) 'C: results.pid owns the debug port'
+            Expect ($null -ne (Get-Process -Id $launcher -ErrorAction SilentlyContinue)) 'C: the launcher stays alive (-wait-for-browser)'
+            $r = FF @('--port', '6123', 'stop')
+            Expect ($r.Code -eq 0 -and $r.Json.results.stopped -eq $true -and $r.Json.results.profile_removed -eq $true) 'C: stop -> stopped:true, profile_removed:true'
+            Expect ((Wait-Dead $browser) -and (Wait-Dead $launcher) -and (Port-Owner 6123) -eq 0) 'C: browser and launcher gone, port released'
+            Expect (No-Firefox-Left) 'C: no firefox.exe left running'
+          } finally { Kill-All }
+
+      - name: "F: pipe-captured launch returns"
+        shell: bash
+        run: |
+          set -u +e
+          start=$SECONDS
+          timeout 30 bash -c 'out=$(ff-rdp launch --headless --temp-profile --port 6125); printf "%s\n" "$out"'
+          code=$?
+          elapsed=$((SECONDS - start))
+          if [ "$code" -ne 0 ]; then
+            echo "- FAIL: F: pipe-captured launch exit=$code after ${elapsed}s (124 = timed out)" >> "$GITHUB_STEP_SUMMARY"
+            taskkill //F //IM firefox.exe > /dev/null 2>&1
+            exit 1
+          fi
+          echo "- PASS: F: pipe-captured launch returned in ${elapsed}s" >> "$GITHUB_STEP_SUMMARY"
+          stopped=$(timeout 30 ff-rdp --port 6125 stop --jq '.results.stopped')
+          code=$?
+          taskkill //F //IM firefox.exe > /dev/null 2>&1
+          if [ "$code" -ne 0 ] || [ "$stopped" != "true" ]; then
+            echo "- FAIL: F: stop exit=$code stopped=$stopped" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "- PASS: F: stop -> stopped:true" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "G: headless launch with a user --profile, then stop"
+        shell: pwsh
+        run: |
+          . "$env:RUNNER_TEMP\h.ps1"
+          try {
+            $prof = Join-Path $env:RUNNER_TEMP 'user-profile'
+            New-Item -ItemType Directory -Force $prof | Out-Null
+            $r = FF @('launch', '--headless', '--profile', $prof, '--port', '6123')
+            Expect ($r.Code -eq 0) 'G: --profile launch exits 0'
+            $browser = [int]$r.Json.results.pid
+            Expect ((Port-Owner 6123) -eq $browser) 'G: results.pid owns the debug port'
+            $r = FF @('--port', '6123', 'stop')
+            Expect ($r.Code -eq 0 -and $r.Json.results.stopped -eq $true -and $r.Json.results.profile_removed -eq $false) 'G: stop -> stopped:true, profile_removed:false'
+            Expect ((Test-Path $prof) -and (Test-Path (Join-Path $prof 'user.js'))) "G: the user's profile is kept"
+            Expect (-not (Test-Path (Join-Path $prof '.ff-rdp-owner-pid'))) "G: the user's profile never received an owner marker"
+            Expect ((Wait-Dead $browser) -and (Port-Owner 6123) -eq 0) 'G: browser gone, port released'
+            Expect (No-Firefox-Left) 'G: no firefox.exe left running'
+          } finally { Kill-All }

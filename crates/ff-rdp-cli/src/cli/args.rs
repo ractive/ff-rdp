@@ -1510,6 +1510,12 @@ Examples:
 The launched Firefox keeps running until you stop it — ff-rdp never stops it on
 its own. `ff-rdp stop` (see its --help) stops it and removes its temporary profile.
 
+On Windows the firefox.exe `launch` spawns is Firefox's launcher process, which
+starts the browser as its child (iter-299). `results.pid` is that browser — the
+process holding the debug port, which `stop` stops — and `results.launcher_pid`
+is the spawned launcher; it exits when the browser does. Elsewhere `results.pid`
+is the spawned process and `launcher_pid` is absent.
+
 --auto-consent installs the Consent-O-Matic extension into the profile so it
 CAN dismiss cookie banners it recognizes once a page loads — but `launch`
 returns before any page loads, so its
@@ -1533,7 +1539,7 @@ prefs) unless its user.js already sets them: `browser.preonboarding.enabled`,
 `datareporting.policy.dataSubmissionPolicyBypassNotification`,
 `datareporting.policy.dataSubmissionEnabled`.
 
-Output: {\"results\": {\"pid\": N, \"host\": \"...\", \"port\": N, \"headless\": bool, \"profile\": \"...\", \"profile_path\": \"...\", \"temp_profile\": bool, \"auto_consent_extension_installed\": bool, \"window_size\": {\"requested\": {\"width\": N, \"height\": N}, \"below_floor\": bool}|null, \"warnings\"?: [...]}, \"total\": 1, \"meta\": {\"firefox\": \"...\", \"launch_wait_secs\": N, \"replaced\"?: {\"stopped\": bool, \"pid\": N}}}"
+Output: {\"results\": {\"pid\": N, \"launcher_pid\"?: N, \"host\": \"...\", \"port\": N, \"headless\": bool, \"profile\": \"...\", \"profile_path\": \"...\", \"temp_profile\": bool, \"auto_consent_extension_installed\": bool, \"window_size\": {\"requested\": {\"width\": N, \"height\": N}, \"below_floor\": bool}|null, \"warnings\"?: [...]}, \"total\": 1, \"meta\": {\"firefox\": \"...\", \"launch_wait_secs\": N, \"replaced\"?: {\"stopped\": bool, \"pid\": N}}}"
     )]
     Launch(LaunchArgs),
     /// Stop a Firefox that `ff-rdp launch` started, and remove its temporary profile
