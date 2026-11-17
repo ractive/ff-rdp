@@ -150,6 +150,7 @@ mod live_295_perf_cold;
 mod live_296_triage_easy_batch;
 mod live_297_launch_temporary_addon;
 mod live_298_addon_command;
+mod live_300_launch_startup_url;
 mod live_304_refs_snapshot_eval;
 mod live_consent_settle;
 mod live_launch_first_run;

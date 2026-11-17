@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use ff_rdp_core::{AddonsActor, ProtocolError, RdpConnection, RootActor, TabActor};
 use serde_json::Value;
 
+use super::startup_url;
 use crate::commands::addon;
 pub(crate) use crate::commands::addon::AddonPath as TemporaryAddon;
 use crate::error::AppError;
@@ -61,12 +62,14 @@ pub(crate) fn install_and_navigate(
         )?);
     }
     if let Some(url) = url {
-        warning = open_url(transport, port, url, timeout).err().map(|error| {
-            format!(
-                "--temporary-addon: the add-ons are installed, but opening the startup \
-                     URL {url} did not finish: {error}; the next command may race the navigation"
-            )
-        });
+        warning = open_url(transport, port, url, Instant::now() + timeout)
+            .err()
+            .map(|error| {
+                format!(
+                    "--temporary-addon: the add-ons are installed, but the startup URL {url} \
+                     did not load: {error}"
+                )
+            });
     }
     Ok(Installed {
         addons: installed,
@@ -79,27 +82,67 @@ pub(crate) fn install_and_navigate(
 /// Firefox 140+ has the tab descriptor's `navigateTo(url, waitForLoad: true)`,
 /// which replies once the load of `url` stops — Firefox's own definition,
 /// redirects included. Older Firefox answers `unrecognizedPacketType`; then the
-/// WindowGlobalTarget `navigateTo` starts the load and [`wait_for_commit`]
-/// polls `listTabs` for the URL change.
+/// WindowGlobalTarget `navigateTo` only starts the load. Either way
+/// [`startup_url::wait_for_document`] then checks the document through the
+/// route the next command takes, as the plain `launch <URL>` does: the reply
+/// to `navigateTo` says a load of the URL stopped, not that it finished — an
+/// aborted load replies the same (no status check in Firefox's listener) —
+/// nor that a fresh `getTarget` already hands out the new document. When the
+/// tab stays on its old page, the wait opens the URL again.
 fn open_url(
     transport: &mut ff_rdp_core::RdpTransport,
     port: u16,
     url: &str,
-    timeout: Duration,
+    deadline: Instant,
 ) -> Result<(), AppError> {
     let tabs = RootActor::list_tabs(transport)?;
     let tab = crate::tab_target::resolve_tab_with_context(&tabs, None, None, "127.0.0.1", port)?;
     let (tab_actor, before) = (tab.actor.clone(), tab.url.clone());
-    match TabActor::navigate_to(transport, &tab_actor, url, true) {
+    if navigate(transport, &tab_actor, url, deadline)? == Navigated::Started {
+        // Pre-140: the old page stays up, loaded, while the request is in
+        // flight, so a settled old page is no sign of a dropped load.
+        return startup_url::wait_for_document(port, url, &before, deadline, None);
+    }
+    let mut renavigate = || navigate(transport, &tab_actor, url, deadline).map(drop);
+    startup_url::wait_for_document(port, url, &before, deadline, Some(&mut renavigate))
+}
+
+/// Which `navigateTo` [`navigate`] used.
+#[derive(Debug, PartialEq, Eq)]
+enum Navigated {
+    /// The descriptor's (Firefox 140+): replied on a `STATE_STOP` of the URL.
+    Stopped,
+    /// The WindowGlobalTarget's (older Firefox): replied once the load began.
+    Started,
+}
+
+/// One `navigateTo` of `tab` to `url`: the descriptor's, waiting for the load
+/// (Firefox 140+), else the WindowGlobalTarget's, which only starts it.
+fn navigate(
+    transport: &mut ff_rdp_core::RdpTransport,
+    tab: &ff_rdp_core::ActorId,
+    url: &str,
+    deadline: Instant,
+) -> Result<Navigated, AppError> {
+    let started = Instant::now();
+    let navigated =
+        transport.with_read_deadline(deadline, |t| TabActor::navigate_to(t, tab, url, true));
+    tracing::debug!(
+        elapsed_ms = started.elapsed().as_millis(),
+        ok = navigated.is_ok(),
+        "launch: --temporary-addon navigateTo replied"
+    );
+    match navigated {
         Err(ProtocolError::ActorError {
             kind: ff_rdp_core::ActorErrorKind::UnrecognizedPacketType,
             ..
-        }) => {}
-        other => return other.map_err(AppError::from),
+        }) => {
+            let target = TabActor::get_target(transport, tab)?;
+            ff_rdp_core::WindowGlobalTarget::navigate_to(transport, &target.actor, url)?;
+            Ok(Navigated::Started)
+        }
+        other => other.map(|()| Navigated::Stopped).map_err(AppError::from),
     }
-    let target = TabActor::get_target(transport, &tab_actor)?;
-    ff_rdp_core::WindowGlobalTarget::navigate_to(transport, &target.actor, url)?;
-    wait_for_commit(transport, &tab_actor, url, &before, timeout)
 }
 
 /// What [`install_and_navigate`] reports back to `launch`.
@@ -107,58 +150,6 @@ fn open_url(
 pub(crate) struct Installed {
     /// One `{path, id, actor}` object per installed add-on.
     pub(crate) addons: Vec<Value>,
-    /// Set when the startup URL had not committed within the wait.
+    /// Set when the startup URL had not loaded within the wait.
     pub(crate) warning: Option<String>,
-}
-
-/// Pre-140 fallback: poll `listTabs` until `tab` has committed `url`, or
-/// `timeout` passes. See [`committed`].
-fn wait_for_commit(
-    transport: &mut ff_rdp_core::RdpTransport,
-    tab: &ff_rdp_core::ActorId,
-    url: &str,
-    before: &str,
-    timeout: Duration,
-) -> Result<(), AppError> {
-    let deadline = Instant::now() + timeout;
-    let mut last = before.to_owned();
-    loop {
-        if let Ok(tabs) = RootActor::list_tabs(transport)
-            && let Some(current) = tabs.iter().find(|t| &t.actor == tab)
-        {
-            if committed(&current.url, url, before) {
-                return Ok(());
-            }
-            last.clone_from(&current.url);
-        }
-        if Instant::now() >= deadline {
-            return Err(AppError::User(format!(
-                "not committed after {} ms (tab still at {last})",
-                timeout.as_millis()
-            )));
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
-/// Has the tab committed the requested navigation? It has when it shows the
-/// requested URL, or — allowing for redirects — any URL other than the one it
-/// showed before `navigateTo` and the initial `about:blank`.
-fn committed(current: &str, requested: &str, before: &str) -> bool {
-    current == requested || (current != before && current != "about:blank")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn commit_means_requested_url_or_a_redirect_away_from_the_start() {
-        let blank = "about:blank";
-        assert!(committed("https://a/", "https://a/", blank));
-        assert!(committed("about:blank", "about:blank", "about:home"));
-        assert!(committed("https://www.a/", "https://a/", blank));
-        assert!(!committed(blank, "https://a/", blank));
-        assert!(!committed("about:home", "https://a/", "about:home"));
-    }
 }

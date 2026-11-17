@@ -1409,10 +1409,14 @@ make the temporary profile explicit.
 --url URL opens an initial page through Firefox's browser startup handler,
 including about:support. A positional URL (`ff-rdp launch --headless URL`) is
 shorthand for --url: same validation, and giving both is an error. This retains
-the temporary profile's English locale preferences. Launch waits only for the
-debug port; use tabs and page commands to verify that the requested document is
-ready. results.requested_url is present only when a URL was supplied and means
-forwarded, not loaded.
+the temporary profile's English locale preferences. With a URL, launch returns
+once the selected tab — the one the next command uses — shows that document
+with readyState complete (a redirect's target counts), waiting up to --timeout
+once its other startup waits (first tab, --auto-consent options tab) are done.
+A URL that shows an error page or does not load in time is a results.warnings
+entry, never a failed launch.
+results.requested_url is present only when a URL was supplied. Without a URL,
+launch waits only for the debug port and the first tab.
 
 URL schemes follow the normal policy: http, https, about and moz-extension are allowed;
 file requires --allow-file-urls, and data/javascript require --allow-unsafe-urls.
@@ -1477,10 +1481,11 @@ is an extension directory containing manifest.json, or an .xpi; a missing path
 fails before Firefox starts. With a URL, Firefox starts on a blank tab, every
 add-on is installed, and only then is the URL opened, so `document_start`
 content scripts already run on the first page. The URL opens in the selected
-tab, and launch waits up to --timeout for it to load (Firefox 140+; older
-Firefox: until it commits), so the next command reaches the new document. A
-URL that fails or does not load in time (an error page can take the full
---timeout) is a results.warnings entry, never a failed launch. MV3 host permissions and
+tab, and launch waits up to --timeout for it to load, the same wait as a plain
+URL, so the next command reaches the new document. A URL that fails or does
+not load in time (an error page can take the full --timeout here: Firefox
+never answers that navigateTo) is a results.warnings entry, never a failed
+launch. MV3 host permissions and
 content-script origins are granted at install on Firefox 127+ (default
 extensions.originControls.grantByDefault=true); on older Firefox add
 `granted_host_permissions: true` to manifest.json, which Firefox honours for
@@ -2894,7 +2899,7 @@ pub struct LaunchArgs {
     #[arg(long, requires = "english_language_pack")]
     pub restart_after_language_pack_install: bool,
     /// Initial URL opened by Firefox's browser startup handler.
-    /// Launch waits for the debug port, not for this document to finish loading.
+    /// Launch returns once this document has loaded (up to --timeout).
     #[arg(long, value_name = "URL")]
     pub url: Option<String>,
     /// Initial URL (positional shorthand for --url; same validation, cannot be

@@ -2,6 +2,7 @@ mod language_initialization;
 mod launcher_process;
 pub(crate) mod replace;
 mod startup;
+mod startup_url;
 mod temporary_addon;
 
 use std::net::ToSocketAddrs as _;
@@ -770,6 +771,10 @@ type InstallTemporaryAddons = fn(
 pub(crate) struct LaunchHooks {
     initialize_language_pack: InitializeLanguagePack,
     install_temporary_addons: InstallTemporaryAddons,
+    /// A startup URL without `--temporary-addon`: wait until the tab the next
+    /// command uses shows it loaded ([`startup_url::wait_for_document`]).
+    /// An error becomes a `results.warnings` entry, never a failed launch.
+    wait_for_startup_url: fn(u16, &str, std::time::Instant) -> Result<(), AppError>,
     emit_launch: fn(&Cli, &serde_json::Value) -> Result<(), AppError>,
     /// Fast probe: does *anything* accept TCP on `port` right now?
     pub(crate) is_port_in_use: fn(u16) -> bool,
@@ -821,6 +826,9 @@ impl LaunchHooks {
         Self {
             initialize_language_pack: language_initialization::run,
             install_temporary_addons: temporary_addon::install_and_navigate,
+            wait_for_startup_url: |port, url, deadline| {
+                startup_url::wait_for_document(port, url, "about:blank", deadline, None)
+            },
             emit_launch: |cli, envelope| {
                 let mut hint_ctx = HintContext::new(HintSource::Launch);
                 if let Some(port) = envelope["results"]["port"]
@@ -860,6 +868,7 @@ impl LaunchHooks {
         Self {
             pid_is_ff_rdp_spawned: |_pid| false,
             wait_for_tab: |_port, _deadline, _observation| PortWaitOutcome::Opened,
+            wait_for_startup_url: |_port, _url, _deadline| Ok(()),
             suppress_consent_options_tab: |_port, _wait| Ok("closed".to_owned()),
             record_user_profile_owner: |_profile, _pid| {
                 Err(AppError::User("unit tests record no ownership".into()))
@@ -1538,7 +1547,18 @@ pub(crate) fn run_with_hooks(
             }
             // iter-297: install every --temporary-addon, then open the URL.
             // A rejected install stops the Firefox this command started.
+            // iter-300: without add-ons, Firefox got the URL on its command
+            // line; wait for its document the same way (the listed tab shows
+            // the URL long before its document replaces the initial
+            // about:blank). Same `--timeout` budget as the add-on path.
+            let mut startup_url_warning = None;
             let installed_addons = if temporary_addons.is_empty() {
+                if let Some(url) = url {
+                    let deadline = std::time::Instant::now() + Duration::from_millis(cli.timeout);
+                    startup_url_warning = (hooks.wait_for_startup_url)(port, url, deadline)
+                        .err()
+                        .map(|error| format!("the startup URL {url} did not load: {error}"));
+                }
                 None
             } else {
                 match (hooks.install_temporary_addons)(
@@ -1614,8 +1634,8 @@ pub(crate) fn run_with_hooks(
                 }
             }
             if let Some(url) = url {
-                // Forwarded request only; port readiness does not attest that
-                // the requested document has loaded.
+                // The URL asked for. A load that did not finish within the
+                // wait is reported in `warnings`, not here.
                 result["requested_url"] = json!(url);
             }
             let mut warnings: Vec<String> = Vec::new();
@@ -1634,6 +1654,7 @@ pub(crate) fn run_with_hooks(
                      instead of relying on this live session's viewport."
                 ));
             }
+            warnings.extend(startup_url_warning);
             warnings.extend(consent_warning);
             warnings.extend(handover_warning);
             if !warnings.is_empty()
@@ -2981,6 +3002,116 @@ mod iter_175_tests {
         assert_eq!(envelope["results"]["requested_url"], "https://example.com/");
         assert_eq!(envelope["results"]["temporary_addons"][0]["id"], "x@test");
         assert_eq!(envelope["results"]["warnings"][0], "not committed");
+    }
+
+    /// iter-300: a plain `launch <URL>` keeps the URL on Firefox's command line,
+    /// waits for its document within `--timeout`, and reports a wait that did
+    /// not finish as a warning on a successful launch.
+    #[cfg(unix)]
+    #[test]
+    #[allow(unsafe_code)]
+    fn unit_300_plain_startup_url_is_awaited_and_a_failed_wait_warns() {
+        /// (Firefox argv, URL handed to the wait hook, its budget in ms).
+        type Seen = (Vec<String>, Option<String>, u128);
+        static SEEN: Mutex<Option<Seen>> = Mutex::new(None);
+        static ENVELOPE: Mutex<Option<serde_json::Value>> = Mutex::new(None);
+        let hooks = LaunchHooks {
+            locate_firefox: || Ok(PathBuf::from("/unused/firefox")),
+            is_port_in_use: |_| false,
+            spawn: |cmd| {
+                let args = cmd
+                    .get_args()
+                    .map(|a| a.to_string_lossy().into_owned())
+                    .collect();
+                SEEN.lock().unwrap().replace((args, None, 0));
+                spawn_lingering_child()
+            },
+            probe_port: |_, _, _, _| PortWaitOutcome::Opened,
+            wait_for_startup_url: |_port, url, deadline| {
+                let mut seen = SEEN.lock().unwrap();
+                let seen = seen.as_mut().unwrap();
+                seen.1 = Some(url.to_owned());
+                seen.2 = deadline
+                    .saturating_duration_since(std::time::Instant::now())
+                    .as_millis();
+                Err(AppError::User("not loaded after 10000 ms".to_owned()))
+            },
+            emit_launch: |_cli, envelope| {
+                ENVELOPE.lock().unwrap().replace(envelope.clone());
+                Ok(())
+            },
+            ..LaunchHooks::none_running()
+        };
+        let opts = LaunchOpts {
+            url: Some("https://example.com/"),
+            ..managed_opts(7300)
+        };
+        let cli = bare_launch_cli();
+        run_with_hooks(&cli, &opts, &hooks).unwrap();
+        let envelope = ENVELOPE.lock().unwrap().take().unwrap();
+        let pid = i32::try_from(envelope["results"]["pid"].as_u64().unwrap()).unwrap();
+        let mut status = 0;
+        // SAFETY: pid is the direct child this test's spawn hook started and
+        // the successful launch handed over; kill and reap it.
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+            libc::waitpid(pid, &raw mut status, 0);
+        }
+        if let Some(profile) = envelope["results"]["profile"].as_str() {
+            let _ = std::fs::remove_dir_all(profile);
+        }
+        let (args, url, budget_ms) = SEEN.lock().unwrap().take().unwrap();
+        assert!(
+            args.iter().any(|a| a == "https://example.com/"),
+            "the URL stays a Firefox startup argument: {args:?}"
+        );
+        assert_eq!(url.as_deref(), Some("https://example.com/"));
+        assert!(
+            budget_ms > 0 && budget_ms <= u128::from(cli.timeout),
+            "wait budget {budget_ms} ms must come from --timeout ({} ms)",
+            cli.timeout
+        );
+        assert_eq!(envelope["results"]["requested_url"], "https://example.com/");
+        let warning = envelope["results"]["warnings"][0].as_str().unwrap();
+        assert!(
+            warning.contains("https://example.com/") && warning.contains("not loaded"),
+            "{warning}"
+        );
+    }
+
+    /// iter-300: without a URL, `launch` never waits for a document.
+    #[cfg(unix)]
+    #[test]
+    #[allow(unsafe_code)]
+    fn unit_300_no_startup_url_means_no_document_wait() {
+        static ENVELOPE: Mutex<Option<serde_json::Value>> = Mutex::new(None);
+        let hooks = LaunchHooks {
+            locate_firefox: || Ok(PathBuf::from("/unused/firefox")),
+            is_port_in_use: |_| false,
+            spawn: |_cmd| spawn_lingering_child(),
+            probe_port: |_, _, _, _| PortWaitOutcome::Opened,
+            wait_for_startup_url: |_port, _url, _deadline| {
+                panic!("no URL was given; nothing to wait for")
+            },
+            emit_launch: |_cli, envelope| {
+                ENVELOPE.lock().unwrap().replace(envelope.clone());
+                Ok(())
+            },
+            ..LaunchHooks::none_running()
+        };
+        run_with_hooks(&bare_launch_cli(), &managed_opts(7301), &hooks).unwrap();
+        let envelope = ENVELOPE.lock().unwrap().take().unwrap();
+        let pid = i32::try_from(envelope["results"]["pid"].as_u64().unwrap()).unwrap();
+        let mut status = 0;
+        // SAFETY: as above — the direct child the spawn hook started.
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+            libc::waitpid(pid, &raw mut status, 0);
+        }
+        if let Some(profile) = envelope["results"]["profile"].as_str() {
+            let _ = std::fs::remove_dir_all(profile);
+        }
+        assert!(envelope["results"]["warnings"].is_null(), "{envelope}");
     }
 
     /// iter-297: a rejected install fails the launch with Firefox's message and
