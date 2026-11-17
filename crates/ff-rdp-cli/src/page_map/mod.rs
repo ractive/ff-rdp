@@ -13,7 +13,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context as _, bail};
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -40,9 +40,11 @@ pub struct PageMap {
     /// Format version — must be [`PAGE_MAP_VERSION`].
     pub version: u32,
 
-    /// Timestamp when the map was generated.
+    /// Timestamp when the map was generated, as RFC 3339 in UTC (`…Z`).
+    /// Accepts any RFC 3339 offset on input, so maps written by the
+    /// pre-jiff (chrono) builds still load.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub generated_at: Option<DateTime<Utc>>,
+    pub generated_at: Option<Timestamp>,
 
     /// Base URL the map was crawled from.
     pub base_url: String,
@@ -725,6 +727,43 @@ mod tests {
         assert!(map.is_ok(), "minimal YAML should parse: {map:?}");
         let map = map.unwrap();
         assert_eq!(map.version, PAGE_MAP_VERSION);
+    }
+
+    /// Backward compat: page maps written by the chrono-based builds (before
+    /// the switch to jiff) must still load. The `generated_at` values are
+    /// verbatim from `ff-rdp index` output of the chrono build (JSON and
+    /// `--format yaml`); only `base_url` was shortened. Re-serialising yields
+    /// the identical string.
+    #[test]
+    fn test_chrono_written_generated_at_still_loads() {
+        let json = r#"{
+  "$schema": "https://ff-rdp.dev/schemas/page-map/v1.json",
+  "version": 1,
+  "generated_at": "2026-11-17T19:56:36.791959Z",
+  "base_url": "https://example.com/",
+  "pages": {},
+  "api_routes": {},
+  "flows": {}
+}"#;
+        let map = parse_page_map_str(json, PageMapFormat::Json).expect("chrono-era JSON loads");
+        let ts = map.generated_at.expect("generated_at present");
+        assert_eq!(ts.as_second(), 1_794_945_396);
+        assert_eq!(ts.subsec_nanosecond(), 791_959_000);
+        let out = serde_json::to_value(&map).expect("serialise");
+        assert_eq!(out["generated_at"], "2026-11-17T19:56:36.791959Z");
+
+        let yaml = "version: 1\ngenerated_at: 2026-11-17T19:56:43.380835Z\nbase_url: https://example.com/\n";
+        let map = parse_page_map_str(yaml, PageMapFormat::Yaml).expect("chrono-era YAML loads");
+        let ts = map.generated_at.expect("generated_at present");
+        assert_eq!(ts.to_string(), "2026-11-17T19:56:43.380835Z");
+
+        // An explicit `+00:00` offset (hand-edited maps) is accepted too.
+        let json = r#"{"version": 1, "generated_at": "2026-11-17T19:56:36+00:00", "base_url": "https://x.com"}"#;
+        let map = parse_page_map_str(json, PageMapFormat::Json).expect("offset form loads");
+        assert_eq!(
+            map.generated_at.map(|t| t.to_string()).as_deref(),
+            Some("2026-11-17T19:56:36Z")
+        );
     }
 
     #[test]

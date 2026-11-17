@@ -421,6 +421,15 @@ pub(crate) fn parse_older_than(input: &str) -> Result<Duration, AppError> {
     Ok(Duration::from_secs(n.saturating_mul(multiplier)))
 }
 
+/// Render `t` as RFC 3339 in UTC with an explicit `+00:00` offset — the form
+/// `profiles list` has always emitted for `oldest_mtime`. Fractional seconds
+/// are printed with trailing zeros trimmed (none for whole seconds).
+/// `None` only for a time outside jiff's supported range (years -9999..=9999).
+fn rfc3339_utc(t: SystemTime) -> Option<String> {
+    let ts = jiff::Timestamp::try_from(t).ok()?;
+    Some(ts.display_with_offset(jiff::tz::Offset::UTC).to_string())
+}
+
 // ---------------------------------------------------------------------------
 // Thin command wrappers — resolve `secure_profile_root()`, delegate to the
 // pure-`&Path` core above, and emit the standard JSON envelope.
@@ -430,9 +439,7 @@ pub(crate) fn parse_older_than(input: &str) -> Result<Duration, AppError> {
 pub fn run_list(cli: &Cli) -> Result<(), AppError> {
     let root = secure_profile_root()?;
     let summary = aggregate_profiles(&root);
-    let oldest_mtime = summary
-        .oldest_mtime
-        .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339());
+    let oldest_mtime = summary.oldest_mtime.and_then(rfc3339_utc);
 
     let results = json!({
         "path": root.display().to_string(),
@@ -535,6 +542,22 @@ mod tests {
         filetime::set_file_mtime(&payload, ft).expect("set_file_mtime payload");
         filetime::set_file_mtime(&dir, ft).expect("set_file_mtime dir");
         dir
+    }
+
+    /// `oldest_mtime` keeps the exact strings the chrono build printed for
+    /// these mtimes (captured from `ff-rdp profiles list` before the switch):
+    /// `+00:00` offset, nanosecond fraction, no fraction for whole seconds.
+    #[test]
+    fn unit_rfc3339_utc_matches_pre_jiff_output() {
+        let at = |secs: u64, nanos: u32| SystemTime::UNIX_EPOCH + Duration::new(secs, nanos);
+        assert_eq!(
+            rfc3339_utc(at(1_794_945_372, 421_481_528)).as_deref(),
+            Some("2026-11-17T19:56:12.421481528+00:00")
+        );
+        assert_eq!(
+            rfc3339_utc(at(1_794_904_215, 0)).as_deref(),
+            Some("2026-11-17T08:30:15+00:00")
+        );
     }
 
     // -----------------------------------------------------------------
