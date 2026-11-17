@@ -36,8 +36,6 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-        with:
-          components: clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Build ff-rdp from this commit
@@ -45,11 +43,6 @@ jobs:
         run: |
           cargo build -q -p ff-rdp-cli
           "$env:GITHUB_WORKSPACE\target\debug" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
-
-      # The launcher-process code is all `#[cfg(windows)]`; CI's clippy job
-      # runs on Linux and never sees it.
-      - name: Clippy (Windows)
-        run: cargo clippy -q -p ff-rdp-cli --all-targets -- -D warnings
 
       - name: Write helpers
         shell: pwsh

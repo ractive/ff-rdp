@@ -692,6 +692,7 @@ test "$(ff-rdp --port 6011 eval 'document.documentElement.dataset.myExt' --jq .r
   launcher-process hand-off; see `kb/backlog.md`). Hosted runners end the job's processes
   anyway, so the trap above tolerates that failure on Windows only: under `set -euo pipefail`
   a plain `trap 'ff-rdp --port 6011 stop' EXIT` turns a passing script into exit 1 there.
+  The next release after v0.5.0 fixes this (and headed launches on Windows).
 
 ## Using ff-rdp from Claude Code
 

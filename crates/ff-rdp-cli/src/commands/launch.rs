@@ -3620,8 +3620,7 @@ mod iter_175_tests {
             .lock()
             .expect("slot")
             .take()
-            .map(|e| e["results"].clone())
-            .unwrap_or_default();
+            .map_or(serde_json::Value::Null, |e| e["results"].clone());
         reap_launcher(&results);
         launched.expect("the launch must succeed");
         let profile = PathBuf::from(results["profile"].as_str().expect("managed profile"));
@@ -3630,8 +3629,8 @@ mod iter_175_tests {
 
         let me = std::process::id();
         assert_eq!(results["pid"], json!(me), "{results}");
-        let launcher = results["launcher_pid"].as_u64().expect("launcher_pid");
-        assert_ne!(launcher, u64::from(me), "{results}");
+        let launcher_pid = results["launcher_pid"].as_u64().expect("launcher_pid");
+        assert_ne!(launcher_pid, u64::from(me), "{results}");
         assert_eq!(
             pair,
             (
@@ -3678,8 +3677,7 @@ mod iter_175_tests {
             .lock()
             .expect("slot")
             .take()
-            .map(|e| e["results"].clone())
-            .unwrap_or_default();
+            .map_or(serde_json::Value::Null, |e| e["results"].clone());
         reap_launcher(&results);
         let record = RECORD.lock().expect("slot").take().expect("record created");
         let pair = owner_pair(&record);
