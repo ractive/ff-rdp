@@ -118,12 +118,13 @@ fn process_uptime_s(pid: u32) -> Option<u64> {
 
 #[cfg(target_os = "windows")]
 fn find_listener_windows(port: u16) -> Result<Option<PortOwner>, String> {
-    // `netstat -ano` prints IPv4 and IPv6 TCP rows (and UDP rows, skipped):
+    // `netstat -ano -p tcp` prints the IPv4 TCP table — the family
+    // `is_port_in_use` probes — in rows like:
     //   TCP    127.0.0.1:6000   0.0.0.0:0   LISTENING   1234
     // The state column is localized and the text is in the OEM code page, so
     // the parser never reads it — see `parse_netstat_pid`.
     let output = std::process::Command::new("netstat")
-        .arg("-ano")
+        .args(["-ano", "-p", "tcp"])
         .output()
         .map_err(|e| format!("running netstat: {e}"))?;
     if !output.status.success() {
@@ -158,20 +159,32 @@ fn find_listener_windows(port: u16) -> Result<Option<PortOwner>, String> {
 /// remote port. The state column is never read — Windows localizes it
 /// (`LISTENING`, German `ABHÖREN`, garbled to `ABH�REN` by the OEM code
 /// page) — and the PID is the last column, so a state that is several words
-/// in some language still parses.
+/// in some language still parses. When a loopback and a wildcard listener
+/// share the port, the loopback one wins: it is the one a `127.0.0.1` client
+/// reaches.
 #[cfg(any(target_os = "windows", test))]
 fn parse_netstat_pid(output: &str, port: u16) -> Option<u32> {
-    output.lines().find_map(|line| {
+    let mut first = None;
+    for line in output.lines() {
         let cols: Vec<&str> = line.split_whitespace().collect();
-        let [proto, local, foreign, _state @ .., pid] = cols.as_slice() else {
-            return None;
+        let [proto, local, foreign, _, .., pid] = cols.as_slice() else {
+            continue;
         };
-        let is_listener = cols.len() >= 5
-            && proto.eq_ignore_ascii_case("TCP")
-            && netstat_addr_port(local) == Some(port)
-            && netstat_addr_port(foreign) == Some(0);
-        if is_listener { pid.parse().ok() } else { None }
-    })
+        if !proto.eq_ignore_ascii_case("TCP")
+            || netstat_addr_port(local) != Some(port)
+            || netstat_addr_port(foreign) != Some(0)
+        {
+            continue;
+        }
+        let Ok(pid) = pid.parse::<u32>() else {
+            continue;
+        };
+        if local.starts_with("127.") || local.starts_with("[::1]") {
+            return Some(pid);
+        }
+        first.get_or_insert(pid);
+    }
+    first
 }
 
 /// Port of a netstat address column: `127.0.0.1:6000`, `[::1]:6000`.
@@ -184,12 +197,13 @@ fn netstat_addr_port(addr: &str) -> Option<u16> {
 ///
 /// When the process is gone tasklist prints a localized message instead
 /// (`INFO: No tasks…`, German `INFORMATION: Es werden keine Aufgaben…`), so
-/// only a quoted CSV row counts — no message prefix is matched.
+/// only a quoted CSV row counts — no message prefix is matched. A Windows
+/// file name cannot contain `"`, so the first field ends at the next quote
+/// even when the name contains a comma.
 #[cfg(any(target_os = "windows", test))]
 fn parse_tasklist_name(output: &str) -> Option<String> {
     output.lines().find_map(|line| {
-        let first = line.trim_start().split(',').next()?.trim();
-        let name = first.strip_prefix('"')?.strip_suffix('"')?;
+        let (name, _) = line.trim_start().strip_prefix('"')?.split_once('"')?;
         (!name.is_empty()).then(|| name.to_owned())
     })
 }
@@ -285,6 +299,15 @@ mod tests {
     }
 
     #[test]
+    fn parse_netstat_pid_prefers_loopback_over_wildcard_listener() {
+        let raw = "  TCP    0.0.0.0:6399    0.0.0.0:0  LISTENING  1111\n\
+                   \x20 TCP    127.0.0.1:6399  0.0.0.0:0  LISTENING  2222\n";
+        assert_eq!(parse_netstat_pid(raw, 6399), Some(2222));
+        let raw = "  TCP    0.0.0.0:6399    0.0.0.0:0  LISTENING  1111\n";
+        assert_eq!(parse_netstat_pid(raw, 6399), Some(1111));
+    }
+
+    #[test]
     fn parse_netstat_pid_skips_udp_and_header_rows() {
         let raw = "  Proto  Local Address  Foreign Address  State  PID\n\
                    \x20 UDP    0.0.0.0:6399   *:*   999\n\
@@ -296,6 +319,8 @@ mod tests {
     fn parse_tasklist_name_reads_csv_row() {
         let raw = "\r\n\"firefox.exe\",\"30944\",\"Console\",\"1\",\"412.120 K\"\r\n";
         assert_eq!(parse_tasklist_name(raw).as_deref(), Some("firefox.exe"));
+        let raw = "\"my,app.exe\",\"4242\",\"Console\",\"1\",\"1.024 K\"\r\n";
+        assert_eq!(parse_tasklist_name(raw).as_deref(), Some("my,app.exe"));
     }
 
     #[test]

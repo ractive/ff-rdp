@@ -276,7 +276,7 @@ fn assert_listener(port: u16, pid: u32, home: &Path, label: &str) {
     #[cfg(windows)]
     let mut command = {
         let mut c = Command::new("netstat");
-        c.arg("-ano");
+        c.args(["-ano", "-p", "tcp"]);
         c
     };
     let out = common::bounded_command_output(
@@ -306,7 +306,7 @@ fn assert_listener(port: u16, pid: u32, home: &Path, label: &str) {
                 .and_then(|(_, p)| p.parse::<u16>().ok())
         };
         fields.len() >= 5
-            && fields[0] == "TCP"
+            && fields[0].eq_ignore_ascii_case("TCP")
             && addr_port(fields[1]) == Some(port)
             && addr_port(fields[2]) == Some(0)
             && fields.last().and_then(|p| p.parse::<u32>().ok()) == Some(pid)
