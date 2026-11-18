@@ -2,7 +2,7 @@
 title: "Iteration 301: Windows port-owner lookup on non-English Windows"
 type: iteration
 date: 2026-11-18
-status: in-progress
+status: done
 branch: iter-301/windows-netstat-locale
 depends_on: []
 tags: [iteration, windows, launch, stop]
@@ -22,22 +22,34 @@ lines) was affected.
 
 ## Tasks
 
-- [ ] `parse_netstat_pid`: a TCP row is a listener when its foreign address has port 0
-      (`0.0.0.0:0`, `[::]:0`); the PID is the last column; the state column is never read
-- [ ] Run `netstat -ano` (IPv4 and IPv6 rows) instead of `-p tcp` (IPv4 only)
-- [ ] `parse_tasklist_name`: only a quoted CSV row counts, so no localized message prefix
-      (`INFO:` / `INFORMATION:`) is matched
-- [ ] Parsers compile under `cfg(any(windows, test))`; unit tests (English, German OEM rows,
-      IPv6, TIME_WAIT with the port as remote, prefix-sharing ports, UDP, tasklist messages)
-      run on every CI OS
-- [ ] `tests/live/support/replace_fixture.rs` listener check: same rule, lossy decode
+- [x] `parse_netstat_pid`: a TCP row is a listener when its foreign address has port 0
+      (`0.0.0.0:0`, `[::]:0`); the PID is the last column; the state column is never read;
+      a loopback row wins over a wildcard row for the same port
+- [x] `parse_tasklist_name`: only a quoted CSV row counts, so no localized message prefix
+      (`INFO:` / `INFORMATION:`) is matched; a comma in the image name survives
+- [x] Parsers compile under `cfg(any(windows, test))`; unit tests (English, German OEM rows,
+      IPv6, TIME_WAIT with the port as remote, prefix-sharing ports, loopback preference, UDP,
+      tasklist messages) run on every CI OS
+- [x] `tests/live/support/replace_fixture.rs` listener check: same rule, lossy decode (it
+      panicked on non-UTF-8 OEM output)
 
-## Acceptance Criteria
+## Acceptance Criteria [4/4]
 
-- [ ] On German Windows, `launch --headless --temp-profile --port P` prints no "could not
+- [x] On German Windows, `launch --headless --temp-profile --port P` prints no "could not
       identify" warning, `results.pid` is the port's netstat owner and `results.launcher_pid`
       is set
-- [ ] `--port P stop` then returns `stopped:true, profile_removed:true`, the browser and
+- [x] `--port P stop` then returns `stopped:true, profile_removed:true`, the browser and
       launcher processes are gone, and other Firefox processes are untouched
-- [ ] `--port P doctor` names the listener PID
-- [ ] English Windows (`windows-launch` workflow) stays green
+- [x] `--port P doctor` names the listener PID
+- [x] English Windows (`windows-launch` workflow) stays green
+
+## Design notes
+
+- The lookup keeps `netstat -ano -p tcp` (the IPv4 table). `netstat -ano` would add IPv6
+  listeners and the UDP table, but `is_port_in_use` probes `127.0.0.1` only, and callers such as
+  `port_free_or_held_by` combine the two — a `[::]:P` listener of another process would then
+  read as "held" while IPv4 clients see the port free. Firefox's debugger server binds
+  `127.0.0.1`. The parser still accepts `[…]:P` rows.
+- `GetExtendedTcpTable` (no subprocess, no parsing) was not chosen: it needs the
+  `Win32_NetworkManagement_IpHelper` feature and `unsafe` buffer handling for a fix the
+  port-0 rule already makes locale-independent.
