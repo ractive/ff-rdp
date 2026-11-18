@@ -290,19 +290,26 @@ fn assert_listener(port: u16, pid: u32, home: &Path, label: &str) {
         &json!({"status":out.status.to_string(),"stdout":out.stdout,"stderr":out.stderr,"port":port,"expected_pid":pid}),
     );
     assert!(out.status.success(), "native listener observation failed");
-    let text = String::from_utf8(out.stdout).expect("native listener UTF8");
+    // netstat prints in the OEM code page, so non-English output is not UTF-8.
+    let text = String::from_utf8_lossy(&out.stdout);
     #[cfg(not(windows))]
     let found = text
         .lines()
         .any(|line| line.strip_prefix('p').and_then(|s| s.parse::<u32>().ok()) == Some(pid));
+    // The state column is localized (German `ABHÖREN`): a listener is the row
+    // whose foreign address has port 0, and the PID is the last column.
     #[cfg(windows)]
     let found = text.lines().any(|line| {
         let fields: Vec<_> = line.split_whitespace().collect();
+        let addr_port = |addr: &str| {
+            addr.rsplit_once(':')
+                .and_then(|(_, p)| p.parse::<u16>().ok())
+        };
         fields.len() >= 5
-            && fields[0] == "TCP"
-            && fields[1].ends_with(&format!(":{port}"))
-            && fields[3] == "LISTENING"
-            && fields[4].parse::<u32>().ok() == Some(pid)
+            && fields[0].eq_ignore_ascii_case("TCP")
+            && addr_port(fields[1]) == Some(port)
+            && addr_port(fields[2]) == Some(0)
+            && fields.last().and_then(|p| p.parse::<u32>().ok()) == Some(pid)
     });
     assert!(
         found,

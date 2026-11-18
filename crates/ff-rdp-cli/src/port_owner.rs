@@ -118,8 +118,11 @@ fn process_uptime_s(pid: u32) -> Option<u64> {
 
 #[cfg(target_os = "windows")]
 fn find_listener_windows(port: u16) -> Result<Option<PortOwner>, String> {
-    // `netstat -ano -p tcp` prints rows like:
+    // `netstat -ano -p tcp` prints the IPv4 TCP table — the family
+    // `is_port_in_use` probes — in rows like:
     //   TCP    127.0.0.1:6000   0.0.0.0:0   LISTENING   1234
+    // The state column is localized and the text is in the OEM code page, so
+    // the parser never reads it — see `parse_netstat_pid`.
     let output = std::process::Command::new("netstat")
         .args(["-ano", "-p", "tcp"])
         .output()
@@ -128,41 +131,18 @@ fn find_listener_windows(port: u16) -> Result<Option<PortOwner>, String> {
         return Ok(None);
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let pid = match parse_netstat_pid(&stdout, port) {
-        Some(p) => p,
-        None => return Ok(None),
+    let Some(pid) = parse_netstat_pid(&stdout, port) else {
+        return Ok(None);
     };
 
     // `tasklist /FI "PID eq <pid>" /NH /FO CSV` prints the process name in
-    // CSV, which we parse out lossily.
+    // CSV. Filter keywords are not localized; its messages are.
     let process_name = std::process::Command::new("tasklist")
         .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
         .output()
         .ok()
-        .and_then(|o| {
-            if !o.status.success() {
-                return None;
-            }
-            let s = String::from_utf8_lossy(&o.stdout).into_owned();
-            // tasklist emits "INFO: No tasks are running..." (and similar) when
-            // the process exited between netstat and tasklist; ignore non-CSV
-            // lines so process_name falls back to empty.
-            let first = s
-                .lines()
-                .find(|line| !line.trim().is_empty() && !line.trim_start().starts_with("INFO:"))?
-                .split(',')
-                .next()?
-                .trim();
-            if !first.starts_with('"') {
-                return None;
-            }
-            let stripped = first.trim_matches('"');
-            if stripped.is_empty() {
-                None
-            } else {
-                Some(stripped.to_owned())
-            }
-        })
+        .filter(|o| o.status.success())
+        .and_then(|o| parse_tasklist_name(&String::from_utf8_lossy(&o.stdout)))
         .unwrap_or_default();
 
     Ok(Some(PortOwner {
@@ -172,32 +152,60 @@ fn find_listener_windows(port: u16) -> Result<Option<PortOwner>, String> {
     }))
 }
 
-#[cfg(target_os = "windows")]
+/// PID of the TCP listener on local `port` in `netstat -ano` output.
+///
+/// A row is a listener when its foreign address has port 0 (`0.0.0.0:0`,
+/// `[::]:0`): connected, `TIME_WAIT` and `SYN_SENT` rows always name a real
+/// remote port. The state column is never read — Windows localizes it
+/// (`LISTENING`, German `ABHÖREN`, garbled to `ABH�REN` by the OEM code
+/// page) — and the PID is the last column, so a state that is several words
+/// in some language still parses. When a loopback and a wildcard listener
+/// share the port, the loopback one wins: it is the one a `127.0.0.1` client
+/// reaches.
+#[cfg(any(target_os = "windows", test))]
 fn parse_netstat_pid(output: &str, port: u16) -> Option<u32> {
-    let needle = format!(":{port}");
+    let mut first = None;
     for line in output.lines() {
-        let line = line.trim();
-        if !line.starts_with("TCP") {
-            continue;
-        }
-        if !line.contains("LISTENING") {
-            continue;
-        }
-        // Local address column contains :<port> and remote column does not
-        // for a LISTENING row. Be conservative: the local address is the 2nd
-        // whitespace-delimited token.
         let cols: Vec<&str> = line.split_whitespace().collect();
-        if cols.len() < 5 {
+        let [proto, local, foreign, _, .., pid] = cols.as_slice() else {
+            continue;
+        };
+        if !proto.eq_ignore_ascii_case("TCP")
+            || netstat_addr_port(local) != Some(port)
+            || netstat_addr_port(foreign) != Some(0)
+        {
             continue;
         }
-        if !cols[1].ends_with(&needle) {
+        let Ok(pid) = pid.parse::<u32>() else {
             continue;
-        }
-        if let Ok(pid) = cols[4].parse::<u32>() {
+        };
+        if local.starts_with("127.") || local.starts_with("[::1]") {
             return Some(pid);
         }
+        first.get_or_insert(pid);
     }
-    None
+    first
+}
+
+/// Port of a netstat address column: `127.0.0.1:6000`, `[::1]:6000`.
+#[cfg(any(target_os = "windows", test))]
+fn netstat_addr_port(addr: &str) -> Option<u16> {
+    addr.rsplit_once(':')?.1.parse().ok()
+}
+
+/// Image name from `tasklist /NH /FO CSV` output (`"firefox.exe","4242",…`).
+///
+/// When the process is gone tasklist prints a localized message instead
+/// (`INFO: No tasks…`, German `INFORMATION: Es werden keine Aufgaben…`), so
+/// only a quoted CSV row counts — no message prefix is matched. A Windows
+/// file name cannot contain `"`, so the first field ends at the next quote
+/// even when the name contains a comma.
+#[cfg(any(target_os = "windows", test))]
+fn parse_tasklist_name(output: &str) -> Option<String> {
+    output.lines().find_map(|line| {
+        let (name, _) = line.trim_start().strip_prefix('"')?.split_once('"')?;
+        (!name.is_empty()).then(|| name.to_owned())
+    })
 }
 
 #[cfg(test)]
@@ -237,20 +245,90 @@ mod tests {
         assert!(owner.is_none());
     }
 
-    #[cfg(target_os = "windows")]
     #[test]
-    fn parse_netstat_pid_extracts_pid_for_listening_row() {
-        let raw = "Active Connections\n\
-                   \n\
-                     Proto  Local Address          Foreign Address        State           PID\n\
-                     TCP    127.0.0.1:6000         0.0.0.0:0              LISTENING       4242\n";
+    fn parse_netstat_pid_extracts_pid_for_english_listening_row() {
+        let raw = "\r\nActive Connections\r\n\
+                   \r\n\
+                   \x20 Proto  Local Address          Foreign Address        State           PID\r\n\
+                   \x20 TCP    127.0.0.1:6000         0.0.0.0:0              LISTENING       4242\r\n";
         assert_eq!(parse_netstat_pid(raw, 6000), Some(4242));
     }
 
-    #[cfg(target_os = "windows")]
+    /// Rows captured on German Windows 11 (Firefox 160 on 6399) as raw OEM
+    /// bytes: `Ö` is 0x99 in code page 850, which `from_utf8_lossy` turns
+    /// into U+FFFD — exactly what `find_listener_windows` parses.
     #[test]
-    fn parse_netstat_pid_returns_none_for_non_listening() {
-        let raw = "  TCP    127.0.0.1:6000  0.0.0.0:0  ESTABLISHED  1\n";
-        assert_eq!(parse_netstat_pid(raw, 6000), None);
+    fn parse_netstat_pid_handles_german_oem_rows() {
+        let mut raw = b"\r\nAktive Verbindungen\r\n\r\n  Proto  Lokale Adresse         Remoteadresse          Status           PID\r\n".to_vec();
+        raw.extend_from_slice(
+            b"  TCP    127.0.0.1:8706         127.0.0.1:6399         WARTEND         0\r\n",
+        );
+        raw.extend_from_slice(
+            b"  TCP    127.0.0.1:6399         0.0.0.0:0              ABH\x99REN         30944\r\n",
+        );
+        let text = String::from_utf8_lossy(&raw);
+        assert!(text.contains("ABH\u{FFFD}REN"), "lossy decode: {text}");
+        assert_eq!(parse_netstat_pid(&text, 6399), Some(30944));
+        // The WARTEND (TIME_WAIT) row's local port is not a listener.
+        assert_eq!(parse_netstat_pid(&text, 8706), None);
+    }
+
+    #[test]
+    fn parse_netstat_pid_ignores_time_wait_row_whose_remote_is_the_port() {
+        let raw = "  TCP    127.0.0.1:8706  127.0.0.1:6399  TIME_WAIT  0\n";
+        assert_eq!(parse_netstat_pid(raw, 6399), None);
+        let raw = "  TCP    127.0.0.1:6399  127.0.0.1:8706  ESTABLISHED  77\n";
+        assert_eq!(parse_netstat_pid(raw, 6399), None);
+    }
+
+    #[test]
+    fn parse_netstat_pid_extracts_ipv6_listener() {
+        let raw = "  TCP    [::]:6399              [::]:0                 LISTENING       5150\n\
+                   \x20 TCP    [::1]:7000             [::]:0                 ABH\u{FFFD}REN         5151\n";
+        assert_eq!(parse_netstat_pid(raw, 6399), Some(5150));
+        assert_eq!(parse_netstat_pid(raw, 7000), Some(5151));
+    }
+
+    #[test]
+    fn parse_netstat_pid_does_not_match_a_port_sharing_a_prefix() {
+        let raw = "  TCP    127.0.0.1:63990  0.0.0.0:0  LISTENING  1111\n\
+                   \x20 TCP    127.0.0.1:16399  0.0.0.0:0  LISTENING  2222\n";
+        assert_eq!(parse_netstat_pid(raw, 6399), None);
+        let raw = format!("{raw}  TCP    127.0.0.1:6399  0.0.0.0:0  LISTENING  3333\n");
+        assert_eq!(parse_netstat_pid(&raw, 6399), Some(3333));
+    }
+
+    #[test]
+    fn parse_netstat_pid_prefers_loopback_over_wildcard_listener() {
+        let raw = "  TCP    0.0.0.0:6399    0.0.0.0:0  LISTENING  1111\n\
+                   \x20 TCP    127.0.0.1:6399  0.0.0.0:0  LISTENING  2222\n";
+        assert_eq!(parse_netstat_pid(raw, 6399), Some(2222));
+        let raw = "  TCP    0.0.0.0:6399    0.0.0.0:0  LISTENING  1111\n";
+        assert_eq!(parse_netstat_pid(raw, 6399), Some(1111));
+    }
+
+    #[test]
+    fn parse_netstat_pid_skips_udp_and_header_rows() {
+        let raw = "  Proto  Local Address  Foreign Address  State  PID\n\
+                   \x20 UDP    0.0.0.0:6399   *:*   999\n\
+                   \x20 UDP    [::]:6399      *:*   998\n";
+        assert_eq!(parse_netstat_pid(raw, 6399), None);
+    }
+
+    #[test]
+    fn parse_tasklist_name_reads_csv_row() {
+        let raw = "\r\n\"firefox.exe\",\"30944\",\"Console\",\"1\",\"412.120 K\"\r\n";
+        assert_eq!(parse_tasklist_name(raw).as_deref(), Some("firefox.exe"));
+        let raw = "\"my,app.exe\",\"4242\",\"Console\",\"1\",\"1.024 K\"\r\n";
+        assert_eq!(parse_tasklist_name(raw).as_deref(), Some("my,app.exe"));
+    }
+
+    #[test]
+    fn parse_tasklist_name_ignores_localized_no_task_messages() {
+        let english = "INFO: No tasks are running which match the specified criteria.\r\n";
+        let german = "INFORMATION: Es werden keine Aufgaben mit den angegebenen Kriterien ausgef\u{FFFD}hrt.\r\n";
+        assert_eq!(parse_tasklist_name(english), None);
+        assert_eq!(parse_tasklist_name(german), None);
+        assert_eq!(parse_tasklist_name(""), None);
     }
 }
