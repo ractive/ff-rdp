@@ -558,33 +558,6 @@ pub fn pid_alive(pid: u32) -> bool {
     }
 }
 
-/// TEMP iter-304 diagnostic: whether `pid` is openable and whether it has
-/// signalled its exit (with its exit code).
-#[cfg(windows)]
-pub fn pid_diag(pid: u32) -> String {
-    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
-    use windows_sys::Win32::System::Threading::{
-        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
-        WaitForSingleObject,
-    };
-    // SAFETY: as in `pid_alive`.
-    unsafe {
-        let h = OpenProcess(
-            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
-            0,
-            pid,
-        );
-        if h.is_null() {
-            return format!("pid {pid}: not openable");
-        }
-        let running = WaitForSingleObject(h, 0) == WAIT_TIMEOUT;
-        let mut code = 0u32;
-        GetExitCodeProcess(h, &raw mut code);
-        CloseHandle(h);
-        format!("pid {pid}: openable, running={running}, exit_code={code}")
-    }
-}
-
 /// RAII guard that kills a Firefox process by raw PID on drop.
 ///
 /// Use this for instances this suite spawns *indirectly* — notably the fresh
