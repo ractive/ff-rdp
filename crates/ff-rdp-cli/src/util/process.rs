@@ -325,6 +325,31 @@ pub fn process_executable_name(pid: u32) -> Option<String> {
 /// reused; callers pair it with a liveness check on the parent they expect.
 #[cfg(windows)]
 pub fn parent_pid(pid: u32) -> Option<u32> {
+    process_table()?
+        .into_iter()
+        .find_map(|(entry, parent)| (entry == pid).then_some(parent))
+}
+
+/// The PIDs whose recorded parent is `pid` (a Toolhelp32 process snapshot);
+/// empty when the snapshot fails.
+///
+/// The same caveat as [`parent_pid`]: a recorded parent PID may have been
+/// reused, so a caller relies on this only while it holds a handle to `pid`
+/// (which keeps the number from being reused) — and even then only to wait,
+/// never to signal: a process orphaned by an earlier holder of the number is
+/// listed too.
+#[cfg(windows)]
+pub fn child_pids(pid: u32) -> Vec<u32> {
+    process_table()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(entry, parent)| (parent == pid && entry != pid).then_some(entry))
+        .collect()
+}
+
+/// Every `(pid, parent pid)` in a Toolhelp32 process snapshot.
+#[cfg(windows)]
+fn process_table() -> Option<Vec<(u32, u32)>> {
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
@@ -339,25 +364,24 @@ pub fn parent_pid(pid: u32) -> Option<u32> {
     }
     // SAFETY: PROCESSENTRY32W is plain old data, for which all-zero is valid.
     let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
-    let found = u32::try_from(std::mem::size_of::<PROCESSENTRY32W>())
+    let table = u32::try_from(std::mem::size_of::<PROCESSENTRY32W>())
         .ok()
-        .and_then(|size| {
+        .map(|size| {
             entry.dwSize = size;
+            let mut table = Vec::new();
             // SAFETY: `snapshot` is a valid snapshot handle and `entry` is a
             // live PROCESSENTRY32W whose `dwSize` is its own size, as required.
             let mut ok = unsafe { Process32FirstW(snapshot, &raw mut entry) };
             while ok != 0 {
-                if entry.th32ProcessID == pid {
-                    return Some(entry.th32ParentProcessID);
-                }
+                table.push((entry.th32ProcessID, entry.th32ParentProcessID));
                 // SAFETY: as above.
                 ok = unsafe { Process32NextW(snapshot, &raw mut entry) };
             }
-            None
+            table
         });
     // SAFETY: `snapshot` is the valid handle opened above, not used again.
     unsafe { CloseHandle(snapshot) };
-    found
+    table
 }
 
 /// Stop every process ff-rdp spawns from inheriting ff-rdp's own standard
@@ -895,5 +919,21 @@ mod tests {
         let _ = child.wait();
         assert_eq!(parent, Some(std::process::id()));
         assert_eq!(parent_pid(999_999_999), None);
+    }
+
+    /// iter-304: the children lookup lists a process this one spawned.
+    #[cfg(windows)]
+    #[test]
+    fn unit_304_child_pids_lists_a_spawned_child() {
+        let mut child = Command::new("ping")
+            .args(["-n", "31", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn ping");
+        let children = child_pids(std::process::id());
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(children.contains(&child.id()), "{children:?}");
+        assert!(!children.contains(&std::process::id()), "{children:?}");
     }
 }

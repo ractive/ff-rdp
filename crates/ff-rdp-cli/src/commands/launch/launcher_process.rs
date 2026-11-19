@@ -147,12 +147,332 @@ pub(super) fn find_browser(spawned: u32, port: u16) -> Handover {
     }
 }
 
+/// iter-304: the browser `launch` adopted from the launcher ([`Handover::Browser`]),
+/// with its start token read at adoption, so a failed launch can stop it
+/// itself and never signals a recycled PID.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct AdoptedBrowser {
+    pub(super) pid: u32,
+    pub(super) start_token: Option<String>,
+}
+
+impl AdoptedBrowser {
+    pub(super) fn new(pid: u32) -> Self {
+        Self {
+            pid,
+            start_token: crate::util::process::process_start_token(pid),
+        }
+    }
+}
+
+/// How long a failed launch waits for the processes its launcher started to
+/// exit before it gives up on removing the profile.
+const CHILD_EXIT_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The process operations [`settle_with`] needs, so its decisions are
+/// unit-tested over plain PIDs.
+trait ProcessControl {
+    fn is_alive(&self, pid: u32) -> bool;
+    fn start_token(&self, pid: u32) -> Option<String>;
+    /// The PIDs whose recorded parent is `pid`.
+    fn children_of(&self, pid: u32) -> Vec<u32>;
+    /// Terminate `pid` and the process tree it roots.
+    fn terminate_tree(&self, pid: u32);
+    /// Whether `pid` exited within `timeout`.
+    fn wait_for_exit(&self, pid: u32, timeout: std::time::Duration) -> bool;
+}
+
+struct OsProcessControl;
+
+impl ProcessControl for OsProcessControl {
+    fn is_alive(&self, pid: u32) -> bool {
+        crate::util::process::is_process_alive(pid)
+    }
+    fn start_token(&self, pid: u32) -> Option<String> {
+        crate::util::process::process_start_token(pid)
+    }
+    fn children_of(&self, pid: u32) -> Vec<u32> {
+        #[cfg(windows)]
+        {
+            crate::util::process::child_pids(pid)
+        }
+        #[cfg(not(windows))]
+        {
+            // Off Windows the spawned PID is the browser itself and leads its
+            // own process group, which the failed-launch path already killed.
+            let _ = pid;
+            Vec::new()
+        }
+    }
+    fn terminate_tree(&self, pid: u32) {
+        crate::util::process::kill_process_tree(pid, None);
+        crate::util::process::kill_process_group_force(pid);
+    }
+    fn wait_for_exit(&self, pid: u32, timeout: std::time::Duration) -> bool {
+        super::replace::wait_for_exit(crate::util::process::is_process_alive, pid, timeout)
+    }
+}
+
+/// Terminate the adopted browser — only while its start token still matches
+/// the one read at adoption. `Ok` when it is gone, was replaced by another
+/// process (a reused PID: the browser is gone) or was terminated.
+fn terminate_adopted(
+    browser: &AdoptedBrowser,
+    control: &impl ProcessControl,
+) -> Result<(), String> {
+    let pid = browser.pid;
+    if !control.is_alive(pid) {
+        return Ok(());
+    }
+    match (browser.start_token.as_deref(), control.start_token(pid)) {
+        (Some(adopted), Some(now)) if now != adopted => Ok(()),
+        (Some(_), Some(_)) => {
+            control.terminate_tree(pid);
+            Ok(())
+        }
+        (_, None) if !control.is_alive(pid) => Ok(()),
+        _ => Err(format!(
+            "the browser behind the launcher (pid {pid}) is still running and its identity \
+             could not be confirmed, so ff-rdp did not stop it"
+        )),
+    }
+}
+
+/// After a failed launch reaped the `launcher` it spawned (still holding its
+/// handle, so the PID cannot have been reused): stop the browser adopted from
+/// it, if any, then wait until every process the launcher started has exited,
+/// so the profile they hold can be removed.
+///
+/// iter-304: on GitHub's Windows runner a failed launch removed the profile
+/// while the browser behind the launcher was still exiting — the removal
+/// failed (`remove-failed`) and the debug port was briefly still open
+/// (`live_297_bad_manifest_fails_launch_and_stops_firefox`, runs 44577054335
+/// and 44588362892; `live_175_failed_launch_leaves_no_profile_dir`, run
+/// 44570808653). Children other than the adopted browser are only waited
+/// for, never signalled: the tree kill already reached them, and a listed
+/// child might be an orphan of an earlier holder of the PID number.
+///
+/// `Err` carries the reason for a launch warning; the profile must then stay.
+fn settle_with(
+    launcher: u32,
+    adopted: Option<&AdoptedBrowser>,
+    control: &impl ProcessControl,
+) -> Result<(), String> {
+    if let Some(browser) = adopted {
+        terminate_adopted(browser, control)?;
+    }
+    let mut waiting = control.children_of(launcher);
+    if let Some(browser) = adopted
+        && !waiting.contains(&browser.pid)
+    {
+        waiting.push(browser.pid);
+    }
+    let deadline = std::time::Instant::now() + CHILD_EXIT_WAIT;
+    let survivors: Vec<u32> = waiting
+        .into_iter()
+        .filter(|&pid| {
+            !control.wait_for_exit(
+                pid,
+                deadline.saturating_duration_since(std::time::Instant::now()),
+            )
+        })
+        .collect();
+    if survivors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Firefox process(es) {survivors:?} started by the launcher (pid {launcher}) were still \
+             running {} s after the launch failed",
+            CHILD_EXIT_WAIT.as_secs()
+        ))
+    }
+}
+
+/// `LaunchHooks::real`'s [`settle_with`] over the OS.
+pub(super) fn settle_after_failed_launch(
+    launcher: u32,
+    adopted: Option<&AdoptedBrowser>,
+) -> Result<(), String> {
+    settle_with(launcher, adopted, &OsProcessControl)
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::Cell;
     use std::time::Duration;
 
-    use super::{Handover, ProcessView, browser_behind, browser_behind_retrying};
+    use super::{
+        AdoptedBrowser, Handover, ProcessControl, ProcessView, browser_behind,
+        browser_behind_retrying, settle_with,
+    };
+
+    /// The launcher's children for [`settle_with`]: the browser (alive until
+    /// terminated, unless `ignores_terminate`, with a fixed start token) and
+    /// `others`, each alive until waited for unless listed in `stuck`.
+    struct Tree {
+        browser_alive: Cell<bool>,
+        token: Option<&'static str>,
+        ignores_terminate: bool,
+        terminated: Cell<u32>,
+        others: Vec<u32>,
+        stuck: Vec<u32>,
+        waited: std::cell::RefCell<Vec<u32>>,
+    }
+
+    impl Tree {
+        fn running(token: Option<&'static str>) -> Self {
+            Self {
+                browser_alive: Cell::new(true),
+                token,
+                ignores_terminate: false,
+                terminated: Cell::new(0),
+                others: Vec::new(),
+                stuck: Vec::new(),
+                waited: std::cell::RefCell::new(Vec::new()),
+            }
+        }
+    }
+
+    impl ProcessControl for Tree {
+        fn is_alive(&self, pid: u32) -> bool {
+            assert_eq!(pid, BROWSER, "only the browser's liveness is asked");
+            self.browser_alive.get()
+        }
+        fn start_token(&self, _pid: u32) -> Option<String> {
+            self.browser_alive.get().then_some(self.token?.to_owned())
+        }
+        fn children_of(&self, pid: u32) -> Vec<u32> {
+            assert_eq!(pid, LAUNCHER);
+            let mut children = self.others.clone();
+            if self.browser_alive.get() {
+                children.push(BROWSER);
+            }
+            children
+        }
+        fn terminate_tree(&self, pid: u32) {
+            assert_eq!(pid, BROWSER, "only the adopted browser is signalled");
+            self.terminated.set(self.terminated.get() + 1);
+            if !self.ignores_terminate {
+                self.browser_alive.set(false);
+            }
+        }
+        fn wait_for_exit(&self, pid: u32, _timeout: Duration) -> bool {
+            self.waited.borrow_mut().push(pid);
+            if pid == BROWSER {
+                !self.browser_alive.get()
+            } else {
+                !self.stuck.contains(&pid)
+            }
+        }
+    }
+
+    fn adopted(token: Option<&str>) -> AdoptedBrowser {
+        AdoptedBrowser {
+            pid: BROWSER,
+            start_token: token.map(str::to_owned),
+        }
+    }
+
+    /// iter-304: the adopted browser is terminated and waited for, and so is
+    /// every other process the launcher started.
+    #[test]
+    fn unit_304_failed_launch_stops_the_adopted_browser() {
+        let tree = Tree {
+            others: vec![4001],
+            ..Tree::running(Some("t1"))
+        };
+        assert_eq!(
+            settle_with(LAUNCHER, Some(&adopted(Some("t1"))), &tree),
+            Ok(())
+        );
+        assert_eq!(tree.terminated.get(), 1);
+        assert_eq!(*tree.waited.borrow(), [4001, BROWSER]);
+    }
+
+    /// Before the hand-over there is no adopted browser: nothing is
+    /// signalled, the launcher's children are only waited for
+    /// (`live_175_failed_launch_leaves_no_profile_dir`).
+    #[test]
+    fn unit_304_unadopted_children_are_waited_for_not_signalled() {
+        let tree = Tree {
+            browser_alive: Cell::new(false),
+            others: vec![4001],
+            ..Tree::running(Some("t1"))
+        };
+        assert_eq!(settle_with(LAUNCHER, None, &tree), Ok(()));
+        assert_eq!(tree.terminated.get(), 0);
+        assert!(tree.waited.borrow().contains(&4001), "{:?}", tree.waited);
+
+        let stuck = Tree {
+            browser_alive: Cell::new(false),
+            others: vec![4001],
+            stuck: vec![4001],
+            ..Tree::running(Some("t1"))
+        };
+        let outcome = settle_with(LAUNCHER, None, &stuck);
+        assert!(
+            outcome
+                .as_ref()
+                .is_err_and(|reason| reason.contains("[4001]")
+                    && reason.contains(&format!("pid {LAUNCHER}"))),
+            "{outcome:?}"
+        );
+    }
+
+    /// A browser that already exited needs nothing.
+    #[test]
+    fn unit_304_exited_browser_is_not_signalled() {
+        let tree = Tree::running(Some("t1"));
+        tree.browser_alive.set(false);
+        assert_eq!(
+            settle_with(LAUNCHER, Some(&adopted(Some("t1"))), &tree),
+            Ok(())
+        );
+        assert_eq!(tree.terminated.get(), 0);
+    }
+
+    /// A PID now running another process (different start token) is never
+    /// signalled: the adopted browser is gone.
+    #[test]
+    fn unit_304_reused_pid_is_not_signalled() {
+        let tree = Tree::running(Some("someone-else"));
+        let _ = settle_with(LAUNCHER, Some(&adopted(Some("t1"))), &tree);
+        assert_eq!(tree.terminated.get(), 0);
+    }
+
+    /// No identity proof, no signal: the launch reports it and keeps the
+    /// profile.
+    #[test]
+    fn unit_304_unconfirmed_identity_is_not_signalled() {
+        for (adopted_token, current) in [(None, Some("t1")), (Some("t1"), None)] {
+            let tree = Tree::running(current);
+            let outcome = settle_with(LAUNCHER, Some(&adopted(adopted_token)), &tree);
+            assert!(
+                outcome
+                    .as_ref()
+                    .is_err_and(|reason| reason.contains("could not be confirmed")),
+                "{outcome:?}"
+            );
+            assert_eq!(tree.terminated.get(), 0);
+        }
+    }
+
+    /// A browser that survives termination is reported, naming its PID.
+    #[test]
+    fn unit_304_browser_surviving_termination_is_reported() {
+        let tree = Tree {
+            ignores_terminate: true,
+            ..Tree::running(Some("t1"))
+        };
+        let outcome = settle_with(LAUNCHER, Some(&adopted(Some("t1"))), &tree);
+        assert!(
+            outcome
+                .as_ref()
+                .is_err_and(|reason| reason.contains(&format!("[{BROWSER}]"))
+                    && reason.contains("still running")),
+            "{outcome:?}"
+        );
+    }
 
     const PORT: u16 = 6123;
     const LAUNCHER: u32 = 7628;

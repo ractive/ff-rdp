@@ -144,13 +144,14 @@ fn live_stop_refuses_a_hand_started_firefox() {
     }
     let raw = RawFirefox::headless_on_random_port();
     let port = raw.port().to_string();
+    let browser = browser_pid(&raw);
     for args in [&["--port", &port][..], &["--dry-run", "--port", &port][..]] {
         let (ok, _, out) = stop(args);
         assert!(
             !ok,
             "stop must refuse a Firefox ff-rdp did not launch: {out}"
         );
-        assert!(out.contains(&format!("PID {}", raw.pid())), "{out}");
+        assert!(out.contains(&format!("PID {browser}")), "{out}");
         assert!(out.contains("did not launch"), "{out}");
     }
     let (ok, json, out) = stop(&["--all"]);
@@ -161,7 +162,75 @@ fn live_stop_refuses_a_hand_started_firefox() {
     );
     std::thread::sleep(Duration::from_millis(500));
     assert!(
-        pid_alive(raw.pid()),
+        pid_alive(raw.pid()) && pid_alive(browser),
         "REGRESSION: ff-rdp stop signalled a Firefox it did not launch"
     );
+}
+
+/// The PID holding the hand-started Firefox's debug port — the process
+/// `stop` looks up and names.
+///
+/// On Linux and macOS that is the spawned PID. On Windows the spawned
+/// `firefox.exe` is usually Firefox's *launcher process*, which starts the
+/// browser as a child and stays alive as its parent; the browser holds the
+/// port (iter-299). GitHub's Windows runner runs that launcher, so the refusal
+/// there names the child (run 44577054335: listener 3196, not the spawned
+/// PID). The listener is read from `netstat` and must be the spawned PID or a
+/// process whose parent it is.
+fn browser_pid(raw: &RawFirefox) -> u32 {
+    #[cfg(windows)]
+    {
+        let out = std::process::Command::new("netstat")
+            .args(["-ano", "-p", "tcp"])
+            .output()
+            .expect("run netstat");
+        // OEM code page, localized state column: a listener is the row whose
+        // foreign address has port 0; the PID is the last column.
+        let text = String::from_utf8_lossy(&out.stdout);
+        let port_of = |addr: &str| {
+            addr.rsplit_once(':')
+                .and_then(|(_, p)| p.parse::<u16>().ok())
+        };
+        let listener = text
+            .lines()
+            .find_map(|line| {
+                let fields: Vec<_> = line.split_whitespace().collect();
+                (fields.len() >= 5
+                    && fields[0].eq_ignore_ascii_case("TCP")
+                    && port_of(fields[1]) == Some(raw.port())
+                    && port_of(fields[2]) == Some(0))
+                .then(|| fields.last().and_then(|p| p.parse::<u32>().ok()))
+                .flatten()
+            })
+            .unwrap_or_else(|| panic!("no listener on {} in netstat:\n{text}", raw.port()));
+        if listener != raw.pid() {
+            let parent = parent_pid(listener);
+            assert_eq!(
+                parent,
+                Some(raw.pid()),
+                "port {} is held by PID {listener}, neither the spawned Firefox {} nor its child",
+                raw.port(),
+                raw.pid()
+            );
+        }
+        listener
+    }
+    #[cfg(not(windows))]
+    {
+        raw.pid()
+    }
+}
+
+/// `pid`'s parent PID, from `Win32_Process` (a `wmic`-free PowerShell query).
+#[cfg(windows)]
+fn parent_pid(pid: u32) -> Option<u32> {
+    let out = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            &format!("(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').ParentProcessId"),
+        ])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
 }

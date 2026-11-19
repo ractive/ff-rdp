@@ -549,11 +549,42 @@ fn report_failed_profile_cleanup(
 
 /// A spawned browser remains this command's responsibility until its launch
 /// result has been delivered. Never remove its profile while it may still run.
+/// [`LaunchHooks::settle_after_failed_launch`]: given the reaped launcher's
+/// PID and the browser adopted from it, if any, stop that browser and wait for
+/// the launcher's children to exit; `Err` names what may still run.
+type SettleAfterFailedLaunch =
+    fn(u32, Option<&launcher_process::AdoptedBrowser>) -> Result<(), String>;
+
+/// What a failed launch must still settle once it reaped the spawned process
+/// (iter-304).
+struct FailedLaunchChildren<'a> {
+    browser: Option<&'a launcher_process::AdoptedBrowser>,
+    settle: SettleAfterFailedLaunch,
+}
+
+/// iter-304: once the spawned launcher is reaped (its `Child` still held, so
+/// its PID is not reused), stop the browser `launch` adopted from it and wait
+/// for the processes it started (Windows), then remove the profile — or keep
+/// the profile, with a warning, while one of them may still be running.
+fn finish_failed_launch(
+    error: AppError,
+    launcher: u32,
+    children: &FailedLaunchChildren<'_>,
+    profile_guard: &mut crate::util::profile_dir::ManagedProfileGuard,
+) -> AppError {
+    if let Err(reason) = (children.settle)(launcher, children.browser) {
+        profile_guard.disarm();
+        return error.with_warning(format!("{reason}; profile retained"));
+    }
+    report_failed_profile_cleanup(error, profile_guard)
+}
+
 fn stop_failed_launch(
     error: AppError,
     child: &mut std::process::Child,
     profile_guard: &mut crate::util::profile_dir::ManagedProfileGuard,
     stderr: &mut startup::StderrCapture,
+    children: &FailedLaunchChildren<'_>,
 ) -> AppError {
     stderr.pump(None);
     let error = error.with_warning(stderr.summary());
@@ -568,7 +599,7 @@ fn stop_failed_launch(
     stderr.trace(child.id(), "before_cleanup_signals", &state, None);
     let error = error.with_warning(state);
     if matches!(observed, Ok(Some(_))) {
-        return report_failed_profile_cleanup(error, profile_guard);
+        return finish_failed_launch(error, child.id(), children, profile_guard);
     }
     let pid = child.id();
     // build_command puts Firefox in a new group. Validate that fact before
@@ -591,7 +622,7 @@ fn stop_failed_launch(
         Ok(status) => {
             stderr.pump(None);
             stderr.trace(pid, "cleanup_wait", &status.to_string(), None);
-            report_failed_profile_cleanup(error, profile_guard)
+            finish_failed_launch(error, pid, children, profile_guard)
         }
         Err(e) => {
             profile_guard.disarm();
@@ -607,12 +638,27 @@ struct PendingLaunch {
     profile: crate::util::profile_dir::ManagedProfileGuard,
     armed: bool,
     stderr: startup::StderrCapture,
+    /// iter-304: the browser behind Windows' launcher process, once `launch`
+    /// identified it; a failure stops it too.
+    browser: Option<launcher_process::AdoptedBrowser>,
+    settle: SettleAfterFailedLaunch,
 }
 
 impl PendingLaunch {
     fn fail(&mut self, error: AppError) -> AppError {
         self.armed = false;
-        stop_failed_launch(error, &mut self.child, &mut self.profile, &mut self.stderr)
+        let browser = self.browser.take();
+        let children = FailedLaunchChildren {
+            browser: browser.as_ref(),
+            settle: self.settle,
+        };
+        stop_failed_launch(
+            error,
+            &mut self.child,
+            &mut self.profile,
+            &mut self.stderr,
+            &children,
+        )
     }
 
     fn disarm(&mut self) {
@@ -836,6 +882,11 @@ pub(crate) struct LaunchHooks {
     /// Windows launcher process) handed the debug port to, if any
     /// ([`launcher_process::find_browser`]; always `NotNeeded` off Windows).
     pub(crate) find_browser: fn(u32, u16) -> launcher_process::Handover,
+    /// iter-304: after a failed launch reaped the spawned process, stop the
+    /// browser [`Self::find_browser`] named, if any, and wait for the
+    /// processes the spawned launcher started to exit
+    /// ([`launcher_process::settle_after_failed_launch`]).
+    settle_after_failed_launch: SettleAfterFailedLaunch,
 }
 
 impl LaunchHooks {
@@ -869,6 +920,7 @@ impl LaunchHooks {
             suppress_consent_options_tab: super::auto_consent::suppress_options_tab,
             record_user_profile_owner: crate::util::profile_dir::create_ownership_record,
             find_browser: launcher_process::find_browser,
+            settle_after_failed_launch: launcher_process::settle_after_failed_launch,
         }
     }
 }
@@ -892,6 +944,9 @@ impl LaunchHooks {
                 Err(AppError::User("unit tests record no ownership".into()))
             },
             find_browser: |_spawned, _port| launcher_process::Handover::NotNeeded,
+            // Tests that fake a hand-over name this test process as the
+            // browser: never signal it.
+            settle_after_failed_launch: |_launcher, _browser| Ok(()),
             ..Self::real()
         }
     }
@@ -1413,6 +1468,9 @@ pub(crate) fn run_with_hooks(
             if let Some(dir) = owner_marker.as_deref() {
                 crate::util::profile_dir::write_owner_pid_marker(dir, browser);
             }
+            // iter-304: a failure from here on stops this browser by its own
+            // PID as well as the launcher.
+            pending.browser = Some(launcher_process::AdoptedBrowser::new(browser));
             launcher_pid = Some(std::mem::replace(&mut pid, browser));
         }
         launcher_process::Handover::Unidentified(reason) => {
@@ -1865,6 +1923,8 @@ fn spawn_and_wait(
         profile: profile_guard,
         armed: true,
         stderr: startup::StderrCapture::default(),
+        browser: None,
+        settle: hooks.settle_after_failed_launch,
     };
     if let Err(error) = pending.stderr.attach(pending.child.stderr.take()) {
         return Err(pending.fail(AppError::Internal(anyhow::anyhow!(
@@ -3444,6 +3504,65 @@ mod iter_175_tests {
             !profile.exists(),
             "managed profile survived the failed launch"
         );
+    }
+
+    /// iter-304: a launch that fails after the Windows launcher handed the
+    /// port to a browser stops that browser by its own PID too; while it may
+    /// still run, the profile it holds stays and the error says so.
+    #[cfg(unix)]
+    #[test]
+    fn unit_304_failed_launch_stops_the_adopted_browser() {
+        const BROWSER: u32 = 4_000_123;
+        static STOPPED: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+        static PROFILE: Mutex<Option<PathBuf>> = Mutex::new(None);
+        let root = tempfile::tempdir().unwrap();
+        let addons = [addon_dir(root.path())];
+        let hooks = LaunchHooks {
+            locate_firefox: || Ok(PathBuf::from("/unused/firefox")),
+            is_port_in_use: |_| false,
+            spawn: |cmd| {
+                use std::os::unix::process::CommandExt;
+                PROFILE
+                    .lock()
+                    .unwrap()
+                    .replace(profile_arg_of(cmd).unwrap());
+                std::process::Command::new("/bin/sleep")
+                    .arg("30")
+                    .process_group(0)
+                    .spawn()
+            },
+            probe_port: |_, _, _, _| PortWaitOutcome::Opened,
+            find_browser: |_spawned, _port| launcher_process::Handover::Browser(BROWSER),
+            settle_after_failed_launch: |_launcher, browser| {
+                let pid = browser.map_or(0, |b| b.pid);
+                STOPPED.lock().unwrap().push(pid);
+                Err(format!("browser pid {pid} still running"))
+            },
+            install_temporary_addons: |_, _, _, _| {
+                Err(AppError::User(
+                    "Firefox rejected the temporary install".into(),
+                ))
+            },
+            ..LaunchHooks::none_running()
+        };
+        let opts = LaunchOpts {
+            temporary_addons: &addons,
+            ..managed_opts(7304)
+        };
+        let err = run_with_hooks(&bare_launch_cli(), &opts, &hooks)
+            .expect_err("a rejected install must fail the launch");
+        let profile = PROFILE.lock().unwrap().take().unwrap();
+        assert_eq!(*STOPPED.lock().unwrap(), [BROWSER]);
+        let rendered = format!("{err:?}");
+        assert!(
+            rendered.contains("browser pid 4000123 still running; profile retained"),
+            "{rendered}"
+        );
+        assert!(
+            profile.exists(),
+            "a possibly running browser's profile was removed"
+        );
+        let _ = std::fs::remove_dir_all(&profile);
     }
 
     /// AC 2 (`unit_175_failed_spawn_leaves_no_profile_dir`): `build_command`

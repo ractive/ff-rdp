@@ -61,11 +61,6 @@ jobs:
           cargo build -p ff-rdp-cli -p xtask --bins
           cargo test --no-run -p ff-rdp-cli -p ff-rdp-core
 
-      - name: TEMP diagnostics
-        if: inputs.tests != ''
-        shell: pwsh
-        run: ./.github/diag-windows.ps1
-
       - name: Run the live sweep
         if: inputs.tests == ''
         # `--jobs 1`: at `--jobs 2`, as on Linux, this runner failed 11 of 306

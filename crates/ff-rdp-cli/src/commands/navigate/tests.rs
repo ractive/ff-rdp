@@ -387,6 +387,32 @@ fn split_wait_budget_exact_values() {
     assert_eq!(split_wait_budget(0), (0, 0));
 }
 
+/// iter-304: when the events wait spends the whole `--timeout`, the error still
+/// says what did not happen and how long was spent ("within Nms", like every
+/// other readiness timeout) and names the budget — on GitHub's Windows runner
+/// a timed-out `back` reported only "no remaining budget for readystate
+/// fallback".
+#[test]
+fn fallback_budget_spent_error_reports_elapsed_and_budget() {
+    let error = readiness::fallback_budget_spent_error(
+        "navigate",
+        WaitLevel::Complete.poll_target_description(),
+        3012,
+        3000,
+    );
+    assert!(matches!(error, AppError::Timeout(_)), "{error:?}");
+    let message = error.to_string();
+    assert!(
+        message.contains(&format!(
+            "did not reach {} within 3012ms",
+            WaitLevel::Complete.poll_target_description()
+        )),
+        "{message}"
+    );
+    assert!(message.contains("3000ms --timeout"), "{message}");
+    assert!(message.contains("increase --timeout"), "{message}");
+}
+
 /// iter-83 Theme C: parsing the navigate command without `--wait-strategy`
 /// must resolve to `WaitStrategy::Both`.
 #[test]

@@ -1655,6 +1655,28 @@ pub(crate) fn wait_for_readystate_complete(
     })
 }
 
+/// The timeout error when the document-event wait used up the whole
+/// `--timeout` before the readystate fallback could start.
+///
+/// iter-304: this path used to say only "no remaining budget for readystate
+/// fallback", naming neither the target nor the time spent, while every other
+/// readiness timeout reports "within Nms". On a slow machine (GitHub's
+/// Windows runner) this is the path a timed-out `back` takes. It now states
+/// the wall-clock time spent — like [`wait_for_readystate_complete`] — and the
+/// budget that ran out.
+pub(crate) fn fallback_budget_spent_error(
+    prefix: &str,
+    target: &str,
+    elapsed_ms: u64,
+    budget_ms: u64,
+) -> AppError {
+    AppError::Timeout(format!(
+        "{prefix}: document.readyState did not reach {target} within {elapsed_ms}ms — the \
+         document events never arrived and the {budget_ms}ms --timeout left no remaining \
+         budget for the readystate fallback; use --no-wait to skip or increase --timeout"
+    ))
+}
+
 /// Split a total wait `timeout_ms` into `(reserved_ms, events_budget)` for the
 /// `Both` wait strategy: `reserved_ms` goes to the readystate fallback,
 /// `events_budget` to the events wait.
@@ -1882,8 +1904,11 @@ pub(crate) fn wait_for_navigation_commit(
             let elapsed_ms = u64::try_from(nav_start.elapsed().as_millis()).unwrap_or(cli_timeout);
             let remaining = cli_timeout.saturating_sub(elapsed_ms);
             if remaining == 0 {
-                Err(AppError::Timeout(
-                    "nav_action: no remaining budget for readystate fallback".to_string(),
+                Err(fallback_budget_spent_error(
+                    "navigate",
+                    WaitLevel::Complete.poll_target_description(),
+                    elapsed_ms,
+                    cli_timeout,
                 ))
             } else {
                 wait_for_readystate_complete(
