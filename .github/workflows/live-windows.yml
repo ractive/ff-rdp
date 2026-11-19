@@ -14,6 +14,16 @@ name: Live Tests (Windows)
 # that fails and passes on one re-run is quarantined.
 on:
   workflow_dispatch:
+    inputs:
+      tests:
+        # Space-separated libtest filters, e.g.
+        # `live_oneway::live_watcher_oneway_unwatch_no_hang live_stop_command::`.
+        # When set, only those live tests run (serially) instead of the sweep;
+        # the nightly cron always runs the full sweep.
+        description: "Run only these live tests (libtest filters); empty = full sweep"
+        required: false
+        default: ""
+        type: string
   schedule:
     - cron: "0 3 * * *"
 
@@ -51,8 +61,26 @@ jobs:
           cargo build -p ff-rdp-cli -p xtask --bins
           cargo test --no-run -p ff-rdp-cli -p ff-rdp-core
 
+      - name: TEMP diagnostics
+        if: inputs.tests != ''
+        shell: pwsh
+        run: ./.github/diag-windows.ps1
+
       - name: Run the live sweep
+        if: inputs.tests == ''
         # `--jobs 1`: at `--jobs 2`, as on Linux, this runner failed 11 of 306
         # tests, mostly on timeouts and wall-clock assertions (run
         # 44570808653, 26.5 min; kb/backlog.md).
         run: cargo run -p xtask -- live-sweep --jobs 1
+
+      - name: Run the selected live tests
+        if: inputs.tests != ''
+        # `--nocapture` so each test's own output shows; the job env sets
+        # every live gate, so a test that prints `skipped` here did not run.
+        shell: bash
+        env:
+          TESTS: ${{ inputs.tests }}
+        run: |
+          # Word-splitting $TESTS into separate filters is intended.
+          # shellcheck disable=SC2086
+          cargo test -p ff-rdp-cli --test live -- --include-ignored --test-threads 1 --nocapture $TESTS
