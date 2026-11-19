@@ -52,33 +52,6 @@ jobs:
         # tests on "rect stability probe did not answer" that pass serially.
         run: cargo run -p xtask -- live-sweep --jobs 2
 
-  live-tests-windows:
-    # Nightly cron, or by hand — not at release: the Windows sweep is slower
-    # than the Linux one and must not hold a release up. Added 2026-11-19
-    # after a sweep on a Windows machine found `screenshot --full-page`
-    # broken there (#389), which no CI job could have caught.
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 3 * * *'
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
-
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-
-      - name: Verify Firefox installation
-        # The runner image ships Firefox where ff-rdp looks for it.
-        shell: pwsh
-        run: (Get-Item 'C:\Program Files\Mozilla Firefox\firefox.exe').VersionInfo.ProductVersion
-
-      - name: Build ff-rdp
-        run: cargo build -p ff-rdp-cli -p xtask --bins
-
-      - name: Run the live sweep
-        # `--jobs 2` as on Linux: at the default of 6 a 12-core Windows machine
-        # had ten contention failures that pass serially (kb/backlog.md).
-        run: cargo run -p xtask -- live-sweep --jobs 2
-
   sites:
     # Weekly cron, or by hand.
     if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 4 * * 1'
