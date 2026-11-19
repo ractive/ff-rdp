@@ -11,6 +11,18 @@ use crate::error::ProtocolError;
 use crate::transport::RdpTransport;
 use crate::types::{ActorId, Grip};
 
+/// Encode a local filesystem path as a JS string literal for chrome-privileged
+/// code (`IOUtils.write`). The path stays native: on Windows `IOUtils` rejects
+/// forward-slash paths such as `C:/Users/…` with `NS_ERROR_FILE_UNRECOGNIZED_PATH`.
+/// JSON string escaping is valid JS and doubles each backslash.
+fn path_js_literal(path: &std::path::Path) -> Result<String, ProtocolError> {
+    serde_json::to_string(&path.to_string_lossy()).map_err(|e| {
+        ProtocolError::InvalidPacket(format!(
+            "screenshot_via_process_drawsnapshot: invalid temp path: {e}"
+        ))
+    })
+}
+
 /// Try the legacy boolean first: old WebIDL silently converts a dictionary to
 /// true, so dictionary-first is not capability detection. Only Firefox's exact
 /// argument-conversion error permits retrying; no rendering has started then.
@@ -393,15 +405,10 @@ impl ScreenshotActor {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or_default(|d| d.as_nanos());
         let tmp_dir = std::env::temp_dir();
-        // Forward-slashes work on all platforms in Firefox's IOUtils.
         let tmp_path = tmp_dir.join(format!("ff-rdp-screenshot-{pid}-{nonce}.png"));
-        let tmp_path_str = tmp_path.to_string_lossy().replace('\\', "/");
-        // JSON-encode the path to produce a safely-escaped JS string literal.
-        let tmp_path_js = serde_json::to_string(&tmp_path_str).map_err(|e| {
-            ProtocolError::InvalidPacket(format!(
-                "screenshot_via_process_drawsnapshot: invalid temp path: {e}"
-            ))
-        })?;
+        // The same `tmp_path` is handed to Firefox (as a native-path JS
+        // literal) and read back / removed below.
+        let tmp_path_js = path_js_literal(&tmp_path)?;
 
         // Step 4: run the async screenshot JS in the parent-process console.
         //
@@ -573,6 +580,25 @@ impl ScreenshotActor {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn path_js_literal_keeps_windows_path_native_and_escapes_backslashes() {
+        let native = r"C:\Users\james\AppData\Local\Temp\ff-rdp-screenshot-19944-1.png";
+        let literal = super::path_js_literal(std::path::Path::new(native)).unwrap();
+        assert_eq!(
+            literal,
+            r#""C:\\Users\\james\\AppData\\Local\\Temp\\ff-rdp-screenshot-19944-1.png""#
+        );
+        assert!(!literal.contains('/'), "no forward-slash rewrite: {literal}");
+        let decoded: String = serde_json::from_str(&literal).unwrap();
+        assert_eq!(decoded, native);
+    }
+
+    #[test]
+    fn path_js_literal_escapes_quotes_and_keeps_unix_path() {
+        let literal = super::path_js_literal(std::path::Path::new("/tmp/a\"b.png")).unwrap();
+        assert_eq!(literal, r#""/tmp/a\"b.png""#);
+    }
+
     #[test]
     fn drawsnapshot_legacy_success_preserves_both_boolean_values_without_retry() {
         for reset in [false, true] {
