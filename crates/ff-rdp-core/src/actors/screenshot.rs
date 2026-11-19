@@ -588,7 +588,10 @@ mod tests {
             literal,
             r#""C:\\Users\\james\\AppData\\Local\\Temp\\ff-rdp-screenshot-19944-1.png""#
         );
-        assert!(!literal.contains('/'), "no forward-slash rewrite: {literal}");
+        assert!(
+            !literal.contains('/'),
+            "no forward-slash rewrite: {literal}"
+        );
         let decoded: String = serde_json::from_str(&literal).unwrap();
         assert_eq!(decoded, native);
     }
