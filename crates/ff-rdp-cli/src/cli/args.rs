@@ -1452,6 +1452,11 @@ measured binding its debug port at 7 s under load, and the previous hardcoded
 spawn, `launch` fails immediately naming that process and PID instead of
 waiting out the bound.
 
+`FF_RDP_FIREFOX=<path>` (iter-305) names the Firefox binary to start instead of
+the installed one (a portable copy, an unpacked Nightly). It is checked before
+the well-known install paths and PATH; a path that does not exist fails the
+launch rather than silently starting a different Firefox.
+
 `launch` is a NO-OP when the port is already held by a Firefox ff-rdp itself
 launched (iter-210): it exits 0 and reports that instance —
 `results.already_running: true` with the existing `pid`, `port` and `profile`

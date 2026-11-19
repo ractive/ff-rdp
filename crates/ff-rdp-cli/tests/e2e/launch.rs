@@ -38,6 +38,59 @@ fn e2e_147_launch_url_validation_precedes_replace_and_profile_creation() {
     }
 }
 
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("bind")
+        .local_addr()
+        .expect("addr")
+        .port()
+}
+
+/// iter-305: `FF_RDP_FIREFOX` names the binary `launch` spawns. A path that
+/// does not exist is a `User` error naming the variable — never a silent
+/// fallback to the installed Firefox — and a path that exists is the one
+/// `launch` tries to start (an empty file is not runnable, so the spawn error
+/// names it and proves the override was honoured without starting a browser).
+#[test]
+fn e2e_305_ff_rdp_firefox_override_is_the_binary_launch_starts() {
+    let home = tempfile::tempdir().unwrap();
+    let missing = home.path().join("no-such-firefox");
+    let output = std::process::Command::new(ff_rdp_bin())
+        .env("FF_RDP_HOME", home.path())
+        .env("FF_RDP_FIREFOX", &missing)
+        .env_remove("FF_RDP_PORT")
+        .args(["launch", "--headless", "--port", &free_port().to_string()])
+        .output()
+        .expect("run launch with a missing FF_RDP_FIREFOX");
+    assert!(!output.status.success(), "{}", support::output_note(&output));
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|_| panic!("{}", support::output_note(&output)));
+    assert_eq!(json["error_type"], "User", "{json}");
+    let message = json["error"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("FF_RDP_FIREFOX=") && message.contains("no-such-firefox"),
+        "{json}"
+    );
+
+    let not_runnable = home.path().join("not-runnable-firefox.exe");
+    std::fs::write(&not_runnable, b"").unwrap();
+    let output = std::process::Command::new(ff_rdp_bin())
+        .env("FF_RDP_HOME", home.path())
+        .env("FF_RDP_FIREFOX", &not_runnable)
+        .env_remove("FF_RDP_PORT")
+        .args(["launch", "--headless", "--port", &free_port().to_string()])
+        .output()
+        .expect("run launch with a non-runnable FF_RDP_FIREFOX");
+    assert!(!output.status.success(), "{}", support::output_note(&output));
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|_| panic!("{}", support::output_note(&output)));
+    let message = json["error"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("failed to start Firefox at") && message.contains("not-runnable-firefox"),
+        "{json}"
+    );
+}
+
 /// iter-297: a `--temporary-addon` path that does not exist, or a directory
 /// without `manifest.json`, is a `User` error before any side effect —
 /// `--replace` stops nothing, no profile is created, no Firefox starts.

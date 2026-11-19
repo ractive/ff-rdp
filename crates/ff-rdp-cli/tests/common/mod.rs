@@ -1855,7 +1855,22 @@ impl Drop for LiveFirefox {
 ///
 /// Checks the same macOS/Windows well-known paths, then falls back to
 /// `which`/`where`. Returns `None` if Firefox is not installed.
+///
+/// `FF_RDP_FIREFOX` wins first, exactly as in the product, so raw-spawned and
+/// `ff-rdp launch`-spawned Firefoxes in one run are the same binary. A set
+/// value naming no file panics rather than silently testing another Firefox.
 pub fn find_firefox_binary() -> Option<PathBuf> {
+    if let Some(value) = std::env::var_os("FF_RDP_FIREFOX").filter(|v| !v.is_empty()) {
+        let path = PathBuf::from(value);
+        assert!(
+            path.is_file(),
+            "FF_RDP_FIREFOX={} does not name an existing Firefox binary",
+            path.display()
+        );
+        return Some(path);
+    }
+
+
     #[cfg(target_os = "macos")]
     let well_known: &[&str] = &[
         "/Applications/Firefox.app/Contents/MacOS/firefox",
@@ -1965,6 +1980,9 @@ impl RawFirefox {
 
         let mut command = Command::new(&firefox);
         confine_temp_dir(&mut command, &profile);
+        // iter-305: as `ff-rdp launch` does — a pending update applied at
+        // startup exits this process 0 and relaunches Firefox unowned.
+        command.env("MOZ_DISABLE_UPDATE_PROCESSING", "1");
         let child = command
             .args([
                 "-no-remote",
