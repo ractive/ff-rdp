@@ -25,9 +25,9 @@ env:
 jobs:
   live-tests-windows:
     runs-on: windows-latest
-    # A full sweep took 15 min on a 12-core Windows machine; the 4-vCPU runner
-    # is expected to need 30-50 min. Without a bound a hang runs for 6 h.
-    timeout-minutes: 90
+    # At `--jobs 2` the job took 26.5 min on this runner; serially it is
+    # expected to need about twice that. Without a bound a hang runs for 6 h.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -52,6 +52,7 @@ jobs:
           cargo test --no-run -p ff-rdp-cli -p ff-rdp-core
 
       - name: Run the live sweep
-        # `--jobs 2` as on Linux: at the default of 6 a 12-core Windows machine
-        # had ten contention failures that pass serially (kb/backlog.md).
-        run: cargo run -p xtask -- live-sweep --jobs 2
+        # `--jobs 1`: at `--jobs 2`, as on Linux, this runner failed 11 of 306
+        # tests, mostly on timeouts and wall-clock assertions (run
+        # 44570808653, 26.5 min; kb/backlog.md).
+        run: cargo run -p xtask -- live-sweep --jobs 1
