@@ -1,18 +1,22 @@
 //! Firefox-free checks for isolated live-session parsing and configuration.
 
 use std::path::Path;
+#[cfg(unix)]
 use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(unix)]
+use std::time::Instant;
 
-use super::common::{
-    IsolatedLiveFirefox, ProfilePreference, TestHome, bounded_command_output,
-    isolated_launch_command_timeout, launch_receipt_from_output, parse_product_launch_timeout,
-    retained_failed_launch_home, validate_session_binary, write_requested_profile_prefs,
-};
 #[cfg(unix)]
 use super::common::{
-    OWNER_PID_MARKER, OWNER_START_MARKER, bounded_command_output_with_poll, failed_launch_error,
-    kill_pid, launch_request_context, pid_alive, process_start_token,
+    IsolatedLiveFirefox, OWNER_PID_MARKER, OWNER_START_MARKER, bounded_command_output,
+    bounded_command_output_with_poll, failed_launch_error, kill_pid, launch_request_context,
+    pid_alive, process_start_token,
+};
+use super::common::{
+    ProfilePreference, TestHome, isolated_launch_command_timeout, launch_receipt_from_output,
+    parse_product_launch_timeout, retained_failed_launch_home, validate_session_binary,
+    write_requested_profile_prefs,
 };
 
 #[test]

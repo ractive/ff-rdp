@@ -1144,6 +1144,10 @@ fn root_is_trustworthy(root: &Path) -> Result<bool, std::io::ErrorKind> {
 }
 
 #[cfg(not(unix))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "signature matches the fallible Unix `root_is_trustworthy`"
+)]
 fn root_is_trustworthy(_root: &Path) -> Result<bool, std::io::ErrorKind> {
     Ok(true)
 }
