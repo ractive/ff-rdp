@@ -18,55 +18,102 @@ use crate::output;
 use crate::output_pipeline::OutputPipeline;
 use crate::port_owner;
 
+/// Environment variable naming the Firefox binary `launch` (and
+/// `screenshot`) spawn, checked before the well-known install paths.
+///
+/// Lets an operator run a Firefox that is not installed in a standard place —
+/// a portable copy, a Nightly unpacked next to a stable install, or a CI
+/// toolcache build. Windows motivated it: the launcher process is disabled per
+/// install path in `HKCU\Software\Mozilla\Firefox\Launcher`, so a portable copy
+/// is the only way to run the launcher-process topology the GitHub runner sees
+/// on a machine whose installed Firefox has it turned off
+/// (kb/research/windows-lenny-baseline-2026-11.md).
+pub(crate) const FIREFOX_OVERRIDE_ENV: &str = "FF_RDP_FIREFOX";
+
+/// Resolve the [`FIREFOX_OVERRIDE_ENV`] value, if any.
+///
+/// `None` when the variable is unset or empty (empty behaves as unset, like
+/// `FF_RDP_HOME`). A set value must name an existing file: a typo must fail
+/// the launch loudly rather than silently fall back to a different Firefox
+/// than the one the operator asked for.
+fn firefox_override(value: Option<std::ffi::OsString>) -> Option<Result<PathBuf, AppError>> {
+    let value = value.filter(|v| !v.is_empty())?;
+    // Absolute, so the file checked is the file spawned: `Command::new` looks a
+    // bare name up in PATH, never in the working directory.
+    let raw = PathBuf::from(value);
+    let path = std::path::absolute(&raw).unwrap_or(raw);
+    Some(if path.is_file() {
+        Ok(path)
+    } else {
+        Err(AppError::User(format!(
+            "{FIREFOX_OVERRIDE_ENV}={} does not name an existing Firefox binary — \
+             fix the path or unset {FIREFOX_OVERRIDE_ENV} to use the installed Firefox",
+            path.display()
+        )))
+    })
+}
+
 /// Locate the Firefox binary on the current platform.
 ///
-/// Checks well-known installation paths first, then falls back to a PATH
-/// search via `which` (Unix) or `where` (Windows).
+/// Honours [`FIREFOX_OVERRIDE_ENV`] first, then checks well-known installation
+/// paths, then falls back to a PATH search via `which` (Unix) or `where`
+/// (Windows).
 pub(crate) fn find_firefox() -> Result<PathBuf, AppError> {
-    // Platform-specific well-known paths checked before falling back to PATH.
-    if cfg!(target_os = "macos") {
-        let mac_paths = [
+    let well_known: &[&str] = if cfg!(target_os = "macos") {
+        &[
             "/Applications/Firefox.app/Contents/MacOS/firefox",
             "/Applications/Firefox Developer Edition.app/Contents/MacOS/firefox",
             "/Applications/Firefox Nightly.app/Contents/MacOS/firefox",
-        ];
-        for p in &mac_paths {
-            let path = PathBuf::from(p);
-            if path.is_file() {
-                return Ok(path);
-            }
-        }
-    }
-
-    if cfg!(target_os = "windows") {
-        let win_paths = [
+        ]
+    } else if cfg!(target_os = "windows") {
+        &[
             r"C:\Program Files\Mozilla Firefox\firefox.exe",
             r"C:\Program Files (x86)\Mozilla Firefox\firefox.exe",
-        ];
-        for p in &win_paths {
-            let path = PathBuf::from(p);
-            if path.is_file() {
-                return Ok(path);
-            }
-        }
+        ]
+    } else {
+        &[]
+    };
+    let path_candidates: &[&str] = if cfg!(target_os = "windows") {
+        &["firefox.exe"]
+    } else {
+        &["firefox", "firefox-esr", "firefox-developer-edition"]
+    };
+    resolve_firefox(
+        std::env::var_os(FIREFOX_OVERRIDE_ENV),
+        well_known,
+        path_candidates,
+        which_binary,
+    )
+}
+
+/// The lookup order behind [`find_firefox`], every source a parameter so the
+/// order is unit-testable: override → well-known paths → PATH candidates.
+fn resolve_firefox(
+    override_value: Option<std::ffi::OsString>,
+    well_known: &[&str],
+    path_candidates: &[&str],
+    which: impl Fn(&str) -> Result<PathBuf, AppError>,
+) -> Result<PathBuf, AppError> {
+    if let Some(found) = firefox_override(override_value) {
+        return found;
     }
 
-    // Fall back to PATH lookup on all platforms.
-    let candidates = if cfg!(target_os = "windows") {
-        vec!["firefox.exe"]
-    } else {
-        vec!["firefox", "firefox-esr", "firefox-developer-edition"]
-    };
-
-    for candidate in candidates {
-        if let Ok(path) = which_binary(candidate) {
+    for p in well_known {
+        let path = PathBuf::from(p);
+        if path.is_file() {
             return Ok(path);
         }
     }
 
-    Err(AppError::User(
-        "Firefox not found. Install Firefox or set it in PATH.".to_owned(),
-    ))
+    for candidate in path_candidates {
+        if let Ok(path) = which(candidate) {
+            return Ok(path);
+        }
+    }
+
+    Err(AppError::User(format!(
+        "Firefox not found. Install Firefox, put it in PATH, or set {FIREFOX_OVERRIDE_ENV} to its binary."
+    )))
 }
 
 /// Resolve a binary name to its full path using the system's `which` / `where`
@@ -291,6 +338,26 @@ user_pref("intl.locale.requested", "en-US");
 user_pref("intl.locale.matchOS", false);
 "#;
 
+/// Environment variable that stops Firefox applying a pending update at
+/// startup (`ShouldNotProcessUpdates` in toolkit/xre/nsAppRunner.cpp, Firefox
+/// 154+, bug 2055849 — added for firefox-devtools-mcp, which drives Firefox
+/// like ff-rdp does).
+///
+/// iter-305: a Firefox ff-rdp starts can download an update in the
+/// background (`app.update.enabled` in [`USER_JS`] has been inert since
+/// Firefox 63; only an enterprise policy disables updates). The *next*
+/// launch then hands the staged update to `updater.exe` and exits 0 within
+/// ~400 ms, and the updater relaunches Firefox with the same arguments 1–15 s
+/// later under its own, already-gone parent. `launch` saw only its spawned
+/// process exit — "Firefox exited immediately with exit code: 0" — removed
+/// the profile, and the relaunched browser ran on unowned. This hit the
+/// Windows live sweep (runner Firefox 159.0.1 downloading 160.0.1 mid-run,
+/// `live_129_click_cross_origin_frame`, runs 44577054335 and 44592055119)
+/// and a lenny run right after a self-update
+/// (kb/research/windows-lenny-baseline-2026-11.md). The update stays pending
+/// for the next Firefox started without ff-rdp.
+pub(crate) const UPDATE_PROCESSING_ENV: &str = "MOZ_DISABLE_UPDATE_PROCESSING";
+
 /// Build a `Command` ready to spawn Firefox, and return the effective profile
 /// path if one is in use (useful for reporting in the output JSON).
 ///
@@ -506,6 +573,10 @@ fn browser_command(
     // a crash-reporter dialog on the user's desktop. ff-rdp reports the exit
     // itself; nobody is there to submit the report.
     cmd.env("MOZ_CRASHREPORTER_DISABLE", "1");
+
+    // iter-305: never apply a pending Firefox update at startup — see
+    // [`UPDATE_PROCESSING_ENV`].
+    cmd.env(UPDATE_PROCESSING_ENV, "1");
 
     // Detach from the terminal so the spawned browser doesn't inherit our
     // stdin/stdout. Capture stderr so we can surface early crash messages.
@@ -2039,6 +2110,120 @@ fn spawn_and_wait(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn no_path_lookup(name: &str) -> Result<PathBuf, AppError> {
+        Err(AppError::User(format!("{name} not found in PATH")))
+    }
+
+    /// The `FF_RDP_FIREFOX` override wins over a well-known install path that
+    /// exists and over PATH; unset or empty falls through to the well-known
+    /// path, then to PATH.
+    #[test]
+    fn unit_305_firefox_lookup_order_override_then_well_known_then_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let portable = dir.path().join("portable-firefox");
+        let installed = dir.path().join("installed-firefox");
+        std::fs::write(&portable, b"").expect("write portable");
+        std::fs::write(&installed, b"").expect("write installed");
+        let installed_str = installed.to_str().expect("utf8 path");
+        let on_path = dir.path().join("path-firefox");
+        let which = |_: &str| Ok(on_path.clone());
+
+        let got = resolve_firefox(
+            Some(portable.clone().into_os_string()),
+            &[installed_str],
+            &["firefox"],
+            which,
+        )
+        .expect("override resolves");
+        assert_eq!(got, portable, "override must beat well-known and PATH");
+
+        for unset in [None, Some(std::ffi::OsString::new())] {
+            let got = resolve_firefox(unset, &[installed_str], &["firefox"], which)
+                .expect("well-known resolves");
+            assert_eq!(got, installed, "unset/empty override falls to well-known");
+        }
+
+        let missing = dir.path().join("missing-firefox");
+        let got = resolve_firefox(
+            None,
+            &[missing.to_str().expect("utf8 path")],
+            &["firefox"],
+            which,
+        )
+        .expect("PATH resolves");
+        assert_eq!(got, on_path, "absent well-known falls to PATH");
+
+        let err = resolve_firefox(None, &[], &["firefox"], no_path_lookup).unwrap_err();
+        assert!(err.to_string().contains("FF_RDP_FIREFOX"), "{err}");
+    }
+
+    /// A set override naming a missing file is an error — never a silent
+    /// fallback to a different Firefox than the one asked for.
+    #[test]
+    fn unit_305_firefox_override_to_missing_file_is_an_error_not_a_fallback() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let installed = dir.path().join("installed-firefox");
+        std::fs::write(&installed, b"").expect("write installed");
+        let missing = dir.path().join("no-such-firefox");
+        let err = resolve_firefox(
+            Some(missing.clone().into_os_string()),
+            &[installed.to_str().expect("utf8 path")],
+            &["firefox"],
+            no_path_lookup,
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("FF_RDP_FIREFOX="), "{msg}");
+        assert!(msg.contains("no-such-firefox"), "{msg}");
+        // A directory is not a binary either.
+        let err = resolve_firefox(
+            Some(dir.path().as_os_str().to_owned()),
+            &[],
+            &[],
+            no_path_lookup,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("does not name an existing"),
+            "{err}"
+        );
+        // A relative value is resolved against the working directory, so the
+        // file checked is the file spawned (not a PATH lookup of a bare name).
+        let err = firefox_override(Some("no-such-relative-firefox".into()))
+            .expect("set")
+            .unwrap_err();
+        let cwd = std::env::current_dir().expect("cwd");
+        assert!(
+            err.to_string().contains(&cwd.display().to_string()),
+            "{err}"
+        );
+    }
+
+    /// Every Firefox `launch` spawns carries `MOZ_DISABLE_UPDATE_PROCESSING=1`,
+    /// so a pending update is never applied at startup (which exits the
+    /// spawned process 0 and relaunches Firefox unowned).
+    #[test]
+    fn unit_305_spawned_firefox_never_processes_a_pending_update() {
+        let (cmd, profile) = build_command(
+            Path::new("owned-fixture-firefox"),
+            7348,
+            true,
+            None,
+            false,
+            None,
+            None,
+        )
+        .unwrap();
+        let value = cmd
+            .get_envs()
+            .find(|(k, _)| *k == std::ffi::OsStr::new(UPDATE_PROCESSING_ENV))
+            .and_then(|(_, v)| v);
+        assert_eq!(value, Some(std::ffi::OsStr::new("1")));
+        if let Some(profile) = profile {
+            let _ = std::fs::remove_dir_all(profile);
+        }
+    }
 
     #[test]
     fn unit_147_startup_url_is_one_argument_and_managed_prefs_stay_unchanged() {

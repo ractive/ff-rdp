@@ -1452,6 +1452,11 @@ measured binding its debug port at 7 s under load, and the previous hardcoded
 spawn, `launch` fails immediately naming that process and PID instead of
 waiting out the bound.
 
+`FF_RDP_FIREFOX=<path>` (iter-305) names the Firefox binary to start instead of
+the installed one (a portable copy, an unpacked Nightly). It is checked before
+the well-known install paths and PATH; a path that does not exist fails the
+launch rather than silently starting a different Firefox.
+
 `launch` is a NO-OP when the port is already held by a Firefox ff-rdp itself
 launched (iter-210): it exits 0 and reports that instance —
 `results.already_running: true` with the existing `pid`, `port` and `profile`
@@ -3093,7 +3098,9 @@ the body scroll lock on a later task. After clicking, the command waits —
 bounded by --timeout — until the banner is hidden, so a `screenshot` run right
 after it no longer shows the banner. `accepted` means the banner was observed
 hidden; `clicked_not_dismissed` (action \"clicked\") means it was still visible
-when --timeout ran out.
+when --timeout ran out. --timeout bounds only that wait (iter-305): connecting,
+finding the banner and clicking it each get at least the default 10 s per
+reply, so a short --timeout on a busy machine still reaches the click.
 
 One JSON document either way. On exit 0 that is the usual results envelope; on
 exit 1 it is the error envelope, which carries `cmp`, `action` and `status`

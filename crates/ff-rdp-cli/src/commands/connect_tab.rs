@@ -25,10 +25,26 @@ pub struct ConnectedTab {
 ///
 /// Every command opens its own connection and drops it when it returns.
 pub fn connect_and_get_target(cli: &Cli) -> Result<ConnectedTab, AppError> {
-    let connection =
-        connect_to_firefox(&cli.host, cli.port, cli).map_err(ConnectFailure::into_app_error)?;
+    connect_and_get_target_within(cli, Duration::from_millis(cli.timeout))
+}
 
-    handshake_and_resolve_tab(connection, cli)
+/// [`connect_and_get_target`] with `socket_timeout` instead of `--timeout` as
+/// the per-read deadline for connecting (greeting included) and resolving the
+/// target, and as the socket timeout the returned tab keeps.
+///
+/// For a command whose `--timeout` is the budget of one *phase* of its work
+/// rather than of every round trip: `consent accept` documents `--timeout` as
+/// the post-click settle bound, and a short one must not also fail the
+/// connection to a busy Firefox before anything was clicked (iter-305).
+pub(crate) fn connect_and_get_target_within(
+    cli: &Cli,
+    socket_timeout: Duration,
+) -> Result<ConnectedTab, AppError> {
+    let connection = connect_with_timeout(&cli.host, cli.port, socket_timeout, cli)
+        .map_err(ConnectFailure::into_app_error)?;
+    handshake_and_list_tabs(connection)
+        .map_err(TabListError::into_app_error)?
+        .attach_within(cli, socket_timeout)
 }
 
 /// Connect to Firefox for a command that talks to browser-wide actors only
@@ -44,7 +60,16 @@ pub(crate) fn connect_browser(cli: &Cli) -> Result<RdpConnection, AppError> {
 /// Establish a TCP connection to Firefox and produce user-friendly errors on
 /// failure.
 fn connect_to_firefox(host: &str, port: u16, cli: &Cli) -> Result<RdpConnection, ConnectFailure> {
-    let timeout = Duration::from_millis(cli.timeout);
+    connect_with_timeout(host, port, Duration::from_millis(cli.timeout), cli)
+}
+
+/// [`connect_to_firefox`] under an explicit socket timeout.
+fn connect_with_timeout(
+    host: &str,
+    port: u16,
+    timeout: Duration,
+    cli: &Cli,
+) -> Result<RdpConnection, ConnectFailure> {
     RdpConnection::connect(host, port, timeout).map_err(|e| {
         let detail = e.to_string();
         let app = match e {
@@ -183,7 +208,17 @@ impl TabListing {
     /// Resolve the target tab on **this** connection and call `getTarget` on
     /// it, yielding the same [`ConnectedTab`] a plain
     /// [`connect_and_get_target`] would have produced.
-    pub fn attach(mut self, cli: &Cli) -> Result<ConnectedTab, AppError> {
+    pub fn attach(self, cli: &Cli) -> Result<ConnectedTab, AppError> {
+        self.attach_within(cli, Duration::from_millis(cli.timeout))
+    }
+
+    /// [`attach`](Self::attach) with an explicit target-resolution timeout
+    /// (see [`connect_and_get_target_within`]).
+    fn attach_within(
+        mut self,
+        cli: &Cli,
+        target_timeout: Duration,
+    ) -> Result<ConnectedTab, AppError> {
         // When the RDP greeting omits the `ua` field (some Firefox builds strip
         // it), try the device actor's `getDescription` as a version fallback.
         // This ensures `remembered_version()` is populated for all downstream
@@ -207,7 +242,6 @@ impl TabListing {
         )?;
         let tab_actor = tab.actor.clone();
 
-        let target_timeout = Duration::from_millis(cli.timeout);
         let target_info = resolve_target_until(
             connection.transport_mut(),
             &tab_actor,
@@ -273,20 +307,9 @@ fn handshake_and_list_tabs(mut connection: RdpConnection) -> Result<TabListing, 
     })
 }
 
-/// Run the RDP handshake: list tabs, resolve the target tab, call `getTarget`,
-/// and register the discovered actor fronts in the session registry.
-fn handshake_and_resolve_tab(
-    connection: RdpConnection,
-    cli: &Cli,
-) -> Result<ConnectedTab, AppError> {
-    handshake_and_list_tabs(connection)
-        .map_err(TabListError::into_app_error)?
-        .attach(cli)
-}
-
 /// Register target and console fronts in the registry after `getTarget`.
 ///
-/// Called once per `handshake_and_resolve_tab` and again after each
+/// Called once per [`connect_and_get_target_within`] and again after each
 /// `refresh_target` to keep the registry in sync with Firefox's actor state.
 fn register_target_fronts(registry: &Arc<Registry>, target: &TargetInfo) {
     let target_id = target.actor.clone();

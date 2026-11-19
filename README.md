@@ -825,6 +825,7 @@ over its variable.
 |---|---|---|
 | `FF_RDP_PORT` | every command | Debug-server port when `--port` is absent (default 6000). `FF_RDP_PORT=6195 ff-rdp launch` then `ff-rdp tabs` finds the browser with no flag. |
 | `FF_RDP_HOME` | `launch`, `profiles`, `doctor` | Base directory of the temporary-profile root (see [Connections](#connections)). |
+| `FF_RDP_FIREFOX` | `launch`, `screenshot --window-size`, live harness | Path of the Firefox binary to start, checked before the well-known install paths and PATH; a missing path is an error, not a fallback. |
 | `FF_RDP_LAUNCH_TIMEOUT_SECS` | `launch` | Seconds to wait for the debug port (default 30); `--launch-timeout` wins. |
 | `FF_RDP_PROFILE_PRUNE_DAYS` | `launch` | Age after which leftover temporary profiles are pruned (default 7). |
 | `FF_RDP_PROFILE_PRUNE_MAX` | `launch`, `doctor` | Upper bound on temporary profiles kept (default 50). |

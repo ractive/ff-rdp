@@ -406,6 +406,9 @@ fn run_batch_window_size(
     // iter-296: a batch capture that crashes (e.g. a surface too large to
     // allocate) must not open a crash-reporter dialog on the desktop.
     cmd.env("MOZ_CRASHREPORTER_DISABLE", "1");
+    // iter-305: a pending update applied at startup would exit this process
+    // 0 with no capture and relaunch Firefox behind our back.
+    cmd.env(super::launch::UPDATE_PROCESSING_ENV, "1");
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::null());
     // stderr goes to a file, not a pipe: an undrained pipe fills (64 KiB of
