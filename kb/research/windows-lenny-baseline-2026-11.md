@@ -311,3 +311,7 @@ usage: spawnrepro <label> <n> <base_port> [stdout=null|file] [stderr=piped|null|
 ```
 
 Runs named `A-ffrdp-like`, `A2-piped` … `G3-no-debugger` under `runs\` are its output.
+
+On #388 the `windows-launch` run 44448665301 (windows-latest) logged the relaunch in scenario C
+(headed): the first Firefox's sandbox failed to launch the tab process 18 times, `launch`
+relaunched and passed. CI's failure is this one.

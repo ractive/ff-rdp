@@ -1637,6 +1637,8 @@ enum Attempt {
         started: Started,
         spawn_failures: u64,
         last_error: Option<String>,
+        /// The attempt's port/tab-wait deadline, which a relaunch shares.
+        deadline: std::time::Instant,
     },
 }
 
@@ -1652,13 +1654,14 @@ fn start_firefox_relaunching_once(
     plan: &SpawnPlan<'_>,
     hooks: &LaunchHooks,
 ) -> Result<(Started, Vec<String>), AppError> {
-    let (started, first_failures) = match spawn_and_wait(plan, hooks)? {
+    let (started, first_failures, deadline) = match spawn_and_wait(plan, hooks, None)? {
         Attempt::Ready(started) => return Ok((started, Vec::new())),
         Attempt::ContentProcessesFailed {
             started,
             spawn_failures,
+            deadline,
             ..
-        } => (started, spawn_failures),
+        } => (started, spawn_failures, deadline),
     };
     let first_pid = started.pid;
     let what_happened = format!(
@@ -1669,7 +1672,7 @@ fn start_firefox_relaunching_once(
         startup::CONTENT_SPAWN_GRACE.as_secs()
     );
     let notes = stop_dead_instance(started, plan, hooks)?;
-    match spawn_and_wait(plan, hooks) {
+    match spawn_and_wait(plan, hooks, Some(deadline)) {
         Err(error) => Err(std::iter::once(what_happened)
             .chain(notes)
             .fold(error, AppError::with_warning)),
@@ -1681,6 +1684,7 @@ fn start_firefox_relaunching_once(
             mut started,
             spawn_failures,
             last_error,
+            ..
         }) => {
             let error = AppError::User(format!(
                 "Firefox could not start its content processes, twice: its sandbox failed to \
@@ -1698,8 +1702,10 @@ fn start_firefox_relaunching_once(
 
 /// Stop a dead-on-arrival instance through the failed-launch teardown (its
 /// own process tree; its managed profile removed, so the relaunch gets a
-/// fresh one) and wait for its debug port to close. Returns warnings for
-/// anything the teardown left behind.
+/// fresh one) and wait for its debug port to close — and, for a user
+/// `--profile` the relaunch reuses, for Firefox's profile lock to be
+/// released. Returns the teardown's own problem reports ("could not stop …",
+/// "could not remove managed Firefox profile …") as warnings.
 fn stop_dead_instance(
     started: Started,
     plan: &SpawnPlan<'_>,
@@ -1715,38 +1721,67 @@ fn stop_dead_instance(
         "Firefox (pid {pid}) could not start its content processes"
     )));
     tracing::debug!("launch: stopped the dead-on-arrival Firefox before relaunching: {teardown:?}");
-    let mut notes = Vec::new();
-    if should_write_owner_marker(plan.profile)
-        && let Some(dir) = profile_path.as_deref().filter(|dir| dir.exists())
-    {
-        notes.push(format!(
-            "could not remove the first instance's managed Firefox profile {}",
-            dir.display()
-        ));
-    }
+    let notes = teardown_problems(&teardown, pid);
+    let reused_profile = profile_path
+        .as_deref()
+        .filter(|_| !should_write_owner_marker(plan.profile));
+    let released =
+        || !(hooks.is_port_in_use)(plan.port) && reused_profile.is_none_or(profile_lock_released);
     let deadline = std::time::Instant::now() + RELAUNCH_PORT_RELEASE_WAIT;
-    while (hooks.is_port_in_use)(plan.port) {
+    while !released() {
         if std::time::Instant::now() >= deadline {
             let error = AppError::User(format!(
                 "Firefox (pid {pid}) could not start its content processes; ff-rdp stopped it \
-                 to relaunch, but debug port {} was still in use {}s later",
+                 to relaunch, but its debug port {} or profile was still in use {}s later",
                 plan.port,
                 RELAUNCH_PORT_RELEASE_WAIT.as_secs()
             ));
-            return Err(notes.into_iter().fold(
-                error.with_warning(teardown.to_string()),
-                AppError::with_warning,
-            ));
+            return Err(notes.into_iter().fold(error, AppError::with_warning));
         }
         std::thread::sleep(Duration::from_millis(200));
     }
     Ok(notes)
 }
 
+/// The failed-launch teardown's reports of what it could not do — stop the
+/// process, wait for it, remove its profile — prefixed with whose they are.
+/// Its routine notes (the stderr summary, the observed state) are dropped.
+fn teardown_problems(teardown: &AppError, pid: u32) -> Vec<String> {
+    match teardown {
+        AppError::WithWarnings { warnings, .. } => warnings
+            .iter()
+            .filter(|warning| warning.starts_with("could not"))
+            .map(|warning| format!("the first Firefox (pid {pid}): {warning}"))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Has the Firefox that used `dir` released its profile? On Windows Firefox
+/// holds `parent.lock` open without sharing while it runs, so a write open
+/// fails until the process is gone.
+#[cfg(windows)]
+fn profile_lock_released(dir: &Path) -> bool {
+    let lock = dir.join("parent.lock");
+    !lock.exists() || std::fs::OpenOptions::new().write(true).open(&lock).is_ok()
+}
+
+/// Elsewhere the dead-on-arrival case has not been seen; the closed debug
+/// port is the only signal.
+#[cfg(not(windows))]
+fn profile_lock_released(_dir: &Path) -> bool {
+    true
+}
+
 /// Spawn one Firefox per `plan` and wait until it opens its debug port and
 /// lists a tab. Every failure stops the spawned instance and reclaims its
 /// managed profile; a dead-on-arrival instance is handed back still running.
-fn spawn_and_wait(plan: &SpawnPlan<'_>, hooks: &LaunchHooks) -> Result<Attempt, AppError> {
+/// `shared_deadline`: a relaunch's wait ends where the first attempt's did.
+fn spawn_and_wait(
+    plan: &SpawnPlan<'_>,
+    hooks: &LaunchHooks,
+    shared_deadline: Option<std::time::Instant>,
+) -> Result<Attempt, AppError> {
     let &SpawnPlan {
         firefox,
         port,
@@ -1899,8 +1934,11 @@ fn spawn_and_wait(plan: &SpawnPlan<'_>, hooks: &LaunchHooks) -> Result<Attempt, 
     // Still running — verify the debug port is actually reachable before
     // reporting success. Always probe localhost since we just spawned a local
     // Firefox, regardless of --host.
-    let deadline = std::time::Instant::now() + port_wait_bound;
-    let outcome = (hooks.probe_port)("localhost", port, port_wait_bound, &mut observation);
+    // A relaunch inherits the first attempt's deadline: `--launch-timeout`
+    // bounds the wait across both instances, not per instance.
+    let deadline = shared_deadline.unwrap_or_else(|| std::time::Instant::now() + port_wait_bound);
+    let probe_bound = deadline.saturating_duration_since(std::time::Instant::now());
+    let outcome = (hooks.probe_port)("localhost", port, probe_bound, &mut observation);
     if let Some(e) = outcome.into_error(pid, port, port_wait_bound) {
         return Err(pending.fail(e));
     }
@@ -1923,6 +1961,7 @@ fn spawn_and_wait(plan: &SpawnPlan<'_>, hooks: &LaunchHooks) -> Result<Attempt, 
             started: started(pending),
             spawn_failures,
             last_error,
+            deadline,
         }),
         outcome => match outcome.into_error(pid, port, port_wait_bound) {
             Some(e) => Err(pending.fail(e)),
@@ -3682,6 +3721,25 @@ mod iter_175_tests {
             !warning.contains("Failed to launch"),
             "raw stderr must stay redacted"
         );
+    }
+
+    /// iter-302: what the dead instance's teardown could not do reaches the
+    /// relaunch's warnings; its routine notes do not.
+    #[test]
+    fn teardown_problems_keep_only_what_could_not_be_done() {
+        let teardown = AppError::User("dead".to_owned())
+            .with_warning("startup stderr: 10 bytes observed")
+            .with_warning("alive before cleanup signals; subsequent exit cause unknown")
+            .with_warning("could not stop failed Firefox launch (pid 5): denied; profile retained");
+        assert_eq!(
+            teardown_problems(&teardown, 5),
+            vec![
+                "the first Firefox (pid 5): could not stop failed Firefox launch (pid 5): \
+                 denied; profile retained"
+                    .to_owned()
+            ]
+        );
+        assert!(teardown_problems(&AppError::User("dead".to_owned()), 5).is_empty());
     }
 
     /// iter-302: a relaunch that is dead the same way fails with its own

@@ -2,7 +2,7 @@
 title: "Iteration 302: Windows launch fails with listTabs currentWindowGlobal is null"
 type: iteration
 date: 2026-11-18
-status: in-review
+status: done
 branch: iter-302/windows-listtabs-launch-failure
 depends_on: []
 tags: [iteration, windows, launch]
@@ -46,7 +46,7 @@ context has no window global.
         test, and an e2e/unit test of the lookup
 - [x] If it reproduces: capture `--log-level trace` for a failing launch (listTabs replies over
       the 30 s) and find what keeps the first tab without a window global
-- [x] Fix in ff-rdp, if ff-rdp can do anything about it. For example, treat this listTabs error
+- [ ] Fix in ff-rdp, if ff-rdp can do anything about it. For example, treat this listTabs error
       as "not ready yet" and keep polling, or open a tab with `newTab` once the root actor answers
       but lists no usable tab. Either way, launch must not fail on it
 - [ ] If it never reproduces off the runner: add diagnostics to the `windows-launch` workflow
@@ -68,11 +68,18 @@ context has no window global.
 - Fix: `launch` detects this (marker in the raw startup stderr + the listTabs error, 8 s after
   the first marker), stops the instance and relaunches once; a second dead instance fails with
   "could not start its content processes, twice". Polling longer or `newTab` cannot help here.
-  Caveat on the tick above: two dead instances in a row still fail the launch (plainly, with
-  their own error), and the relaunch path is proven by unit tests only unless a real relaunch
-  fired in the runs below.
+  The Fix task stays unticked: two dead instances in a row still fail the launch (plainly, with
+  their own error), so "launch must not fail on it" is not met in that case.
 - Diagnostics: added to `windows-launch` anyway (debug + raw stderr of every call, uploaded on
   failure; relaunch warnings noted in the step summary), though the failure did reproduce.
+- Proof on lenny, fixed binary, 2026-11-19 03:24–03:29: headless 0/60, headed 0/20, no relaunch
+  fired; `firefox.exe` 0 before and 0 after. Before: 3/75 at ~02:00 with the unfixed binary — but
+  by 03:13 the unfixed binary was also at 0 (0/630), so these runs do not show the fix under the
+  condition that reproduced it. AC 1 stays unticked for that reason.
+- CI: on #388 `windows-launch` run 44448665301 (attempt 1) was green and scenario C (headed)
+  hit the dead-on-arrival case and recovered — "the first Firefox (pid 6492) could not start its
+  content processes: its sandbox failed to launch the tab process 18 times … relaunched Firefox
+  once". So CI's failure is this one, and the relaunch works on a real Firefox.
 
 ## Acceptance criteria
 
@@ -80,7 +87,7 @@ context has no window global.
       null": proven on lenny under the condition that reproduced it (0 failures in ≥30 runs
       after the fix, with the failing count before), and `windows-launch` green on the PR
       without a re-run
-- [ ] The owner's desktop Firefox on lenny is untouched by every test run (the `firefox.exe`
+- [x] The owner's desktop Firefox on lenny is untouched by every test run (the `firefox.exe`
       count before = after, recorded in the PR body)
-- [ ] The backlog line is closed with this PR, or updated with what was learned if the cause
+- [x] The backlog line is closed with this PR, or updated with what was learned if the cause
       lives outside ff-rdp

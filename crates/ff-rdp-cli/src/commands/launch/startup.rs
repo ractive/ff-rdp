@@ -19,6 +19,8 @@ pub(super) struct StderrCapture {
     quota_hits: u64,
     spawn_failures: u64,
     first_spawn_failure: Option<Instant>,
+    /// The last `marker.len() - 1` bytes read, for markers split across reads.
+    marker_carry: Vec<u8>,
 }
 
 /// What Firefox's parent process prints when its sandbox launcher cannot
@@ -135,21 +137,21 @@ impl StderrCapture {
 
     /// Retain `chunk` in the bounded tail and count child-spawn failure
     /// markers in it. A marker split across two reads is counted once: the
-    /// search starts `marker.len() - 1` bytes back into what was already
-    /// retained, so a match must end inside `chunk`.
+    /// search covers the previous read's last `marker.len() - 1` bytes (too
+    /// short to hold a whole marker) plus `chunk`.
     fn ingest(&mut self, chunk: &[u8]) {
         self.observed = self.observed.saturating_add(chunk.len() as u64);
         let remove = (self.tail.len() + chunk.len()).saturating_sub(RETAIN);
         self.tail.drain(..remove);
-        let start = self
-            .tail
+        self.tail.extend(chunk);
+        let mut window = std::mem::take(&mut self.marker_carry);
+        window.extend_from_slice(chunk);
+        let found = count_occurrences(&window, CONTENT_SPAWN_FAILURE_MARKER);
+        let keep_from = window
             .len()
             .saturating_sub(CONTENT_SPAWN_FAILURE_MARKER.len() - 1);
-        self.tail.extend(chunk);
-        let found = count_occurrences(
-            &self.tail.make_contiguous()[start..],
-            CONTENT_SPAWN_FAILURE_MARKER,
-        );
+        window.drain(..keep_from);
+        self.marker_carry = window;
         if found > 0 {
             self.spawn_failures = self.spawn_failures.saturating_add(found);
             self.first_spawn_failure.get_or_insert_with(Instant::now);
