@@ -14,13 +14,20 @@ use crate::types::{ActorId, Grip};
 /// Encode a local filesystem path as a JS string literal for chrome-privileged
 /// code (`IOUtils.write`). The path stays native: on Windows `IOUtils` rejects
 /// forward-slash paths such as `C:/Users/…` with `NS_ERROR_FILE_UNRECOGNIZED_PATH`.
-/// JSON string escaping is valid JS and doubles each backslash.
+/// JSON string escaping is valid JS and doubles each backslash. A non-Unicode
+/// path is refused rather than lossily converted, which would make Firefox
+/// write one file and the caller read another.
 fn path_js_literal(path: &std::path::Path) -> Result<String, ProtocolError> {
-    serde_json::to_string(&path.to_string_lossy()).map_err(|e| {
+    let invalid = |why: String| {
         ProtocolError::InvalidPacket(format!(
-            "screenshot_via_process_drawsnapshot: invalid temp path: {e}"
+            "screenshot_via_process_drawsnapshot: invalid temp path '{}': {why}",
+            path.display()
         ))
-    })
+    };
+    let native = path
+        .to_str()
+        .ok_or_else(|| invalid("not valid Unicode".to_owned()))?;
+    serde_json::to_string(native).map_err(|e| invalid(e.to_string()))
 }
 
 /// Try the legacy boolean first: old WebIDL silently converts a dictionary to
@@ -404,7 +411,12 @@ impl ScreenshotActor {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or_default(|d| d.as_nanos());
-        let tmp_dir = std::env::temp_dir();
+        // IOUtils only accepts absolute paths; TMPDIR/TMP may be relative.
+        let tmp_dir = std::path::absolute(std::env::temp_dir()).map_err(|e| {
+            ProtocolError::InvalidPacket(format!(
+                "screenshot_via_process_drawsnapshot: cannot resolve the temp directory: {e}"
+            ))
+        })?;
         let tmp_path = tmp_dir.join(format!("ff-rdp-screenshot-{pid}-{nonce}.png"));
         // The same `tmp_path` is handed to Firefox (as a native-path JS
         // literal) and read back / removed below.
@@ -600,6 +612,28 @@ mod tests {
     fn path_js_literal_escapes_quotes_and_keeps_unix_path() {
         let literal = super::path_js_literal(std::path::Path::new("/tmp/a\"b.png")).unwrap();
         assert_eq!(literal, r#""/tmp/a\"b.png""#);
+    }
+
+    #[test]
+    fn path_js_literal_refuses_non_unicode_path() {
+        #[cfg(unix)]
+        let path = {
+            use std::os::unix::ffi::OsStrExt;
+            std::path::PathBuf::from(std::ffi::OsStr::from_bytes(b"/tmp/\xff.png"))
+        };
+        #[cfg(windows)]
+        let path = {
+            use std::os::windows::ffi::OsStringExt;
+            // An unpaired UTF-16 surrogate.
+            std::path::PathBuf::from(std::ffi::OsString::from_wide(&[
+                u16::from(b'C'),
+                u16::from(b':'),
+                u16::from(b'\\'),
+                0xD800,
+            ]))
+        };
+        let err = super::path_js_literal(&path).unwrap_err().to_string();
+        assert!(err.contains("not valid Unicode"), "{err}");
     }
 
     #[test]
