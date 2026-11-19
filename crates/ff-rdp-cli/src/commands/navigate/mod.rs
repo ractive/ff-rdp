@@ -494,8 +494,11 @@ pub fn run_core(
                                 status_reason: Some(StatusUnknown::NotObserved),
                             })
                         }
-                        None => Err(AppError::Timeout(
-                            "navigate: no remaining budget for readystate fallback".to_string(),
+                        None => Err(readiness::fallback_budget_spent_error(
+                            "navigate",
+                            goal.level().poll_target_description(),
+                            elapsed_ms,
+                            cli.timeout,
                         )),
                     }
                 } else {

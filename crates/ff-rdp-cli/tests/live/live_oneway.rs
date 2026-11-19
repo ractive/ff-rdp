@@ -148,8 +148,17 @@ fn base_args(port: u16) -> Vec<String> {
 /// uses `actor_send` and returns immediately.
 ///
 /// We time a data-URL navigation which exercises the watch → navigate →
-/// unwatch lifecycle.  The assertion threshold is generous (5 s) to avoid
-/// flakes on slow CI, while still catching a full socket timeout (≥10 s).
+/// unwatch lifecycle. An `unwatchResources` that awaited a reply would block
+/// for the full socket read timeout, which is `--timeout` (15 s here), so a
+/// regression takes ≥15 s. The 10 s bound sits well clear of both sides.
+///
+/// iter-304: the bound was 5 s with `--timeout 8000`, and GitHub's Windows
+/// runner took 5.22 s / 5.49 s inside the live sweep. Nothing in the command
+/// waits a fixed ~5 s: a trace on that runner (run 44588362892) shows the
+/// connect handshake, the navigation and the `--network-timeout 1000` capture
+/// window, with `unwatchResources` sent without waiting; the same test run on
+/// its own there took 2.77 s. The extra time is the loaded machine, so the
+/// read timeout and bound were moved apart instead of tightened.
 #[test]
 #[ignore = "requires FF_RDP_LIVE_TESTS=1 and a running Firefox instance"]
 fn live_watcher_oneway_unwatch_no_hang() {
@@ -168,7 +177,7 @@ fn live_watcher_oneway_unwatch_no_hang() {
             "navigate",
             "data:text/html,<h1>oneway-test</h1>",
             "--timeout",
-            "8000",
+            "15000",
             "--allow-unsafe-urls",
             "--with-network",
             "--network-timeout",
@@ -188,9 +197,10 @@ fn live_watcher_oneway_unwatch_no_hang() {
     }
 
     assert!(
-        elapsed < Duration::from_secs(5),
-        "navigate + unwatchResources took {elapsed:?} — expected <5s. \
-         A longer time suggests unwatchResources is awaiting a reply that never arrives."
+        elapsed < Duration::from_secs(10),
+        "navigate + unwatchResources took {elapsed:?} — expected <10s (the 15 s read \
+         timeout is what an awaited reply would cost). A longer time suggests \
+         unwatchResources is awaiting a reply that never arrives."
     );
 
     eprintln!("live_watcher_oneway_unwatch_no_hang: elapsed={elapsed:?} PASS");
