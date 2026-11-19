@@ -35,15 +35,21 @@ use crate::error::AppError;
 use crate::output;
 use crate::output_pipeline::OutputPipeline;
 
-use super::connect_tab::{ConnectedTab, connect_and_get_target};
+use super::connect_tab::{ConnectedTab, connect_and_get_target_within};
 
 /// `ff-rdp consent accept` — explicit, on-demand consent acceptance.
 ///
 /// iter-160 Theme D: exit 1 unless a banner was actually accepted. `--allow-no-cmp`
 /// (`allow_no_cmp`) restores exit 0 for the no-CMP outcome only.
 pub fn run(cli: &Cli, allow_no_cmp: bool) -> Result<(), AppError> {
-    let mut ctx = connect_and_get_target(cli)?;
-    let result = detect_and_accept(&mut ctx, Duration::from_millis(cli.timeout))?;
+    let settle_budget = Duration::from_millis(cli.timeout);
+    let socket_timeout = setup_socket_timeout(settle_budget);
+    // A setup read that still times out names the timeout it really waited.
+    crate::error::remember_socket_timeout_ms(
+        u64::try_from(socket_timeout.as_millis()).unwrap_or(u64::MAX),
+    );
+    let mut ctx = connect_and_get_target_within(cli, socket_timeout)?;
+    let result = detect_and_accept(&mut ctx, settle_budget)?;
     let status = status_of(&result);
 
     let mut meta = json!({});
@@ -586,6 +592,30 @@ const ACTION_CLICKED: &str = "clicked";
 /// How often the settle loop re-reads the overlay.
 const SETTLE_POLL: Duration = Duration::from_millis(100);
 
+/// The least time one settle read gets, even at the budget's end: the read at
+/// the deadline must still be able to observe the banner.
+const SETTLE_READ_FLOOR: Duration = Duration::from_millis(250);
+
+/// When a settle read started at `now` must give up: at the settle deadline,
+/// but never sooner than [`SETTLE_READ_FLOOR`] from now.
+fn settle_read_deadline(deadline: Instant, now: Instant) -> Instant {
+    deadline.max(now + SETTLE_READ_FLOOR)
+}
+
+/// The per-read socket timeout of `consent accept`'s connection: the settle
+/// budget, but never less than the default `--timeout`.
+///
+/// iter-305: `--timeout` is documented as the bound on the post-click wait.
+/// It used to be every read's socket timeout as well, so on a slow machine
+/// (the 4-vCPU Windows runner; lenny pinned to one core) `consent accept
+/// --timeout 1500` failed in the frame-target enumeration *before* the click
+/// with `operation timed out after 1500ms (phase: recv)` (exit 5), or at the
+/// greeting with "could not connect" (exit 3), instead of clicking and
+/// reporting `clicked_not_dismissed`.
+fn setup_socket_timeout(settle_budget: Duration) -> Duration {
+    settle_budget.max(Duration::from_millis(crate::cli::args::DEFAULT_TIMEOUT_MS))
+}
+
 /// How long the settle loop keeps waiting for a scroll lock to lift once the
 /// overlay itself is hidden. Bounded separately from `--timeout` because a
 /// page may keep `overflow: hidden` for reasons of its own; the banner being
@@ -667,16 +697,27 @@ fn settle_action(
 ) -> &'static str {
     let js = format!("JSON.stringify({})", overlay_probe_expr(Some(cmp)));
     let mut console = top_console.clone();
+    let deadline = Instant::now() + budget;
     let settle = wait_for_dismissal(
         || {
-            // A CMP that reloads the page on accept kills this console actor.
-            // Re-resolve the target, so the next read sees the new document
-            // (where a stored consent means no banner) instead of failing
-            // until the deadline.
-            let Ok(result) = WebConsoleActor::evaluate_js_async(ctx.transport_mut(), &console, &js)
+            // iter-305: every read ends with the settle budget (plus a short
+            // floor), not after a whole socket timeout — the connection's
+            // timeout is longer than `--timeout` (see `run`).
+            let read_by = settle_read_deadline(deadline, Instant::now());
+            let read = ctx.transport_mut().with_read_deadline(read_by, |t| {
+                WebConsoleActor::evaluate_js_async(t, &console, &js)
+            });
+            let Ok(result) =
+                read.inspect_err(|e| tracing::debug!("consent: settle read failed: {e}"))
             else {
-                ctx.refresh_target();
-                console = ctx.target().console_actor.clone();
+                // A CMP that reloads the page on accept kills this console
+                // actor. Re-resolve the target, so the next read sees the new
+                // document (where a stored consent means no banner) instead of
+                // failing until the deadline.
+                let refresh_by = settle_read_deadline(deadline, Instant::now());
+                if ctx.refresh_target_until(refresh_by).is_ok() {
+                    console = ctx.target().console_actor.clone();
+                }
                 return None;
             };
             if result.exception.is_some() {
@@ -1294,6 +1335,32 @@ mod tests {
             status_of(&json!({"status": "accepted"})),
             ConsentStatus::Accepted
         );
+    }
+
+    /// iter-305: a short `--timeout` bounds the settle wait only; the
+    /// connection, frame enumeration and click keep at least the default
+    /// socket timeout, and a long `--timeout` raises it.
+    #[test]
+    fn unit_305_setup_socket_timeout_never_drops_below_the_default() {
+        let default = Duration::from_millis(crate::cli::args::DEFAULT_TIMEOUT_MS);
+        assert_eq!(setup_socket_timeout(Duration::from_millis(1500)), default);
+        assert_eq!(setup_socket_timeout(Duration::ZERO), default);
+        assert_eq!(
+            setup_socket_timeout(Duration::from_secs(30)),
+            Duration::from_secs(30)
+        );
+    }
+
+    /// iter-305: a settle read ends at the settle deadline, and the read
+    /// started at or after it still gets the floor to observe the banner.
+    #[test]
+    fn unit_305_settle_read_ends_with_the_budget_but_keeps_a_floor() {
+        let now = Instant::now();
+        let far = now + Duration::from_secs(5);
+        assert_eq!(settle_read_deadline(far, now), far);
+        assert_eq!(settle_read_deadline(now, now), now + SETTLE_READ_FLOOR);
+        let past = now.checked_sub(Duration::from_secs(1)).unwrap_or(now);
+        assert_eq!(settle_read_deadline(past, now), now + SETTLE_READ_FLOOR);
     }
 
     // ── 2026-10-26: settle after the accept click ────────────────────────

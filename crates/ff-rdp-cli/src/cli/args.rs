@@ -3098,7 +3098,9 @@ the body scroll lock on a later task. After clicking, the command waits —
 bounded by --timeout — until the banner is hidden, so a `screenshot` run right
 after it no longer shows the banner. `accepted` means the banner was observed
 hidden; `clicked_not_dismissed` (action \"clicked\") means it was still visible
-when --timeout ran out.
+when --timeout ran out. --timeout bounds only that wait (iter-305): connecting,
+finding the banner and clicking it each get at least the default 10 s per
+reply, so a short --timeout on a busy machine still reaches the click.
 
 One JSON document either way. On exit 0 that is the usual results envelope; on
 exit 1 it is the error envelope, which carries `cmp`, `action` and `status`

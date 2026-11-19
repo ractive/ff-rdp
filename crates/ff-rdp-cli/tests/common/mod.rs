@@ -1870,7 +1870,6 @@ pub fn find_firefox_binary() -> Option<PathBuf> {
         return Some(path);
     }
 
-
     #[cfg(target_os = "macos")]
     let well_known: &[&str] = &[
         "/Applications/Firefox.app/Contents/MacOS/firefox",

@@ -315,3 +315,84 @@ Runs named `A-ffrdp-like`, `A2-piped` … `G3-no-debugger` under `runs\` are its
 On #388 the `windows-launch` run 44448665301 (windows-latest) logged the relaunch in scenario C
 (headed): the first Firefox's sandbox failed to launch the tab process 18 times, `launch`
 relaunched and passed. CI's failure is this one.
+
+## 2026-11-19 (evening): reproducing the runner's launcher process, and the startup update
+
+### Why runner-only failures never reproduced on lenny
+
+The GitHub runner runs Firefox's **launcher process**: the spawned `firefox.exe` starts the real
+browser as its child (iter-299, `commands/launch/launcher_process.rs`). On lenny the installed
+Firefox has the launcher force-disabled, per install path, in
+`HKCU\Software\Mozilla\Firefox\Launcher`: value `C:\Program Files\Mozilla Firefox\firefox.exe|Browser`
+= `0`. Nothing was changed there. Because the key names one path, a **portable copy** of the
+install runs with the launcher on: `C:\Users\james\ffrdp-work\ff-portable\firefox.exe` (a copy of
+the install directory, Firefox 160.0.1).
+
+`C:\Users\james\ffrdp-work\probe-launcher.ps1` launches one Firefox with `-wait-for-browser` and
+asks whether the spawned PID has a browser child (teardown: `taskkill /PID <spawned> /T`, its own
+tree only). Portable copy: spawned pid 8252 with browser child 12036, "launcher in use: True".
+Installed: one process, "False".
+
+ff-rdp looked only in the well-known install paths, so iter-305 added `FF_RDP_FIREFOX=<binary>`
+(`launch`, `screenshot --window-size`, and the live harness's `RawFirefox`). The runner-like local
+setup is then: `FF_RDP_FIREFOX=…\ff-portable\firefox.exe`, CPU affinity 4 cores (`0xF`, set on
+the test binary right after start, inherited by every child), `--test-threads 1`
+(`C:\Users\james\ffrdp-work\loop305.ps1`). For load beyond 4 cores, `hog305.ps1` starts busy-loop
+processes pinned to the same core(s).
+
+### "Firefox exited immediately with exit code: 0" is Firefox applying a pending update
+
+Evidence on lenny: the installed Firefox's `updates\308046B0AF4A39CB\updates\last-update.log`
+(under `C:\ProgramData\Mozilla-1de4eec8-1241-4177-a864-e594e8d1fb38\`) shows `updater.exe`
+applying an update at 2026-11-19 01:55:46, invoked from working directory
+`C:\Users\james\devel\ff-rdp` (a Firefox ff-rdp launched), elevating through UAC and relaunching
+`firefox.exe`. That is the minute of the `302-nonelev-headless` run (started 01:55:36) whose
+launches failed with exit 0 and whose Firefox reappeared 8–14 s later under an already-gone
+parent: the updater, after the UAC prompt. The runner image ships Firefox **159.0.1** while
+160.0.1 is out, so a Firefox in the sweep downloads it in the background (`app.update.enabled`
+in ff-rdp's `user.js` has been inert since Firefox 63; `update-config.json` says
+`app.update.auto: true`) and a later launch applies it at startup — once per sweep, at about
+the same point (`live_129_click_cross_origin_frame`, runs 44577054335 and 44592055119).
+
+Mechanism: at startup Firefox finds `updates\0\update.status` = `pending`, hands the update to
+`updater.exe` and exits 0 (~400 ms, stderr only `*** You are running in headless mode.`, 39
+bytes); the launcher waiting on it exits 0 too. The updater relaunches Firefox with the original
+arguments. `launch` saw an immediate exit, removed the profile, and the relaunched browser ran on
+unowned (with a recreated, empty profile, so without a debug listener).
+
+Reproduction: `C:\Users\james\ffrdp-work\update305.ps1` plants a pending update for the
+**portable copy only** (its own update directory `updates\81C474B6780752EE\updates\0`:
+`update.version` = `999.0`, `update.status` = `pending`, a bogus `update.mar`; the updater fails
+on the MAR and relaunches Firefox anyway), runs one `ff-rdp launch --headless`, and after 15 s
+kills only processes whose command line names that run's directory.
+`update305-loop.ps1` repeats it: before the fix (`bin-305-before`) **10/10** launches failed with
+exactly the runner's error and 2 unowned `firefox.exe` left each time; after (`bin-305-after`)
+**10/10** launched, 0 left over.
+
+Fix (iter-305): every Firefox ff-rdp spawns gets `MOZ_DISABLE_UPDATE_PROCESSING=1`
+(`ShouldNotProcessUpdates` in `toolkit/xre/nsAppRunner.cpp`, bug 2055849, Firefox 154+, added for
+firefox-devtools-mcp). The update stays pending for the next Firefox started without ff-rdp.
+Firefox older than 154 is not covered (backlog line).
+
+Unconfirmed, for the iter-302 line: the content-process spawn failures (`SpawnTarget`) were
+measured from ~02:00, minutes after this 01:55 update replaced the install's files, and faded
+within the hour.
+
+### `consent accept --timeout 1500`: the timeout was before the click
+
+`live_consent_settle_banner_that_stays_is_not_dismissed` never failed on lenny at 4 cores
+(0/10) or at 1 core (0/10). With the test pinned to core 0 **and** two busy loops on that core
+(`hog305.ps1 -Count 2 -Affinity 1`) it failed 7/10, then 5/8, with the runner's
+`operation timed out after 1500ms (phase: recv)` (exit 5) or, under the same load,
+`could not connect to Firefox` (exit 3). Debug logs (`RUST_LOG=ff_rdp_cli::frame_targets=debug`)
+put the exit-5 timeout in the frame-target enumeration, `FRAME_TARGETS_END … elapsed_ns=1517247400
+result=Err(RdpTimeout { phase: "recv", after_ms: 1500 })` — before the click, not in the settle
+loop (whose read errors were already swallowed). The exit-3 case is the RDP greeting arriving
+later than `--timeout`; the same Firefox answered the next command.
+
+`--timeout` is documented as the bound on the post-click wait, but it was also every read's
+socket timeout. iter-305: `consent accept` connects, enumerates and clicks with
+`max(--timeout, 10 s)` per read, and each settle read ends at the settle deadline (with a 250 ms
+floor). Same load after the fix: 8/10 passed; the 2 failures were waits beyond the 10 s default
+itself (`operation timed out after 10000ms`, and a greeting slower than 10 s) — the machine was
+starved, not the budget mis-applied.

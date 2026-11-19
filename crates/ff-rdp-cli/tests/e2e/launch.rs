@@ -62,7 +62,11 @@ fn e2e_305_ff_rdp_firefox_override_is_the_binary_launch_starts() {
         .args(["launch", "--headless", "--port", &free_port().to_string()])
         .output()
         .expect("run launch with a missing FF_RDP_FIREFOX");
-    assert!(!output.status.success(), "{}", support::output_note(&output));
+    assert!(
+        !output.status.success(),
+        "{}",
+        support::output_note(&output)
+    );
     let json: serde_json::Value = serde_json::from_slice(&output.stdout)
         .unwrap_or_else(|_| panic!("{}", support::output_note(&output)));
     assert_eq!(json["error_type"], "User", "{json}");
@@ -81,7 +85,11 @@ fn e2e_305_ff_rdp_firefox_override_is_the_binary_launch_starts() {
         .args(["launch", "--headless", "--port", &free_port().to_string()])
         .output()
         .expect("run launch with a non-runnable FF_RDP_FIREFOX");
-    assert!(!output.status.success(), "{}", support::output_note(&output));
+    assert!(
+        !output.status.success(),
+        "{}",
+        support::output_note(&output)
+    );
     let json: serde_json::Value = serde_json::from_slice(&output.stdout)
         .unwrap_or_else(|_| panic!("{}", support::output_note(&output)));
     let message = json["error"].as_str().unwrap_or_default();

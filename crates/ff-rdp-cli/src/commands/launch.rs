@@ -320,8 +320,7 @@ user_pref("toolkit.telemetry.reportingpolicy.firstRun", false);
 user_pref("browser.shell.checkDefaultBrowser", false);
 // Disable session restore prompts
 user_pref("browser.sessionstore.resume_from_crash", false);
-// Inert since Firefox 63 (kept for older builds); the startup update is blocked by
-// MOZ_DISABLE_UPDATE_PROCESSING in the spawn environment instead (iter-305).
+// Disable auto-updates so Firefox cannot restart mid-session and break the RDP connection
 user_pref("app.update.enabled", false);
 // Enable remote debugging server (required since Firefox ~149)
 user_pref("devtools.debugger.remote-enabled", true);
@@ -2182,7 +2181,10 @@ mod tests {
             no_path_lookup,
         )
         .unwrap_err();
-        assert!(err.to_string().contains("does not name an existing"), "{err}");
+        assert!(
+            err.to_string().contains("does not name an existing"),
+            "{err}"
+        );
     }
 
     /// Every Firefox `launch` spawns carries `MOZ_DISABLE_UPDATE_PROCESSING=1`,
