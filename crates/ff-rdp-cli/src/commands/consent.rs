@@ -42,14 +42,11 @@ use super::connect_tab::{ConnectedTab, connect_and_get_target_within};
 /// iter-160 Theme D: exit 1 unless a banner was actually accepted. `--allow-no-cmp`
 /// (`allow_no_cmp`) restores exit 0 for the no-CMP outcome only.
 pub fn run(cli: &Cli, allow_no_cmp: bool) -> Result<(), AppError> {
-    let settle_budget = Duration::from_millis(cli.timeout);
-    let socket_timeout = setup_socket_timeout(settle_budget);
+    let socket_timeout_ms = setup_socket_timeout_ms(cli.timeout);
     // A setup read that still times out names the timeout it really waited.
-    crate::error::remember_socket_timeout_ms(
-        u64::try_from(socket_timeout.as_millis()).unwrap_or(u64::MAX),
-    );
-    let mut ctx = connect_and_get_target_within(cli, socket_timeout)?;
-    let result = detect_and_accept(&mut ctx, settle_budget)?;
+    crate::error::remember_socket_timeout_ms(socket_timeout_ms);
+    let mut ctx = connect_and_get_target_within(cli, Duration::from_millis(socket_timeout_ms))?;
+    let result = detect_and_accept(&mut ctx, Duration::from_millis(cli.timeout))?;
     let status = status_of(&result);
 
     let mut meta = json!({});
@@ -612,8 +609,8 @@ fn settle_read_deadline(deadline: Instant, now: Instant) -> Instant {
 /// with `operation timed out after 1500ms (phase: recv)` (exit 5), or at the
 /// greeting with "could not connect" (exit 3), instead of clicking and
 /// reporting `clicked_not_dismissed`.
-fn setup_socket_timeout(settle_budget: Duration) -> Duration {
-    settle_budget.max(Duration::from_millis(crate::cli::args::DEFAULT_TIMEOUT_MS))
+fn setup_socket_timeout_ms(settle_budget_ms: u64) -> u64 {
+    settle_budget_ms.max(crate::cli::args::DEFAULT_TIMEOUT_MS)
 }
 
 /// How long the settle loop keeps waiting for a scroll lock to lift once the
@@ -707,18 +704,24 @@ fn settle_action(
             let read = ctx.transport_mut().with_read_deadline(read_by, |t| {
                 WebConsoleActor::evaluate_js_async(t, &console, &js)
             });
-            let Ok(result) =
-                read.inspect_err(|e| tracing::debug!("consent: settle read failed: {e}"))
-            else {
-                // A CMP that reloads the page on accept kills this console
-                // actor. Re-resolve the target, so the next read sees the new
-                // document (where a stored consent means no banner) instead of
-                // failing until the deadline.
-                let refresh_by = settle_read_deadline(deadline, Instant::now());
-                if ctx.refresh_target_until(refresh_by).is_ok() {
-                    console = ctx.target().console_actor.clone();
+            let result = match read {
+                Ok(result) => result,
+                // A slow but healthy console: just read again (or stop at the
+                // deadline) — nothing was reloaded.
+                Err(ff_rdp_core::ProtocolError::Timeout) => return None,
+                Err(e) => {
+                    tracing::debug!("consent: settle read failed: {e}");
+                    // A CMP that reloads the page on accept kills this console
+                    // actor. Re-resolve the target, so the next read sees the
+                    // new document (where a stored consent means no banner)
+                    // instead of failing until the deadline.
+                    let refresh_by = settle_read_deadline(deadline, Instant::now());
+                    match ctx.refresh_target_until(refresh_by) {
+                        Ok(fresh) => console = fresh,
+                        Err(e) => tracing::warn!("consent: could not refresh target actors: {e}"),
+                    }
+                    return None;
                 }
-                return None;
             };
             if result.exception.is_some() {
                 return None;
@@ -1342,13 +1345,10 @@ mod tests {
     /// socket timeout, and a long `--timeout` raises it.
     #[test]
     fn unit_305_setup_socket_timeout_never_drops_below_the_default() {
-        let default = Duration::from_millis(crate::cli::args::DEFAULT_TIMEOUT_MS);
-        assert_eq!(setup_socket_timeout(Duration::from_millis(1500)), default);
-        assert_eq!(setup_socket_timeout(Duration::ZERO), default);
-        assert_eq!(
-            setup_socket_timeout(Duration::from_secs(30)),
-            Duration::from_secs(30)
-        );
+        let default = crate::cli::args::DEFAULT_TIMEOUT_MS;
+        assert_eq!(setup_socket_timeout_ms(1500), default);
+        assert_eq!(setup_socket_timeout_ms(0), default);
+        assert_eq!(setup_socket_timeout_ms(30_000), 30_000);
     }
 
     /// iter-305: a settle read ends at the settle deadline, and the read

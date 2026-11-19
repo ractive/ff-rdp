@@ -38,7 +38,10 @@ pub(crate) const FIREFOX_OVERRIDE_ENV: &str = "FF_RDP_FIREFOX";
 /// than the one the operator asked for.
 fn firefox_override(value: Option<std::ffi::OsString>) -> Option<Result<PathBuf, AppError>> {
     let value = value.filter(|v| !v.is_empty())?;
-    let path = PathBuf::from(value);
+    // Absolute, so the file checked is the file spawned: `Command::new` looks a
+    // bare name up in PATH, never in the working directory.
+    let raw = PathBuf::from(value);
+    let path = std::path::absolute(&raw).unwrap_or(raw);
     Some(if path.is_file() {
         Ok(path)
     } else {
@@ -2183,6 +2186,16 @@ mod tests {
         .unwrap_err();
         assert!(
             err.to_string().contains("does not name an existing"),
+            "{err}"
+        );
+        // A relative value is resolved against the working directory, so the
+        // file checked is the file spawned (not a PATH lookup of a bare name).
+        let err = firefox_override(Some("no-such-relative-firefox".into()))
+            .expect("set")
+            .unwrap_err();
+        let cwd = std::env::current_dir().expect("cwd");
+        assert!(
+            err.to_string().contains(&cwd.display().to_string()),
             "{err}"
         );
     }

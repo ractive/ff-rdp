@@ -1861,7 +1861,11 @@ impl Drop for LiveFirefox {
 /// value naming no file panics rather than silently testing another Firefox.
 pub fn find_firefox_binary() -> Option<PathBuf> {
     if let Some(value) = std::env::var_os("FF_RDP_FIREFOX").filter(|v| !v.is_empty()) {
-        let path = PathBuf::from(value);
+        // Absolute, as in the product (`commands::launch::firefox_override`,
+        // which test code cannot import): a bare name must not become a
+        // PATH lookup of a different Firefox.
+        let raw = PathBuf::from(value);
+        let path = std::path::absolute(&raw).unwrap_or(raw);
         assert!(
             path.is_file(),
             "FF_RDP_FIREFOX={} does not name an existing Firefox binary",

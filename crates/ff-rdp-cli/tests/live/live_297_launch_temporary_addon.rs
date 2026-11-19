@@ -126,7 +126,7 @@ fn live_297_directory_addon_marks_first_page() {
 
 /// The same fixture packed as an `.xpi` at test time (no committed binary).
 #[test]
-#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+#[ignore = "flaky: see kb/backlog.md"]
 fn live_297_xpi_addon_marks_first_page() {
     if !live_tests_enabled() {
         eprintln!("live_297_xpi_addon_marks_first_page: set FF_RDP_LIVE_TESTS=1");
