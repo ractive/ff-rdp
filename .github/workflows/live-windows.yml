@@ -76,6 +76,11 @@ jobs:
         env:
           TESTS: ${{ inputs.tests }}
         run: |
+          # A blank input would run every live test outside the sweep.
+          if [ -z "${TESTS//[[:space:]]/}" ]; then
+            echo "::error::the tests input is blank; leave it empty for the full sweep"
+            exit 1
+          fi
           # Word-splitting $TESTS into separate filters is intended.
           # shellcheck disable=SC2086
           cargo test -p ff-rdp-cli --test live -- --include-ignored --test-threads 1 --nocapture $TESTS

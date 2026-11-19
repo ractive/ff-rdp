@@ -87,7 +87,7 @@ fn live_stop_stops_launched_instance_and_removes_profile() {
 /// AC: `--dry-run` reports the instance and signals nothing; `--all` then
 /// stops both launched instances and removes both profiles.
 #[test]
-#[ignore = "requires a live Firefox instance (FF_RDP_LIVE_TESTS=1)"]
+#[ignore = "flaky: see kb/backlog.md"]
 fn live_stop_all_stops_every_launched_instance() {
     if !live_tests_enabled() {
         eprintln!("live_stop_all_stops_every_launched_instance: skipped");

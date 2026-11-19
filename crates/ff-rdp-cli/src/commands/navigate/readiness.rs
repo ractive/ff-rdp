@@ -1672,7 +1672,7 @@ pub(crate) fn fallback_budget_spent_error(
 ) -> AppError {
     AppError::Timeout(format!(
         "{prefix}: document.readyState did not reach {target} within {elapsed_ms}ms — the \
-         document events never arrived and the {budget_ms}ms --timeout left no remaining \
+         {budget_ms}ms --timeout ran out waiting for the navigation and left no remaining \
          budget for the readystate fallback; use --no-wait to skip or increase --timeout"
     ))
 }
@@ -1905,7 +1905,7 @@ pub(crate) fn wait_for_navigation_commit(
             let remaining = cli_timeout.saturating_sub(elapsed_ms);
             if remaining == 0 {
                 Err(fallback_budget_spent_error(
-                    "navigate",
+                    "nav_action",
                     WaitLevel::Complete.poll_target_description(),
                     elapsed_ms,
                     cli_timeout,

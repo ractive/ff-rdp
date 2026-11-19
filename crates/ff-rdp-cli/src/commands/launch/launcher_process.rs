@@ -219,18 +219,18 @@ impl ProcessControl for OsProcessControl {
 fn terminate_adopted(
     browser: &AdoptedBrowser,
     control: &impl ProcessControl,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let pid = browser.pid;
     if !control.is_alive(pid) {
-        return Ok(());
+        return Ok(false);
     }
     match (browser.start_token.as_deref(), control.start_token(pid)) {
-        (Some(adopted), Some(now)) if now != adopted => Ok(()),
+        (Some(adopted), Some(now)) if now != adopted => Ok(false),
         (Some(_), Some(_)) => {
             control.terminate_tree(pid);
-            Ok(())
+            Ok(true)
         }
-        (_, None) if !control.is_alive(pid) => Ok(()),
+        (_, None) if !control.is_alive(pid) => Ok(false),
         _ => Err(format!(
             "the browser behind the launcher (pid {pid}) is still running and its identity \
              could not be confirmed, so ff-rdp did not stop it"
@@ -258,15 +258,25 @@ fn settle_with(
     adopted: Option<&AdoptedBrowser>,
     control: &impl ProcessControl,
 ) -> Result<(), String> {
-    if let Some(browser) = adopted {
-        terminate_adopted(browser, control)?;
-    }
+    let terminated = match adopted {
+        Some(browser) => terminate_adopted(browser, control)?.then_some(browser.pid),
+        None => None,
+    };
     let mut waiting = control.children_of(launcher);
-    if let Some(browser) = adopted
-        && !waiting.contains(&browser.pid)
-    {
-        waiting.push(browser.pid);
+    // A child that started before the launcher is an orphan of an earlier
+    // holder of the launcher's PID number, not ours. Start tokens are
+    // comparable creation times on Windows; an unreadable one is kept (waited
+    // for), the conservative direction.
+    let born = |pid: u32| control.start_token(pid)?.parse::<u64>().ok();
+    if let Some(launcher_born) = born(launcher) {
+        waiting.retain(|&pid| born(pid).is_none_or(|child| child >= launcher_born));
     }
+    if let Some(browser) = adopted {
+        // The adopted browser is waited for only when it was terminated here:
+        // a PID that now runs another process is not ours.
+        waiting.retain(|&pid| pid != browser.pid);
+    }
+    waiting.extend(terminated);
     let deadline = std::time::Instant::now() + CHILD_EXIT_WAIT;
     let survivors: Vec<u32> = waiting
         .into_iter()
@@ -316,6 +326,8 @@ mod tests {
         terminated: Cell<u32>,
         others: Vec<u32>,
         stuck: Vec<u32>,
+        /// Per-PID start tokens that override the browser's.
+        tokens: Vec<(u32, &'static str)>,
         waited: std::cell::RefCell<Vec<u32>>,
     }
 
@@ -328,6 +340,7 @@ mod tests {
                 terminated: Cell::new(0),
                 others: Vec::new(),
                 stuck: Vec::new(),
+                tokens: Vec::new(),
                 waited: std::cell::RefCell::new(Vec::new()),
             }
         }
@@ -338,7 +351,10 @@ mod tests {
             assert_eq!(pid, BROWSER, "only the browser's liveness is asked");
             self.browser_alive.get()
         }
-        fn start_token(&self, _pid: u32) -> Option<String> {
+        fn start_token(&self, pid: u32) -> Option<String> {
+            if let Some((_, token)) = self.tokens.iter().find(|(p, _)| *p == pid) {
+                return Some((*token).to_owned());
+            }
             self.browser_alive.get().then_some(self.token?.to_owned())
         }
         fn children_of(&self, pid: u32) -> Vec<u32> {
@@ -436,8 +452,29 @@ mod tests {
     #[test]
     fn unit_304_reused_pid_is_not_signalled() {
         let tree = Tree::running(Some("someone-else"));
-        let _ = settle_with(LAUNCHER, Some(&adopted(Some("t1"))), &tree);
+        assert_eq!(
+            settle_with(LAUNCHER, Some(&adopted(Some("t1"))), &tree),
+            Ok(()),
+            "a reused PID is neither signalled nor waited for"
+        );
         assert_eq!(tree.terminated.get(), 0);
+        assert!(tree.waited.borrow().is_empty(), "{:?}", tree.waited);
+    }
+
+    /// A process whose recorded parent is the launcher's PID number but which
+    /// started before the launcher is an orphan of an earlier holder of that
+    /// number: not waited for.
+    #[test]
+    fn unit_304_orphan_older_than_the_launcher_is_not_waited_for() {
+        let tree = Tree {
+            browser_alive: Cell::new(false),
+            others: vec![4001, 4002],
+            stuck: vec![4001],
+            tokens: vec![(LAUNCHER, "200"), (4001, "100"), (4002, "300")],
+            ..Tree::running(Some("t1"))
+        };
+        assert_eq!(settle_with(LAUNCHER, None, &tree), Ok(()));
+        assert_eq!(*tree.waited.borrow(), [4002]);
     }
 
     /// No identity proof, no signal: the launch reports it and keeps the

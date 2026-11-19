@@ -547,8 +547,6 @@ fn report_failed_profile_cleanup(
     }
 }
 
-/// A spawned browser remains this command's responsibility until its launch
-/// result has been delivered. Never remove its profile while it may still run.
 /// [`LaunchHooks::settle_after_failed_launch`]: given the reaped launcher's
 /// PID and the browser adopted from it, if any, stop that browser and wait for
 /// the launcher's children to exit; `Err` names what may still run.
@@ -574,11 +572,16 @@ fn finish_failed_launch(
 ) -> AppError {
     if let Err(reason) = (children.settle)(launcher, children.browser) {
         profile_guard.disarm();
-        return error.with_warning(format!("{reason}; profile retained"));
+        // "could not …": `teardown_problems` forwards exactly these.
+        return error.with_warning(format!(
+            "could not settle the failed launch's Firefox processes: {reason}; profile retained"
+        ));
     }
     report_failed_profile_cleanup(error, profile_guard)
 }
 
+/// A spawned browser remains this command's responsibility until its launch
+/// result has been delivered. Never remove its profile while it may still run.
 fn stop_failed_launch(
     error: AppError,
     child: &mut std::process::Child,
@@ -613,9 +616,11 @@ fn stop_failed_launch(
         // Only a collected status authorizes profile removal in that case.
         if !matches!(child.try_wait(), Ok(Some(_))) {
             profile_guard.disarm();
-            return error.with_warning(format!(
+            let error = error.with_warning(format!(
                 "could not stop failed Firefox launch (pid {pid}): {e}; profile retained"
             ));
+            // The profile stays either way; still stop the adopted browser.
+            return finish_failed_launch(error, pid, children, profile_guard);
         }
     }
     match child.wait() {
@@ -626,9 +631,10 @@ fn stop_failed_launch(
         }
         Err(e) => {
             profile_guard.disarm();
-            error.with_warning(format!(
+            let error = error.with_warning(format!(
                 "could not wait for failed Firefox launch (pid {pid}): {e}; profile retained"
-            ))
+            ));
+            finish_failed_launch(error, pid, children, profile_guard)
         }
     }
 }
