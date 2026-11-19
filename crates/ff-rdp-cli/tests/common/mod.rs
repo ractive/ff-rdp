@@ -515,22 +515,73 @@ pub fn pid_alive(pid: u32) -> bool {
 }
 
 /// Return `true` if a process with `pid` is currently alive (Windows).
+///
+/// iter-304: "openable" is not "alive". A process that has exited stays
+/// openable for as long as anyone holds a handle to it — Firefox's content
+/// processes and the launcher process hold one to the browser — so the old
+/// `OpenProcess`-succeeds check reported a browser `stop` had already ended as
+/// still running ("pid … must be gone", "still alive 5s after SIGKILL" on
+/// windows-latest). The product fixed the same check in iter-299
+/// (`util::process::is_process_alive`); this mirrors it: alive means the
+/// process object has not signalled its exit.
 #[cfg(windows)]
 pub fn pid_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+        WaitForSingleObject,
+    };
+    // SAFETY: OpenProcess returns NULL or a handle, closed on every path; a
+    // zero-timeout wait only polls the handle's signalled state.
     unsafe {
-        use windows_sys::Win32::Foundation::CloseHandle;
-        use windows_sys::Win32::System::Threading::{
-            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-        };
-        // SAFETY: OpenProcess returns NULL when the PID is invalid/dead, which
-        // we check before closing the handle.
+        let h = OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+            0,
+            pid,
+        );
+        if !h.is_null() {
+            let running = WaitForSingleObject(h, 0) == WAIT_TIMEOUT;
+            CloseHandle(h);
+            return running;
+        }
+        // SYNCHRONIZE can be refused where a limited query is not: fall back
+        // to the exit code (a real exit code of 259 reads as alive — the
+        // conservative direction).
         let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
         if h.is_null() {
-            false
-        } else {
-            CloseHandle(h);
-            true
+            return false;
         }
+        let mut code = 0u32;
+        let ok = GetExitCodeProcess(h, &raw mut code);
+        CloseHandle(h);
+        ok == 0 || code == STILL_ACTIVE.cast_unsigned()
+    }
+}
+
+/// TEMP iter-304 diagnostic: whether `pid` is openable and whether it has
+/// signalled its exit (with its exit code).
+#[cfg(windows)]
+pub fn pid_diag(pid: u32) -> String {
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+        WaitForSingleObject,
+    };
+    // SAFETY: as in `pid_alive`.
+    unsafe {
+        let h = OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+            0,
+            pid,
+        );
+        if h.is_null() {
+            return format!("pid {pid}: not openable");
+        }
+        let running = WaitForSingleObject(h, 0) == WAIT_TIMEOUT;
+        let mut code = 0u32;
+        GetExitCodeProcess(h, &raw mut code);
+        CloseHandle(h);
+        format!("pid {pid}: openable, running={running}, exit_code={code}")
     }
 }
 

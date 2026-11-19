@@ -38,9 +38,38 @@ fn launch() -> (FirefoxGuard, u16, PathBuf) {
     );
     let guard = guard.expect("launch must report results.pid");
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).expect("launch JSON");
+    eprintln!(
+        "DIAG launch pid={} launcher_pid={} port={port}",
+        json["results"]["pid"], json["results"]["launcher_pid"]
+    );
     let profile = PathBuf::from(json["results"]["profile"].as_str().expect("profile"));
     assert!(profile.is_dir(), "managed profile must exist after launch");
     (guard, port, profile)
+}
+
+/// TEMP iter-304 diagnostic: the state of every firefox.exe after `stop`.
+fn diag_after_stop(label: &str) {
+    #[cfg(windows)]
+    for delay in [0u64, 1000, 3000] {
+        std::thread::sleep(Duration::from_millis(delay));
+        let table = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                "Get-CimInstance Win32_Process -Filter \"Name='firefox.exe'\" | \
+                 ForEach-Object { \"$($_.ProcessId) ppid=$($_.ParentProcessId) contentproc=$($_.CommandLine -like '*-contentproc*')\" }",
+            ])
+            .output()
+            .map_or_else(|_| String::new(), |o| String::from_utf8_lossy(&o.stdout).into_owned());
+        let states: Vec<String> = table
+            .lines()
+            .filter_map(|l| l.split_whitespace().next()?.parse::<u32>().ok())
+            .map(crate::common::pid_diag)
+            .collect();
+        eprintln!("DIAG {label} +{delay}ms table:\n{table}states: {states:?}");
+    }
+    #[cfg(not(windows))]
+    let _ = label;
 }
 
 fn stop(args: &[&str]) -> (bool, serde_json::Value, String) {
@@ -50,6 +79,8 @@ fn stop(args: &[&str]) -> (bool, serde_json::Value, String) {
         .output()
         .expect("run ff-rdp stop");
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    eprintln!("DIAG stop {args:?} -> {}", stdout.trim());
+    diag_after_stop(&format!("{args:?}"));
     let json = serde_json::from_str(&stdout).unwrap_or(serde_json::Value::Null);
     (out.status.success(), json, stdout)
 }
@@ -87,7 +118,7 @@ fn live_stop_stops_launched_instance_and_removes_profile() {
 /// AC: `--dry-run` reports the instance and signals nothing; `--all` then
 /// stops both launched instances and removes both profiles.
 #[test]
-#[ignore = "flaky: see kb/backlog.md"]
+#[ignore = "requires a live Firefox instance (FF_RDP_LIVE_TESTS=1)"]
 fn live_stop_all_stops_every_launched_instance() {
     if !live_tests_enabled() {
         eprintln!("live_stop_all_stops_every_launched_instance: skipped");
