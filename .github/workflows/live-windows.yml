@@ -1,0 +1,58 @@
+name: Live Tests (Windows)
+
+# The live-Firefox sweep on windows-latest: nightly on `main`, or by hand.
+# Added 2026-11-19 after a sweep on a Windows machine found
+# `screenshot --full-page` broken there (#389), which no CI job could have
+# caught: `live.yml` runs on ubuntu-latest only.
+#
+# A workflow of its own, not a job in `live.yml`: the release preflight reads
+# the conclusion of the last `live.yml` run, and a red Windows sweep must not
+# refuse a release or hide the state of the Linux nightly. Not run at release
+# either: it is slower than the Linux sweep.
+#
+# Same rules as `live.yml`: a red nightly gets one kb/backlog.md line; a test
+# that fails and passes on one re-run is quarantined.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * *"
+
+env:
+  CARGO_TERM_COLOR: always
+  FF_RDP_LIVE_TESTS: "1"
+  FF_RDP_LIVE_NETWORK_TESTS: "1"
+
+jobs:
+  live-tests-windows:
+    runs-on: windows-latest
+    # At `--jobs 2` the job took 26.5 min on this runner; serially it is
+    # expected to need about twice that. Without a bound a hang runs for 6 h.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Firefox version
+        # The runner image ships Firefox where ff-rdp looks for it. It can lag
+        # the release the Linux nightly installs: compare this line with that
+        # job's `firefox --version` before reading a Windows-only result as a
+        # platform difference.
+        shell: pwsh
+        run: (Get-Item 'C:\Program Files\Mozilla Firefox\firefox.exe').VersionInfo.ProductVersion
+
+      - name: Build ff-rdp and the live test binaries
+        # The test binaries too: otherwise they compile inside the sweep, under
+        # its 900 s silent-build watchdog, and a cold cache on this runner
+        # could be booked as every test timing out.
+        run: |
+          cargo build -p ff-rdp-cli -p xtask --bins
+          cargo test --no-run -p ff-rdp-cli -p ff-rdp-core
+
+      - name: Run the live sweep
+        # `--jobs 1`: at `--jobs 2`, as on Linux, this runner failed 11 of 306
+        # tests, mostly on timeouts and wall-clock assertions (run
+        # 44570808653, 26.5 min; kb/backlog.md).
+        run: cargo run -p xtask -- live-sweep --jobs 1

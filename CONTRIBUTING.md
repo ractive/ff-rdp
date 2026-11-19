@@ -77,6 +77,8 @@ result as a pass; `live-sweep` below reports unmet gates as `ignored` instead.
 
 **The full sweep is not a per-PR gate.** `.github/workflows/live.yml` runs it nightly on `main`,
 on `workflow_dispatch` and at release; a weekly `sites` job adds `FF_RDP_LIVE_SITES_TESTS=1`.
+`.github/workflows/live-windows.yml` runs the same sweep on `windows-latest`, nightly and on
+`workflow_dispatch` only; the release check below reads `live.yml`, not the Windows run.
 To run it by hand:
 
 ```sh
