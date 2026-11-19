@@ -321,6 +321,11 @@ mod tests {
             process.arg("/C").raw_arg(format!("\"{command}\""));
             process
                 .current_dir(temp.path())
+                // A hardened shell may set this, which disables cmd's cwd
+                // lookup. Clear it so every run sees the default (and worst)
+                // case: the decoy control needs the lookup, and the trusted
+                // shell must avoid the decoy even when the lookup is enabled.
+                .env_remove("NoDefaultCurrentDirectoryInExePath")
                 .env("PROBE_EXIT", exit.to_string())
                 .output()
                 .unwrap()

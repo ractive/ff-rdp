@@ -428,7 +428,19 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(&real_file, &link).expect("symlink");
         #[cfg(windows)]
-        std::os::windows::fs::symlink_file(&real_file, &link).expect("symlink");
+        if let Err(e) = std::os::windows::fs::symlink_file(&real_file, &link) {
+            // ERROR_PRIVILEGE_NOT_HELD: a non-elevated shell without Developer
+            // Mode cannot create symlinks. Skip visibly; elevated runners (CI)
+            // still run the assertion below.
+            if e.raw_os_error() == Some(1314) {
+                eprintln!(
+                    "SKIP safe_write_rejects_symlink: symlink creation needs \
+                     admin or Developer Mode (os error 1314)"
+                );
+                return;
+            }
+            panic!("symlink: {e}");
+        }
 
         let result = safe_write(&link, b"evil");
         assert!(
