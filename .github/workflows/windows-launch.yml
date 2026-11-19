@@ -29,6 +29,11 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # iter-302: every ff-rdp call runs with `--log-level debug` and raw traces,
+  # its stderr kept under $RUNNER_TEMP/ff-logs and uploaded when a scenario
+  # fails, so a launch failure shows Firefox's own startup stderr (e.g. the
+  # sandbox's "Failed to launch tab subprocess") instead of a redacted count.
+  FF_RDP_TRACE_RAW: '1'
 
 jobs:
   scenarios:
@@ -53,24 +58,33 @@ jobs:
           $env:FF_RDP_HOME = Join-Path $env:RUNNER_TEMP 'ffhome'
           New-Item -ItemType Directory -Force $env:FF_RDP_HOME | Out-Null
           "FF_RDP_HOME=$env:FF_RDP_HOME" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          New-Item -ItemType Directory -Force (Join-Path $env:RUNNER_TEMP 'ff-logs') | Out-Null
           $h = @'
           $ErrorActionPreference = 'Stop'
           # Runs ff-rdp with its output in files, never a pipe (scenario F is
           # the pipe check). Returns the exit code and the parsed stdout.
+          # iter-302: always at --log-level debug; the stderr log stays in
+          # $RUNNER_TEMP/ff-logs (uploaded on failure), only its tail is echoed.
           function FF([string[]]$a, [int]$timeoutSec = 120) {
-            $o = Join-Path $env:RUNNER_TEMP ("o-" + [guid]::NewGuid() + ".txt"); $e = "$o.err"
+            $stem = Join-Path $env:RUNNER_TEMP ("ff-logs\" + (Get-Date -Format 'HHmmss.fff') + "-" + ($a[0] -replace '[^\w-]', ''))
+            $o = "$stem.out.json"; $e = "$stem.stderr.log"
+            $a = @('--log-level', 'debug') + $a
             Write-Host ">>> ff-rdp $($a -join ' ')"
             $exe = (Get-Command ff-rdp).Source
             $p = Start-Process -FilePath $exe -ArgumentList $a -RedirectStandardOutput $o -RedirectStandardError $e -NoNewWindow -PassThru
             $null = $p.Handle
-            if (-not $p.WaitForExit($timeoutSec * 1000)) { $p.Kill(); throw "FAIL: ff-rdp $($a -join ' ') did not return within $timeoutSec s" }
+            if (-not $p.WaitForExit($timeoutSec * 1000)) { $p.Kill(); throw "FAIL: ff-rdp $($a -join ' ') did not return within $timeoutSec s (log: $e)" }
             $p.WaitForExit()
             $raw = Get-Content $o -Raw -ErrorAction SilentlyContinue
-            $err = Get-Content $e -Raw -ErrorAction SilentlyContinue
             if ($raw) { Write-Host $raw }
-            if ($err) { Write-Host "[stderr] $err" }
+            if ($p.ExitCode -ne 0) { Write-Host "[stderr tail, full log in the ff-logs artifact: $e]"; Get-Content $e -Tail 60 -ErrorAction SilentlyContinue | Write-Host }
             Write-Host "<<< exit=$($p.ExitCode)"
             $json = if ($raw) { $raw | ConvertFrom-Json } else { $null }
+            # iter-302: a launch that had to relaunch a dead-on-arrival Firefox
+            # still passes; make it visible in the summary.
+            foreach ($w in @($json.results.warnings)) {
+              if ("$w" -match 'relaunched Firefox once') { "- NOTE: relaunch warning: $w" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY }
+            }
             [pscustomobject]@{ Code = $p.ExitCode; Json = $json }
           }
           function Expect([bool]$cond, [string]$what) {
@@ -181,7 +195,8 @@ jobs:
         run: |
           set -u +e
           start=$SECONDS
-          timeout 30 bash -c 'out=$(ff-rdp launch --headless --temp-profile --port 6125); printf "%s\n" "$out"'
+          # iter-302: stderr (debug log) to the ff-logs artifact; stdout stays the pipe under test.
+          timeout 30 bash -c 'out=$(ff-rdp --log-level debug launch --headless --temp-profile --port 6125 2>>"$RUNNER_TEMP/ff-logs/F-launch.stderr.log"); printf "%s\n" "$out"'
           code=$?
           elapsed=$((SECONDS - start))
           if [ "$code" -ne 0 ]; then
@@ -217,3 +232,14 @@ jobs:
             Expect ((Wait-Dead $browser) -and (Port-Owner 6123) -eq 0) 'G: browser gone, port released'
             Expect (No-Firefox-Left) 'G: no firefox.exe left running'
           } finally { Kill-All }
+
+      # iter-302: the evidence for a failed scenario — every ff-rdp call's
+      # debug stderr (with Firefox's raw startup stderr) and JSON stdout.
+      - name: Upload ff-rdp logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-launch-ff-logs-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ff-logs/
+          if-no-files-found: warn
+          retention-days: 14

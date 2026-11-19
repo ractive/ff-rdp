@@ -696,6 +696,15 @@ pub(crate) enum PortWaitOutcome {
     /// elapsed, so a command run right after `launch` would find nothing to
     /// attach to. Carries the last `listTabs` error, if any attempt failed.
     NoTab(Option<String>),
+    /// iter-302: the port opened, `listTabs` keeps failing because the first
+    /// tab has no window global, and Firefox's stderr reported that its
+    /// sandbox could not start a tab process — `spawn_failures` times — for
+    /// longer than [`startup::CONTENT_SPAWN_GRACE`]. No content process will
+    /// come; waiting longer cannot help. `launch` relaunches once.
+    ContentProcessesFailed {
+        spawn_failures: u64,
+        last_error: Option<String>,
+    },
     /// `host:port` could not be resolved at all — a configuration error, not a
     /// timing one.
     Unresolvable(String),
@@ -723,6 +732,15 @@ impl PortWaitOutcome {
                 "Firefox (pid {pid}) opened debug port {port} but listed no tab within {}s{} — \
                  raise --launch-timeout or set {LAUNCH_TIMEOUT_ENV}",
                 bound.as_secs(),
+                last_error.map_or_else(String::new, |e| format!(" (last listTabs error: {e})"))
+            ))),
+            Self::ContentProcessesFailed {
+                spawn_failures,
+                last_error,
+            } => Some(AppError::User(format!(
+                "Firefox (pid {pid}) opened debug port {port} but could not start its content \
+                 processes (its sandbox failed to launch the tab process {spawn_failures} times), \
+                 so the first tab never got a window{}",
                 last_error.map_or_else(String::new, |e| format!(" (last listTabs error: {e})"))
             ))),
             Self::Unresolvable(msg) => Some(AppError::User(msg)),
@@ -1096,6 +1114,20 @@ fn wait_for_listable_tab(
             Ok(_) => None,
             Err(error) => Some(error),
         };
+        // iter-302: a Firefox whose sandbox cannot start a tab process never
+        // lists a tab; stop waiting for it once the grace period is over.
+        let spawn_failures = observation.stderr.spawn_failures();
+        if startup::content_processes_dead(
+            last_error.as_deref(),
+            spawn_failures,
+            observation.stderr.since_first_spawn_failure(),
+        ) {
+            observation.terminal("tab_wait", "content_processes_failed");
+            return PortWaitOutcome::ContentProcessesFailed {
+                spawn_failures,
+                last_error,
+            };
+        }
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
         if remaining.is_zero() {
             observation.terminal("tab_wait", "no_tab_at_deadline");
@@ -1340,8 +1372,396 @@ pub(crate) fn run_with_hooks(
     } else {
         None
     };
+    let plan = SpawnPlan {
+        firefox: &firefox,
+        port,
+        headless,
+        profile,
+        auto_consent,
+        window_size,
+        startup_url,
+        pack: pack.as_ref(),
+        restart_after_language_pack_install,
+        initialization_runtime: initialization_runtime.as_ref(),
+        port_wait_bound,
+    };
+    // iter-302: a Firefox whose sandbox cannot start a tab process is
+    // stopped and relaunched once; the warnings say so.
+    let (started, relaunch_warnings) = start_firefox_relaunching_once(&plan, hooks)?;
+    let Started {
+        mut pending,
+        profile_path,
+        owner_marker,
+        mut pid,
+        initialization,
+    } = started;
+    // iter-299: on Windows the spawned PID is Firefox's launcher
+    // process and the browser it started holds the port; `stop` and
+    // `--replace` look the port's listener up, so the owner marker
+    // must name the browser. Re-mark it (PID and start token) and
+    // report the browser as `results.pid`. Until then the marker names
+    // the launcher: an interrupted launch is then reachable through
+    // `stop --all` and the profile prune (both go by the marker PID;
+    // killing the launcher takes the browser down with it), not
+    // through `stop --port`, which goes by the listener. `pending`
+    // still owns the launcher, so a failure below stops both.
+    let mut launcher_pid = None;
+    let mut handover_warning = None;
+    match (hooks.find_browser)(pid, port) {
+        launcher_process::Handover::NotNeeded => {}
+        launcher_process::Handover::Browser(browser) => {
+            if let Some(dir) = owner_marker.as_deref() {
+                crate::util::profile_dir::write_owner_pid_marker(dir, browser);
+            }
+            launcher_pid = Some(std::mem::replace(&mut pid, browser));
+        }
+        launcher_process::Handover::Unidentified(reason) => {
+            handover_warning = Some(format!(
+                "could not identify the browser behind Firefox's launcher process \
+                 (pid {pid}): {reason}. `ff-rdp stop` may refuse this instance; \
+                 `ff-rdp stop --all` stops it by the launcher's PID."
+            ));
+        }
+    }
+    // A tab is listed, so the first window exists: arm the closer
+    // for the options tab Consent-O-Matic opens on first run. On a
+    // first run wait for the tab and return only once it is gone; a
+    // `--profile` that already ran the extension gets no tab, so
+    // there the closer just keeps watching.
+    let consent_warning = if auto_consent {
+        let wait = consent_options_tab_wait(consent_first_run);
+        consent_options_tab_warning((hooks.suppress_consent_options_tab)(port, wait), wait)
+    } else {
+        None
+    };
+
+    // iter-97 Theme A wrote the owner markers here, after the port
+    // probe; iter-171 moved them up to immediately after the spawn so
+    // an interrupted launch still leaves an attributable profile —
+    // see the write site above `try_wait`. Nothing to do here.
+
+    // The language-pack relaunch must have produced a new process,
+    // not the initializer that installed the pack.
+    let final_start_token = crate::util::process::process_start_token(pid);
+    if let Some(initializer) = &initialization
+        && (final_start_token.is_none()
+            || (initializer["pid"].as_u64() == Some(u64::from(pid))
+                && initializer["start_token"].as_str() == final_start_token.as_deref()))
+    {
+        return Err(pending.fail(AppError::User(
+            "operational Firefox identity is unqualified".into(),
+        )));
+    }
+    // iter-297: install every --temporary-addon, then open the URL.
+    // A rejected install stops the Firefox this command started.
+    // iter-300: without add-ons, Firefox got the URL on its command
+    // line; wait for its document the same way (the listed tab shows
+    // the URL long before its document replaces the initial
+    // about:blank). Same `--timeout` budget as the add-on path.
+    let mut startup_url_warning = None;
+    let installed_addons = if temporary_addons.is_empty() {
+        if let Some(url) = url {
+            let deadline = std::time::Instant::now() + Duration::from_millis(cli.timeout);
+            startup_url_warning = (hooks.wait_for_startup_url)(port, url, deadline)
+                .err()
+                .map(|error| format!("the startup URL {url} did not load: {error}"));
+        }
+        None
+    } else {
+        match (hooks.install_temporary_addons)(
+            port,
+            &temporary_addons,
+            url,
+            Duration::from_millis(cli.timeout),
+        ) {
+            Ok(installed) => Some(installed),
+            Err(error) => return Err(pending.fail(error)),
+        }
+    };
+    // `temp_profile` is true when the caller requested --temp-profile
+    // OR when we auto-created one because no profile flag was given.
+    let effective_temp_profile = temp_profile || profile.is_none();
+    let profile_path_str = profile_path
+        .as_ref()
+        .map(|p| p.to_string_lossy().as_ref().to_owned());
+
+    // iter-133 Theme A: report the requested window size (if any) and
+    // whether it is below the documented ~500px live-viewport floor.
+    // `below_floor` looks only at width — the floor is a width clamp,
+    // not a height clamp (see kb/research/viewport-emulation.md).
+    // Computed once here and reused below so the envelope's
+    // `window_size.below_floor` and the presence of `warnings` can
+    // never disagree.
+    let below_floor =
+        window_size.is_some_and(|(w, _)| w < crate::util::window_size::LIVE_VIEWPORT_FLOOR_PX);
+    let window_size_json = window_size.map(|(w, h)| {
+        json!({
+            "requested": {"width": w, "height": h},
+            "below_floor": below_floor,
+        })
+    });
+
+    let mut result = json!({
+        // iter-210 Theme D: always present, so
+        // `--jq '.results.already_running'` answers on both paths.
+        "already_running": false,
+        "pid": pid,
+        "host": host,
+        "port": port,
+        "headless": headless,
+        "profile": profile_path_str,
+        // iter-96: explicit alias of "profile".
+        "profile_path": profile_path_str,
+        "temp_profile": effective_temp_profile,
+        // iter-144 Theme C: renamed from "auto_consent" — `launch`
+        // returns before any page loads, so this field can only
+        // ever attest that the Consent-O-Matic extension was
+        // *installed* into the profile, never that a consent
+        // banner was actually dismissed (kb/iterations/
+        // iteration-142-session-hygiene.md found `auto_consent:
+        // true` reported while a banner still covered the page).
+        // A real dismiss attestation lives in `results.consent`
+        // from `navigate --auto-consent` / `consent accept`
+        // (`{"cmp": ..., "action": ...}`, iter-129) — those run
+        // after a page has loaded and can check the DOM.
+        "auto_consent_extension_installed": auto_consent,
+        "window_size": window_size_json,
+    });
+    if let Some(launcher) = launcher_pid {
+        // iter-299: the Windows launcher process behind `pid`.
+        result["launcher_pid"] = json!(launcher);
+    }
+    if let Some(pack) = &pack {
+        result["english_language_pack"] = pack.staged_result();
+        if let Some(receipt) = &initialization {
+            result["english_language_pack"]["mode"] = json!("install-then-relaunch");
+            result["english_language_pack"]["status"] = json!("initialized-and-relaunched");
+            result["english_language_pack"]["initialization"] = receipt.clone();
+            result["english_language_pack"]["relaunch_count"] = json!(1);
+        }
+    }
+    if let Some(url) = url {
+        // The URL asked for. A load that did not finish within the
+        // wait is reported in `warnings`, not here.
+        result["requested_url"] = json!(url);
+    }
+    let mut warnings: Vec<String> = relaunch_warnings;
+    if let Some(installed) = installed_addons {
+        result["temporary_addons"] = json!(installed.addons);
+        warnings.extend(installed.warning);
+    }
+    if below_floor && let Some((w, h)) = window_size {
+        let floor = crate::util::window_size::LIVE_VIEWPORT_FLOOR_PX;
+        warnings.push(format!(
+            "requested width {w}px (window-size {w}x{h}) is below the ~{floor}px \
+             live-viewport floor observed for a headless debugger-server Firefox \
+             instance; effective innerWidth typically clamps up to ~{floor}px \
+             (confirm with `ff-rdp eval innerWidth`). For a true sub-{floor}px \
+             raster, use `ff-rdp screenshot --window-size {w}x{h}` after navigating \
+             instead of relying on this live session's viewport."
+        ));
+    }
+    warnings.extend(startup_url_warning);
+    warnings.extend(consent_warning);
+    warnings.extend(handover_warning);
+    if !warnings.is_empty()
+        && let Some(obj) = result.as_object_mut()
+    {
+        obj.insert("warnings".to_owned(), json!(warnings));
+    }
+    let mut meta = json!({
+        "firefox": firefox.to_string_lossy().as_ref().to_owned(),
+        // iter-158 Theme A: the effective debug-port wait bound, so a
+        // caller can see which of --launch-timeout /
+        // FF_RDP_LAUNCH_TIMEOUT_SECS / the 30 s default actually
+        // applied. Reporting it makes the bound a real knob rather
+        // than an invisible constant.
+        "launch_wait_secs": port_wait_bound.as_secs(),
+    });
+    // iter-153: fold the --replace stop outcome into this envelope's
+    // meta instead of `stop_prior_instance` printing a second
+    // top-level JSON document. `replaced.pid` is the STOPPED
+    // instance's PID — never to be confused with `results.pid`
+    // above, which is always the instance THIS command launched.
+    if let (Some(r), Some(obj)) = (replaced, meta.as_object_mut()) {
+        obj.insert(
+            "replaced".to_owned(),
+            json!({"stopped": r.stopped, "pid": r.pid}),
+        );
+    }
+    crate::connection_meta::merge_into_if_verbose(&mut meta, host, port, None, cli.is_verbose());
+    let envelope = output::envelope(&result, 1, &meta);
+    let emitted = (hooks.emit_launch)(cli, &envelope);
+    if let Err(error) = emitted {
+        return Err(pending.fail(error));
+    }
+    // Only successful output transfers ownership. A bad jq filter or
+    // rendering failure must not leave a browser behind an error result.
+    pending.disarm();
+    Ok(())
+}
+
+/// What one Firefox spawn needs — shared by the launch and its one relaunch
+/// (iter-302), so the relaunch uses exactly the same options.
+struct SpawnPlan<'a> {
+    firefox: &'a Path,
+    port: u16,
+    headless: bool,
+    profile: Option<&'a str>,
+    auto_consent: bool,
+    window_size: Option<(u32, u32)>,
+    startup_url: Option<&'a str>,
+    pack: Option<&'a super::english_language_pack::Pack>,
+    restart_after_language_pack_install: bool,
+    initialization_runtime: Option<&'a language_initialization::Runtime>,
+    port_wait_bound: Duration,
+}
+
+/// A spawned Firefox that listed a tab (or is dead on arrival) and is still
+/// this command's responsibility through `pending`.
+struct Started {
+    pending: PendingLaunch,
+    profile_path: Option<PathBuf>,
+    owner_marker: Option<PathBuf>,
+    /// The spawned PID (on Windows, Firefox's launcher process).
+    pid: u32,
+    initialization: Option<serde_json::Value>,
+}
+
+/// The result of one [`spawn_and_wait`].
+enum Attempt {
+    Ready(Started),
+    /// [`PortWaitOutcome::ContentProcessesFailed`]: the instance is still
+    /// running and owned; the caller stops it.
+    ContentProcessesFailed {
+        started: Started,
+        spawn_failures: u64,
+        last_error: Option<String>,
+    },
+}
+
+/// How long `launch` waits for a dead-on-arrival instance's debug port to
+/// close before relaunching on the same port.
+const RELAUNCH_PORT_RELEASE_WAIT: Duration = Duration::from_secs(10);
+
+/// Spawn Firefox and wait for its first tab; if the instance turns out dead
+/// on arrival (its sandbox could not start a tab process, iter-302), stop it
+/// and relaunch exactly once with the same options. Returns the instance and
+/// the `results.warnings` entries describing a relaunch, if there was one.
+fn start_firefox_relaunching_once(
+    plan: &SpawnPlan<'_>,
+    hooks: &LaunchHooks,
+) -> Result<(Started, Vec<String>), AppError> {
+    let (started, first_failures) = match spawn_and_wait(plan, hooks)? {
+        Attempt::Ready(started) => return Ok((started, Vec::new())),
+        Attempt::ContentProcessesFailed {
+            started,
+            spawn_failures,
+            ..
+        } => (started, spawn_failures),
+    };
+    let first_pid = started.pid;
+    let what_happened = format!(
+        "the first Firefox (pid {first_pid}) could not start its content processes: its \
+         sandbox failed to launch the tab process {first_failures} times and no tab came up \
+         within {}s of the first failure. ff-rdp stopped it and relaunched Firefox once with \
+         the same options",
+        startup::CONTENT_SPAWN_GRACE.as_secs()
+    );
+    let notes = stop_dead_instance(started, plan, hooks)?;
+    match spawn_and_wait(plan, hooks) {
+        Err(error) => Err(std::iter::once(what_happened)
+            .chain(notes)
+            .fold(error, AppError::with_warning)),
+        Ok(Attempt::Ready(started)) => Ok((
+            started,
+            std::iter::once(what_happened).chain(notes).collect(),
+        )),
+        Ok(Attempt::ContentProcessesFailed {
+            mut started,
+            spawn_failures,
+            last_error,
+        }) => {
+            let error = AppError::User(format!(
+                "Firefox could not start its content processes, twice: its sandbox failed to \
+                 launch the tab process {first_failures} times in the first instance (pid \
+                 {first_pid}) and {spawn_failures} times in the relaunch (pid {}), so neither \
+                 listed a tab; both were stopped{}",
+                started.pid,
+                last_error.map_or_else(String::new, |e| format!(" (last listTabs error: {e})"))
+            ));
+            let error = notes.into_iter().fold(error, AppError::with_warning);
+            Err(started.pending.fail(error))
+        }
+    }
+}
+
+/// Stop a dead-on-arrival instance through the failed-launch teardown (its
+/// own process tree; its managed profile removed, so the relaunch gets a
+/// fresh one) and wait for its debug port to close. Returns warnings for
+/// anything the teardown left behind.
+fn stop_dead_instance(
+    started: Started,
+    plan: &SpawnPlan<'_>,
+    hooks: &LaunchHooks,
+) -> Result<Vec<String>, AppError> {
+    let Started {
+        mut pending,
+        profile_path,
+        pid,
+        ..
+    } = started;
+    let teardown = pending.fail(AppError::User(format!(
+        "Firefox (pid {pid}) could not start its content processes"
+    )));
+    tracing::debug!("launch: stopped the dead-on-arrival Firefox before relaunching: {teardown:?}");
+    let mut notes = Vec::new();
+    if should_write_owner_marker(plan.profile)
+        && let Some(dir) = profile_path.as_deref().filter(|dir| dir.exists())
+    {
+        notes.push(format!(
+            "could not remove the first instance's managed Firefox profile {}",
+            dir.display()
+        ));
+    }
+    let deadline = std::time::Instant::now() + RELAUNCH_PORT_RELEASE_WAIT;
+    while (hooks.is_port_in_use)(plan.port) {
+        if std::time::Instant::now() >= deadline {
+            let error = AppError::User(format!(
+                "Firefox (pid {pid}) could not start its content processes; ff-rdp stopped it \
+                 to relaunch, but debug port {} was still in use {}s later",
+                plan.port,
+                RELAUNCH_PORT_RELEASE_WAIT.as_secs()
+            ));
+            return Err(notes.into_iter().fold(
+                error.with_warning(teardown.to_string()),
+                AppError::with_warning,
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    Ok(notes)
+}
+
+/// Spawn one Firefox per `plan` and wait until it opens its debug port and
+/// lists a tab. Every failure stops the spawned instance and reclaims its
+/// managed profile; a dead-on-arrival instance is handed back still running.
+fn spawn_and_wait(plan: &SpawnPlan<'_>, hooks: &LaunchHooks) -> Result<Attempt, AppError> {
+    let &SpawnPlan {
+        firefox,
+        port,
+        headless,
+        profile,
+        auto_consent,
+        window_size,
+        startup_url,
+        pack,
+        restart_after_language_pack_install,
+        initialization_runtime,
+        port_wait_bound,
+    } = plan;
     let (mut cmd, profile_path) = build_command(
-        &firefox,
+        firefox,
         port,
         headless,
         profile,
@@ -1366,7 +1786,7 @@ pub(crate) fn run_with_hooks(
         _ => crate::util::profile_dir::ManagedProfileGuard::disarmed(),
     };
 
-    if let Some(pack) = &pack {
+    if let Some(pack) = pack {
         let staged = profile_path
             .as_deref()
             .ok_or_else(|| AppError::User("managed profile absent for language pack".to_owned()))
@@ -1376,18 +1796,16 @@ pub(crate) fn run_with_hooks(
         }
     }
     let initialization = if restart_after_language_pack_install {
-        let (Some(path), Some(selected_pack), Some(runtime)) = (
-            profile_path.as_deref(),
-            pack.as_ref(),
-            initialization_runtime.as_ref(),
-        ) else {
+        let (Some(path), Some(selected_pack), Some(runtime)) =
+            (profile_path.as_deref(), pack, initialization_runtime)
+        else {
             let error = AppError::Internal(anyhow::anyhow!(
                 "language-pack initialization preparation incomplete: managed profile, pack and runtime required"
             ));
             return Err(report_failed_profile_cleanup(error, &mut profile_guard));
         };
         let (guard, receipt) = (hooks.initialize_language_pack)(
-            &firefox,
+            firefox,
             port,
             path,
             selected_pack,
@@ -1465,244 +1883,51 @@ pub(crate) fn run_with_hooks(
         try_wait: hooks.try_wait,
         started: std::time::Instant::now(),
     };
+    let pid = observation.child.id();
     match observation.initial_interval() {
         Ok(Some(status)) => {
             observation.terminal("initial_interval", "natural_exit");
             let error = AppError::User(format!("Firefox exited immediately with {status}"));
-            Err(pending.fail(error))
+            return Err(pending.fail(error));
         }
-        Ok(None) => {
-            // Still running — verify the debug port is actually reachable
-            // before reporting success. Always probe localhost since we
-            // just spawned a local Firefox, regardless of --host.
-            let mut pid = observation.child.id();
-            let deadline = std::time::Instant::now() + port_wait_bound;
-            let outcome = (hooks.probe_port)("localhost", port, port_wait_bound, &mut observation);
-            if let Some(e) = outcome.into_error(pid, port, port_wait_bound) {
-                return Err(pending.fail(e));
-            }
-            // An open port is not yet a usable browser: the first tab can
-            // appear a moment later, and `tabs` run right after `launch` then
-            // saw none. Same bound as the port wait, measured from its start.
-            let outcome = (hooks.wait_for_tab)(port, deadline, &mut observation);
-            if let Some(e) = outcome.into_error(pid, port, port_wait_bound) {
-                return Err(pending.fail(e));
-            }
-            // iter-299: on Windows the spawned PID is Firefox's launcher
-            // process and the browser it started holds the port; `stop` and
-            // `--replace` look the port's listener up, so the owner marker
-            // must name the browser. Re-mark it (PID and start token) and
-            // report the browser as `results.pid`. Until then the marker names
-            // the launcher: an interrupted launch is then reachable through
-            // `stop --all` and the profile prune (both go by the marker PID;
-            // killing the launcher takes the browser down with it), not
-            // through `stop --port`, which goes by the listener. `pending`
-            // still owns the launcher, so a failure below stops both.
-            let mut launcher_pid = None;
-            let mut handover_warning = None;
-            match (hooks.find_browser)(pid, port) {
-                launcher_process::Handover::NotNeeded => {}
-                launcher_process::Handover::Browser(browser) => {
-                    if let Some(dir) = owner_marker.as_deref() {
-                        crate::util::profile_dir::write_owner_pid_marker(dir, browser);
-                    }
-                    launcher_pid = Some(std::mem::replace(&mut pid, browser));
-                }
-                launcher_process::Handover::Unidentified(reason) => {
-                    handover_warning = Some(format!(
-                        "could not identify the browser behind Firefox's launcher process \
-                         (pid {pid}): {reason}. `ff-rdp stop` may refuse this instance; \
-                         `ff-rdp stop --all` stops it by the launcher's PID."
-                    ));
-                }
-            }
-            // A tab is listed, so the first window exists: arm the closer
-            // for the options tab Consent-O-Matic opens on first run. On a
-            // first run wait for the tab and return only once it is gone; a
-            // `--profile` that already ran the extension gets no tab, so
-            // there the closer just keeps watching.
-            let consent_warning = if auto_consent {
-                let wait = consent_options_tab_wait(consent_first_run);
-                consent_options_tab_warning((hooks.suppress_consent_options_tab)(port, wait), wait)
-            } else {
-                None
-            };
-
-            // iter-97 Theme A wrote the owner markers here, after the port
-            // probe; iter-171 moved them up to immediately after the spawn so
-            // an interrupted launch still leaves an attributable profile —
-            // see the write site above `try_wait`. Nothing to do here.
-
-            // The language-pack relaunch must have produced a new process,
-            // not the initializer that installed the pack.
-            let final_start_token = crate::util::process::process_start_token(pid);
-            if let Some(initializer) = &initialization
-                && (final_start_token.is_none()
-                    || (initializer["pid"].as_u64() == Some(u64::from(pid))
-                        && initializer["start_token"].as_str() == final_start_token.as_deref()))
-            {
-                return Err(pending.fail(AppError::User(
-                    "operational Firefox identity is unqualified".into(),
-                )));
-            }
-            // iter-297: install every --temporary-addon, then open the URL.
-            // A rejected install stops the Firefox this command started.
-            // iter-300: without add-ons, Firefox got the URL on its command
-            // line; wait for its document the same way (the listed tab shows
-            // the URL long before its document replaces the initial
-            // about:blank). Same `--timeout` budget as the add-on path.
-            let mut startup_url_warning = None;
-            let installed_addons = if temporary_addons.is_empty() {
-                if let Some(url) = url {
-                    let deadline = std::time::Instant::now() + Duration::from_millis(cli.timeout);
-                    startup_url_warning = (hooks.wait_for_startup_url)(port, url, deadline)
-                        .err()
-                        .map(|error| format!("the startup URL {url} did not load: {error}"));
-                }
-                None
-            } else {
-                match (hooks.install_temporary_addons)(
-                    port,
-                    &temporary_addons,
-                    url,
-                    Duration::from_millis(cli.timeout),
-                ) {
-                    Ok(installed) => Some(installed),
-                    Err(error) => return Err(pending.fail(error)),
-                }
-            };
-            // `temp_profile` is true when the caller requested --temp-profile
-            // OR when we auto-created one because no profile flag was given.
-            let effective_temp_profile = temp_profile || profile.is_none();
-            let profile_path_str = profile_path
-                .as_ref()
-                .map(|p| p.to_string_lossy().as_ref().to_owned());
-
-            // iter-133 Theme A: report the requested window size (if any) and
-            // whether it is below the documented ~500px live-viewport floor.
-            // `below_floor` looks only at width — the floor is a width clamp,
-            // not a height clamp (see kb/research/viewport-emulation.md).
-            // Computed once here and reused below so the envelope's
-            // `window_size.below_floor` and the presence of `warnings` can
-            // never disagree.
-            let below_floor = window_size
-                .is_some_and(|(w, _)| w < crate::util::window_size::LIVE_VIEWPORT_FLOOR_PX);
-            let window_size_json = window_size.map(|(w, h)| {
-                json!({
-                    "requested": {"width": w, "height": h},
-                    "below_floor": below_floor,
-                })
-            });
-
-            let mut result = json!({
-                // iter-210 Theme D: always present, so
-                // `--jq '.results.already_running'` answers on both paths.
-                "already_running": false,
-                "pid": pid,
-                "host": host,
-                "port": port,
-                "headless": headless,
-                "profile": profile_path_str,
-                // iter-96: explicit alias of "profile".
-                "profile_path": profile_path_str,
-                "temp_profile": effective_temp_profile,
-                // iter-144 Theme C: renamed from "auto_consent" — `launch`
-                // returns before any page loads, so this field can only
-                // ever attest that the Consent-O-Matic extension was
-                // *installed* into the profile, never that a consent
-                // banner was actually dismissed (kb/iterations/
-                // iteration-142-session-hygiene.md found `auto_consent:
-                // true` reported while a banner still covered the page).
-                // A real dismiss attestation lives in `results.consent`
-                // from `navigate --auto-consent` / `consent accept`
-                // (`{"cmp": ..., "action": ...}`, iter-129) — those run
-                // after a page has loaded and can check the DOM.
-                "auto_consent_extension_installed": auto_consent,
-                "window_size": window_size_json,
-            });
-            if let Some(launcher) = launcher_pid {
-                // iter-299: the Windows launcher process behind `pid`.
-                result["launcher_pid"] = json!(launcher);
-            }
-            if let Some(pack) = &pack {
-                result["english_language_pack"] = pack.staged_result();
-                if let Some(receipt) = &initialization {
-                    result["english_language_pack"]["mode"] = json!("install-then-relaunch");
-                    result["english_language_pack"]["status"] = json!("initialized-and-relaunched");
-                    result["english_language_pack"]["initialization"] = receipt.clone();
-                    result["english_language_pack"]["relaunch_count"] = json!(1);
-                }
-            }
-            if let Some(url) = url {
-                // The URL asked for. A load that did not finish within the
-                // wait is reported in `warnings`, not here.
-                result["requested_url"] = json!(url);
-            }
-            let mut warnings: Vec<String> = Vec::new();
-            if let Some(installed) = installed_addons {
-                result["temporary_addons"] = json!(installed.addons);
-                warnings.extend(installed.warning);
-            }
-            if below_floor && let Some((w, h)) = window_size {
-                let floor = crate::util::window_size::LIVE_VIEWPORT_FLOOR_PX;
-                warnings.push(format!(
-                    "requested width {w}px (window-size {w}x{h}) is below the ~{floor}px \
-                     live-viewport floor observed for a headless debugger-server Firefox \
-                     instance; effective innerWidth typically clamps up to ~{floor}px \
-                     (confirm with `ff-rdp eval innerWidth`). For a true sub-{floor}px \
-                     raster, use `ff-rdp screenshot --window-size {w}x{h}` after navigating \
-                     instead of relying on this live session's viewport."
-                ));
-            }
-            warnings.extend(startup_url_warning);
-            warnings.extend(consent_warning);
-            warnings.extend(handover_warning);
-            if !warnings.is_empty()
-                && let Some(obj) = result.as_object_mut()
-            {
-                obj.insert("warnings".to_owned(), json!(warnings));
-            }
-            let mut meta = json!({
-                "firefox": firefox.to_string_lossy().as_ref().to_owned(),
-                // iter-158 Theme A: the effective debug-port wait bound, so a
-                // caller can see which of --launch-timeout /
-                // FF_RDP_LAUNCH_TIMEOUT_SECS / the 30 s default actually
-                // applied. Reporting it makes the bound a real knob rather
-                // than an invisible constant.
-                "launch_wait_secs": port_wait_bound.as_secs(),
-            });
-            // iter-153: fold the --replace stop outcome into this envelope's
-            // meta instead of `stop_prior_instance` printing a second
-            // top-level JSON document. `replaced.pid` is the STOPPED
-            // instance's PID — never to be confused with `results.pid`
-            // above, which is always the instance THIS command launched.
-            if let (Some(r), Some(obj)) = (replaced, meta.as_object_mut()) {
-                obj.insert(
-                    "replaced".to_owned(),
-                    json!({"stopped": r.stopped, "pid": r.pid}),
-                );
-            }
-            crate::connection_meta::merge_into_if_verbose(
-                &mut meta,
-                host,
-                port,
-                None,
-                cli.is_verbose(),
-            );
-            let envelope = output::envelope(&result, 1, &meta);
-            let emitted = (hooks.emit_launch)(cli, &envelope);
-            if let Err(error) = emitted {
-                return Err(pending.fail(error));
-            }
-            // Only successful output transfers ownership. A bad jq filter or
-            // rendering failure must not leave a browser behind an error result.
-            pending.disarm();
-            Ok(())
-        }
+        Ok(None) => {}
         Err(e) => {
             let error = AppError::Internal(anyhow::anyhow!("failed to check Firefox status: {e}"));
-            Err(pending.fail(error))
+            return Err(pending.fail(error));
         }
+    }
+    // Still running — verify the debug port is actually reachable before
+    // reporting success. Always probe localhost since we just spawned a local
+    // Firefox, regardless of --host.
+    let deadline = std::time::Instant::now() + port_wait_bound;
+    let outcome = (hooks.probe_port)("localhost", port, port_wait_bound, &mut observation);
+    if let Some(e) = outcome.into_error(pid, port, port_wait_bound) {
+        return Err(pending.fail(e));
+    }
+    // An open port is not yet a usable browser: the first tab can appear a
+    // moment later, and `tabs` run right after `launch` then saw none. Same
+    // bound as the port wait, measured from its start.
+    let outcome = (hooks.wait_for_tab)(port, deadline, &mut observation);
+    let started = |pending| Started {
+        pending,
+        profile_path,
+        owner_marker,
+        pid,
+        initialization,
+    };
+    match outcome {
+        PortWaitOutcome::ContentProcessesFailed {
+            spawn_failures,
+            last_error,
+        } => Ok(Attempt::ContentProcessesFailed {
+            started: started(pending),
+            spawn_failures,
+            last_error,
+        }),
+        outcome => match outcome.into_error(pid, port, port_wait_bound) {
+            Some(e) => Err(pending.fail(e)),
+            None => Ok(Attempt::Ready(started(pending))),
+        },
     }
 }
 
@@ -3379,6 +3604,159 @@ mod iter_175_tests {
         );
         let dir = PROFILE.lock().expect("profile slot").clone().unwrap();
         assert!(!dir.exists(), "profile left behind: {}", dir.display());
+    }
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const NO_WINDOW_GLOBAL: &str = "TypeError — can't access property \"outerWindowId\", \
+                                    browsingContext.currentWindowGlobal is null";
+
+    fn dead_on_arrival(spawn_failures: u64) -> PortWaitOutcome {
+        PortWaitOutcome::ContentProcessesFailed {
+            spawn_failures,
+            last_error: Some(NO_WINDOW_GLOBAL.to_owned()),
+        }
+    }
+
+    /// iter-302: a Firefox whose sandbox could not start a tab process is
+    /// stopped (its profile reclaimed) and relaunched once on a fresh managed
+    /// profile; the successful launch says so in `results.warnings`.
+    #[test]
+    fn dead_on_arrival_firefox_is_relaunched_once_with_a_warning() {
+        static PROFILES: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+        static WAITS: AtomicUsize = AtomicUsize::new(0);
+        static ENVELOPE: Mutex<Option<serde_json::Value>> = Mutex::new(None);
+
+        let hooks = LaunchHooks {
+            is_port_in_use: |_port| false,
+            find_listener: |_port| None,
+            probe_port: |_host, _port, _timeout, _observation| PortWaitOutcome::Opened,
+            wait_for_tab: |_port, _deadline, _observation| {
+                if WAITS.fetch_add(1, Ordering::SeqCst) == 0 {
+                    dead_on_arrival(17)
+                } else {
+                    PortWaitOutcome::Opened
+                }
+            },
+            spawn: |cmd| {
+                PROFILES
+                    .lock()
+                    .expect("profiles")
+                    .extend(profile_arg_of(cmd));
+                spawn_lingering_child()
+            },
+            emit_launch: |_cli, envelope| {
+                ENVELOPE.lock().expect("envelope").replace(envelope.clone());
+                // Fail the delivery so the launch's own teardown stops the
+                // stand-in child and removes its profile.
+                Err(AppError::User("captured".to_owned()))
+            },
+            locate_firefox: || Ok(PathBuf::from("/nonexistent/ff-rdp-fake-firefox")),
+            ..LaunchHooks::none_running()
+        };
+
+        let err = run_with_hooks(&bare_launch_cli(), &managed_opts(7605), &hooks)
+            .expect_err("the capturing emit hook fails the delivery");
+        assert!(err.to_string().contains("captured"), "{err:?}");
+        assert_eq!(WAITS.load(Ordering::SeqCst), 2, "exactly one relaunch");
+        let profiles = PROFILES.lock().expect("profiles").clone();
+        assert_eq!(profiles.len(), 2, "two spawns: {profiles:?}");
+        assert_ne!(
+            profiles[0], profiles[1],
+            "the relaunch needs a fresh profile"
+        );
+        for dir in &profiles {
+            assert!(!dir.exists(), "profile left behind: {}", dir.display());
+        }
+        let envelope = ENVELOPE.lock().expect("envelope").take().expect("emitted");
+        let warning = envelope["results"]["warnings"][0]
+            .as_str()
+            .expect("a relaunch warning");
+        assert!(
+            warning.contains("could not start its content processes")
+                && warning.contains("17 times")
+                && warning.contains("relaunched Firefox once"),
+            "{warning}"
+        );
+        assert!(
+            !warning.contains("Failed to launch"),
+            "raw stderr must stay redacted"
+        );
+    }
+
+    /// iter-302: a relaunch that is dead the same way fails with its own
+    /// error naming both marker counts — and never spawns a third time.
+    #[test]
+    fn second_dead_on_arrival_firefox_fails_plainly_without_looping() {
+        static PROFILES: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+        static WAITS: AtomicUsize = AtomicUsize::new(0);
+
+        let hooks = LaunchHooks {
+            is_port_in_use: |_port| false,
+            find_listener: |_port| None,
+            probe_port: |_host, _port, _timeout, _observation| PortWaitOutcome::Opened,
+            wait_for_tab: |_port, _deadline, _observation| {
+                let call = WAITS.fetch_add(1, Ordering::SeqCst);
+                dead_on_arrival(if call == 0 { 17 } else { 20 })
+            },
+            spawn: |cmd| {
+                PROFILES
+                    .lock()
+                    .expect("profiles")
+                    .extend(profile_arg_of(cmd));
+                spawn_lingering_child()
+            },
+            locate_firefox: || Ok(PathBuf::from("/nonexistent/ff-rdp-fake-firefox")),
+            ..LaunchHooks::none_running()
+        };
+
+        let err = run_with_hooks(&bare_launch_cli(), &managed_opts(7606), &hooks)
+            .expect_err("two dead instances must fail the launch");
+        let text = err.to_string();
+        assert!(
+            text.contains("could not start its content processes, twice")
+                && text.contains("17 times in the first instance")
+                && text.contains("20 times in the relaunch")
+                && !text.contains("listed no tab"),
+            "{err:?}"
+        );
+        assert_eq!(WAITS.load(Ordering::SeqCst), 2, "no third launch");
+        let profiles = PROFILES.lock().expect("profiles").clone();
+        assert_eq!(profiles.len(), 2, "{profiles:?}");
+        for dir in &profiles {
+            assert!(!dir.exists(), "profile left behind: {}", dir.display());
+        }
+    }
+
+    /// iter-302: the same listTabs error without the spawn-failure marker
+    /// keeps the existing behaviour — no relaunch, the "listed no tab" text.
+    #[test]
+    fn no_tab_without_the_marker_is_not_relaunched() {
+        static SPAWNS: AtomicUsize = AtomicUsize::new(0);
+
+        let hooks = LaunchHooks {
+            is_port_in_use: |_port| false,
+            find_listener: |_port| None,
+            probe_port: |_host, _port, _timeout, _observation| PortWaitOutcome::Opened,
+            wait_for_tab: |_port, _deadline, _observation| {
+                PortWaitOutcome::NoTab(Some(NO_WINDOW_GLOBAL.to_owned()))
+            },
+            spawn: |_cmd| {
+                SPAWNS.fetch_add(1, Ordering::SeqCst);
+                spawn_lingering_child()
+            },
+            locate_firefox: || Ok(PathBuf::from("/nonexistent/ff-rdp-fake-firefox")),
+            ..LaunchHooks::none_running()
+        };
+
+        let err = run_with_hooks(&bare_launch_cli(), &managed_opts(7607), &hooks)
+            .expect_err("no tab must fail the launch");
+        assert!(
+            err.to_string()
+                .contains("listed no tab within 0s (last listTabs error: "),
+            "{err:?}"
+        );
+        assert_eq!(SPAWNS.load(Ordering::SeqCst), 1);
     }
 
     /// `count_tabs` reports what one `listTabs` round trip returned, and 0

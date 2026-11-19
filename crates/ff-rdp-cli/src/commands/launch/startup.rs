@@ -17,6 +17,65 @@ pub(super) struct StderrCapture {
     eof: bool,
     read_error: Option<io::ErrorKind>,
     quota_hits: u64,
+    spawn_failures: u64,
+    first_spawn_failure: Option<Instant>,
+}
+
+/// What Firefox's parent process prints when its sandbox launcher cannot
+/// start a tab (content) process — on lenny and, by the identical symptom,
+/// probably on GitHub's windows-latest runner
+/// (`[Parent …] WARNING: Failed to launch tab subprocess @SB::LA::SpawnTarget
+/// (Error:-2147024809)`, kb/research/windows-lenny-baseline-2026-11.md). With
+/// no content process the first tab never gets a window global and `listTabs`
+/// keeps failing. Windows-only in practice; elsewhere it simply never appears.
+pub(super) const CONTENT_SPAWN_FAILURE_MARKER: &[u8] = b"Failed to launch tab subprocess";
+
+/// The `listTabs` error a tab without a window global produces.
+pub(super) const NO_WINDOW_GLOBAL_ERROR: &str = "currentWindowGlobal is null";
+
+/// How long after the first [`CONTENT_SPAWN_FAILURE_MARKER`] a first tab may
+/// still come up before the instance counts as dead on arrival.
+///
+/// A single failed spawn does not mean a dead instance: lenny saw one failed
+/// spawn next to seven healthy content processes, and that tab came up. The
+/// marker appears ~0.8 s after the spawn; healthy headless launches on lenny
+/// list their first tab 2.4–3.1 s after the spawn (5.8 s at worst, on the
+/// first run after a Firefox update), headed ones within 4.7 s. 8 s after the
+/// first marker is past every healthy launch seen, while a dead instance
+/// would otherwise hold the whole 30 s launch bound.
+pub(super) const CONTENT_SPAWN_GRACE: Duration = Duration::from_secs(8);
+
+/// Is this Firefox dead on arrival: its sandbox reported failing to start a
+/// tab process, `listTabs` still fails because the first tab has no window
+/// global, and the grace period since the first failure is over?
+///
+/// Without the marker this is always `false`: a slow tab keeps the plain
+/// "listed no tab" path and its error text.
+pub(super) fn content_processes_dead(
+    last_list_tabs_error: Option<&str>,
+    spawn_failures: u64,
+    since_first_spawn_failure: Option<Duration>,
+) -> bool {
+    spawn_failures > 0
+        && since_first_spawn_failure.is_some_and(|elapsed| elapsed >= CONTENT_SPAWN_GRACE)
+        && last_list_tabs_error.is_some_and(|error| error.contains(NO_WINDOW_GLOBAL_ERROR))
+}
+
+fn count_occurrences(haystack: &[u8], needle: &[u8]) -> u64 {
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return 0;
+    }
+    let mut count = 0;
+    let mut i = 0;
+    while i + needle.len() <= haystack.len() {
+        if haystack[i..].starts_with(needle) {
+            count += 1;
+            i += needle.len();
+        } else {
+            i += 1;
+        }
+    }
+    count
 }
 
 impl StderrCapture {
@@ -37,9 +96,15 @@ impl StderrCapture {
         if self.eof || self.read_error.is_some() {
             return;
         }
-        let Some(pipe) = self.pipe.as_mut() else {
+        // Taken out for the turn so `ingest` can borrow `self`; always put back.
+        let Some(mut pipe) = self.pipe.take() else {
             return;
         };
+        self.pump_from(&mut pipe, deadline);
+        self.pipe = Some(pipe);
+    }
+
+    fn pump_from(&mut self, pipe: &mut ChildStderr, deadline: Option<Instant>) {
         let mut bytes = 0;
         let mut reads = 0;
         let mut buffer = [0_u8; 8192];
@@ -55,10 +120,7 @@ impl StderrCapture {
                 }
                 Ok(n) => {
                     bytes += n;
-                    self.observed = self.observed.saturating_add(n as u64);
-                    let remove = (self.tail.len() + n).saturating_sub(RETAIN);
-                    self.tail.drain(..remove);
-                    self.tail.extend(&buffer[..n]);
+                    self.ingest(&buffer[..n]);
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => return,
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
@@ -69,6 +131,41 @@ impl StderrCapture {
             }
         }
         self.quota_hits = self.quota_hits.saturating_add(1);
+    }
+
+    /// Retain `chunk` in the bounded tail and count child-spawn failure
+    /// markers in it. A marker split across two reads is counted once: the
+    /// search starts `marker.len() - 1` bytes back into what was already
+    /// retained, so a match must end inside `chunk`.
+    fn ingest(&mut self, chunk: &[u8]) {
+        self.observed = self.observed.saturating_add(chunk.len() as u64);
+        let remove = (self.tail.len() + chunk.len()).saturating_sub(RETAIN);
+        self.tail.drain(..remove);
+        let start = self
+            .tail
+            .len()
+            .saturating_sub(CONTENT_SPAWN_FAILURE_MARKER.len() - 1);
+        self.tail.extend(chunk);
+        let found = count_occurrences(
+            &self.tail.make_contiguous()[start..],
+            CONTENT_SPAWN_FAILURE_MARKER,
+        );
+        if found > 0 {
+            self.spawn_failures = self.spawn_failures.saturating_add(found);
+            self.first_spawn_failure.get_or_insert_with(Instant::now);
+        }
+    }
+
+    /// How many times Firefox's stderr so far reported that its sandbox could
+    /// not start a tab (content) process ([`CONTENT_SPAWN_FAILURE_MARKER`]).
+    /// Counted on the raw bytes, so it works while the text stays redacted.
+    pub(super) fn spawn_failures(&self) -> u64 {
+        self.spawn_failures
+    }
+
+    /// Time since the first spawn-failure marker was read, if one was.
+    pub(super) fn since_first_spawn_failure(&self) -> Option<Duration> {
+        self.first_spawn_failure.map(|at| at.elapsed())
     }
 
     pub(super) fn summary(&self) -> String {
@@ -209,4 +306,63 @@ fn read_available(_pipe: &mut ChildStderr, _buffer: &mut [u8]) -> io::Result<usi
         io::ErrorKind::Unsupported,
         "nonblocking startup stderr unavailable",
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const LINE: &[u8] = b"[Parent 25704, IPC I/O Parent] WARNING: Failed to launch tab subprocess @SB::LA::SpawnTarget (Error:-2147024809): file checkouts\\gecko\\ipc\\glue\\GeckoChildProcessHost.cpp:978\n";
+
+    #[test]
+    fn spawn_failure_markers_are_counted_across_reads_and_redaction() {
+        let mut capture = StderrCapture::default();
+        capture.ingest(b"*** You are running in headless mode.\n");
+        assert_eq!(capture.spawn_failures(), 0);
+        assert!(capture.since_first_spawn_failure().is_none());
+        capture.ingest(LINE);
+        // A marker split across two reads still counts once.
+        let split = LINE.len() / 2;
+        capture.ingest(&LINE[..split]);
+        capture.ingest(&LINE[split..]);
+        // Other subprocess kinds are not the tab marker.
+        capture.ingest(b"WARNING: Failed to launch socket subprocess\n");
+        assert_eq!(capture.spawn_failures(), 2);
+        assert!(capture.since_first_spawn_failure().is_some());
+        // The summary never shows the text, only counts.
+        assert!(!capture.summary().contains("Failed to launch"));
+    }
+
+    #[test]
+    fn markers_keep_counting_after_the_tail_wraps() {
+        let mut capture = StderrCapture::default();
+        for _ in 0..1000 {
+            capture.ingest(LINE);
+        }
+        assert_eq!(capture.spawn_failures(), 1000);
+        assert!(capture.tail.len() <= RETAIN);
+    }
+
+    #[test]
+    fn dead_on_arrival_needs_marker_error_and_grace() {
+        let error = "TypeError — can't access property \"outerWindowId\", \
+                     browsingContext.currentWindowGlobal is null";
+        let past = Some(CONTENT_SPAWN_GRACE);
+        assert!(content_processes_dead(Some(error), 17, past));
+        // The partial case: a failed spawn, but still inside the grace period.
+        assert!(!content_processes_dead(
+            Some(error),
+            1,
+            CONTENT_SPAWN_GRACE.checked_sub(Duration::from_millis(1))
+        ));
+        // No marker: the existing "listed no tab" path, whatever the error.
+        assert!(!content_processes_dead(Some(error), 0, None));
+        // A marker but another listTabs failure (or none) is not this case.
+        assert!(!content_processes_dead(
+            Some("connection refused"),
+            17,
+            past
+        ));
+        assert!(!content_processes_dead(None, 17, past));
+    }
 }
