@@ -49,7 +49,14 @@ jobs:
   clippy:
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-latest
+    # Every OS the `test` job runs on: `cfg(windows)` / `cfg(target_os =
+    # "macos")` code, and test helpers used only under `cfg(unix)`, are only
+    # linted on a runner of that OS. Any red leg fails `clippy`, hence `ci`.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable

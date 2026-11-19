@@ -261,6 +261,10 @@ fn configure(pipe: &ChildStderr) -> io::Result<()> {
 }
 
 #[cfg(not(unix))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "signature matches the fallible Unix `configure`; Windows reads nonblockingly via PeekNamedPipe"
+)]
 fn configure(_pipe: &ChildStderr) -> io::Result<()> {
     Ok(())
 }
@@ -290,7 +294,7 @@ fn read_available(pipe: &mut ChildStderr, buffer: &mut [u8]) -> io::Result<usize
     };
     if ok == 0 {
         let error = io::Error::last_os_error();
-        if error.raw_os_error() == Some(ERROR_BROKEN_PIPE as i32) {
+        if error.raw_os_error() == Some(ERROR_BROKEN_PIPE.cast_signed()) {
             return Ok(0);
         }
         return Err(error);

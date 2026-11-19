@@ -3166,6 +3166,7 @@ mod iter_175_tests {
     }
 
     /// A temporary-addon fixture directory: just enough for `resolve`.
+    #[cfg(unix)]
     fn addon_dir(root: &Path) -> PathBuf {
         let dir = root.join("extension");
         std::fs::create_dir(&dir).unwrap();

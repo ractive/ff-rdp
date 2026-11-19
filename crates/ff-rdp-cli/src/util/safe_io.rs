@@ -317,7 +317,7 @@ pub fn reparse_tag_of(path: &Path) -> std::io::Result<Option<u32>> {
     // FSCTL_GET_REPARSE_POINT = 0x900a8
     const FSCTL_GET_REPARSE_POINT: u32 = 0x0009_00a8;
     // MAXIMUM_REPARSE_DATA_BUFFER_SIZE
-    const MAXIMUM_REPARSE_DATA_BUFFER_SIZE: usize = 16 * 1024;
+    const MAXIMUM_REPARSE_DATA_BUFFER_SIZE: u32 = 16 * 1024;
 
     let wide: Vec<u16> = path
         .as_os_str()
@@ -344,7 +344,7 @@ pub fn reparse_tag_of(path: &Path) -> std::io::Result<Option<u32>> {
     }
 
     // 8-byte reparse header: u32 ReparseTag, u16 ReparseDataLength, u16 Reserved.
-    let mut buf = vec![0u8; MAXIMUM_REPARSE_DATA_BUFFER_SIZE];
+    let mut buf = vec![0u8; MAXIMUM_REPARSE_DATA_BUFFER_SIZE as usize];
     let mut bytes_returned: u32 = 0;
     // SAFETY: `buf` outlives the call; `handle` is a valid open HANDLE.
     let ok = unsafe {
@@ -354,7 +354,7 @@ pub fn reparse_tag_of(path: &Path) -> std::io::Result<Option<u32>> {
             std::ptr::null(),
             0,
             buf.as_mut_ptr().cast(),
-            buf.len() as u32,
+            MAXIMUM_REPARSE_DATA_BUFFER_SIZE,
             &raw mut bytes_returned,
             std::ptr::null_mut(),
         )
@@ -368,7 +368,8 @@ pub fn reparse_tag_of(path: &Path) -> std::io::Result<Option<u32>> {
         if code == ERROR_NOT_A_REPARSE_POINT {
             return Ok(None);
         }
-        return Err(std::io::Error::from_raw_os_error(code as i32));
+        // Win32 error codes are DWORDs; std stores them bit-for-bit as i32.
+        return Err(std::io::Error::from_raw_os_error(code.cast_signed()));
     }
     // SAFETY: `handle` is valid.
     unsafe {
@@ -571,7 +572,6 @@ mod tests {
             eprintln!("skipping: set FF_RDP_LIVE_TESTS=1 to run (needs admin/DevMode for mklink)");
             return;
         }
-        use std::process::Command;
         let dir = TempDir::new().expect("tempdir");
         let real_target = dir.path().join("real_target");
         std::fs::create_dir_all(&real_target).expect("mkdir real_target");
@@ -579,7 +579,7 @@ mod tests {
 
         // Use `cmd /c mklink /J <link> <target>` to create an NTFS junction
         // (mount-point reparse tag).  No admin needed for /J on most systems.
-        let status = Command::new("cmd")
+        let status = std::process::Command::new("cmd")
             .args([
                 "/c",
                 "mklink",
