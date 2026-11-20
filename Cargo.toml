@@ -44,7 +44,7 @@ sha2 = "0.11"
 # jiff replaces chrono (RUSTSEC-2026-0543: chrono is unmaintained).  It is
 # already in the tree via jaq-std; ff-rdp needs only `std` (Timestamp::now,
 # SystemTime conversion) and `serde` (page-map `generated_at`).
-jiff = { version = "0.2", default-features = false, features = ["std", "serde"] }
+jiff = { version = "1.0", default-features = false, features = ["std", "serde"] }
 dirs = "7"
 fs2 = "0.4"
 thiserror = "2"
