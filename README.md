@@ -675,8 +675,7 @@ Then use a fresh profile per job, headless, on a port of its own, and always sto
 
 ```bash
 set -euo pipefail
-# Windows: `stop` fails there (see below), and under `set -e` a failing EXIT trap fails the job.
-trap 'ff-rdp --port 6011 stop || [ "$RUNNER_OS" = Windows ]' EXIT
+trap 'ff-rdp --port 6011 stop' EXIT
 ff-rdp launch --headless --temp-profile --debug-port 6011 \
   --temporary-addon ./dist/my-ext.xpi http://127.0.0.1:8080/fixture.html
 test "$(ff-rdp --port 6011 eval 'document.documentElement.dataset.myExt' --jq .results)" = '"ready"'
@@ -688,12 +687,9 @@ test "$(ff-rdp --port 6011 eval 'document.documentElement.dataset.myExt' --jq .r
   sites, and use `data-*` attributes or `console` messages the content script writes as the
   thing you assert on.
 - `stop` also removes the temporary profile. Give parallel jobs different ports.
-- On Windows, `stop` currently fails to stop the Firefox `launch` started: the debug port is
-  held by a `firefox.exe` with another PID than the one `launch` spawned (presumably Firefox's
-  launcher-process hand-off; see `kb/backlog.md`). Hosted runners end the job's processes
-  anyway, so the trap above tolerates that failure on Windows only: under `set -euo pipefail`
-  a plain `trap 'ff-rdp --port 6011 stop' EXIT` turns a passing script into exit 1 there.
-  The next release after v0.5.0 fixes this (and headed launches on Windows).
+- On Windows, use v0.5.1 or later. Before it, `stop` failed to stop the Firefox `launch` started
+  (the debug port belongs to the browser behind Firefox's launcher process), and headed launches
+  exited at once.
 
 ## Using ff-rdp from Claude Code
 
