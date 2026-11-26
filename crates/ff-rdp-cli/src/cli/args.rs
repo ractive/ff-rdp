@@ -717,7 +717,7 @@ pass --no-isolate, to get the script completion value back. Declaration-free
 scripts are untouched by this rule; they never enter the wrap.
 
 Output: {\"results\": <value>, \"total\": 1, \"meta\": {...}}
-With --format text, eval prints just the value (a plain object or array as JSON) and no hint line.
+With --format text, eval prints just the value and no hint line: a plain object or array as JSON of its own enumerable properties (up to 6 levels and 200 objects, with a stderr warning when cut), non-JSON values (functions, Date, BigInt, Symbol, DOM nodes) as \"[Kind]\" placeholders; use --stringify for exact JSON.stringify output.
 
 Errors: a script that throws, or whose resulting Promise rejects, exits 1 with
 {\"error\": \"<message>\", \"error_type\": \"User\", \"stack\": \"...\"}; a rejection

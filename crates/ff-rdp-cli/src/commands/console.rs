@@ -178,7 +178,7 @@ fn empty_result_hint(raw_total: usize, level: Option<&str>, pattern: Option<&str
     }
     let mut filters = Vec::new();
     if let Some(l) = level {
-        if l.chars().all(|c| c.is_ascii_alphanumeric()) {
+        if !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric()) {
             filters.push(format!("--level {l}"));
         } else {
             filters.push(format!("--level {}", sh_single_quote(l)));
@@ -628,6 +628,10 @@ mod tests {
         assert!(
             empty_result_hint(0, Some("error"), Some("x"))
                 .starts_with("No console messages captured")
+        );
+        assert!(
+            empty_result_hint(2, Some(""), None).contains("none matched --level ''."),
+            "an empty --level must stay visible"
         );
         assert_eq!(
             empty_result_hint(2, Some("a b"), Some("it's")),

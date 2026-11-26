@@ -74,6 +74,49 @@ fn live_eval_text_values() {
         r#"{"z":1,"a":[1,{"b":"x"}]}"#
     );
 
+    // Nested non-JSON values print as "[Kind]" placeholders, never as actor
+    // metadata; arrays pad to `length`.
+    let out = text_ok(
+        port,
+        &[
+            "eval",
+            "--format",
+            "text",
+            "({n: 10n, s: Symbol('k'), d: new Date(0), f(){}, h: new Array(2)})",
+        ],
+    );
+    let value: serde_json::Value = serde_json::from_str(&out)
+        .unwrap_or_else(|e| panic!("placeholder text output is not JSON: {e}\n{out}"));
+    assert_eq!(
+        value,
+        serde_json::json!({
+            "n": "[BigInt 10]",
+            "s": "[Symbol k]",
+            "d": "[Date]",
+            "f": "[Function]",
+            "h": [null, null]
+        })
+    );
+
+    // Past the depth cap the value is cut, and stderr says so.
+    let deep = run(
+        port,
+        &[
+            "eval",
+            "--format",
+            "text",
+            "({a:{a:{a:{a:{a:{a:{a:1}}}}}}})",
+        ],
+    );
+    assert!(deep.status.success(), "deep: {}", output_note(&deep));
+    let stderr = String::from_utf8_lossy(&deep.stderr);
+    assert!(
+        stderr.contains("caps") && stderr.contains("--stringify"),
+        "a cut value must warn on stderr; got: {}",
+        output_note(&deep)
+    );
+    assert!(String::from_utf8_lossy(&deep.stdout).contains("\"[Object]\""));
+
     assert_eq!(text_ok(port, &["eval", "--format", "text", "1+1"]), "2\n");
 
     // Statement completion value: the script is not re-wrapped.
