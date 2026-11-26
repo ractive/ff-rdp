@@ -178,10 +178,14 @@ fn empty_result_hint(raw_total: usize, level: Option<&str>, pattern: Option<&str
     }
     let mut filters = Vec::new();
     if let Some(l) = level {
-        filters.push(format!("--level {l}"));
+        if l.chars().all(|c| c.is_ascii_alphanumeric()) {
+            filters.push(format!("--level {l}"));
+        } else {
+            filters.push(format!("--level {}", sh_single_quote(l)));
+        }
     }
     if let Some(p) = pattern {
-        filters.push(format!("--pattern '{p}'"));
+        filters.push(format!("--pattern {}", sh_single_quote(p)));
     }
     let noun = if raw_total == 1 {
         "message"
@@ -193,6 +197,12 @@ fn empty_result_hint(raw_total: usize, level: Option<&str>, pattern: Option<&str
          Run without the filter to see them.",
         filters.join(" ")
     )
+}
+
+/// POSIX single-quote `s` so the hint's flag can be pasted back into a shell:
+/// each `'` becomes `'\''`.
+fn sh_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
 }
 
 /// Prime the WebConsole actor's message cache so a following
@@ -618,6 +628,10 @@ mod tests {
         assert!(
             empty_result_hint(0, Some("error"), Some("x"))
                 .starts_with("No console messages captured")
+        );
+        assert_eq!(
+            empty_result_hint(2, Some("a b"), Some("it's")),
+            r"2 console messages captured, none matched --level 'a b' --pattern 'it'\''s'. Run without the filter to see them."
         );
         assert_eq!(
             empty_result_hint(3, None, Some("nomatch")),

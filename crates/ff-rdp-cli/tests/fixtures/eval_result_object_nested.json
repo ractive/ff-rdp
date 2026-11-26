@@ -1,0 +1,50 @@
+{
+  "type": "evaluationResult",
+  "resultID": "0",
+  "hasException": false,
+  "input": "({z: 1, a: [2, {b: 'x'}]})",
+  "result": {
+    "type": "object",
+    "actor": "server1.conn0.child0/obj19",
+    "class": "Object",
+    "ownPropertyLength": 2,
+    "extensible": true,
+    "frozen": false,
+    "sealed": false,
+    "isError": false,
+    "preview": {
+      "kind": "Object",
+      "ownProperties": {
+        "z": {
+          "configurable": true,
+          "enumerable": true,
+          "writable": true,
+          "value": 1
+        },
+        "a": {
+          "configurable": true,
+          "enumerable": true,
+          "writable": true,
+          "value": {
+            "type": "object",
+            "actor": "server1.conn0.child0/obj20",
+            "class": "Array",
+            "ownPropertyLength": 3,
+            "extensible": true,
+            "frozen": false,
+            "sealed": false,
+            "isError": false,
+            "preview": {
+              "kind": "ArrayLike",
+              "length": 2
+            }
+          }
+        }
+      },
+      "ownPropertiesLength": 2
+    }
+  },
+  "startTime": 1795736201313.045,
+  "timestamp": 1795736201315.869,
+  "from": "server1.conn0.child0/consoleActor3"
+}

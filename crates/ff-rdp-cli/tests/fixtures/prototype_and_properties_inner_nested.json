@@ -1,0 +1,28 @@
+{
+  "prototype": {
+    "type": "object",
+    "actor": "server1.conn0.child0/obj26",
+    "class": "Object",
+    "ownPropertyLength": 12,
+    "extensible": true,
+    "frozen": false,
+    "sealed": false,
+    "isError": false,
+    "preview": {
+      "kind": "Object",
+      "ownProperties": {},
+      "ownPropertiesLength": 12
+    }
+  },
+  "ownProperties": {
+    "b": {
+      "configurable": true,
+      "enumerable": true,
+      "writable": true,
+      "value": "x"
+    }
+  },
+  "ownSymbols": [],
+  "safeGetterValues": {},
+  "from": "server1.conn0.child0/obj24"
+}

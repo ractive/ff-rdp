@@ -1,0 +1,60 @@
+{
+  "prototype": {
+    "type": "object",
+    "actor": "server1.conn0.child0/obj23",
+    "class": "Object",
+    "ownPropertyLength": 12,
+    "extensible": true,
+    "frozen": false,
+    "sealed": false,
+    "isError": false,
+    "preview": {
+      "kind": "Object",
+      "ownProperties": {},
+      "ownPropertiesLength": 12
+    }
+  },
+  "ownProperties": {
+    "z": {
+      "configurable": true,
+      "enumerable": true,
+      "writable": true,
+      "value": 1
+    },
+    "a": {
+      "configurable": true,
+      "enumerable": true,
+      "writable": true,
+      "value": {
+        "type": "object",
+        "actor": "server1.conn0.child0/obj21",
+        "class": "Array",
+        "ownPropertyLength": 3,
+        "extensible": true,
+        "frozen": false,
+        "sealed": false,
+        "isError": false,
+        "preview": {
+          "kind": "ArrayLike",
+          "length": 2,
+          "items": [
+            2,
+            {
+              "type": "object",
+              "actor": "server1.conn0.child0/obj22",
+              "class": "Object",
+              "ownPropertyLength": 1,
+              "extensible": true,
+              "frozen": false,
+              "sealed": false,
+              "isError": false
+            }
+          ]
+        }
+      }
+    }
+  },
+  "ownSymbols": [],
+  "safeGetterValues": {},
+  "from": "server1.conn0.child0/obj19"
+}
