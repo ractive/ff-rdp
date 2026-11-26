@@ -717,6 +717,7 @@ pass --no-isolate, to get the script completion value back. Declaration-free
 scripts are untouched by this rule; they never enter the wrap.
 
 Output: {\"results\": <value>, \"total\": 1, \"meta\": {...}}
+With --format text, eval prints just the value, evaluated as --stringify would, with no hint line.
 
 Errors: a script that throws, or whose resulting Promise rejects, exits 1 with
 {\"error\": \"<message>\", \"error_type\": \"User\", \"stack\": \"...\"}; a rejection
@@ -806,7 +807,7 @@ The command primes Firefox's message cache (startListeners) before reading it,
 so messages a separate earlier `ff-rdp eval 'console.log(...)'` emitted are
 visible on this fresh connection. Use --follow to stream live messages.
 
-Output: {\"results\": [{\"level\": \"...\", \"message\": \"...\", \"source\": \"...\", \"line\": N, \"timestamp\": N}], \"summary\": {\"total\": N, \"shown\": Z, \"by_level\": {...}, \"matched\": M}, \"total\": N, \"meta\": {...}}")]
+Output: {\"results\": [{\"level\": \"...\", \"message\": \"...\", \"source\": \"...\", \"line\": N, \"timestamp\": N}], \"summary\": {\"total\": ALL, \"shown\": Z, \"by_level\": {...}, \"matched\": M}, \"total\": M, \"meta\": {...}} — ALL counts every captured message, M those matching --level/--pattern (by_level counts them too), Z those shown after --limit")]
     Console(ConsoleArgs),
     /// Show network requests captured by the WatcherActor.
     ///

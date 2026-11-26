@@ -158,15 +158,41 @@ pub fn run(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), 
     {
         obj.insert(
             "hint".to_string(),
-            json!(
-                "No console messages captured. Use --follow to stream live messages, \
-                 or generate some with: ff-rdp eval 'console.log(\"test\")'"
-            ),
+            json!(empty_result_hint(raw_total, level, pattern)),
         );
     }
 
     let hint_ctx = HintContext::new(HintSource::Console).with_has_errors(error_count > 0);
     OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
+}
+
+/// The `hint` for a `console` read that matched nothing. `raw_total` is every
+/// cached message before `--level`/`--pattern`: when it is non-zero the
+/// filters removed them all, which is a different situation (and a different
+/// fix) from a page that logged nothing.
+fn empty_result_hint(raw_total: usize, level: Option<&str>, pattern: Option<&str>) -> String {
+    if raw_total == 0 {
+        return "No console messages captured. Use --follow to stream live messages, \
+                or generate some with: ff-rdp eval 'console.log(\"test\")'"
+            .to_owned();
+    }
+    let mut filters = Vec::new();
+    if let Some(l) = level {
+        filters.push(format!("--level {l}"));
+    }
+    if let Some(p) = pattern {
+        filters.push(format!("--pattern '{p}'"));
+    }
+    let noun = if raw_total == 1 {
+        "message"
+    } else {
+        "messages"
+    };
+    format!(
+        "{raw_total} console {noun} captured, none matched {}. \
+         Run without the filter to see them.",
+        filters.join(" ")
+    )
 }
 
 /// Prime the WebConsole actor's message cache so a following
@@ -585,6 +611,25 @@ impl ConsoleDeliveries {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_result_hint_distinguishes_filtered_out_from_nothing_captured() {
+        assert!(empty_result_hint(0, None, None).starts_with("No console messages captured"));
+        assert!(
+            empty_result_hint(0, Some("error"), Some("x"))
+                .starts_with("No console messages captured")
+        );
+        assert_eq!(
+            empty_result_hint(3, None, Some("nomatch")),
+            "3 console messages captured, none matched --pattern 'nomatch'. \
+             Run without the filter to see them."
+        );
+        assert_eq!(
+            empty_result_hint(1, Some("error"), Some("boom")),
+            "1 console message captured, none matched --level error --pattern 'boom'. \
+             Run without the filter to see them."
+        );
+    }
 
     #[test]
     fn console_identity_excludes_only_grip_handles() {

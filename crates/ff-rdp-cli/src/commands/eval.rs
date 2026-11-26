@@ -1476,6 +1476,11 @@ pub fn run(
 ) -> Result<(), AppError> {
     let script = load_script(script, file, use_stdin)?;
     let scope = cli_scope.to_scope();
+    // `--format text` asks for the bare value, so it evaluates the way
+    // `--stringify` does: an object or array comes back as its JSON value
+    // rather than as Firefox grip metadata (actor id, preview, propertyNames),
+    // and no trailing `-> ff-rdp …` hint line is printed.
+    let stringify = stringify || text_format_implies_stringify(&cli.format);
     // iter-165: `--no-isolate` is honoured again. By default a script that
     // declares something at top level runs inside a per-call IIFE, so its
     // `const`/`let`/`class` never leak into the next `eval`; `--no-isolate`
@@ -1657,7 +1662,13 @@ pub fn run(
         None,
         cli.is_verbose(),
     );
-    let envelope = output::envelope(&result_json, 1, &meta);
+    let mut envelope = output::envelope(&result_json, 1, &meta);
+    if !stringify
+        && matches!(eval_result.result, Grip::Object { .. })
+        && let Some(obj) = envelope.as_object_mut()
+    {
+        obj.insert("hint".to_owned(), json!(OBJECT_GRIP_HINT));
+    }
 
     let hint_ctx = HintContext::new(HintSource::Eval);
     let pipeline = OutputPipeline::from_cli(cli)?;
@@ -1671,6 +1682,19 @@ pub fn run(
         pipeline
     };
     pipeline.finalize_with_hints(&envelope, Some(&hint_ctx))
+}
+
+/// Top-level `hint` on a default (JSON) result that is an object grip: the
+/// grip carries actor metadata and a shallow preview (nested arrays show only
+/// `length`), not the value, and agents otherwise wrap `JSON.stringify`
+/// themselves and get a JSON string inside JSON.
+const OBJECT_GRIP_HINT: &str = "results is a Firefox object grip (actor metadata, not the value); \
+     re-run with --stringify to get the value as JSON";
+
+/// Whether `--format <format>` makes `eval` behave as if `--stringify` was
+/// passed. Only `text` does: it prints the bare value.
+fn text_format_implies_stringify(format: &str) -> bool {
+    format == "text"
 }
 
 /// Prefix of the string a captured Promise rejection resolves to; the rest is
@@ -1796,6 +1820,13 @@ fn try_unwrap_json_string(value: &mut serde_json::Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_text_format_implies_stringify() {
+        assert!(text_format_implies_stringify("text"));
+        assert!(!text_format_implies_stringify("json"));
+        assert!(!text_format_implies_stringify("html"));
+    }
 
     // ── dogfooding session 64 #3: rejected Promises ────────────────────────
 
