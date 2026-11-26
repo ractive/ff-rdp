@@ -590,13 +590,14 @@ Examples:
         long_about = "Evaluate JavaScript in the target tab (a positional script, --file PATH or --stdin).
 
 Objects and arrays come back as protocol grips (actor IDs, class names); pass
---stringify for the value. Strings come back in full. Top-level `await` works
-and a Promise result is awaited; a throw or rejection exits 1 (see Errors).
+--stringify for the value. Strings come back in full; a Promise is awaited.
 
-A multi-statement script returns its last statement when that is a bare expression;
-otherwise add `return`. A script declaring `const`, `let`, `class`, `var` or `function`
-at top level runs in a per-call function, so declarations never leak across calls.
-A script that declares nothing cannot leak anything, so it is sent verbatim.
+A script that declares `const`, `let`, `class`, `var` or `function` at top level,
+uses `await`, or runs with --stringify is wrapped in a per-call function: it returns
+its last statement when that is a bare expression (otherwise add `return`), and
+its declarations never leak across calls.
+A script that declares nothing cannot leak anything, so it is sent verbatim (unless
+it uses `await` or --stringify) and keeps its completion value (`if (1) { 2 }` is 2).
 Pass --no-isolate to opt out and share ONE scope across calls.
 
 Output: {\"results\": <value>, \"total\": 1, \"meta\": {...}}",
@@ -772,9 +773,8 @@ size with:
   --viewport WxH     the tab's URL laid out at exactly WxH CSS px in an iframe
                      on the live tab (a second page load; see the flag below)
   --window-size WxH  a one-shot `firefox --headless --screenshot` in a fresh
-                     scratch profile: an exact WxH PNG with no floor, the only
-                     true sub-500px raster (`launch --window-size` clamps below
-                     ~500px). The URL is loaded from scratch, so cookies,
+                     scratch profile: an exact WxH real window with no floor
+                     (`launch --window-size` clamps below ~500px). The URL is loaded from scratch, so cookies,
                      localStorage and session state are NOT carried over.
 
 --color-scheme dark|light simulates prefers-color-scheme and --media print the
@@ -1217,8 +1217,9 @@ Output: {\"results\": {\"pid\": N, \"launcher_pid\"?: N, \"host\": \"...\", \"po
 
 Window size:
   --window-size WxH forwards -width/-height to Firefox: at >= ~500px CSS width
-  it is the only ff-rdp path with true viewport emulation (real innerWidth,
-  @media evaluation, layout). Below ~500px Firefox clamps the live viewport to
+  it is the only way to get a live session at a real window size (real
+  innerWidth, @media evaluation, layout); for a one-off capture laid out at a
+  given width use `screenshot --viewport WxH`. Below ~500px Firefox clamps the live viewport to
   that floor: the requested size is echoed with a warning, but `eval
   innerWidth` reads ~500. There is no RDP actor that sizes a viewport.
 
@@ -1301,8 +1302,10 @@ Examples:
 
 Stops the Firefox on --port (or FF_RDP_PORT, default 6000) — SIGTERM, then
 SIGKILL after 2 s, as `launch --replace` does — and removes its managed
-`ff-rdp-profile-*` directory; a --profile directory is kept (`profile` names
-it, `profile_removed` is false). Nothing listening: exit 0, `stopped: false`.
+`ff-rdp-profile-*` directory. A `launch --profile DIR` instance is stoppable
+too (its owner markers live in a separate managed directory, never in your
+profile), and DIR is kept (`profile` names it, `profile_removed` is false).
+Nothing listening: exit 0, `stopped: false`.
 --all stops every live Firefox ff-rdp launched under the profile root
 ($FF_RDP_HOME when set), found from launch's owner markers; no port needed.
 --dry-run reports what would be stopped and `profile_would_be_removed` (false
@@ -2015,13 +2018,12 @@ pub struct ScreenshotArgs {
     pub bulk: bool,
     /// Batch-capture a screenshot at this exact `WxH` pixel size via a
     /// one-shot `firefox --headless --window-size --screenshot` subprocess
-    /// — the only path to a TRUE sub-500px mobile raster (bypasses the live
-    /// viewport floor `launch --window-size` hits below ~500px). Runs in a
+    /// — an exact-size real window with no floor (bypasses the live viewport
+    /// floor `launch --window-size` hits below ~500px). Runs in a
     /// fresh scratch profile separate from the live RDP session: the
     /// current tab's URL is re-navigated from scratch, so cookies/localStorage/
     /// session state from the live tab are NOT carried over. No density knob:
-    /// `layout.css.devPixelsPerPx` was tested against this exact capture path
-    /// and found to have zero effect on the output raster (Firefox 153.0.3).
+    /// `layout.css.devPixelsPerPx` has no effect on this capture.
     /// With `--full-page`, only the width is used and the PNG spans the whole
     /// document.
     #[arg(long, value_name = "WxH")]
