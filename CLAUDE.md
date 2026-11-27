@@ -94,7 +94,8 @@ BBC, Guardian, HN, Wikipedia, MDN; weekly CI job only).
   working: report the reason and stop. Never `--squash`.
 - **Docs-only changes go through a PR too** — `main` rejects direct pushes. CI's `changes` gate
   skips the Rust matrix for `kb/**` and `*.md`, so `ci` is green in ~20 s:
-  `gh pr create --fill && gh pr merge --merge --delete-branch --auto`.
+  `gh pr create --fill`, then `gh pr checks <n> --watch && gh pr merge <n> --merge --delete-branch`
+  (auto-merge is disabled on this repo, so `gh pr merge --auto` is refused).
 
 ## Autonomous merges — standing authorization from the repo owner
 
