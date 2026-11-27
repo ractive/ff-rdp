@@ -158,15 +158,51 @@ pub fn run(cli: &Cli, level: Option<&str>, pattern: Option<&str>) -> Result<(), 
     {
         obj.insert(
             "hint".to_string(),
-            json!(
-                "No console messages captured. Use --follow to stream live messages, \
-                 or generate some with: ff-rdp eval 'console.log(\"test\")'"
-            ),
+            json!(empty_result_hint(raw_total, level, pattern)),
         );
     }
 
     let hint_ctx = HintContext::new(HintSource::Console).with_has_errors(error_count > 0);
     OutputPipeline::from_cli(cli)?.finalize_with_hints(&envelope, Some(&hint_ctx))
+}
+
+/// The `hint` for a `console` read that matched nothing. `raw_total` is every
+/// cached message before `--level`/`--pattern`: when it is non-zero the
+/// filters removed them all, which is a different situation (and a different
+/// fix) from a page that logged nothing.
+fn empty_result_hint(raw_total: usize, level: Option<&str>, pattern: Option<&str>) -> String {
+    if raw_total == 0 {
+        return "No console messages captured. Use --follow to stream live messages, \
+                or generate some with: ff-rdp eval 'console.log(\"test\")'"
+            .to_owned();
+    }
+    let mut filters = Vec::new();
+    if let Some(l) = level {
+        if !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric()) {
+            filters.push(format!("--level {l}"));
+        } else {
+            filters.push(format!("--level {}", sh_single_quote(l)));
+        }
+    }
+    if let Some(p) = pattern {
+        filters.push(format!("--pattern {}", sh_single_quote(p)));
+    }
+    let noun = if raw_total == 1 {
+        "message"
+    } else {
+        "messages"
+    };
+    format!(
+        "{raw_total} console {noun} captured, none matched {}. \
+         Run without the filter to see them.",
+        filters.join(" ")
+    )
+}
+
+/// POSIX single-quote `s` so the hint's flag can be pasted back into a shell:
+/// each `'` becomes `'\''`.
+fn sh_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
 }
 
 /// Prime the WebConsole actor's message cache so a following
@@ -585,6 +621,33 @@ impl ConsoleDeliveries {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_result_hint_distinguishes_filtered_out_from_nothing_captured() {
+        assert!(empty_result_hint(0, None, None).starts_with("No console messages captured"));
+        assert!(
+            empty_result_hint(0, Some("error"), Some("x"))
+                .starts_with("No console messages captured")
+        );
+        assert!(
+            empty_result_hint(2, Some(""), None).contains("none matched --level ''."),
+            "an empty --level must stay visible"
+        );
+        assert_eq!(
+            empty_result_hint(2, Some("a b"), Some("it's")),
+            r"2 console messages captured, none matched --level 'a b' --pattern 'it'\''s'. Run without the filter to see them."
+        );
+        assert_eq!(
+            empty_result_hint(3, None, Some("nomatch")),
+            "3 console messages captured, none matched --pattern 'nomatch'. \
+             Run without the filter to see them."
+        );
+        assert_eq!(
+            empty_result_hint(1, Some("error"), Some("boom")),
+            "1 console message captured, none matched --level error --pattern 'boom'. \
+             Run without the filter to see them."
+        );
+    }
 
     #[test]
     fn console_identity_excludes_only_grip_handles() {

@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 use serde_json::{Value, json};
 
 use crate::actor::actor_request;
@@ -65,7 +63,9 @@ pub enum PropertyDescriptor {
 #[derive(Debug)]
 pub struct PrototypeAndProperties {
     pub prototype: Grip,
-    pub own_properties: BTreeMap<String, PropertyDescriptor>,
+    /// Own properties in the order Firefox sent them (integer keys ascending,
+    /// then insertion order) — the order `JSON.stringify` uses.
+    pub own_properties: Vec<(String, PropertyDescriptor)>,
 }
 
 /// Operations on a Firefox object grip actor.
@@ -450,8 +450,21 @@ mod tests {
         };
         assert_eq!(class, "Object");
         assert_eq!(pap.own_properties.len(), 2);
-        assert!(pap.own_properties.contains_key("a"));
-        assert!(pap.own_properties.contains_key("b"));
+        let keys: Vec<&str> = pap.own_properties.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, ["a", "b"]);
+    }
+
+    #[test]
+    fn parse_prototype_and_properties_keeps_firefox_order() {
+        let data = |v: i64| json!({"value": v, "writable": true, "enumerable": true, "configurable": true});
+        let response = json!({
+            "from": "server1.conn0.child2/obj1",
+            "prototype": {"type": "null"},
+            "ownProperties": {"zeta": data(1), "alpha": data(2), "mid": data(3)}
+        });
+        let pap = parse_prototype_and_properties(&response);
+        let keys: Vec<&str> = pap.own_properties.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, ["zeta", "alpha", "mid"]);
     }
 
     #[test]

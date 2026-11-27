@@ -130,6 +130,11 @@ fn eval_object_result() {
         json["results"]["propertyNames"],
         serde_json::json!(["a", "b"])
     );
+    let hint = json["hint"].as_str().unwrap_or_default();
+    assert!(
+        hint.contains("object grip") && hint.contains("--stringify"),
+        "an object-grip result must carry a hint naming --stringify; envelope: {json}"
+    );
 
     let requests = request_log.lock().unwrap();
     let property_requests: Vec<_> = requests
@@ -645,6 +650,219 @@ fn eval_stringify_text_suppresses_hints() {
         "stdout must not contain a `-> ff-rdp …` hint suffix when \
          --stringify is set (dogfood-49 #6); got: {stdout:?}"
     );
+}
+
+/// `eval --format text '1+1'` prints the bare value and no `-> ff-rdp …`
+/// hint line (the generic "check console errors" tip has nothing to do with
+/// the value the caller asked for).
+#[test]
+fn eval_text_scalar_has_no_hint_line() {
+    let server = eval_server("eval_result_number.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "eval".to_owned(),
+        "--format".to_owned(),
+        "text".to_owned(),
+        "1 + 41".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        support::output_note(&output)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
+}
+
+/// Mock for `eval '({z: 1, a: [2, {b: "x"}]})'`: the recorded eval result
+/// plus the recorded `prototypeAndProperties` replies for the object, its
+/// array and the object inside that, served in the order the CLI asks.
+fn nested_object_server() -> MockRdpServer {
+    let pap = |name: &str| (load_fixture(name), Vec::new());
+    let target = load_fixture("get_target_response.json");
+    // The evaluationResult event is matched by its `from`; this recording
+    // came from another session's console actor, so re-address it to the one
+    // `get_target_response.json` hands out — the same replay adaptation the
+    // mock applies to replies (iter-136).
+    let mut result = load_fixture("eval_result_object_nested.json");
+    result["from"] = target["frame"]["consoleActor"].clone();
+    MockRdpServer::new()
+        .on("listTabs", load_fixture("list_tabs_response.json"))
+        .on("getTarget", target)
+        .on_with_followup(
+            "evaluateJSAsync",
+            load_fixture("eval_immediate_object_nested.json"),
+            result,
+        )
+        .on_sequence(
+            "prototypeAndProperties",
+            vec![
+                pap("prototype_and_properties_object_nested.json"),
+                pap("prototype_and_properties_array_nested.json"),
+                pap("prototype_and_properties_inner_nested.json"),
+            ],
+        )
+}
+
+/// `eval --format text` on a plain object prints its value as JSON, read
+/// from the object actors on this side. The script is sent as in JSON mode,
+/// without the --stringify wrap, so text mode does not change what runs.
+#[test]
+fn eval_text_object_prints_json_value() {
+    let server = nested_object_server();
+    let port = server.port();
+    let request_log = server.request_log();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let script = "({z: 1, a: [2, {b: 'x'}]})";
+    let mut args = base_args(port);
+    args.extend([
+        "eval".to_owned(),
+        "--format".to_owned(),
+        "text".to_owned(),
+        script.to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        support::output_note(&output)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value: serde_json::Value =
+        serde_json::from_str(&stdout).expect("text output must be one JSON value");
+    assert_eq!(
+        serde_json::to_string(&value).unwrap(),
+        r#"{"z":1,"a":[2,{"b":"x"}]}"#,
+        "keys keep Firefox's order"
+    );
+
+    let requests = request_log.lock().unwrap();
+    let eval_request = requests
+        .iter()
+        .find(|r| r["type"] == "evaluateJSAsync")
+        .expect("an evaluateJSAsync request");
+    assert!(
+        !eval_request["text"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("circular reference detected"),
+        "--format text must not add the --stringify wrap; request: {eval_request}"
+    );
+}
+
+/// `--format text --jq` keeps the JSON envelope (the grip), so the filter
+/// sees the same fields as in JSON mode.
+#[test]
+fn eval_text_with_jq_keeps_the_grip() {
+    let server = eval_server("eval_result_object.json").on(
+        "prototypeAndProperties",
+        load_fixture("prototype_and_properties_response.json"),
+    );
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "eval".to_owned(),
+        "--format".to_owned(),
+        "text".to_owned(),
+        "--jq".to_owned(),
+        ".results.class".to_owned(),
+        "({a: 1, b: [2,3]})".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        support::output_note(&output)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Object"), "got: {stdout:?}");
+}
+
+/// `--no-hints` drops the object-grip `hint` from the JSON envelope.
+#[test]
+fn eval_object_no_hints_drops_grip_hint() {
+    let server = eval_server("eval_result_object.json").on(
+        "prototypeAndProperties",
+        load_fixture("prototype_and_properties_response.json"),
+    );
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "--no-hints".to_owned(),
+        "eval".to_owned(),
+        "({a: 1, b: [2,3]})".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "expected success, stderr: {}",
+        support::output_note(&output)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["results"]["class"], "Object");
+    assert!(json.get("hint").is_none(), "envelope: {json}");
+}
+
+/// A `--stringify` result is the value, so it carries no grip hint.
+#[test]
+fn eval_stringify_json_has_no_grip_hint() {
+    let server = eval_server("eval_result_stringify.json");
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "eval".to_owned(),
+        "--stringify".to_owned(),
+        "[1]".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(output.status.success());
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(json.get("hint").is_none(), "envelope: {json}");
 }
 
 // ---------------------------------------------------------------------------

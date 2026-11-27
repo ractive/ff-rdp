@@ -2,8 +2,8 @@ use std::io::Read;
 
 use anyhow::Context as _;
 use ff_rdp_core::{
-    ActorId, EvaluateScope, Grip, LongStringActor, ObjectActor, TargetEvent, WebConsoleActor,
-    sanitize_for_terminal,
+    ActorId, EvaluateScope, Grip, LongStringActor, ObjectActor, PropertyDescriptor, RdpTransport,
+    TargetEvent, WebConsoleActor, sanitize_for_terminal,
 };
 use serde_json::json;
 
@@ -1476,6 +1476,12 @@ pub fn run(
 ) -> Result<(), AppError> {
     let script = load_script(script, file, use_stdin)?;
     let scope = cli_scope.to_scope();
+    // `--format text` (without --jq) prints the bare value. It does NOT change
+    // what runs: the script is sent exactly as in JSON mode, and a plain
+    // Object/Array grip is turned into its JSON value on this side afterwards
+    // (see [`plain_value`]), so `--no-isolate`, completion values and
+    // non-JSON results (DOM nodes, BigInt, `window`) behave as in JSON mode.
+    let text_value = !stringify && cli.format == "text" && cli.jq.is_none();
     // iter-165: `--no-isolate` is honoured again. By default a script that
     // declares something at top level runs inside a per-call IIFE, so its
     // `const`/`let`/`class` never leak into the next `eval`; `--no-isolate`
@@ -1593,6 +1599,36 @@ pub fn run(
         return Err(err);
     }
 
+    // `--format text`: a plain Object/Array grip prints as its JSON value,
+    // read through the object actors while they are still alive. Anything
+    // else (a DOM node, Map, `window`, a failed read) keeps the grip output.
+    if text_value
+        && let Grip::Object { ref class, .. } = eval_result.result
+        && is_plain_container(class)
+    {
+        let mut budget = TextValueBudget::new();
+        match plain_value(
+            ctx.transport_mut(),
+            &eval_result.result,
+            TEXT_VALUE_MAX_DEPTH,
+            &mut budget,
+        ) {
+            Ok(value) => {
+                if budget.truncated {
+                    // stderr-ok: (b) the value printed is incomplete; say so
+                    // without touching stdout's JSON.
+                    eprintln!("{TEXT_VALUE_TRUNCATED_WARNING}");
+                }
+                return print_text_value(&value);
+            }
+            Err(e) => {
+                // stderr-ok: (b) best-effort, warn-and-continue — the grip
+                // output below is still a correct (if less useful) answer.
+                eprintln!("warning: could not read the object's values: {e}");
+            }
+        }
+    }
+
     // For object grips, enrich the output with the list of own property names.
     // Best-effort: if the actor is gone or the request fails, we skip silently.
     //
@@ -1601,7 +1637,7 @@ pub fn run(
     if let Grip::Object { ref actor, .. } = eval_result.result {
         match ObjectActor::prototype_and_properties(ctx.transport_mut(), actor.as_ref()) {
             Ok(pap) => {
-                let names: Vec<&str> = pap.own_properties.keys().map(String::as_str).collect();
+                let names: Vec<&str> = pap.own_properties.iter().map(|(k, _)| k.as_str()).collect();
                 result_json["propertyNames"] = json!(names);
             }
             Err(e) => {
@@ -1657,20 +1693,240 @@ pub fn run(
         None,
         cli.is_verbose(),
     );
-    let envelope = output::envelope(&result_json, 1, &meta);
+    let mut envelope = output::envelope(&result_json, 1, &meta);
+    let grip_hint_suppressed =
+        stringify || cli.no_hints || cli.jq.is_some() || cli.format == "text";
+    if wants_grip_hint(&eval_result.result, grip_hint_suppressed)
+        && let Some(obj) = envelope.as_object_mut()
+    {
+        obj.insert("hint".to_owned(), json!(OBJECT_GRIP_HINT));
+    }
 
     let hint_ctx = HintContext::new(HintSource::Eval);
     let pipeline = OutputPipeline::from_cli(cli)?;
     // When the caller passes `--stringify`, they're extracting a raw value;
     // appending the trailing "-> ff-rdp …" hint line would pollute their
     // captured stdout (dogfood-49 #6).  Suppress hints unconditionally in
-    // that mode — symmetric with `--jq` and `--no-hints`.
-    let pipeline = if stringify {
+    // that mode — symmetric with `--jq` and `--no-hints`. `--format text` is
+    // the same request for a bare value, and the generic "check console
+    // errors" tip has nothing to do with the value asked for.
+    let pipeline = if stringify || cli.format == "text" {
         pipeline.without_hints()
     } else {
         pipeline
     };
     pipeline.finalize_with_hints(&envelope, Some(&hint_ctx))
+}
+
+/// Top-level `hint` on a default (JSON) result that is a plain Object/Array
+/// grip: the grip carries actor metadata and a shallow preview (nested arrays
+/// show only `length`), not the value, and agents otherwise wrap
+/// `JSON.stringify` themselves and get a JSON string inside JSON.
+const OBJECT_GRIP_HINT: &str = "results is a Firefox object grip (actor metadata, not the value); \
+     re-run with --stringify to get the value as JSON";
+
+/// Whether the envelope gets [`OBJECT_GRIP_HINT`]: only for a plain
+/// Object/Array grip (JSON.stringify of a DOM node or `window` is no better
+/// than the grip), and never when `suppressed` — under `--stringify` (the
+/// value is already there), `--no-hints`, `--jq` (keeps the envelope shape
+/// existing filters see) or `--format text`.
+fn wants_grip_hint(result: &Grip, suppressed: bool) -> bool {
+    !suppressed && matches!(result, Grip::Object { class, .. } if is_plain_container(class))
+}
+
+/// How deep `--format text` follows nested objects/arrays before printing a
+/// `"[Class]"` placeholder; bounds the requests (and cycles).
+const TEXT_VALUE_MAX_DEPTH: usize = 6;
+/// How many object actors `--format text` reads in total for one result.
+const TEXT_VALUE_MAX_FETCHES: usize = 200;
+/// Longest array `--format text` prints, holes included.
+const TEXT_VALUE_MAX_ARRAY_LEN: usize = 100_000;
+
+/// Grip classes `--format text` turns into a JSON value.
+fn is_plain_container(class: &str) -> bool {
+    class == "Object" || class == "Array"
+}
+
+/// Where [`plain_value`] reads object properties and long strings from — the
+/// live RDP transport, or a canned map in unit tests.
+trait GripReader {
+    fn own_properties(
+        &mut self,
+        actor: &str,
+    ) -> Result<Vec<(String, PropertyDescriptor)>, AppError>;
+    fn long_string(&mut self, actor: &str, length: u64) -> Result<String, AppError>;
+}
+
+impl GripReader for RdpTransport {
+    fn own_properties(
+        &mut self,
+        actor: &str,
+    ) -> Result<Vec<(String, PropertyDescriptor)>, AppError> {
+        Ok(ObjectActor::prototype_and_properties(self, actor)?.own_properties)
+    }
+
+    fn long_string(&mut self, actor: &str, length: u64) -> Result<String, AppError> {
+        Ok(LongStringActor::full_string(self, actor, length)?)
+    }
+}
+
+/// The read budget for one `--format text` value, and whether any cap cut it.
+struct TextValueBudget {
+    fetches: usize,
+    truncated: bool,
+}
+
+impl TextValueBudget {
+    fn new() -> Self {
+        Self {
+            fetches: TEXT_VALUE_MAX_FETCHES,
+            truncated: false,
+        }
+    }
+}
+
+/// The stderr warning when a `--format text` value hit a cap.
+const TEXT_VALUE_TRUNCATED_WARNING: &str = "warning: --format text stopped reading the value at \
+     its caps (6 levels deep, 200 objects, 100000 array items); values past them print as \
+     \"[Object]\"/\"[Array]\"/\"[truncated]\" — use --stringify for the full value";
+
+/// A `"[Kind]"` placeholder for a typed non-object grip (BigInt, Symbol, …),
+/// so actor metadata never leaks into `--format text` output.
+fn typed_value_placeholder(v: &serde_json::Value) -> Option<String> {
+    let kind = v.get("type")?.as_str()?;
+    Some(match kind {
+        "BigInt" => match v.get("text").and_then(serde_json::Value::as_str) {
+            Some(text) => format!("[BigInt {text}]"),
+            None => "[BigInt]".to_owned(),
+        },
+        "symbol" => match v.get("name").and_then(serde_json::Value::as_str) {
+            Some(name) => format!("[Symbol {name}]"),
+            None => "[Symbol]".to_owned(),
+        },
+        other => format!("[{other}]"),
+    })
+}
+
+/// Turn a grip into JSON for `--format text`. This is NOT `JSON.stringify`:
+/// plain Objects and Arrays are read through their actors (own enumerable
+/// properties, in Firefox's order) down to `depth` levels within `budget`;
+/// every other value that is not JSON — functions, Date, Map, DOM nodes,
+/// BigInt, Symbol — becomes a `"[Kind]"` placeholder, an accessor becomes
+/// `"[Getter]"`, and anything past a cap becomes `"[Object]"`/`"[Array]"`
+/// with `budget.truncated` set. `undefined` drops out of an object and is
+/// `null` in an array; NaN/±Infinity are `null`.
+fn plain_value(
+    reader: &mut impl GripReader,
+    grip: &Grip,
+    depth: usize,
+    budget: &mut TextValueBudget,
+) -> Result<serde_json::Value, AppError> {
+    use serde_json::Value;
+    Ok(match grip {
+        Grip::Null | Grip::Undefined | Grip::Inf | Grip::NegInf | Grip::NaN => Value::Null,
+        Grip::NegZero => json!(0),
+        Grip::LongString { actor, length, .. } => {
+            Value::String(reader.long_string(actor.as_ref(), *length)?)
+        }
+        Grip::Value(v) => typed_value_placeholder(v).map_or_else(|| v.clone(), Value::String),
+        Grip::Object { actor, class, .. } => {
+            if !is_plain_container(class) {
+                return Ok(Value::String(format!("[{class}]")));
+            }
+            if depth == 0 || budget.fetches == 0 {
+                budget.truncated = true;
+                return Ok(Value::String(format!("[{class}]")));
+            }
+            budget.fetches -= 1;
+            let props = reader.own_properties(actor.as_ref())?;
+            if class == "Array" {
+                plain_array(reader, &props, depth, budget)?
+            } else {
+                let mut map = serde_json::Map::new();
+                for (key, desc) in &props {
+                    match desc {
+                        PropertyDescriptor::Data {
+                            value, enumerable, ..
+                        } if *enumerable && !matches!(value, Grip::Undefined) => {
+                            map.insert(key.clone(), plain_value(reader, value, depth - 1, budget)?);
+                        }
+                        PropertyDescriptor::Accessor { enumerable, .. } if *enumerable => {
+                            map.insert(key.clone(), json!("[Getter]"));
+                        }
+                        _ => {}
+                    }
+                }
+                Value::Object(map)
+            }
+        }
+    })
+}
+
+/// The array half of [`plain_value`]: index properties in order, holes as
+/// `null`, padded with `null` up to `length`, an accessor index as
+/// `"[Getter]"`. Never longer than [`TEXT_VALUE_MAX_ARRAY_LEN`] (then it ends
+/// in `"[truncated]"`), so neither `new Array(1e9)` nor `a[1e9] = 1` can
+/// allocate a billion slots.
+fn plain_array(
+    reader: &mut impl GripReader,
+    props: &[(String, PropertyDescriptor)],
+    depth: usize,
+    budget: &mut TextValueBudget,
+) -> Result<serde_json::Value, AppError> {
+    let length = props
+        .iter()
+        .find_map(|(key, desc)| match desc {
+            PropertyDescriptor::Data {
+                value: Grip::Value(v),
+                ..
+            } if key == "length" => v.as_u64(),
+            _ => None,
+        })
+        .and_then(|n| usize::try_from(n).ok())
+        .unwrap_or(0);
+    let mut indexed: Vec<(usize, &PropertyDescriptor)> = props
+        .iter()
+        .filter_map(|(key, desc)| {
+            key.parse::<usize>()
+                .ok()
+                .filter(|i| i.to_string() == *key)
+                .map(|i| (i, desc))
+        })
+        .collect();
+    indexed.sort_by_key(|(i, _)| *i);
+    let mut items = Vec::with_capacity(indexed.len());
+    let mut cut = false;
+    for (i, desc) in indexed {
+        if i >= TEXT_VALUE_MAX_ARRAY_LEN {
+            cut = true;
+            break;
+        }
+        items.resize(i, serde_json::Value::Null);
+        items.push(match desc {
+            PropertyDescriptor::Data { value, .. } => {
+                plain_value(reader, value, depth - 1, budget)?
+            }
+            PropertyDescriptor::Accessor { .. } => json!("[Getter]"),
+        });
+    }
+    if length > TEXT_VALUE_MAX_ARRAY_LEN {
+        cut = true;
+    }
+    if cut {
+        items.push(json!("[truncated]"));
+        budget.truncated = true;
+    } else if items.len() < length {
+        items.resize(length, serde_json::Value::Null);
+    }
+    Ok(serde_json::Value::Array(items))
+}
+
+/// Print a `--format text` value: pretty JSON, no envelope and no hint line.
+fn print_text_value(value: &serde_json::Value) -> Result<(), AppError> {
+    let pretty = serde_json::to_string_pretty(value)
+        .map_err(|e| AppError::Internal(anyhow::Error::new(e)))?;
+    println!("{pretty}");
+    Ok(())
 }
 
 /// Prefix of the string a captured Promise rejection resolves to; the rest is
@@ -1796,6 +2052,168 @@ fn try_unwrap_json_string(value: &mut serde_json::Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Canned `prototypeAndProperties` replies keyed by actor id.
+    #[derive(Default)]
+    struct FakeReader {
+        objects: std::collections::HashMap<String, Vec<(String, PropertyDescriptor)>>,
+        reads: usize,
+    }
+
+    impl GripReader for FakeReader {
+        fn own_properties(
+            &mut self,
+            actor: &str,
+        ) -> Result<Vec<(String, PropertyDescriptor)>, AppError> {
+            self.reads += 1;
+            self.objects
+                .get(actor)
+                .cloned()
+                .ok_or_else(|| AppError::User(format!("no such actor {actor}")))
+        }
+
+        fn long_string(&mut self, _actor: &str, length: u64) -> Result<String, AppError> {
+            Ok("x".repeat(usize::try_from(length).unwrap()))
+        }
+    }
+
+    fn obj(actor: &str, class: &str) -> Grip {
+        Grip::Object {
+            actor: ActorId::from(actor.to_owned()),
+            class: class.to_owned(),
+            preview: None,
+        }
+    }
+
+    fn data(value: Grip, enumerable: bool) -> PropertyDescriptor {
+        PropertyDescriptor::Data {
+            value,
+            writable: true,
+            enumerable,
+            configurable: true,
+        }
+    }
+
+    fn val(v: serde_json::Value) -> Grip {
+        Grip::Value(v)
+    }
+
+    #[test]
+    fn plain_value_reads_nested_objects_and_arrays_in_order() {
+        let getter = || PropertyDescriptor::Accessor {
+            get: None,
+            set: None,
+            enumerable: true,
+            configurable: true,
+        };
+        let mut reader = FakeReader::default();
+        reader.objects.insert(
+            "root".into(),
+            vec![
+                ("z".into(), data(val(json!(1)), true)),
+                ("a".into(), data(obj("arr", "Array"), true)),
+                ("hidden".into(), data(val(json!(2)), false)),
+                ("gone".into(), data(Grip::Undefined, true)),
+                ("node".into(), data(obj("body", "HTMLBodyElement"), true)),
+                ("acc".into(), getter()),
+                (
+                    "big".into(),
+                    data(val(json!({"type": "BigInt", "text": "10"})), true),
+                ),
+                (
+                    "sym".into(),
+                    data(
+                        val(json!({"type": "symbol", "actor": "s1", "name": "k"})),
+                        true,
+                    ),
+                ),
+            ],
+        );
+        reader.objects.insert(
+            "arr".into(),
+            vec![
+                ("0".into(), data(val(json!(1)), true)),
+                ("1".into(), getter()),
+                ("2".into(), data(Grip::NaN, true)),
+                ("length".into(), data(val(json!(5)), false)),
+            ],
+        );
+        let mut budget = TextValueBudget::new();
+        let v = plain_value(&mut reader, &obj("root", "Object"), 6, &mut budget).unwrap();
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            r#"{"z":1,"a":[1,"[Getter]",null,null,null],"node":"[HTMLBodyElement]","acc":"[Getter]","big":"[BigInt 10]","sym":"[Symbol k]"}"#
+        );
+        assert_eq!(reader.reads, 2, "the DOM node is not read");
+        assert!(
+            !budget.truncated,
+            "a placeholder for a non-plain value is not a cap"
+        );
+    }
+
+    #[test]
+    fn plain_value_stops_at_the_depth_cap_on_a_cycle() {
+        let mut reader = FakeReader::default();
+        reader.objects.insert(
+            "self".into(),
+            vec![("me".into(), data(obj("self", "Object"), true))],
+        );
+        let mut budget = TextValueBudget::new();
+        let v = plain_value(&mut reader, &obj("self", "Object"), 2, &mut budget).unwrap();
+        assert_eq!(v, json!({"me": {"me": "[Object]"}}));
+        assert_eq!(reader.reads, 2);
+        assert!(budget.truncated, "hitting the depth cap must be reported");
+    }
+
+    #[test]
+    fn plain_value_reports_an_exhausted_read_budget() {
+        let mut reader = FakeReader::default();
+        reader.objects.insert(
+            "root".into(),
+            vec![("a".into(), data(obj("inner", "Object"), true))],
+        );
+        let mut budget = TextValueBudget {
+            fetches: 1,
+            truncated: false,
+        };
+        let v = plain_value(&mut reader, &obj("root", "Object"), 6, &mut budget).unwrap();
+        assert_eq!(v, json!({"a": "[Object]"}));
+        assert!(budget.truncated);
+    }
+
+    #[test]
+    fn plain_array_caps_a_far_sparse_index_and_a_huge_length() {
+        let mut reader = FakeReader::default();
+        let props = vec![
+            ("0".into(), data(val(json!("a")), true)),
+            ("01".into(), data(val(json!("not an index")), true)),
+            ("4000000000".into(), data(val(json!("far")), true)),
+        ];
+        let mut budget = TextValueBudget::new();
+        let v = plain_array(&mut reader, &props, 3, &mut budget).unwrap();
+        assert_eq!(v, json!(["a", "[truncated]"]));
+        assert!(budget.truncated);
+
+        let props = vec![("length".into(), data(val(json!(1_000_000_000_u64)), false))];
+        let mut budget = TextValueBudget::new();
+        let v = plain_array(&mut reader, &props, 3, &mut budget).unwrap();
+        assert_eq!(
+            v,
+            json!(["[truncated]"]),
+            "new Array(1e9) must not allocate"
+        );
+        assert!(budget.truncated);
+    }
+
+    #[test]
+    fn grip_hint_only_for_plain_containers_when_not_suppressed() {
+        assert!(wants_grip_hint(&obj("o", "Object"), false));
+        assert!(wants_grip_hint(&obj("o", "Array"), false));
+        assert!(!wants_grip_hint(&obj("o", "HTMLBodyElement"), false));
+        assert!(!wants_grip_hint(&obj("o", "Window"), false));
+        assert!(!wants_grip_hint(&obj("o", "Object"), true));
+        assert!(!wants_grip_hint(&val(json!(2)), false));
+    }
 
     // ── dogfooding session 64 #3: rejected Promises ────────────────────────
 

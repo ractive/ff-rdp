@@ -600,7 +600,8 @@ A script that declares nothing cannot leak anything, so it is sent verbatim (unl
 it uses `await` or --stringify) and keeps its completion value (`if (1) { 2 }` is 2).
 Pass --no-isolate to opt out and share ONE scope across calls.
 
-Output: {\"results\": <value>, \"total\": 1, \"meta\": {...}}",
+Output: {\"results\": <value>, \"total\": 1, \"meta\": {...}}
+With --format text, eval prints just the value and no hint line: a plain object or array as JSON of its own enumerable properties (up to 6 levels and 200 objects, with a stderr warning when cut), non-JSON values (functions, Date, BigInt, Symbol, DOM nodes) as \"[Kind]\" placeholders; use --stringify for exact JSON.stringify output.",
         after_long_help = "Scripts:
   Prefer --file or --stdin for scripts with shell metacharacters, `?.`,
   template literals or several lines: shell quoting can mangle them into a
@@ -699,7 +700,7 @@ The command primes Firefox's message cache (startListeners) before reading it,
 so messages a separate earlier `ff-rdp eval 'console.log(...)'` emitted are
 visible on this fresh connection. Use --follow to stream live messages.
 
-Output: {\"results\": [{\"level\": \"...\", \"message\": \"...\", \"source\": \"...\", \"line\": N, \"timestamp\": N}], \"summary\": {\"total\": N, \"shown\": Z, \"by_level\": {...}, \"matched\": M}, \"total\": N, \"meta\": {...}}")]
+Output: {\"results\": [{\"level\": \"...\", \"message\": \"...\", \"source\": \"...\", \"line\": N, \"timestamp\": N}], \"summary\": {\"total\": ALL, \"shown\": Z, \"by_level\": {...}, \"matched\": M}, \"total\": M, \"meta\": {...}} — ALL counts every captured message, M those matching --level/--pattern (by_level counts them too), Z those shown after --limit")]
     Console(ConsoleArgs),
     /// Show network requests captured by the WatcherActor.
     ///

@@ -208,6 +208,82 @@ fn console_no_match_returns_empty() {
     assert_eq!(json["results"].as_array().unwrap().len(), 0);
 }
 
+/// `--pattern nomatch` with 3 messages cached: top-level `total` is the
+/// matched count (0), `summary.total` is every message (3), and the hint says
+/// the filter removed them rather than "No console messages captured".
+#[test]
+fn console_pattern_no_match_hint_names_the_filter() {
+    let server = console_server();
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.extend([
+        "console".to_owned(),
+        "--pattern".to_owned(),
+        "nomatch".to_owned(),
+    ]);
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(output.status.success());
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["total"], 0);
+    assert_eq!(json["summary"]["total"], 3);
+    assert_eq!(json["summary"]["matched"], 0);
+    assert_eq!(
+        json["hint"],
+        "3 console messages captured, none matched --pattern 'nomatch'. \
+         Run without the filter to see them."
+    );
+}
+
+/// An empty cache keeps the "No console messages captured" hint.
+#[test]
+fn console_nothing_captured_hint() {
+    let mut empty = load_fixture("get_cached_messages_response.json");
+    empty["messages"] = json!([]);
+    let server = MockRdpServer::new()
+        .on("listTabs", load_fixture("list_tabs_response.json"))
+        .on("getTarget", load_fixture("get_target_response.json"))
+        .on(
+            "startListeners",
+            load_fixture("start_listeners_response.json"),
+        )
+        .on("getCachedMessages", empty);
+    let port = server.port();
+    let handle = std::thread::spawn(move || server.serve_one());
+
+    let mut args = base_args(port);
+    args.push("console".to_owned());
+
+    let output = std::process::Command::new(ff_rdp_bin())
+        .args(&args)
+        .output()
+        .expect("failed to spawn ff-rdp");
+
+    handle.join().unwrap();
+
+    assert!(output.status.success());
+
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["total"], 0);
+    assert_eq!(json["summary"]["total"], 0);
+    assert!(
+        json["hint"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("No console messages captured"),
+        "envelope: {json}"
+    );
+}
+
 #[test]
 fn console_handles_page_error_messages() {
     // Verify that pageError-type messages are parsed alongside consoleAPICall messages.
