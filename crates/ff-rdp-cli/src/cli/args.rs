@@ -31,7 +31,7 @@ COMMAND REFERENCE:
     ff-rdp dom tree [SEL] [--depth N] [--max-chars N]
     ff-rdp snapshot [--depth N] [--max-chars N] [--query TEXT]
 
-  Find, don't guess (iter-211):
+  Find, don't guess:
     --query TEXT (case-insensitive substring) or --query-regex PATTERN on
     page-text, snapshot, `a11y summary` and dom returns only the matching part
     of the page, with meta.matches counting the hits. page-text is capped at
@@ -45,35 +45,27 @@ COMMAND REFERENCE:
     ff-rdp click <SEL> --wait-for selector:<css> --wait-for text:<substr>
     ff-rdp type <SEL> <TEXT> [--submit] [--with-page] [--clear] [--no-wait] [--settle] [--wait-for ...]
 
-  Act and see (iter-210, reader view since iter-219):
+  Act and see:
     --with-page on navigate/click/type/reload/back/forward/scroll returns the
-    resulting page under results.page — headings, an article `excerpt`, and
-    interactive elements carrying `ref` handles for `click --ref` / `type --ref`.
-    Collected after the action settles, so a click that navigates reports the
-    destination page — since iter-220 that holds even when the destination is
-    slow: the collector waits for the navigation the action started to hand over
-    a document (up to 3s) instead of reading the one it is leaving. Since
-    iter-224 a connection that dies mid-collection is rebuilt and the view
-    collected again inside --timeout; meta.page_attempts / meta.page_reconnects
-    report what it cost.
-    Mozilla's Readability.js runs on the live page, so every interactive entry
-    is tagged zone: 'content' | 'chrome' and content sorts first — the 50-entry
-    cap falls on the navigation bar, not on the article, and `chrome_omitted`
-    says how much nav it dropped (chrome only — content links past the cap
-    are truncated uncounted; `interactive_total` still has the full count). --page-chars N sizes the excerpt (default
-    1500, 0 = structure only); --query TEXT narrows both the excerpt and the
-    interactive list. `page.readerable` and `page.source`
+    resulting page under results.page — headings, an article `excerpt`, `facts`
+    (up to 40 {key, value} rows from infobox tables, definition lists and
+    [itemprop] microdata), and interactive elements carrying `ref` handles for
+    `click --ref` / `type --ref`. Collected after the action settles; a click
+    that navigates reports the destination (the collector waits up to 3s for it
+    to take over the tab). A connection that dies mid-collection is rebuilt and
+    the view collected again inside --timeout (meta.page_attempts /
+    meta.page_reconnects). Interactive entries are tagged zone: 'content' |
+    'chrome' (Mozilla Readability on the live page), content first: the 50-entry
+    cap falls on the navigation bar and `chrome_omitted` counts the chrome it
+    dropped (content past the cap is not counted there; `interactive_total` has
+    the full count). --page-chars N sizes the excerpt
+    (default 1500, 0 = structure only). --query TEXT narrows the excerpt, the
+    interactive list and the facts, and on a miss in both text and facts falls
+    back to the page's rendered text: `page.query_source` is
+    readability|facts|innertext, and a total miss sets `page.hint` naming
+    `page-text --full --query`. `page.readerable` and `page.source`
     (readability|innertext) say what kind of page you are on.
-    Since iter-225 the view also carries `page.facts` — up to 40 {key, value}
-    rows harvested from infobox tables, definition lists and [itemprop]
-    microdata, the tabular facts Readability scores as boilerplate (Stable
-    release, Formation, Born). --query searches them too, and on a miss in
-    both the article text and the facts it falls back to a window over the
-    page's rendered text, so one command answers or says the page has no
-    answer: `page.query_source` is readability|facts|innertext, and a total
-    miss sets `page.hint` naming `page-text --full --query`.
-    `ff-rdp a11y summary` keeps the landmark list and stays reader-free — it is
-    the accessibility surface, --with-page is the act-and-see one.
+    `ff-rdp a11y summary` is the accessibility view: landmarks, no excerpt or facts.
 
   Scrolling:
     ff-rdp scroll to <SEL> [--block top|center|bottom] [--smooth] [--no-wait] [--settle]
@@ -146,7 +138,7 @@ BUNDLED CODE:
 AI AGENT TIPS:
   - Use --format text instead of JSON for 3-10x fewer tokens
   - Use eval --stringify '<script>' to get actual values instead of actor grip
-    metadata; it accepts multi-statement scripts, exactly like bare eval (iter-161)
+    metadata; it accepts multi-statement scripts, exactly like bare eval
   - Use styles --properties color,display,font-size (bare styles dumps ~500 properties)
   - Use a11y summary for a flat list instead of the full tree (can be 400+ lines)
   - Use snapshot --depth 3 for a quick page overview
@@ -176,7 +168,7 @@ COOKBOOK:
   ff-rdp click --selector \"button[type=submit]\"          # flag alias
   ff-rdp click \"button[type=submit]\" --wait-for-network \"/api/login\"
   ff-rdp click \"button[aria-haspopup]\" --dispatch pointer  # Radix/Headless-UI dropdowns
-  ff-rdp click \"button\" --no-wait                          # pre-iter-59 fire-and-forget
+  ff-rdp click \"button\" --no-wait                          # skip auto-wait
 
   # Full page audit
   ff-rdp navigate https://example.com --with-network
@@ -232,18 +224,17 @@ COOKBOOK:
   ff-rdp install-skill --claude --dry-run
   ff-rdp install-skill --claude --list
 
-OUTPUT FORMAT (iter-60 compact defaults):
+OUTPUT FORMAT:
   Default JSON: {\"results\": ..., \"total\": N}  (meta omitted when empty)
   --verbose restores meta.connection (host, port, pid, uptime) to the envelope
   Truncated output adds: {\"truncated\": true, \"hint\": \"showing 20 of 84, use --all\"}
   --format json  (default) machine-readable JSON — the stable API contract
   --format text  human-readable tables and trees
-  --format html  raw HTML passthrough (dom and snapshot only — pre-iter-60 shape)
+  --format html  raw HTML passthrough (dom and snapshot only)
   --jq can be combined with --format text: jq runs first, text rendering applies
   Use --jq to filter the envelope: --jq '.results[0]', --jq '.total'
-    --jq is a VIEW: it never changes the envelope's shape. `network` was the one
-    exception until iter-160 (--jq silently switched results object -> array);
-    pass --detail there, as on every other list command.
+    --jq is a VIEW: it never changes the envelope's shape; pass --detail to
+    reach the entry list of a list command (network included).
   Use --detail for per-entry output on list commands (default is summary view)
   Contextual hints suggest follow-up commands: \"hints\": [...] in JSON, -> lines in text
   Hints default: on for --format text, off for JSON. Override: --hints / --no-hints
@@ -282,7 +273,7 @@ TROUBLESHOOTING:
 /// Named (rather than inlined in the `#[arg]` attribute) because the error
 /// path needs the same number: `ProtocolError::Timeout` carries no duration,
 /// so `AppError::from` reports the socket read deadline instead — see
-/// `crate::error::socket_timeout_ms` (iter-137 Theme B).
+/// `crate::error::socket_timeout_ms`.
 pub const DEFAULT_TIMEOUT_MS: u64 = 10_000;
 
 /// Log verbosity level for `--log-level`.
@@ -326,10 +317,8 @@ pub fn build_version_string() -> &'static str {
 ///
 /// Built at runtime rather than written as a literal because its Quick start
 /// block is rendered from `skill_doc`'s tables — the same ones `SKILL.md` and
-/// the home view use (iter-219 Theme E). All 42 runs of the axi benchmark
-/// opened with `ff-rdp --help`, several of them `| head -50`, and `--query`
-/// appeared nowhere in it; a flag an agent cannot see is a flag that does not
-/// exist. `cargo test -p ff-rdp-cli --test help_idioms` fails when this block and
+/// the home view use. Agents open with `ff-rdp --help`, often `| head -50`,
+/// so the idioms must be near the top. `cargo test -p ff-rdp-cli --test help_idioms` fails when this block and
 /// the idiom table disagree.
 fn long_about() -> String {
     format!(
@@ -502,83 +491,84 @@ pub enum Command {
 
 The options tab Consent-O-Matic opens on its first run in a profile
 (`moz-extension://.../options.html`, title \"Consent-O-Matic Options\" or a
-known localized equivalent) is filtered out of the listing (iter-144) — it
-is never counted in `total` or in `--tab N` indices. `launch --auto-consent`
-closes that tab itself; the filter covers a profile it could not close it in.
+localized equivalent) is never listed, counted in `total` or indexed by `--tab N`.
 
 Output: {\"results\": [{\"url\": \"...\", \"title\": \"...\", \"actor\": \"...\", \"selected\": true}], \"total\": N, \"meta\": {...}}")]
     Tabs,
     /// Navigate to a URL
-    #[command(long_about = "Navigate to a URL.
+    #[command(
+        long_about = "Navigate to a URL (a positional argument; there is no --url flag).
 
-about:support is a browser-owned diagnostic page and cannot be entered through
-content navigation safely on Firefox156. Start a new instance with
-`ff-rdp launch --url about:support` instead. Other about: URLs keep their
-existing policy.
-
-moz-extension:// URLs open an installed add-on's own pages (options, popup or
-any HTML file in the add-on; it need not be in web_accessible_resources) with
-no flag. Take the UUID from `ff-rdp addon list`. eval, dom and console then run
-in the extension page, with the browser.* APIs its manifest grants:
-`ff-rdp navigate moz-extension://<uuid>/options.html` then
-`ff-rdp eval --stringify 'await browser.storage.local.get()'`.
-
-By default, navigate blocks until the new document is committed (URL changes and
-readyState reaches 'interactive' or 'complete'), or the --timeout budget expires.
-This default is --wait auto: it prefers 'complete' (the load event), but once the
-new document has been 'interactive' for 3 s without completing, or the budget runs
-out while it is 'interactive', it returns with ready_state 'interactive' instead of
-timing out — a heavy page under --throttle slow-3g can take minutes to fire its
-load event while its DOM is usable after seconds. Pass --wait complete when the
-load event must have fired (every image, frame and stylesheet loaded); that wait
-fails with a timeout if it does not happen within --timeout. --wait-text,
+Blocks until the new document commits. The default --wait auto then waits for
+the load event, but returns with ready_state 'interactive' once the document
+has been interactive for 3 s, or when --timeout runs out while it is
+interactive (a throttled heavy page is usable long before its load event).
+--wait complete insists on the load event and fails with a timeout otherwise;
+--no-wait returns as soon as the request is acknowledged. --wait-text,
 --wait-selector, --wait-for and --wait-idle run after this wait. --with-network
-does not use --wait: its capture runs to 'complete' and network quiet, bounded by
---network-timeout (see below).
-The result includes 'committed_url', 'ready_state', 'elapsed_ms', and 'status' so
-agents can confirm what page actually loaded — including the main document's real
-HTTP status (iter-138): a 404 or 503 page still commits successfully (readyState
-reaches 'complete'), so 'status' is the only reliable way to detect it without a
-follow-up 'network' call. 'status' is always present, and `null` when there is no
-HTTP status to report — in which case 'status_reason' (also always present, and
-`null` exactly when 'status' is not) says which kind of `null` it is:
-  not_observed        this route never subscribed to network events, so no status
-                      could have been seen: --no-wait
-  no_document_request the document committed without issuing a request of its own —
-                      about:blank, a bfcache restore, a same-document navigation
-  no_status_reported  the document's request was identified but Firefox never
-                      reported a status for it (response line not in yet, or the
-                      channel failed)
-Before iter-166 'status' was `null` for ordinary pages that plainly returned 200:
-the main document was matched by an exact string comparison against the URL as
-typed, and Firefox requests the canonical form ('https://example.com' becomes
-'https://example.com/'), so nothing ever matched. On a redirect, 'status' is the
-status of the document that COMMITTED, not of the redirect hop.
+ignores --wait: it captures until readyState 'complete' and network quiet,
+bounded by --network-timeout.
 
-Same-document navigations — SPA `history.pushState`/`popstate` traversal (via
-`back`/`forward`), and same-page fragment navigation (`#frag`) — never fire the
-usual document-commit signal Firefox uses for a full page load; this is detected
-and resolved directly rather than waiting out the full --timeout (iter-138).
+'status' is the HTTP status of the document that COMMITTED (not of a redirect
+hop); a 404 or 503 page still commits, so check it. It is always present; when
+it is null, 'status_reason' (null exactly when 'status' is not) says why:
+  not_observed         --no-wait: no network events were subscribed
+  no_document_request  no request of its own: about:blank, bfcache, same-document
+                       navigation, data:/blob:/file:/moz-extension: documents
+  no_status_reported   the request was found but Firefox reported no status
+Same-document navigations (pushState/popstate, #fragment) resolve without
+waiting out --timeout.
 
-Use --no-wait to restore the old fire-and-forget behaviour (returns immediately after
-the navigate request is acknowledged, without waiting for the document to commit).
+Output: {\"results\": {\"navigated\": \"...\", \"status\": 200|null, \"status_reason\": null|\"not_observed\"|\"no_document_request\"|\"no_status_reported\", \"committed_url\": \"...\", \"ready_state\": \"...\", \"elapsed_ms\": N}, \"total\": 1, \"meta\": {...}}",
+        after_long_help = "URLs:
+  moz-extension:// URLs open an installed add-on's own pages (options, popup, any
+  HTML file in it) with no flag; take the UUID from `ff-rdp addon list`. eval,
+  dom and console then run in the extension page with the browser.* APIs its
+  manifest grants. about:support cannot be entered safely through content
+  navigation (Firefox 156): use `ff-rdp launch --url about:support`.
 
---throttle slow-3g|fast-3g and --block PATTERN (repeatable) shape the network for
-this load: they are set on the command's own connection right before navigating
-and end when the command exits, so they cannot be combined with --no-wait. Blocked
-requests fail with NS_ERROR_ABORT. Throttling does not bypass the HTTP cache. The
-envelope echoes what was applied under results.network_conditions.
+Network conditions and User-Agent (this load only):
+  --throttle slow-3g|fast-3g and --block PATTERN (repeatable) are set on the
+  command's own connection right before navigating and end when it exits, so
+  they cannot be combined with --no-wait. Blocked requests fail with
+  NS_ERROR_ABORT; throttling does not bypass the HTTP cache. Echoed under
+  results.network_conditions.
+  --user-agent UA overrides the document request's and sub-resources'
+  User-Agent header and `navigator.userAgent` while the command runs; the page
+  stays loaded, but a later eval or reload sees the original. Not combinable
+  with --no-wait, --with-network or --auto-consent. Echoed as results.user_agent.
 
---user-agent UA overrides the User-Agent for this load: the document request's
-`User-Agent` header, its sub-resource requests, and `navigator.userAgent` while
-the command runs. It is set on the command's own connection right before
-navigating and ends when the command exits: the page stays loaded, but a later
-`eval` reads the original `navigator.userAgent` and a later reload sends the
-original header. Not combinable with --no-wait, --with-network, or
---auto-consent (whose click runs on a second connection, after the override
-has ended). Echoed as results.user_agent.
+Consent banners:
+  --auto-consent runs `ff-rdp consent accept`'s detection after the document
+  commits (inside the --with-network capture when both are given) and adds
+  results.consent = {\"cmp\": \"sourcepoint\"|\"bbc\"|\"consentmanager\"|null,
+  \"action\": \"accepted\"|\"clicked\"|null, \"status\": \"accepted\"|
+  \"clicked_not_dismissed\"|\"detected_not_actioned\"|\"no_cmp_detected\"}, all
+  three keys always present. Best-effort: a detection failure is a warning, and
+  the exit code does not depend on the consent outcome. Unlike `launch
+  --auto-consent` (Consent-O-Matic) it works headless on Sourcepoint sites.
+  Without it, a known banner (consentmanager, Sourcepoint, BBC) still covering
+  the page or locking its scroll adds results.warnings[] = {\"type\":
+  \"consent_overlay\", \"consent_overlay\": \"<cmp>\", \"visible\": bool,
+  \"scroll_locked\": bool, \"message\": \"...\", \"hint\": \"ff-rdp consent accept\"};
+  `screenshot` and the window `scroll` subcommands report it too. Nothing is
+  dismissed automatically.
 
-The URL is a positional argument (not a flag). There is no --url option.
+--with-network output:
+  results.network is always one object, next to committed_url/ready_state/
+  status/status_reason:
+  {\"entries\": [...], \"shown\": N, \"total\": N, \"truncated\": bool,
+   \"total_requests\": N, \"total_transfer_bytes\": N, \"by_cause_type\": {...},
+   \"slowest\": [...], \"slowest_truncated\": bool, \"timeout_reached\": bool, \"partial\": bool}
+  entries is capped at 20 (--all for every entry); the summary fields cover the
+  full capture. slowest holds the 5 longest requests (url/duration_ms/status/
+  transfer_size). partial: true means the document was still loading when
+  --network-timeout ran out (requests it had yet to issue are missing);
+  timeout_reached is then true as well. --headers adds {\"headers\": {\"request\":
+  [{\"name\": \"...\", \"value\": \"...\"}], \"response\": [...]}} to each shown entry;
+  --security adds a per-entry \"security\" object and network.insecure_requests.
+  Both imply the detail view and are fetched before the connection closes:
+  Firefox drops them with it, so a later `ff-rdp network --headers` cannot.
 
 Examples:
   ff-rdp navigate https://example.com
@@ -591,177 +581,82 @@ Examples:
   ff-rdp navigate https://example.com --wait-idle --idle-ms 500 --timeout-ms 10000
   ff-rdp navigate https://example.com --user-agent 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)'
   ff-rdp navigate https://www.theguardian.com --auto-consent
-
---auto-consent (iter-129): after the document commits, run the same
-CMP-detection-and-accept flow as `ff-rdp consent accept` and add
-`results.consent = {\"cmp\": \"sourcepoint\"|\"bbc\"|\"consentmanager\"|null, \"action\": \"accepted\"|\"clicked\"|null,
-\"status\": \"accepted\"|\"clicked_not_dismissed\"|\"detected_not_actioned\"|\"no_cmp_detected\"}` (all three keys
-always present, never omitted; `status` added in iter-160). Combinable with
---with-network since iter-159, and the same three keys appear there.
-Best-effort — a detection failure prints a warning but does not fail the
-navigate, and unlike `consent accept` the navigate's exit code is UNCHANGED by
-the consent outcome: a page with no cookie banner is not a failed navigation.
-This is the CLI-native complement to `launch --auto-consent` (the
-Consent-O-Matic extension), which does not reliably work headless against
-Sourcepoint-gated sites.
-
-Without --auto-consent, a known consent banner (consentmanager, Sourcepoint,
-BBC) still covering the page or locking its scroll after the load adds
-`results.warnings[] = {\"type\": \"consent_overlay\", \"consent_overlay\": \"<cmp>\",
-\"visible\": bool, \"scroll_locked\": bool, \"message\": \"...\", \"hint\": \"ff-rdp consent accept\"}`;
-`screenshot` and the window `scroll` subcommands report the same warning.
-Nothing is dismissed automatically.
-
-Output: {\"results\": {\"navigated\": \"...\", \"status\": 200|null, \"status_reason\": null|\"not_observed\"|\"no_document_request\"|\"no_status_reported\", \"committed_url\": \"...\", \"ready_state\": \"...\", \"elapsed_ms\": N}, \"total\": 1, \"meta\": {...}}
-
---with-network output: results.network is ONE canonical object on every path (quiet or busy page, --detail/--jq or default, --all or capped); 'committed_url'/'ready_state'/'status' are also present alongside it (iter-138 — previously dropped, forcing a choice between truthful navigation info and network data):
-  {\"navigated\": \"...\", \"network\": {\"entries\": [...], \"shown\": N, \"total\": N, \"truncated\": bool, \"total_requests\": N, \"total_transfer_bytes\": N, \"by_cause_type\": {...}, \"slowest\": [...], \"slowest_truncated\": bool, \"timeout_reached\": false, \"partial\": false}, \"committed_url\": \"...\", \"ready_state\": \"...\", \"status\": 200|null, \"status_reason\": null|\"not_observed\"|\"no_document_request\"|\"no_status_reported\"}
-  entries is capped at 20 by default (use --all to expand); summary fields always reflect the FULL capture.
-  slowest holds the 5 longest requests (url/duration_ms/status/transfer_size); total_transfer_bytes is an integer.
-  Capture runs until the document's readyState is 'complete' (then until the network is quiet), bounded by
-  --network-timeout. partial: true means the document was still loading when the budget ran out (requests it
-  had yet to issue are missing); timeout_reached is then true as well.
-  status is null with status_reason \"no_document_request\" for data:/blob:/file:/moz-extension: documents — no HTTP response exists.
-  --headers adds {\"headers\": {\"request\": [{\"name\": \"...\", \"value\": \"...\"}], \"response\": [...]}} to each shown entry and
-  --security adds a per-entry \"security\" object plus network.insecure_requests — the same shapes as `network --headers`/`--security`.
-  Both imply the detail view and are fetched before this command's connection closes: Firefox drops a request's headers with
-  the connection that observed it, so a later `ff-rdp network --headers` cannot recover them.
-  Note (iter-126): previously results.network was a BARE ARRAY in non-truncated detail mode (and --all), so .results.network.entries / .total_requests threw \"cannot index array\" on quiet pages. It is now always the object above; consumers of the old bare-array form should read .results.network.entries.")]
+  ff-rdp navigate moz-extension://<uuid>/options.html
+  ff-rdp eval --stringify 'await browser.storage.local.get()'   # then, in the add-on page"
+    )]
     Navigate(NavigateArgs),
     /// Evaluate JavaScript in the target tab
-    #[command(long_about = "Evaluate JavaScript in the target tab.
+    #[command(
+        long_about = "Evaluate JavaScript in the target tab (a positional script, --file PATH or --stdin).
 
-Three input modes (exactly one required):
-  Positional:  ff-rdp eval 'document.title'
-  From file:   ff-rdp eval --file script.js
-  From stdin:  echo 'document.title' | ff-rdp eval --stdin
+Objects and arrays come back as protocol grips (actor IDs, class names); pass
+--stringify for the value. Strings come back in full; a Promise is awaited.
 
-Prefer --file or --stdin for scripts that contain shell metacharacters,
-optional chaining (?.), template literals, or multi-line statements — shell
-quoting can mangle them and produce a SyntaxError at column 1.
-
-Scripts are routed through Firefox's Debugger.evalInGlobal, which bypasses
-page CSP (iter-93). That call does NOT give each evaluation a fresh scope —
-it evaluates in the tab's own global lexical environment — so from iter-93 to
-iter-164 a top-level `const`/`let`/`class` survived until navigation and
-re-running the same script failed with `redeclaration of const x`, even
-though this help claimed otherwise. iter-165 restores the promised contract:
-a script that DECLARES something at top level (`const`, `let`, `class`, `var`
-or `function`) now runs inside a per-call IIFE — the same wrap --stringify
-and `await` scripts already used — so declarations never leak across calls
-and repeating an `eval` is idempotent. `var` and `function` are
-function-scoped by that wrap too and likewise stop leaking. To publish state
-deliberately, assign it to the page global (`window.mine = ...` or a bare
-`mine = ...`); property writes are not declarations and are unaffected.
-
-A script that declares nothing cannot leak anything, so it is sent verbatim
-exactly as before — including a lone expression, and including statement
-forms like `if (1) { 2 }`, whose script completion value is preserved. A
-declaration nested inside a block, a loop head or a function body is already
-scoped there and does not trigger the wrap either.
-
-Pass --no-isolate to opt out and share ONE scope across calls: a plain
-synchronous script is then sent unwrapped, exactly as it was before iter-165,
-so declarations accumulate in the tab's global lexical environment (useful
-when building helpers up over several calls). --no-isolate does not change
---stringify or `await` scripts — their wrap is required for those to work at
-all, so their declarations never leak either way.
-
-Top-level `await` works (iter-132): `ff-rdp eval 'await Promise.resolve(41) + 1'`
-resolves to 42. Scripts containing `await` are transparently wrapped in an
-async IIFE before evaluation — no `--async` flag or extra syntax needed. A
-single-expression script auto-returns its value. A multi-statement script
-(statements separated by `;` OR by a plain newline — iter-142 fixed
-ASI-separated scripts being misclassified and leaking the wrapper into a
-SyntaxError) also auto-returns its value if the LAST statement is a bare
-expression, e.g. `let x = await foo(); x + 1` returns `x + 1` — every
-earlier statement still runs unwrapped, so an explicit `return` earlier in
-the script keeps working. Only when the last statement is not a bare
-expression (a declaration, a control-flow construct) does the script need
-its own explicit `return` to surface a value (it still runs either way — no
-SyntaxError).
-
-That statement split understands JS literals: a `;` or newline inside a
-string, a template literal, a regular-expression literal or a `//` / `/* */`
-comment is not a statement separator, and a backslash escape does not end the
-literal it sits in (iter-167 — `eval --stringify '/a;b/.test(\"a;b\")'` used to
-fail with \"unterminated regular expression literal\"). iter-170 closed the two
-gaps that left open: a `${...}` interpolation is scanned as the code it is, so
-a backtick or quote inside one no longer ends the template early
-(`eval --stringify 'const s = `a${\"`\"}b`; s'` used to yield `undefined`), and
-whether a `/` after `}` divides or opens a regex is now decided from what the
-matching `{` opened — a block (`if (n) {} /a;b/.test(\"a;b\")`, which used to be
-a SyntaxError) or an object literal (`const o = {v:8}; o.v / 2`, still
-division). A block also ends its own statement, so no `;` or newline is needed
-after `}`.
-
-iter-176 closed the three positions that left unjudged, after measuring that
-each turned valid JavaScript into a SyntaxError (and a class declaration into
-a silent `undefined`): an arrow function's `{` body, a `class` body and a
-labelled block are now read as the blocks they are, so
-`eval --stringify 'class K { m(){ return 9 } } new K().m()'` returns 9 instead
-of `undefined`, and `const n = 1; outer: { break outer } n` returns 1 instead
-of a SyntaxError. Class *expressions* still divide: `const C = class {} / 2`
-is one statement, as in JS.
-
-It is still a scanner rather than a full JS parser. A label nested inside an
-object literal or a ternary stays unjudged — the conservative answer, which
-can only cost a wrap.
-
-Since iter-165 that same last-statement rule also governs a plain (non-await)
-script that declares something, because that script now runs in the per-call
-IIFE described above: `eval 'const x = 1; x'` returns 1, while a declaring
-script whose LAST statement is not a bare expression — `eval 'const x = 1; if
-(x) { 2 }'` — yields `undefined` rather than 2. Add an explicit `return`, or
-pass --no-isolate, to get the script completion value back. Declaration-free
-scripts are untouched by this rule; they never enter the wrap.
+A script that declares `const`, `let`, `class`, `var` or `function` at top level,
+uses `await`, or runs with --stringify is wrapped in a per-call function: it returns
+its last statement when that is a bare expression (otherwise add `return`), and
+its declarations never leak across calls.
+A script that declares nothing cannot leak anything, so it is sent verbatim (unless
+it uses `await` or --stringify) and keeps its completion value (`if (1) { 2 }` is 2).
+Pass --no-isolate to opt out and share ONE scope across calls.
 
 Output: {\"results\": <value>, \"total\": 1, \"meta\": {...}}
-With --format text, eval prints just the value and no hint line: a plain object or array as JSON of its own enumerable properties (up to 6 levels and 200 objects, with a stderr warning when cut), non-JSON values (functions, Date, BigInt, Symbol, DOM nodes) as \"[Kind]\" placeholders; use --stringify for exact JSON.stringify output.
+With --format text, eval prints just the value and no hint line: a plain object or array as JSON of its own enumerable properties (up to 6 levels and 200 objects, with a stderr warning when cut), non-JSON values (functions, Date, BigInt, Symbol, DOM nodes) as \"[Kind]\" placeholders; use --stringify for exact JSON.stringify output.",
+        after_long_help = "Scripts:
+  Prefer --file or --stdin for scripts with shell metacharacters, `?.`,
+  template literals or several lines: shell quoting can mangle them into a
+  SyntaxError at column 1.
 
-Errors: a script that throws, or whose resulting Promise rejects, exits 1 with
-{\"error\": \"<message>\", \"error_type\": \"User\", \"stack\": \"...\"}; a rejection
-adds \"promise_rejected\": true. `eval 'Promise.reject(new Error(\"boom\"))'`,
-`eval 'await Promise.reject(new Error(\"boom\"))'` and a failing `fetch(...)`
-all report their error this way. `stack` is omitted when the thrown value has
-none. Firefox drops the rejection value of a multi-statement script whose
-completion value is a Promise, so that case reports a generic message.
-A Promise that never settles (or a script that runs past --timeout) exits 5 with
-{\"error\": \"operation timed out after <N>ms (phase: recv)\", \"error_type\": \"Timeout\"}:
-`eval --timeout 2000 'new Promise(()=>{})'` returns after 2 s with exit 5.
+  Scripts run through Debugger.evalInGlobal, which bypasses page CSP, in the
+  tab's global lexical environment. To keep state between calls, assign it to
+  the page global (`window.mine = ...`); property writes are not declarations.
 
-A string result is always returned in full. Firefox inlines only the first
-~1000 characters of a long string and hands back a `longString` grip for the
-rest; ff-rdp fetches the remainder before printing (iter-161), so
-`eval '\"x\".repeat(5000)'` yields all 5000 characters and never a truncated
-preview.
+  A declaring script is wrapped, so it returns its last statement only when
+  that is a bare expression: `eval 'const x = 1; x'` returns 1, while
+  `eval 'const x = 1; if (x) { 2 }'` returns undefined (add `return`, or pass
+  --no-isolate). A declaration-free script keeps its completion value
+  (`if (1) { 2 }` returns 2); a declaration nested in a block, loop head or
+  function body does not trigger the wrap. --no-isolate does not change --stringify or `await`
+  scripts: their wrap is required, so their declarations never leak.
 
-When the result is a non-primitive (object, array), Firefox returns actor grip
-metadata (actor IDs, class names) instead of the actual values. Use --stringify
-to wrap the value in JSON.stringify() and get the real data back.
+  Statements split on `;` or a newline outside strings, template literals
+  (`${...}` included), regular-expression literals and comments; a block,
+  arrow-function body, class body or labelled block ends its own statement,
+  while `/` after an object literal or class expression divides. The splitter
+  is a scanner, not a parser: a label nested in an object literal or ternary
+  is not recognised, which can only cost a wrap.
 
---stringify accepts exactly what bare eval accepts, including multi-statement
-scripts and top-level `await`: `eval --stringify 'const o = {a:1}; o'` returns
-{\"a\":1} (iter-161 — this used to fail with \"expected expression, got keyword
-'const'\"). The same last-statement rule as above decides what is returned.
-A Promise value is awaited before it is stringified, as bare eval awaits it:
-`eval --stringify 'Promise.resolve({a:1})'` returns {\"a\":1}, and a rejected
-Promise fails with the same error envelope (exit 1).
+  --stringify accepts everything bare eval does (multi-statement scripts,
+  `await`) and awaits a Promise before stringifying it; a rejection fails the
+  same way. --unwrap parses a result that is a JSON-encoded string (e.g.
+  `localStorage.getItem('user')`) into `results`; other strings pass through.
 
-Pass --unwrap when the expression itself already returns a JSON-encoded string
-(e.g. `localStorage.getItem('user')` or a server endpoint that returns text):
-ff-rdp will parse it client-side and put the structured object/array into
-`results`. Primitive or non-JSON strings are passed through unchanged.
+Errors:
+  A throw or a rejected Promise exits 1 with {\"error\": \"<message>\",
+  \"error_type\": \"User\", \"stack\": \"...\"}; a rejection adds \"promise_rejected\":
+  true, and `stack` is omitted when the value has none. Firefox drops the
+  rejection value of a multi-statement script whose completion value is a
+  Promise, so that case reports a generic message. A Promise that never
+  settles, or a script that runs past --timeout, exits 5 with {\"error\":
+  \"operation timed out after <N>ms (phase: recv)\", \"error_type\": \"Timeout\"}.
 
-NOTE: `window.resizeTo()` is a silent no-op in headless Firefox — evaluating
-it will not resize the viewport or change subsequent `innerWidth` reads. For
-a real window size, launch with `ff-rdp launch --window-size WxH` (see its
---help for the ~500px live-viewport floor).")]
+  `window.resizeTo()` is a silent no-op in headless Firefox. For a real window
+  size use `ff-rdp launch --window-size WxH` (see its --help for the ~500px
+  live-viewport floor).
+
+Examples:
+  ff-rdp eval 'document.title'
+  ff-rdp eval --file script.js
+  echo 'document.title' | ff-rdp eval --stdin
+  ff-rdp eval --stringify 'const o = {a:1}; o'          # {\"a\":1}
+  ff-rdp eval 'await Promise.resolve(41) + 1'           # 42
+  ff-rdp eval --timeout 2000 'new Promise(()=>{})'      # exit 5 after 2 s"
+    )]
     Eval(EvalArgs),
     /// Page text, capped at 8000 chars — use --query TEXT to find the part you need
     #[command(long_about = "Extract visible page text (document.body.innerText).
 
-Capped at 8000 characters by default (iter-211): `meta.total_chars` always
+Capped at 8000 characters by default: `meta.total_chars` always
 reports the full innerText length and `meta.truncated` says whether anything
 was cut. `--full` lifts the cap; `--max-chars N` moves it.
 
@@ -777,19 +672,17 @@ Output: {\"results\": \"<page text as a plain string>\", \"total\": 1, \"meta\":
 
 Default output (ARIA-tree JSON): {\"results\": [{\"ref\":\"e1\",\"role\":\"heading\",\"name\":\"...\",\"level\":1,\"tag\":\"h1\",\"attrs\":{...}}, ...], \"total\": N}
 
-Since iter-61i, `results` is **always an array** regardless of match count (0 → [], 1 → [item], N → [item, ...]). Agent recipes like `--jq '.results[0]'` work uniformly.
+`results` is always an array (0 → [], 1 → [item], N → [item, ...]), so
+`--jq '.results[0]'` works for any match count.
 
 Each element has: ref (stable ID), role (ARIA semantic role), name (accessible name), tag, attrs (actionable only), state, level (headings).
 
 For input/textarea/select elements, a top-level `value` field carries the
-live `.value` DOM property — distinct from `attrs.value`, which is the
-static HTML `value` attribute (getAttribute) and does not change when
-script or user input edits the field. Use `value` to see the current
-form-field content without an extra `eval` round-trip; `attrs.value`
-reflects only what the HTML markup originally declared.
+live `.value` DOM property; `attrs.value` is the static HTML attribute and
+does not change when script or user input edits the field.
 
 Use --format html for raw HTML strings in each array slot.
-Use --first to revert to the legacy single-value shape (object/string/null, total: 0 or 1).
+Use --first for a single value instead (object/string/null, total: 0 or 1).
 With --count: {\"results\": {\"count\": N}, \"total\": N, \"meta\": {...}}
 
 See also:
@@ -815,78 +708,51 @@ Output: {\"results\": [{\"level\": \"...\", \"message\": \"...\", \"source\": \"
     /// Capture a page load with `navigate <url> --with-network`, traffic caused
     /// by later commands with `network --follow > net.ndjson &` started first,
     /// or what already loaded with `--source performance-api`.
-    #[command(long_about = "Show network requests captured by the WatcherActor.
+    #[command(
+        long_about = "Show network requests captured by the WatcherActor.
 
-Every ff-rdp command opens its own connection, and Firefox's watcher reports
-the requests made while that connection is subscribed. A one-shot `network`
-therefore arms a watcher, collects until the traffic has gone quiet for 2 s
-(half of --timeout, if that is shorter) after the first request or --timeout
-runs out, whichever comes first, and reports what it saw — requests
-that finished before it connected are not in it. --timeout is a hard wall for
-the whole command: on a page that never goes quiet (analytics beacons) the
-result carries what arrived in time and `timeout_reached: true`. Pick the
-capture mode that matches the question:
+Firefox reports only the requests made while this command's connection is
+subscribed. A one-shot `network` collects until traffic has been quiet for 2 s
+(or half of --timeout, if shorter) after the first request, or until --timeout
+— a hard wall: a page that never goes quiet returns what arrived with
+`timeout_reached: true`. Requests that finished before it connected are not in
+it. Pick the capture mode that matches the question:
 
-  1. A page load:      ff-rdp navigate <url> --with-network
-                       subscribes before navigating; results.network has every
-                       request of the load with method, status, content type.
-  2. Traffic caused by later commands (clicks, form submits, XHR):
-                       ff-rdp network --follow > net.ndjson &
-                       ff-rdp click ... ; ff-rdp type ... --submit
-                       kill %1; then read net.ndjson (one JSON object per line,
-                       a `request` and a `response` event per request). A
-                       separate connection's watcher sees traffic other
-                       connections cause.
-  3. What already loaded, after the fact:
-                       ff-rdp network --source performance-api
-                       Resource Timing from the page: URLs and timings, but no
-                       method/status/headers.
+  A page load:              ff-rdp navigate <url> --with-network
+  Traffic caused later:     ff-rdp network --follow > net.ndjson &   (then act,
+                            then kill %1; one `request` and one `response`
+                            JSON line per request, from any connection)
+  What already loaded:      ff-rdp network --source performance-api
+                            (Resource Timing: URLs and timings, no method/status/headers)
+  One request after click:  ff-rdp click <sel> --wait-for-network <pattern>
 
-`click --wait-for-network <pattern>` waits for one matching request on the
-click's own connection.
+Headers and TLS detail (--headers/--security) die with the connection that saw
+the request; fetch them in the capturing command (`navigate --with-network
+--headers [--security]`, `click --wait-for-network <pattern> --headers`).
+--filter and --method narrow results after capture.
 
-Headers and TLS detail (--headers/--security) live on per-request actors that
-Firefox drops with the connection that observed the request — after the fact
-there is nothing left to ask. Fetch them in the capturing command instead:
-`ff-rdp navigate <url> --with-network --headers [--security]`, or
-`ff-rdp click <selector> --wait-for-network <pattern> --headers`.
+Output (summary): {\"results\": {\"total_requests\": N, \"total_transfer_bytes\": N, \"by_cause_type\": {...}, \"slowest\": [...], \"timeout_reached\": false, \"hint\": null}, \"total\": N, \"meta\": {\"source\": \"watcher\", ...}}",
+        after_long_help = "Sources:
+  --source watcher (default) is the only source with method, status,
+  content_type and transfer_size (content_type is backfilled from the
+  Content-Type header in --detail mode when Firefox has not sent it yet). An
+  empty buffer reports 0 rows; it is never swapped for another dataset.
+  --source performance-api has method=null, status=null, no headers or
+  security detail; duration_ms and transfer_size come from Resource Timing.
+  `meta.source` names the source that was actually read.
 
-The --filter and --method flags narrow results after capture; they do not
-affect which requests Firefox records.
-
-Source (--source watcher, the default):
-  --source watcher          the RDP resource watcher — the only source with
-                            method/status/content_type/transfer_size. An empty
-                            buffer reports 0 watcher rows; it is never swapped
-                            for a different dataset.
-  --source performance-api  only Resource Timing; no method/status, no
-                            headers/security detail
-
-`meta.source` names the source that was actually read.
-
-Field fidelity by source:
-  watcher:         method, status, content_type, duration_ms, size_bytes, transfer_size all available.
-                   (iter-128: content_type is backfilled from the response's Content-Type
-                   header in --detail mode when the watcher's own mimeType update hasn't
-                   landed yet — a single extra request only when the field is still null.)
-  performance-api: method=null, status=null; duration_ms, transfer_size available via Resource Timing API
-
-`hint` is always present (iter-128) — null when there's nothing to report, a
-string when results are truncated, a timeout fired, or the capture was empty.
-
-Default: 20 results, sorted by duration (slowest first).
-Output (summary mode): {\"results\": {\"total_requests\": N, \"total_transfer_bytes\": N, \"by_cause_type\": {...}, \"slowest\": [...], \"timeout_reached\": false, \"hint\": null}, \"total\": N, \"meta\": {\"source\": \"watcher\", ...}}
-Output (--detail): {\"results\": [{\"url\": \"...\", \"method\": \"GET\", \"status\": 200, \"duration_ms\": N, ...}], \"total\": N, \"total_requests\": N, \"total_transfer_bytes\": N, \"by_cause_type\": {...}, \"slowest\": [...], \"timeout_reached\": false, \"hint\": null, \"meta\": {\"source\": \"watcher\", ...}}
-  Note (iter-126): detail mode carries the summary fields (total_requests, total_transfer_bytes, by_cause_type, slowest) alongside the results array, so --detail is a strict superset of the summary envelope.
-  Reaching the entry list: pass --detail (or --all/--headers/--security/--sort/--limit/--fields).
-  BREAKING (iter-160): --jq no longer switches this command into detail mode. `network --jq
-  \'.results | type\'` now answers \"object\", the same as plain `network` — previously it
-  answered \"array\", so the filter changed the document it was filtering. --jq is a view over
-  the envelope on all 30 commands; network was the only one where it was also a mode switch.
-  Migration: add --detail to any --jq invocation that expected the entry list.
-Output (--detail --headers): adds {\"headers\": {\"request\": [{\"name\": \"...\", \"value\": \"...\"}], \"response\": [...]}} per entry.
---format text truncates long `url` cells with a middle ellipsis (iter-128) so a
-single ~900-char tracking URL can't blow the table out to thousands of columns.")]
+Output:
+  Default: 20 results, sorted by duration (slowest first). `hint` is always
+  present: null, or a string when results are truncated, a timeout fired, or
+  the capture was empty.
+  --detail: {\"results\": [{\"url\": \"...\", \"method\": \"GET\", \"status\": 200, \"duration_ms\": N, ...}], \"total\": N, \"total_requests\": N, \"total_transfer_bytes\": N, \"by_cause_type\": {...}, \"slowest\": [...], \"timeout_reached\": false, \"hint\": null, \"meta\": {\"source\": \"watcher\", ...}}
+    — a strict superset of the summary envelope.
+  The entry list needs --detail (or --all/--headers/--security/--sort/--limit/
+  --fields); --jq never switches modes, so add --detail to a --jq that expects
+  the entry list.
+  --detail --headers adds {\"headers\": {\"request\": [{\"name\": \"...\", \"value\": \"...\"}], \"response\": [...]}} per entry.
+  --format text truncates long `url` cells with a middle ellipsis."
+    )]
     Network(NetworkArgs),
     /// Query browser Performance API entries and Core Web Vitals
     #[command(
@@ -897,193 +763,154 @@ Output: {\"results\": [{\"url\": \"...\", \"duration_ms\": N, \"transfer_size\":
     )]
     Perf(PerfArgs),
     /// Capture a screenshot
-    #[command(long_about = "Capture a screenshot.
+    #[command(
+        long_about = "Capture a screenshot of the current viewport over the live session
+(--full-page: the whole scrollable document, up to
+document.scrollingElement.scrollHeight).
 
-By default the screenshot is captured at the current viewport size over the
-live RDP session. Use --full-page to capture the entire scrollable document
-(up to document.scrollingElement.scrollHeight). There is no flag to resize the
-live viewport — no RDP actor sizes it, and headless `window.resizeTo()` is a
-silent no-op; set the window size at `launch --window-size`, or use
---window-size below.
+No RDP actor resizes the live viewport and headless `window.resizeTo()` is a
+silent no-op; set the window at `launch --window-size`, or capture at another
+size with:
+  --viewport WxH     the tab's URL laid out at exactly WxH CSS px in an iframe
+                     on the live tab (a second page load; see the flag below)
+  --window-size WxH  a one-shot `firefox --headless --screenshot` in a fresh
+                     scratch profile: an exact WxH real window with no floor
+                     (`launch --window-size` clamps below ~500px). The URL is loaded from scratch, so cookies,
+                     localStorage and session state are NOT carried over.
 
---window-size WxH (iter-133) switches to a different capture mode entirely:
-a one-shot `firefox --headless --window-size --screenshot` subprocess in a
-fresh scratch profile, giving an EXACT WxH PNG with no floor — the only true
-sub-500px mobile raster path (the live RDP capture above inherits whatever
-window `launch` created, which clamps below ~500px CSS width). This
-re-navigates the current tab's URL from scratch: cookies/localStorage/session
-state from the live tab are NOT carried over. No density knob here —
-`layout.css.devPixelsPerPx` was tested against this exact capture path and
-found to have zero effect on the output raster (Firefox 153.0.3). With
---full-page (iter-296) only the width is passed, so the PNG is W wide and as
-tall as the whole document at that width; a page too tall for Firefox to
-allocate the surface fails with an error instead of a PNG.
+--color-scheme dark|light simulates prefers-color-scheme and --media print the
+print medium (screen, the default, simulates nothing), on this command's
+connection only. The capture waits until matchMedia reports them and the
+transitions/animations the change started have finished (infinite ones are
+ignored; capped at 2 s, then \"settled\": false). Neither works with
+--window-size; --color-scheme dark is refused with --media print (Firefox
+always renders print media light).
 
---color-scheme dark|light simulates `prefers-color-scheme`, and --media print
-simulates the print medium (`@media print` rules apply; --media screen is the
-default and simulates nothing). Both are set on this command's own connection
-right before the capture, and the command waits until the page's matchMedia
-reports them and the CSS transitions/animations the change started have
-finished (infinite ones are ignored; capped at 2 s, after which it captures
-anyway with \"settled\": false). They end when the command exits: the tab is back to its own
-settings afterwards, and a later `eval` sees the unemulated page. Not
-available with --window-size, which captures in a separate Firefox process.
---color-scheme dark is refused with --media print: Firefox always renders
-print media with a light colour scheme.
+Output: {\"results\": {\"path\": \"...\", \"width\": N, \"height\": N}, \"total\": 1, \"meta\": {...}}",
+        after_long_help = "More output:
+  --base64: {\"results\": {\"base64\": \"...\"}, \"total\": 1, \"meta\": {...}}
+  --color-scheme/--media: results also carries \"emulation\": {\"color_scheme\": \"dark\", \"media\": \"print\", \"settled\": true}
+    (only the flags passed; no \"settled\" for --media screen alone).
+  --window-size: {\"results\": {\"path\"|\"base64\": ..., \"width\": N, \"height\": N, \"capture\": \"batch-window-size\"}, \"total\": 1, \"meta\": {...}}
+
+--window-size details: with --full-page only the width is passed, so the PNG is
+W wide and as tall as the document at that width; a page too tall for Firefox
+to allocate the surface fails with an error. There is no density knob:
+layout.css.devPixelsPerPx has no effect on this capture path.
 
 Examples:
   ff-rdp screenshot -o page.png
+  ff-rdp screenshot --viewport 390x844 -o phone.png
+  ff-rdp screenshot --window-size 375x667 -o mobile.png
   ff-rdp screenshot --color-scheme dark -o dark.png
-  ff-rdp screenshot --media print --full-page -o print.png
-
-Output: {\"results\": {\"path\": \"...\", \"width\": N, \"height\": N}, \"total\": 1, \"meta\": {...}}
-With --base64: {\"results\": {\"base64\": \"...\"}, \"total\": 1, \"meta\": {...}}
-With --color-scheme/--media: results also carries \"emulation\": {\"color_scheme\": \"dark\", \"media\": \"print\", \"settled\": true} (only the flags passed; no \"settled\" for --media screen alone).
-With --window-size: {\"results\": {\"path\"|\"base64\": ..., \"width\": N, \"height\": N, \"capture\": \"batch-window-size\"}, \"total\": 1, \"meta\": {...}}")]
+  ff-rdp screenshot --media print --full-page -o print.png"
+    )]
     Screenshot(ScreenshotArgs),
     /// Click an element matching a CSS selector
-    #[command(long_about = "Click an element matching a CSS selector.
+    #[command(
+        long_about = "Click an element matching a CSS selector (positional or --selector, not
+both), or the element a --ref from `snapshot`, `dom`, `a11y summary` or
+`--with-page` names (refs are stamped as data-ffrdp-ref and die on navigation).
 
-Auto-waits for the element to exist, be visible, and have a stable bounding rect
-before dispatching the full pointer-event sequence (pointerover, pointerenter,
-pointerdown, pointerup, click). This matches the behaviour expected by modern
-component libraries such as Radix UI and Headless UI.
+Auto-waits for the element to exist, be visible and have a stable bounding
+rect, then dispatches the full pointer sequence (pointerover, pointerenter,
+pointerdown, pointerup, click) that Radix UI / Headless UI expect. A selector
+that matches nothing is reported once the page is provably idle instead of
+after the whole --timeout (see below). Every --dispatch mode sends script-made
+events (isTrusted: false), so the click gives the page no user activation:
+window.open, the clipboard and fullscreen are refused.
 
-Not-found is reported early (iter-237): a selector that matches nothing no longer
-costs the whole --timeout. Once the page is provably done changing — document
-readyState complete, no XHR/fetch in flight for 500 ms, no DOM mutation for
-200 ms — further waiting cannot produce a match, so click answers then. A guessed
-selector against a static page now reports in ~2 s instead of 10 s. The retry
-case the poll exists for is untouched: an element arriving behind an in-flight
-request keeps the page non-idle, so it still gets the full budget. The
-short-circuit never fires before a fraction (1/5, minimum 500 ms) of --timeout has
-elapsed, and never at all on a page whose CSP refuses the idle probe — those fall
-back to polling the whole budget exactly as before.
+Before dispatching, the element's centre is hit-tested (after scrolling it into
+view); a covered target is a FAILED click: exit 1, error_type \"click_obscured\"
+(or \"click_offscreen\"). Not found in the top document, every frame target is
+tried, cross-origin iframes included; --frame <url-substring> picks one. With
+several matches DOM index 0 is clicked; --visible or --index N chooses.
 
-The selector can be supplied positionally or via --selector:
-  ff-rdp click 'button[type=submit]'
-  ff-rdp click --selector 'button[type=submit]'
+A click that starts a top-level navigation waits for the new document to commit
+and reports it in `results.navigated` (see below); --no-wait skips all waiting.
 
-Both forms are interchangeable; supplying both at once is an error.
-
-Use --ref <id> to click an element by the ref (e.g. 'e3') that `snapshot`, `dom`,
-`a11y summary` or `--with-page` handed out on the current page. Refs are stamped
-on the elements themselves (data-ffrdp-ref) and die when the page navigates.
-Mutually exclusive with positional selector and --selector.
-
-Dispatch modes (--dispatch):
+Output: {\"results\": {\"clicked\": true, \"matched\": true, \"reachable\": true, \"obscured_by\": null, \"tag\": \"...\", \"text\": \"...\", \"frame_url\": null, \"navigated\": null}, \"total\": 1, \"meta\": {\"frame_url\": null, ...}}",
+        after_long_help = "Dispatch modes (--dispatch):
   pointer     Full pointer+mouse event sequence (default — Radix/Headless-UI compatible)
   legacy      Mouse-event sequence only (mouseover, mouseenter, mousedown, mouseup, click)
-  click-only  Synthetic .click() only (pre-iter-59 behaviour, fastest)
+  click-only  Synthetic .click() only (fastest)
 
-Every mode dispatches script-made events (isTrusted: false), so the click gives
-the page no user activation: window.open, the clipboard, fullscreen and other
-calls the browser gates on a user gesture are refused.
+Not found: once readyState is complete, no XHR/fetch has been in flight for
+500 ms and the DOM has not mutated for 200 ms, waiting longer cannot produce a
+match, so a guessed selector on a static page fails in ~2 s. An element that
+arrives behind an in-flight request keeps the page busy and gets the full
+budget. The check never fires before 1/5 of --timeout (minimum 500 ms), and not
+at all on a page whose CSP refuses the idle probe. A selector found in no frame
+fails with an error naming how many frames were tried and their URLs.
 
-Cross-origin / iframe reach (iter-129): if the selector isn't found in the top
-document, click automatically enumerates the tab's frame targets (including
-cross-origin, out-of-process iframes such as consent-management-platform
-overlays) and retries inside each one until a match clicks successfully. Use
---frame <url-substring> to target a specific frame directly and skip both the
-top-level attempt and the scan (e.g. --frame sourcepoint). If the selector
-matches nowhere, the error names how many frames were tried and their URLs
-instead of a bare timeout.
+Reachability: document.elementFromPoint at the centre must return the element,
+a descendant (a <span> in a <button>) or an ancestor.
+  results.matched      the selector resolved to an element
+  results.reachable    true | false | null (undecidable, e.g. a cross-origin
+                       iframe document never laid out; events ARE dispatched)
+  results.obscured_by  the covering element, e.g. \"div#veil\" (null on success)
+On failure these three appear at the top level of the error envelope. The hit
+test decides WHETHER to dispatch; events keep e.clientX/e.clientY 0.
 
-When a selector matches more than one element, the default (flag-less)
-behaviour clicks DOM-order index 0 — which may be hidden. Use --visible to
-click the first non-hidden match instead, or --index N to pick a specific
-match (0-based). Mutually exclusive with each other. On success, the output
-gains {\"match_count\": N, \"chosen_index\": N}; on failure (no visible match /
-index out of range), the error names the match count. If the plain selector
-times out because it resolved to a hidden element, the error itself suggests
---visible/--index with the observed match count.
+Multiple matches: --visible clicks the first non-hidden match, --index N the
+Nth (0-based); mutually exclusive. Success adds {\"match_count\": N,
+\"chosen_index\": N}; a failure names the match count, and a timeout caused by
+a hidden index-0 match suggests --visible/--index.
 
-Reachability (iter-160): before dispatching anything, click hit-tests the
-element's centre point with document.elementFromPoint. The point must resolve to
-the element, a descendant of it (a <span> inside a <button> is the normal case),
-or an ancestor of it (an ancestor cannot obscure its own descendant). If the
-centre starts outside the viewport the element is scrolled into view first —
-below the fold is not an obstruction.
-
-  results.matched     the selector resolved to an element
-  results.reachable   true | false | null (hit test could not decide — e.g. a
-                      cross-origin iframe document that was never laid out; the
-                      events ARE dispatched and the envelope says so)
-  results.obscured_by the covering element, e.g. \"div#veil\" (null on success)
-
-A genuinely covered target is a FAILED action, not an informational result: exit
-1 with error_type \"click_obscured\" (or \"click_offscreen\" when the centre is
-still outside the viewport after scrolling), and matched/reachable/obscured_by
-appear at the top level of the error envelope. The removed `entered` field meant
-only \"querySelector matched\" while its name claimed the pointer could enter;
-read `matched` instead.
-
-Ceiling: events remain isTrusted: false and e.clientX/e.clientY remain 0. The hit
-test decides WHETHER to dispatch; it does not give the events real coordinates.
-
-Navigation: a click that starts a top-level navigation (a link, a form submit,
-a handler assigning location) waits for the new document to commit and parse —
-for up to the auto-wait budget again, counted from the click — before
-returning, so the next command reads the
-destination. `results.navigated` reports it:
+Navigation: waits up to the auto-wait budget again, counted from the click,
+for the new document to commit and parse:
   {\"url\": \"...\", \"status\": 200, \"ready_state\": \"interactive\", \"committed\": true, \"elapsed_ms\": N}
-`committed: false` means the load started but replaced no document: `outcome`
-is \"ended_without_document\" (a download, a 204, a cancelled unload) or
-\"timeout\" (it did not land within the budget).
-`navigated` is null when no navigation was announced within ~150 ms of the click
-(a navigation scheduled later by script is not waited for). A destination that is
-Firefox's certificate or network error page fails like `navigate` does
-(error_type \"nav_cert_error\", \"nav_dns_fail\", ...), with or without
---with-page. --no-wait skips this. With --with-page the page view does the
-settling (readiness in meta.page_ready) and `navigated` carries only url and
-committed.
+`committed: false` means no document was replaced: `outcome` is
+\"ended_without_document\" (a download, a 204, a cancelled unload) or
+\"timeout\". `navigated` is null when no navigation was announced within
+~150 ms (a navigation script schedules later is not waited for). A certificate
+or network error page fails like `navigate` (error_type \"nav_cert_error\",
+\"nav_dns_fail\", ...). With --with-page the page view does the settling
+(meta.page_ready) and `navigated` carries only url and committed.
 
-Output: {\"results\": {\"clicked\": true, \"matched\": true, \"reachable\": true, \"obscured_by\": null, \"tag\": \"...\", \"text\": \"...\", \"frame_url\": null, \"navigated\": null}, \"total\": 1, \"meta\": {\"frame_url\": null, ...}}
-`frame_url` is always present (never omitted) — null when the click landed on
-the top-level document, the frame's URL string when it landed inside a frame.
-With --wait-for-network: adds {\"network\": {\"url\": \"...\", \"method\": \"...\", \"status\": N, ...}} to results.
-With --wait-for-network ... --headers: that object also carries {\"headers\": {\"request\": [{\"name\": \"...\", \"value\": \"...\"}], \"response\": [...]}},
-fetched before the click's connection closes (a later `network --headers` cannot see them).")]
+More output:
+  `frame_url` is always present: null on the top-level document, else the frame's URL.
+  --wait-for-network: adds {\"network\": {\"url\": \"...\", \"method\": \"...\", \"status\": N, ...}} to results;
+  with --headers that object also carries {\"headers\": {\"request\": [{\"name\": \"...\", \"value\": \"...\"}], \"response\": [...]}},
+  fetched before the click's connection closes (a later `network --headers` cannot see them).
+
+Examples:
+  ff-rdp click 'button[type=submit]'
+  ff-rdp click --ref e3 --with-page
+  ff-rdp click 'button[type=submit]' --wait-for text:Dashboard
+  ff-rdp click 'button[type=submit]' --wait-for-network /api/login --headers
+  ff-rdp click 'button.accept' --frame sourcepoint"
+    )]
     Click(ClickArgs),
     /// Type text into an input element matching a CSS selector
-    #[command(long_about = "Type text into an input element matching a CSS selector.
+    #[command(
+        long_about = "Type text into an input element matching a CSS selector.
 
-Selector and text can be supplied positionally or via flags:
+Selector and text are positional or --selector/--text (mixing both forms for
+one value is an error), or target the element a --ref from `snapshot`, `dom`,
+`a11y summary` or `--with-page` names (refs die when the page navigates).
+
+Auto-waits for the element to be focusable (exists, visible, not disabled, an
+input/textarea/contenteditable); --no-wait skips this. The value is set through
+the native HTMLInputElement/HTMLTextAreaElement/HTMLSelectElement prototype
+setter, so React/Vue/Svelte value trackers see it, one character at a time with
+keydown -> keypress -> keyup each; `input` and `change` fire once at the end.
+
+Synthetic-input ceiling (\"synthetic\": true in the output): Firefox's devtools
+RDP has no trusted-input surface, so every event is isTrusted: false. A page
+that filters on e.isTrusted ignores them, and preventDefault() on keydown does
+NOT suppress the character, because ff-rdp assigns the value directly.
+
+With several matches DOM index 0 is used; --visible picks the first non-hidden
+match and --index N the Nth (0-based), mutually exclusive; success then adds
+{\"match_count\": N, \"chosen_index\": N}.
+
+Output: {\"results\": {\"typed\": true, \"synthetic\": true, \"tag\": \"INPUT\", \"value\": \"...\"}, \"total\": 1, \"meta\": {...}}",
+        after_long_help = "Examples:
   ff-rdp type 'input[name=email]' 'user@example.com'
   ff-rdp type --selector 'input[name=email]' --text 'user@example.com'
-
-Both forms work identically; mixing positional and flag for the same value errors.
-
-Use --ref <id> to target an element by the ref (e.g. 'e3') a `snapshot`, `dom`,
-`a11y summary` or `--with-page` call handed out on the current page; refs die
-when the page navigates. Mutually exclusive with positional selector and --selector.
-
-Auto-waits for the element to be focusable (exists, visible, not disabled, is an
-input/textarea/contenteditable) before typing. Use --no-wait to skip this.
-
-The value is set via the native HTMLInputElement/HTMLTextAreaElement/HTMLSelectElement
-prototype setter so React/Vue/Svelte value trackers are invalidated. Each character
-is typed as a keydown -> keypress -> keyup sequence with the value applied
-incrementally (iter-160), so a combobox that opens on keydown or a search box that
-debounces keyup responds as it would to a typist; `input` and `change` are dispatched
-once at the end, as before.
-
-Synthetic-input ceiling (reported as \"synthetic\": true in the output):
-  Firefox exposes no trusted-input surface over the devtools RDP — Marionette and
-  WebDriver BiDi are peer protocols, not layers reachable through it — so every
-  event `type` dispatches carries isTrusted: false. A page that filters on
-  e.isTrusted will ignore them, and a handler that calls preventDefault() on
-  keydown will NOT suppress the character: ff-rdp assigns the value directly, and
-  a synthetic preventDefault cannot cancel that assignment. This makes key-driven
-  UIs respond; it does not make `type` indistinguishable from a user.
-
-When a selector matches more than one element (e.g. two `input[name=keywords]`
-on the same page, one hidden), the default (flag-less) behaviour types into
-DOM-order index 0. Use --visible to target the first non-hidden match instead,
-or --index N for a specific match (0-based). Mutually exclusive with each
-other. On success, the output gains {\"match_count\": N, \"chosen_index\": N}.
-
-Output: {\"results\": {\"typed\": true, \"synthetic\": true, \"tag\": \"INPUT\", \"value\": \"...\"}, \"total\": 1, \"meta\": {...}}")]
+  ff-rdp type --ref e7 --text 'search terms' --submit --with-page"
+    )]
     Type(TypeArgs),
     /// Wait for a condition to become true (polls every 100ms), or sleep for a fixed duration.
     /// Exactly one of --selector, --text, --eval, --ref, or --sleep-ms must be specified.
@@ -1132,45 +959,35 @@ With --key: {\"results\": {\"key\": \"...\", \"value\": \"...\"}, \"total\": 1, 
 Output: {\"results\": {\"role\": \"...\", \"name\": \"...\", \"children\": [...]}, \"total\": 1, \"meta\": {..., \"source\": \"native\"|\"js-fallback\"}}
 With a11y summary: {\"results\": {\"landmarks\": [...], \"headings\": [...], \"interactive\": [...]}, \"total\": 1, \"meta\": {...}}
 With a11y contrast: {\"results\": [{\"selector\": \"...\", \"ratio\": N, \"aa_normal\": bool, ...}], \"total\": N, \"sampled\": M, \"capped\": bool, \"source\": \"js-fallback\", \"meta\": {..., \"source\": \"js-fallback\"}}
-  a11y contrast `total` = returned results (AA failures under --fail-only, else all checks); `sampled` = elements examined. Pre-iter-127 `total` reported the sample size.
-  `meta.source` (iter-143) is always present on a11y/a11y --critical/a11y contrast: \"native\" means the real Firefox platform accessibility tree (roles like \"document\"/\"paragraph\"); \"js-fallback\" means a DOM-derived approximation (roles like \"generic\"), with `meta.source_reason` naming why. `a11y --native` opts in to the native tree (never the default — DEC-027) by enabling Firefox's accessibility service for the duration of the call.
-  `meta.service_left_enabled` / `meta.service_restore_error` (iter-149) are always present on plain `a11y`: `service_left_enabled` is true only when `--native` enabled the platform accessibility service and could not restore it afterward (the service stays enabled for as long as this command's connection is open, normally just until it exits), with `service_restore_error` naming the failure; both stay false/null when nothing needed restoring. The walked tree is still returned in `results` even when the restore failed.")]
+  a11y contrast `total` = returned results (AA failures under --fail-only, else all checks); `sampled` = elements examined.
+  `meta.source` is always present on a11y/a11y --critical/a11y contrast: \"native\" means the real Firefox platform accessibility tree (roles like \"document\"/\"paragraph\"); \"js-fallback\" means a DOM-derived approximation (roles like \"generic\"), with `meta.source_reason` naming why. `a11y --native` opts in to the native tree (never the default) by enabling Firefox's accessibility service for the duration of the call.
+  `meta.service_left_enabled` / `meta.service_restore_error` are always present on plain `a11y`: `service_left_enabled` is true only when `--native` enabled the platform accessibility service and could not restore it afterward (it stays enabled while this command's connection is open, normally until it exits), with `service_restore_error` naming the failure; both stay false/null when nothing needed restoring. The walked tree is still returned in `results` even when the restore failed.")]
     A11y(A11yArgs),
     /// Reload the page
-    #[command(long_about = "Reload the page.
+    #[command(
+        long_about = "Reload the page.
 
-Without --wait-idle, the command blocks until the reload commits — same
-{committed_url, ready_state, elapsed_ms, status, status_reason} envelope as
-`navigate`/`back`/`forward` (iter-130, completed by iter-169), so all four
-navigation verbs are interchangeable for a caller that just wants to know
-where the page landed and what the server said.
+Blocks until the reload commits and returns the same {committed_url,
+ready_state, elapsed_ms, status, status_reason} envelope as navigate/back/
+forward. `status` is the main document's HTTP status; it is null exactly when
+`status_reason` is not: `not_observed` (--no-wait), `no_document_request`
+(nothing fetched: a BFCache restore, a data:/about: URL, a same-document
+navigation) or `no_status_reported` (Firefox reported no status).
 
-`status` is the main document's HTTP status; it is null exactly when
-`status_reason` is not, and `status_reason` names which case it was:
-`not_observed` (--no-wait, which returns before any request is seen),
-`no_document_request` (nothing was fetched — a BFCache
-restore, a data:/about: URL, a same-document navigation), or
-`no_status_reported` (the request was identified but Firefox never reported a
-status for it).
+--wait-idle instead blocks until the network has been idle for --idle-ms
+(default 500) or --reload-timeout (default 10000) expires, and returns
+`reloaded`/`idle_at_ms`/`requests_observed` (distinct requests seen during the
+wait) with `status`/`status_reason` matched against the reloaded URL.
 
-With --wait-idle, the command instead blocks until network activity has been
-idle for --idle-ms (default 500) or the --reload-timeout expires (default
-10000) — a different envelope (`reloaded`/`idle_at_ms`/`requests_observed`)
-geared at network-quiescence rather than commit timing. `requests_observed`
-counts distinct requests seen during the wait; `status`/`status_reason` follow
-the same rules as above, matched against the reloaded URL.
+--hard bypasses the HTTP cache (Firefox `options.force`, like Cmd-Shift-R);
+the default is a soft reload. --no-wait dispatches and returns without
+waiting (not with --wait-idle). --throttle slow-3g|fast-3g and --block PATTERN
+shape the network for this reload only, as on `navigate` (not with --no-wait).
 
-Pass --hard for a cache-bypassing reload (Firefox `options.force`, the
-protocol equivalent of Cmd-Shift-R / `LoadFlags::BYPASS_CACHE`).  Default
-remains a soft reload.
-
-Pass --no-wait to dispatch the reload and return immediately without waiting
-for it to commit (iter-138 Theme E) — the same escape hatch `navigate`
-already has. Conflicts with --wait-idle (which is itself a different kind of
-wait).
-
---throttle slow-3g|fast-3g and --block PATTERN (repeatable) shape the network for
-this reload only, exactly as on `navigate` (not with --no-wait).
+Output: {\"results\": {\"action\": \"reload\", \"committed_url\": \"...\", \"ready_state\": \"complete\", \"elapsed_ms\": N, \"status\": 200|null, \"status_reason\": null|\"not_observed\"|\"no_document_request\"|\"no_status_reported\"[, \"force\": true]}, \"total\": 1, \"meta\": {...}}",
+        after_long_help = "More output:
+  --no-wait:   {\"results\": {\"action\": \"reload\", \"status\": null, \"status_reason\": \"not_observed\"[, \"force\": true]}, \"total\": 1, \"meta\": {...}}
+  --wait-idle: {\"results\": {\"reloaded\": true, \"idle_at_ms\": N, \"requests_observed\": M, \"status\": 200|null, \"status_reason\": null|\"no_document_request\"|\"no_status_reported\"[, \"force\": true]}, \"total\": 1, \"meta\": {...}}
 
 Examples:
   ff-rdp reload
@@ -1178,27 +995,16 @@ Examples:
   ff-rdp reload --no-wait
   ff-rdp reload --wait-idle
   ff-rdp reload --hard --throttle fast-3g --wait-idle
-  ff-rdp reload --hard --wait-idle --idle-ms 1000 --reload-timeout 30000
-
-Output (plain):    {\"results\": {\"action\": \"reload\", \"committed_url\": \"...\", \"ready_state\": \"complete\", \"elapsed_ms\": N, \"status\": 200|null, \"status_reason\": null|\"not_observed\"|\"no_document_request\"|\"no_status_reported\"[, \"force\": true]}, \"total\": 1, \"meta\": {...}}
-Output (--no-wait): {\"results\": {\"action\": \"reload\", \"status\": null, \"status_reason\": \"not_observed\"[, \"force\": true]}, \"total\": 1, \"meta\": {...}}
-Output (wait-idle): {\"results\": {\"reloaded\": true, \"idle_at_ms\": N, \"requests_observed\": M, \"status\": 200|null, \"status_reason\": null|\"no_document_request\"|\"no_status_reported\"[, \"force\": true]}, \"total\": 1, \"meta\": {...}}")]
+  ff-rdp reload --hard --wait-idle --idle-ms 1000 --reload-timeout 30000"
+    )]
     Reload(ReloadArgs),
     /// Go back in history
     #[command(long_about = "Navigate back in browser history.
 
-Blocks until the navigation commits, returning the same navigate-style
-envelope as `navigate`/`forward`/`reload` (iter-130, completed by iter-169) —
-a caller doesn't need a follow-up `eval location.href` to know where `back`
-landed, nor a follow-up `network` call to know what the server said.
-
-A history traversal served from BFCache issues no request at all, which is
-reported honestly as `status: null` with `status_reason:
-\"no_document_request\"` rather than as an unexplained null.
-
-Pass --no-wait to dispatch and return immediately without waiting for the
-navigation to commit (iter-138 Theme E) — the same escape hatch `navigate`
-already has.
+Blocks until the navigation commits and returns the same envelope as
+`navigate`/`forward`/`reload`. A traversal served from BFCache issues no
+request: `status: null`, `status_reason: \"no_document_request\"`. --no-wait
+dispatches and returns without waiting for the commit.
 
 Output:              {\"results\": {\"action\": \"back\", \"committed_url\": \"...\", \"ready_state\": \"complete\", \"elapsed_ms\": N, \"status\": 200|null, \"status_reason\": null|\"not_observed\"|\"no_document_request\"|\"no_status_reported\"}, \"total\": 1, \"meta\": {...}}
 Output (--no-wait): {\"results\": {\"action\": \"back\", \"status\": null, \"status_reason\": \"not_observed\"}, \"total\": 1, \"meta\": {...}}")]
@@ -1206,14 +1012,10 @@ Output (--no-wait): {\"results\": {\"action\": \"back\", \"status\": null, \"sta
     /// Go forward in history
     #[command(long_about = "Navigate forward in browser history.
 
-Blocks until the navigation commits, returning the same navigate-style
-envelope as `navigate`/`back`/`reload` (iter-130, completed by iter-169),
-including the main document's `status` and the `status_reason` that explains
-a null one.
-
-Pass --no-wait to dispatch and return immediately without waiting for the
-navigation to commit (iter-138 Theme E) — the same escape hatch `navigate`
-already has.
+Blocks until the navigation commits and returns the same envelope as
+`navigate`/`back`/`reload`, including the main document's `status` and the
+`status_reason` that explains a null one. --no-wait dispatches and returns
+without waiting for the commit.
 
 Output:              {\"results\": {\"action\": \"forward\", \"committed_url\": \"...\", \"ready_state\": \"complete\", \"elapsed_ms\": N, \"status\": 200|null, \"status_reason\": null|\"not_observed\"|\"no_document_request\"|\"no_status_reported\"}, \"total\": 1, \"meta\": {...}}
 Output (--no-wait): {\"results\": {\"action\": \"forward\", \"status\": null, \"status_reason\": \"not_observed\"}, \"total\": 1, \"meta\": {...}}")]
@@ -1238,8 +1040,7 @@ Output: {\"results\": {\"actor\": \"...\", \"prototype\": {...}, \"ownProperties
     #[command(long_about = "List JavaScript/WASM sources loaded on the page.
 
 Output: {\"results\": [{\"url\": \"...\", \"actor\": \"...\", \"isBlackBoxed\": bool}], \"total\": N, \"meta\": {...}}
---format text truncates long `url` cells with a middle ellipsis (iter-128) so a
-single very long source URL can't blow the table out to thousands of columns.")]
+--format text truncates long `url` cells with a middle ellipsis.")]
     Sources(SourcesArgs),
     /// Dump structured page snapshot for LLM consumption: DOM tree with semantic roles,
     /// key attributes, interactive elements, and text content
@@ -1277,9 +1078,6 @@ By default, hidden and zero-sized elements are excluded from results (elements w
 display:none, visibility:hidden, opacity:0, or a zero bounding rect). Pass --include-hidden
 to receive those elements as well.
 
-NOTE: behavior change — prior versions included hidden elements by default and required
---visible-only to filter them. Scripts relying on the old default must add --include-hidden.
-
 Output: {\"results\": {\"elements\": [{\"selector\": \"...\", \"rect\": {...}, \"visible\": bool, \"z_index\": N}], \"overlaps\": [...]}, \"total\": 1, \"meta\": {...}}"
     )]
     Geometry(GeometryArgs),
@@ -1291,23 +1089,19 @@ Output: {\"results\": {\"elements\": [{\"selector\": \"...\", \"rect\": {...}, \
 Simulates each width by constraining the page layout (inline CSS on <html>/<body>),
 collects element geometry at each breakpoint, then restores the original viewport.
 
-IMPORTANT — layout-only emulation: over the RDP protocol ff-rdp cannot resize the
-real top-level window, so CSS @media queries continue to evaluate against the
-physical viewport width. Geometry is correct for the requested width, but media
-queries may not flip. Every breakpoint therefore carries a `media_query_check`
-object — {requested, inner_width, matches} — where `matches` is
-matchMedia(\"(width: <requested>px)\").matches. When it is false a warning is
-attached; pass --strict to make a mismatch exit non-zero.
+Layout-only emulation: RDP cannot resize the real window, so @media queries
+still evaluate against the physical viewport. Geometry is correct for the
+requested width, but media queries may not flip: every breakpoint carries
+`media_query_check` {requested, inner_width, matches}, where `matches` is
+matchMedia(\"(width: <requested>px)\").matches; a false one attaches a warning,
+and --strict makes it exit non-zero.
 
-For TRUE viewport emulation (not this command's layout-only CSS-width
-constraint), use `ff-rdp launch --window-size WxH` before navigating — real
-innerWidth and real media queries above the ~500px live-viewport floor. For
-a true sub-500px mobile screenshot, use `ff-rdp screenshot --window-size WxH`
-instead (see either --help for details). `responsive` remains the right tool
-for geometry/breakpoint auditing across many widths in one call.
+For true viewport emulation use `ff-rdp launch --window-size WxH` before
+navigating (real innerWidth and media queries above the ~500px live-viewport
+floor), or `ff-rdp screenshot --window-size WxH` for a true sub-500px raster.
 
-By default, hidden and zero-sized elements are excluded from results at each breakpoint.
-Pass --include-hidden to receive those elements as well.
+Hidden and zero-sized elements are excluded at each breakpoint unless
+--include-hidden is passed.
 
 Output: {\"results\": {\"breakpoints\": [{\"width\": 320, \"viewport\": {\"width\": N, \"height\": N}, \"media_query_check\": {\"requested\": 320, \"inner_width\": N, \"matches\": bool}, \"elements\": [{\"selector\": \"...\", \"rect\": {...}, \"visible\": bool}]}, ...], \"original_viewport\": {\"width\": N, \"height\": N}, \"warnings\": [...]}, \"total\": N, \"meta\": {...}}")]
     Responsive(ResponsiveArgs),
@@ -1397,111 +1191,95 @@ Subcommands:
     },
     /// Launch Firefox with remote debugging enabled
     #[command(
-        long_about = "Launch a new Firefox instance with remote debugging enabled.
+        long_about = "Launch a new Firefox with remote debugging (-no-remote, a temporary profile or
+--profile DIR), independent of any running Firefox; it runs until `ff-rdp stop`.
 
-This is safe to run while your normal Firefox browser is open — it always
-uses the -no-remote flag and a separate profile, so the new instance is
-fully independent and won't interfere with existing windows.
+Returns once the debug port is open (--launch-timeout, default 30 s) and the
+first tab exists; with a URL (--url or positional) also once the selected tab
+has loaded it (up to --timeout; an error page or slow load is a
+results.warnings entry, not a failure). If ff-rdp already launched the Firefox
+on this port: exit 0 with `already_running: true` (--replace relaunches). Any
+other listener on the port fails at once, naming its process and PID.
+--window-size WxH is a real viewport at >= ~500px CSS width; a smaller request
+clamps to ~500px with a warning (`screenshot --window-size` has no floor).
 
-By default a temporary profile is created with the necessary devtools prefs
-enabled. Use --profile to reuse an existing profile, or --temp-profile to
-make the temporary profile explicit.
+Output: {\"results\": {\"pid\": N, \"launcher_pid\"?: N, \"host\": \"...\", \"port\": N, \"headless\": bool, \"profile\": \"...\", \"profile_path\": \"...\", \"temp_profile\": bool, \"already_running\": bool, \"auto_consent_extension_installed\": bool, \"window_size\": {\"requested\": {\"width\": N, \"height\": N}, \"below_floor\": bool}|null, \"requested_url\"?: \"...\", \"temporary_addons\"?: [...], \"warnings\"?: [...]}, \"total\": 1, \"meta\": {\"firefox\": \"...\", \"launch_wait_secs\": N, \"replaced\"?: {\"stopped\": bool, \"pid\": N}}}",
+        after_long_help = "Startup URL:
+  --url URL (or a positional URL; giving both is an error) opens through
+  Firefox's startup handler, about:support included, and keeps the temporary
+  profile's English locale prefs. Schemes: http, https, about and
+  moz-extension are allowed; file needs --allow-file-urls, data/javascript
+  --allow-unsafe-urls. A moz-extension URL resolves only when the UUID is
+  already known (a kept --profile); a fresh profile assigns a new one at
+  install (read it with `ff-rdp addon list`, then `ff-rdp navigate`). Invalid
+  URLs fail before the profile is created or --replace acts. With an owned
+  instance already running, --url needs a free --debug-port or --replace.
+  `results.requested_url` is present only when a URL was given.
 
---url URL opens an initial page through Firefox's browser startup handler,
-including about:support. A positional URL (`ff-rdp launch --headless URL`) is
-shorthand for --url: same validation, and giving both is an error. This retains
-the temporary profile's English locale preferences. With a URL, launch returns
-once the selected tab — the one the next command uses — shows that document
-with readyState complete (a redirect's target counts), waiting up to --timeout
-once its other startup waits (first tab, --auto-consent options tab) are done.
-A URL that shows an error page or does not load in time is a results.warnings
-entry, never a failed launch.
-results.requested_url is present only when a URL was supplied. Without a URL,
-launch waits only for the debug port and the first tab.
+Window size:
+  --window-size WxH forwards -width/-height to Firefox: at >= ~500px CSS width
+  it is the only way to get a live session at a real window size (real
+  innerWidth, @media evaluation, layout); for a one-off capture laid out at a
+  given width use `screenshot --viewport WxH`. Below ~500px Firefox clamps the live viewport to
+  that floor: the requested size is echoed with a warning, but `eval
+  innerWidth` reads ~500. There is no RDP actor that sizes a viewport.
 
-URL schemes follow the normal policy: http, https, about and moz-extension are allowed;
-file requires --allow-file-urls, and data/javascript require --allow-unsafe-urls.
-A moz-extension startup URL only resolves when the UUID is already known: a kept
---profile keeps it, a fresh temporary profile assigns a new one at install
-(read it with `ff-rdp addon list`, then `ff-rdp navigate`).
-Invalid URLs fail before profile creation or --replace side effects. If an
-owned instance is already running, --url requires a free --debug-port or explicit
---replace; it is never silently ignored or applied as content navigation.
+Startup wait and binary:
+  --launch-timeout SECS bounds the wait for the debug port; default 30 s,
+  overridden by FF_RDP_LAUNCH_TIMEOUT_SECS (a malformed value falls back to
+  30), and the flag overrides the env var. It is not the global --timeout
+  (a per-socket-operation deadline). Reported as `meta.launch_wait_secs`.
+  FF_RDP_FIREFOX=<path> names the Firefox binary to start (checked before the
+  install paths and PATH); a path that does not exist fails the launch.
 
---window-size WxH (iter-133) forwards `-width`/`-height` to Firefox, giving
-this launched instance a real window size. Widths >= ~500px CSS pixels get
-TRUE viewport emulation: real `window.innerWidth`, real `@media` query
-evaluation, real layout — this is the only ff-rdp path that does. Below
-~500px, Firefox clamps the LIVE debugger-server instance's viewport up to
-that floor (empirically confirmed on macOS; see
-kb/research/viewport-emulation.md) — the requested size still appears in
-the envelope, alongside a warning, but `eval innerWidth` will read ~500,
-not your smaller request. For a true sub-500px mobile SCREENSHOT (not a
-live session), use `ff-rdp screenshot --window-size WxH` instead, which
-has no floor. There is no RDP actor that sizes a viewport (RDM does it via
-parent-chrome CSS, unreachable over the wire) — `--window-size` is a real
-Firefox window-feature flag, not protocol-level emulation.
+Already running:
+  Ownership is proved as --replace proves it before signalling: a launch
+  record whose PID still identifies its process, or an owner-PID marker under
+  ff-rdp's managed profile root. A Firefox you started yourself is a foreign
+  owner and gets the port-occupied error. `already_running` is present on
+  both paths (false on a real launch).
 
---launch-timeout SECS (iter-158) bounds how long `launch` waits for Firefox to
-open its debug port after spawning. Default 30 s; `FF_RDP_LAUNCH_TIMEOUT_SECS`
-overrides the default, and the flag overrides the env var. A malformed env
-value falls back to 30 s rather than failing the launch. This is deliberately
-NOT the global --timeout (a 10 s per-socket-operation deadline): Firefox was
-measured binding its debug port at 7 s under load, and the previous hardcoded
-5 s bound failed 5/5 contended launches. The effective bound is reported as
-`meta.launch_wait_secs`. If the port is occupied by another process before the
-spawn, `launch` fails immediately naming that process and PID instead of
-waiting out the bound.
+Profiles:
+  A launch that fails after creating its temporary profile (spawn error,
+  Firefox exiting, the port never opening) removes it again. `launch` also
+  reclaims temporary profiles of earlier failed launches (unmarked, holding
+  only user.js) without waiting out FF_RDP_PROFILE_PRUNE_DAYS. A --profile
+  directory is never removed. Firefox's first-run Terms-of-Use modal,
+  data-reporting notice and telemetry upload are switched off; a --profile
+  gets these prefs appended to its user.js unless it already sets them:
+  browser.preonboarding.enabled, termsofuse.bypassNotification,
+  datareporting.policy.dataSubmissionPolicyBypassNotification,
+  datareporting.policy.dataSubmissionEnabled.
 
-`FF_RDP_FIREFOX=<path>` (iter-305) names the Firefox binary to start instead of
-the installed one (a portable copy, an unpacked Nightly). It is checked before
-the well-known install paths and PATH; a path that does not exist fails the
-launch rather than silently starting a different Firefox.
+Temporary add-ons:
+  --temporary-addon PATH (repeatable; a directory with manifest.json, or an
+  .xpi; a missing path fails before Firefox starts) loads an unsigned
+  WebExtension over RDP, as about:debugging does; it is gone when Firefox
+  exits. With a URL, Firefox starts on a blank tab, installs every add-on, then
+  opens the URL in the selected tab, so `document_start` content scripts run
+  on the first page; the same load wait applies (an error page can take the
+  full --timeout). MV3 host permissions and content-script origins are
+  granted at install on Firefox 127+; on older Firefox add
+  `granted_host_permissions: true` to manifest.json. A content script matching
+  only `<all_urls>` does not run in a top-level data: page: serve test pages
+  over http. Each install is reported in `results.temporary_addons` as {path,
+  id, actor} (`actor` is false). A rejected add-on fails the launch with
+  Firefox's message and stops the Firefox it started. For a running Firefox
+  see `ff-rdp addon --help`.
 
-`launch` is a NO-OP when the port is already held by a Firefox ff-rdp itself
-launched (iter-210): it exits 0 and reports that instance —
-`results.already_running: true` with the existing `pid`, `port` and `profile`
-— rather than failing, so an agent that is unsure whether it already has a
-browser can just run `launch` and carry on. `already_running` is present on
-both paths (`false` on a real launch), so `--jq '.results.already_running'`
-always answers. --replace is unaffected: it still stops the prior instance and
-starts a new one. Ownership is proved exactly as --replace proves it before it
-may signal anything — a launch record whose PID still identifies the process it
-was written for, or an owner-PID marker under ff-rdp's managed profile root. A
-Firefox you started by hand, or any other listener, is a foreign owner and
-still gets the port-occupied error; reporting someone else's process as
-`results.pid` would be a lie this command has no way to back up.
+--auto-consent:
+  Installs Consent-O-Matic so it can dismiss banners it recognises once a page
+  loads. `launch` returns before any page loads, so
+  `results.auto_consent_extension_installed` only reports the install; for an
+  attested dismissal use `navigate --auto-consent` or `consent accept`
+  (`results.consent.action` is \"accepted\" only when a control was clicked).
+  The options tab the extension opens on first run is closed before returning.
 
-When `launch` FAILS after creating its temporary profile — spawn error, Firefox
-exiting immediately, the debug port never opening — it removes that profile
-directory again (iter-175), so a failed launch costs no disk. A directory passed
-via --profile is yours and is never removed. `launch` also reclaims temporary
-profiles left by *earlier* failed launches: an unmarked one holding nothing but
-`user.js` proves no Firefox ever opened it, so it goes without waiting out
-FF_RDP_PROFILE_PRUNE_DAYS.
-
---temporary-addon PATH (repeatable) loads an unsigned WebExtension
-into the launched Firefox over RDP — the about:debugging / `web-ext run` path —
-so release Firefox runs it without signing; it is gone when Firefox exits. PATH
-is an extension directory containing manifest.json, or an .xpi; a missing path
-fails before Firefox starts. With a URL, Firefox starts on a blank tab, every
-add-on is installed, and only then is the URL opened, so `document_start`
-content scripts already run on the first page. The URL opens in the selected
-tab, and launch waits up to --timeout for it to load, the same wait as a plain
-URL, so the next command reaches the new document. A URL that fails or does
-not load in time (an error page can take the full --timeout here: Firefox
-never answers that navigateTo) is a results.warnings entry, never a failed
-launch. MV3 host permissions and
-content-script origins are granted at install on Firefox 127+ (default
-extensions.originControls.grantByDefault=true); on older Firefox add
-`granted_host_permissions: true` to manifest.json, which Firefox honours for
-temporary installs. A content script declared with
-only `<all_urls>` in `matches` did not run in a top-level data: page (Firefox
-160): serve test pages over http. Each install is reported in `results.temporary_addons` as
-{path, id, actor} (`actor` is false: Firefox returns none). If Firefox rejects
-an add-on, launch fails with Firefox's message and stops the Firefox it started.
-To install, reload or remove add-ons in a Firefox that is already running, see
-`ff-rdp addon --help`.
+Windows:
+  The spawned firefox.exe is a launcher that starts the browser as its child:
+  `results.pid` is the browser (the process on the debug port, which `stop`
+  stops) and `results.launcher_pid` the launcher. Elsewhere `launcher_pid` is
+  absent.
 
 Examples:
   ff-rdp launch                          # launch with temp profile on port 6000
@@ -1516,82 +1294,40 @@ Examples:
   ff-rdp launch --profile ~/my-prof      # reuse an existing profile
   ff-rdp launch --headless --window-size 600x800   # true viewport, >= floor
   ff-rdp launch --headless --window-size 390x844   # below floor — clamps to ~500, warns
-  ff-rdp stop                            # done: stop it and remove its temporary profile
-
-The launched Firefox keeps running until you stop it — ff-rdp never stops it on
-its own. `ff-rdp stop` (see its --help) stops it and removes its temporary profile.
-
-On Windows the firefox.exe `launch` spawns is Firefox's launcher process, which
-starts the browser as its child (iter-299). `results.pid` is that browser — the
-process holding the debug port, which `stop` stops — and `results.launcher_pid`
-is the spawned launcher; it exits when the browser does. Elsewhere `results.pid`
-is the spawned process and `launcher_pid` is absent.
-
---auto-consent installs the Consent-O-Matic extension into the profile so it
-CAN dismiss cookie banners it recognizes once a page loads — but `launch`
-returns before any page loads, so its
-`results.auto_consent_extension_installed` field (iter-144) only reports
-that the extension was installed, never that anything was actually
-dismissed (a prior `auto_consent: true` field made that false claim — see
-kb/iterations/iteration-142-session-hygiene.md). For a real dismiss
-attestation after navigating, use `ff-rdp navigate --auto-consent` or
-`ff-rdp consent accept`, both of which report `results.consent = {\"cmp\":
-..., \"action\": ...}` (`action` is `\"accepted\"` only when a control was
-actually clicked). On the extension's first run in a profile it opens a
-\"Consent-O-Matic Options\" tab; `launch` waits for it and closes it before
-returning, so the startup page is the only tab.
-
-Firefox's first-run Terms-of-Use modal and its data-reporting notice (a
-privacy-notice tab on first run) are switched off with the prefs Firefox's own
-automation uses, and telemetry upload with them. A --profile directory gets
-these prefs appended to its user.js (they stay there, like the devtools
-prefs) unless its user.js already sets them: `browser.preonboarding.enabled`,
-`termsofuse.bypassNotification`,
-`datareporting.policy.dataSubmissionPolicyBypassNotification`,
-`datareporting.policy.dataSubmissionEnabled`.
-
-Output: {\"results\": {\"pid\": N, \"launcher_pid\"?: N, \"host\": \"...\", \"port\": N, \"headless\": bool, \"profile\": \"...\", \"profile_path\": \"...\", \"temp_profile\": bool, \"auto_consent_extension_installed\": bool, \"window_size\": {\"requested\": {\"width\": N, \"height\": N}, \"below_floor\": bool}|null, \"warnings\"?: [...]}, \"total\": 1, \"meta\": {\"firefox\": \"...\", \"launch_wait_secs\": N, \"replaced\"?: {\"stopped\": bool, \"pid\": N}}}"
+  ff-rdp stop                            # done: stop it and remove its temporary profile"
     )]
     Launch(LaunchArgs),
     /// Stop a Firefox that `ff-rdp launch` started, and remove its temporary profile
     #[command(
         long_about = "Stop a Firefox that `ff-rdp launch` started, and remove its temporary profile.
 
-`ff-rdp stop` stops the Firefox listening on --port (or FF_RDP_PORT, default
-6000) — SIGTERM, then SIGKILL after 2 s, the same path `launch --replace` uses —
-and then removes that instance's managed `ff-rdp-profile-*` directory. With
-nothing listening on the port it exits 0 with `stopped: false`.
-
-`ff-rdp stop --all` stops every live Firefox ff-rdp launched under the
-configured profile root ($FF_RDP_HOME when set), found from the owner markers
-`launch` writes; no port is needed. `--dry-run` reports what would be stopped,
-and whether its profile would be removed (`profile_would_be_removed`: false when
-the instance was launched under a different profile root), and signals nothing.
+Stops the Firefox on --port (or FF_RDP_PORT, default 6000) — SIGTERM, then
+SIGKILL after 2 s, as `launch --replace` does — and removes its managed
+`ff-rdp-profile-*` directory. A `launch --profile DIR` instance is stoppable
+too (its owner markers live in a separate managed directory, never in your
+profile), and DIR is kept (`profile` names it, `profile_removed` is false).
+Nothing listening: exit 0, `stopped: false`.
+--all stops every live Firefox ff-rdp launched under the profile root
+($FF_RDP_HOME when set), found from launch's owner markers; no port needed.
+--dry-run reports what would be stopped and `profile_would_be_removed` (false
+for an instance under a different profile root), and signals nothing.
 
 ff-rdp never stops a process it cannot prove it launched. Before every signal
-it requires: an owner-PID marker naming the PID in a managed profile under a
-profile root you own that nobody else can write; the process start time ff-rdp
-recorded beside it, matching the live process (so a reused PID is refused);
-and a Firefox executable. A process group is signalled only when the PID leads
-its own group; otherwise the PID alone. There is no --pid flag. A Firefox
-launched with --profile is stoppable too: `launch` keeps its owner markers in a
-separate managed directory under the profile root, never in your profile, and
-`stop` keeps your --profile directory (`profile` names it, `profile_removed`
-is false). A Firefox you started yourself, or any other process on the port, is
-refused with an error naming its PID; under --all such processes are simply not
-candidates.
+it requires an owner-PID marker naming the PID in a managed profile under a
+profile root you own that nobody else can write, the process start time
+recorded beside it matching the live process (a reused PID is refused), and a
+Firefox executable. A process group is signalled only when the PID leads it.
+There is no --pid flag. A Firefox you started yourself, or any other process on
+the port, is refused with an error naming its PID; under --all it is simply not
+a candidate. Nothing stops automatically: stop the browser when you are done.
 
-Nothing stops automatically: every ff-rdp command opens its own connection, so
-the browser has to outlive each of them. Stop it when you are done.
-
-Examples:
+Output:       {\"results\": {\"stopped\": bool, \"pid\": N|null, \"port\": N, \"profile\": \"...\"|null, \"profile_removed\": bool, \"dry_run\": bool, \"would_stop\"?: true, \"profile_would_be_removed\"?: bool, \"reason\"?: \"...\"}, \"total\": 1, \"meta\": {...}}
+Output (--all): {\"results\": [{\"stopped\": bool, \"pid\": N, \"profile\": \"...\", \"profile_removed\": bool, \"would_stop\"?: true, \"profile_would_be_removed\"?: bool, \"error\"?: \"...\"}], \"total\": N, \"meta\": {\"dry_run\": bool}}",
+        after_long_help = "Examples:
   ff-rdp stop                     # the ff-rdp-launched Firefox on port 6000
   ff-rdp stop --port 9222         # the one on port 9222
   ff-rdp stop --dry-run           # what would be stopped, signal nothing
-  ff-rdp stop --all               # every Firefox ff-rdp launched
-
-Output:       {\"results\": {\"stopped\": bool, \"pid\": N|null, \"port\": N, \"profile\": \"...\"|null, \"profile_removed\": bool, \"dry_run\": bool, \"would_stop\"?: true, \"profile_would_be_removed\"?: bool, \"reason\"?: \"...\"}, \"total\": 1, \"meta\": {...}}
-Output (--all): {\"results\": [{\"stopped\": bool, \"pid\": N, \"profile\": \"...\", \"profile_removed\": bool, \"would_stop\"?: true, \"profile_would_be_removed\"?: bool, \"error\"?: \"...\"}], \"total\": N, \"meta\": {\"dry_run\": bool}}"
+  ff-rdp stop --all               # every Firefox ff-rdp launched"
     )]
     Stop(StopArgs),
     /// Install Claude Code skill files to the user or project filesystem
@@ -1610,18 +1346,17 @@ Every installed file gets a managed-by header so re-installs can detect versions
 and skip unchanged files. Files without that header are never overwritten unless
 --force is passed.
 
-Examples:
+Output (install):  {\"results\": [{\"skill\": \"...\", \"path\": \"...\", \"action\": \"written|skipped|would-write\"}], \"total\": N, \"meta\": {...}}
+Output (--list):   {\"results\": [{\"name\": \"...\", \"version\": \"...\", \"installed\": bool, \"installed_path\": \"...\"}], \"total\": N, \"meta\": {...}}
+Output (--uninstall): {\"results\": {\"uninstalled\": bool, \"path\": \"...\"}, \"total\": 1, \"meta\": {...}}",
+        after_long_help = "Examples:
   ff-rdp install-skill --claude                  # install all skills to ~/.claude/skills/
   ff-rdp install-skill --claude ff-rdp-debug     # install one skill
   ff-rdp install-skill --claude --project        # install into <git-root>/.claude/skills/
   ff-rdp install-skill --claude --dry-run        # preview what would be written
   ff-rdp install-skill --claude --list           # list skills and installed status
   ff-rdp install-skill --claude --uninstall ff-rdp-debug
-  ff-rdp install-skill --claude --from-dir ./my-skill ff-rdp-debug  # install from disk
-
-Output (install):  {\"results\": [{\"skill\": \"...\", \"path\": \"...\", \"action\": \"written|skipped|would-write\"}], \"total\": N, \"meta\": {...}}
-Output (--list):   {\"results\": [{\"name\": \"...\", \"version\": \"...\", \"installed\": bool, \"installed_path\": \"...\"}], \"total\": N, \"meta\": {...}}
-Output (--uninstall): {\"results\": {\"uninstalled\": bool, \"path\": \"...\"}, \"total\": 1, \"meta\": {...}}"
+  ff-rdp install-skill --claude --from-dir ./my-skill ff-rdp-debug  # install from disk"
     )]
     InstallSkill(InstallSkillArgs),
 
@@ -1629,11 +1364,10 @@ Output (--uninstall): {\"results\": {\"uninstalled\": bool, \"path\": \"...\"}, 
     #[command(
         long_about = "Install an opt-in session-start hook that prints the bare `ff-rdp` view.
 
-An agent's first turn is otherwise spent on `--help`, which cannot say whether a
-browser is up or what is on it. This writes a `SessionStart` entry that runs
-`ff-rdp home --hook` — the same live-state view bare `ff-rdp` prints, with the
-page block trimmed to headings plus the first 15 interactive entries — so that
-state is already in the agent's context before it types anything.
+Writes a `SessionStart` entry that runs `ff-rdp home --hook` — the live-state
+view bare `ff-rdp` prints (is a browser up, what is on it), with the page block
+trimmed to headings plus the first 15 interactive entries — so that state is in
+the agent's context before it types anything.
 
 Only the entry ff-rdp owns (marked with `\"ff_rdp_managed\": true`) is ever added,
 rewritten or removed; every other hook in the file is left exactly as it was.
@@ -1648,13 +1382,12 @@ Targets: --claude writes settings.json. --codex writes hooks.json in CODEX_HOME
 in that directory's config.toml. Review and trust new/changed commands in Codex
 /hooks. --opencode refuses because its plugin contract requires JavaScript.
 
-Examples:
+Output: {\"results\": {\"target\": \"...\", \"scope\": \"...\", \"path\": \"...\", \"command\": \"...\", \"action\": \"installed|repaired|no-op|uninstalled|not-installed\", \"dry_run\": bool, \"entry\": {...}}, \"total\": 1}",
+        after_long_help = "Examples:
   ff-rdp install-hook --claude --dry-run    # print the entry, touch nothing
   ff-rdp install-hook --claude              # ~/.claude/settings.json
   ff-rdp install-hook --claude --project    # <git-root>/.claude/settings.json
-  ff-rdp install-hook --claude --uninstall
-
-Output: {\"results\": {\"target\": \"...\", \"scope\": \"...\", \"path\": \"...\", \"command\": \"...\", \"action\": \"installed|repaired|no-op|uninstalled|not-installed\", \"dry_run\": bool, \"entry\": {...}}, \"total\": 1}"
+  ff-rdp install-hook --claude --uninstall"
     )]
     InstallHook(InstallHookArgs),
 
@@ -1701,15 +1434,14 @@ Output: {\"results\": [{\"name\": \"...\", \"status\": \"pass|warn|fail\", \"det
 
 Only directories matching the `ff-rdp-profile-<16 alphanumeric chars>` naming convention are ever listed or removed — a `--profile` directory you passed to `launch` yourself is never touched, even if it happens to live under the same root.
 
-Examples:
+Output (list):  {\"results\": {\"path\": \"...\", \"count\": N, \"total_size_bytes\": N, \"oldest_mtime\": \"...\"|null}, \"total\": 1, \"meta\": {...}}
+Output (prune): {\"results\": {\"path\": \"...\", \"would_remove\": [...], \"removed\": [...], \"dry_run\": bool}, \"total\": N, \"meta\": {...}}",
+        after_long_help = "Examples:
   ff-rdp profiles list
   ff-rdp profiles prune                    # remove entries older than 7 days (default)
   ff-rdp profiles prune --older-than 24h
   ff-rdp profiles prune --all --dry-run    # preview removing everything
-  ff-rdp profiles prune --all              # remove every managed entry now
-
-Output (list):  {\"results\": {\"path\": \"...\", \"count\": N, \"total_size_bytes\": N, \"oldest_mtime\": \"...\"|null}, \"total\": 1, \"meta\": {...}}
-Output (prune): {\"results\": {\"path\": \"...\", \"would_remove\": [...], \"removed\": [...], \"dry_run\": bool}, \"total\": N, \"meta\": {...}}"
+  ff-rdp profiles prune --all              # remove every managed entry now"
     )]
     Profiles {
         #[command(subcommand)]
@@ -1717,7 +1449,8 @@ Output (prune): {\"results\": {\"path\": \"...\", \"would_remove\": [...], \"rem
     },
 
     /// Execute a script file (JSON or YAML)
-    #[command(long_about = "Execute a script file (JSON or YAML).
+    #[command(
+        long_about = "Execute a script file (JSON or YAML).
 
 Each step is dispatched in-process and emits one NDJSON line to stdout:
   {\"step\": N, \"verb\": \"...\", \"ok\": true, \"results\": {...}, \"elapsed_ms\": N}
@@ -1725,22 +1458,21 @@ Each step is dispatched in-process and emits one NDJSON line to stdout:
 A final summary line is emitted:
   {\"summary\": true, \"ok\": true, \"total\": N, \"failed\": 0, \"total_elapsed_ms\": N}
 
-Examples:
+Network assertions: when a script contains an `assert_network` (or a `run:`
+step that might), `run` holds one extra connection with a `network-event`
+subscription for the whole playbook, so a request fired by step N is visible
+to an `assert_network` at step N+1; a step `timeout` bounds only the wait for
+a request still in flight. If that subscription cannot be armed, `run` says so
+on stderr and each assertion arms per step, which can miss a request that
+completed before the step started (`diagnostics.subscription` then reads
+`step` rather than `playbook`).",
+        after_long_help = "Examples:
   ff-rdp run login.json
   ff-rdp run login.yaml --vars email=user@example.com --vars password=secret
   ff-rdp run login.json --dry-run
   ff-rdp run login.json --continue-on-failure
-  ff-rdp run login.json --record session.json
-
-NETWORK ASSERTIONS (iter-181): when a script contains an `assert_network` (or a
-`run:` step that might), `run` opens one extra connection before the first step
-and holds a `network-event` subscription on it for the whole playbook.  A
-request fired by step N is therefore still visible to an `assert_network` at
-step N+1, and a step `timeout` bounds only how long it waits for a request
-still in flight.  If that subscription cannot be armed, `run` says so on stderr
-and each assertion falls back to per-step arming, which can miss a request that
-completed before the step started; the step's `diagnostics.subscription` then
-reads `step` rather than `playbook`.")]
+  ff-rdp run login.json --record session.json"
+    )]
     Run(RunArgs),
 
     /// Record browser commands to a replayable script
@@ -1762,7 +1494,8 @@ Examples:
     },
 
     /// Crawl a site and produce a page-map index (JSON) for use by scripts
-    #[command(long_about = "Crawl a site from a base URL and emit a page-map index.
+    #[command(
+        long_about = "Crawl a site from a base URL and emit a page-map index.
 
 The page-map is a pre-computed site index that lets an agent skip the
 \"discovery\" turns (what's on this page? what forms are here?) by reading
@@ -1775,40 +1508,37 @@ areas are crawled automatically. For CI or headless flows, supply
 `ff-rdp index --check` re-crawls and reports drifted selectors/routes
 against an existing map — useful in CI to detect UI changes.
 
-Examples:
+Output: writes page-map JSON/YAML to --out (default: .ffrdp/page-map.json)
+        and emits a summary to stdout:
+        {\"results\": {\"pages\": N, \"forms\": N, \"api_routes\": N, \"out\": \"...\"}}",
+        after_long_help = "Examples:
   ff-rdp index                                     # crawl current tab origin
   ff-rdp index https://example.com --depth 3
   ff-rdp index --out map.json --max-pages 100
   ff-rdp index --login-script login.json
   ff-rdp index --check --page-map .ffrdp/page-map.json --report drift.json
-  ff-rdp index --format yaml --out map.yaml
-
-Output: writes page-map JSON/YAML to --out (default: .ffrdp/page-map.json)
-        and emits a summary to stdout:
-        {\"results\": {\"pages\": N, \"forms\": N, \"api_routes\": N, \"out\": \"...\"}}")]
+  ff-rdp index --format yaml --out map.yaml"
+    )]
     Index(IndexArgs),
 
     /// Detect and accept a known cookie-consent / CMP overlay
     #[command(
         long_about = "Detect and accept a known cookie-consent-management-platform (CMP) overlay.
 
-Complements `ff-rdp launch --auto-consent` (which installs the Consent-O-Matic
-extension): Consent-O-Matic does not reliably record consent for the
-Sourcepoint CMP in headless mode (dogfooding-session-62 finding 1). This
-command is the CLI-native fallback — it first tries a table of known
-same-origin (non-iframe) CMPs (BBC's own `#bbccookies-continue-button`,
-iter-144; consentmanager.net's `#cmpbox a.cmpboxbtnyes` on any host, as on
-comparis.ch), then enumerates the tab's frame targets (including cross-origin
-iframes) and recognises a known iframe-hosted CMP by matching a frame's URL,
-clicking that frame's \"accept all\" control directly.
+The CLI-native complement to `ff-rdp launch --auto-consent` (Consent-O-Matic,
+which does not reliably record consent for Sourcepoint in headless mode). It
+first tries known same-origin CMPs (BBC's `#bbccookies-continue-button`,
+consentmanager.net's `#cmpbox a.cmpboxbtnyes` on any host), then enumerates
+the tab's frame targets (cross-origin iframes included), recognises a known
+iframe-hosted CMP by its frame URL and clicks its \"accept all\" control.
 
 Subcommands:
   consent accept   Detect a known CMP on the current tab and accept it
 
 Output: {\"results\": {\"cmp\": \"sourcepoint\"|\"bbc\"|\"consentmanager\"|null, \"action\": \"accepted\"|\"clicked\"|null, \"status\": \"accepted\"|\"clicked_not_dismissed\"|\"detected_not_actioned\"|\"no_cmp_detected\"}, \"total\": 1, \"meta\": {...}}
 All three keys are always present — cmp/action are null/null when no known CMP was
-found on the page, and `status` (iter-160) names which of the three outcomes it was.
-`consent accept` exits 1 for the two non-accepting outcomes; see `consent accept --help`.
+found on the page, and `status` names the outcome. `consent accept` exits 1 for
+every outcome but \"accepted\"; see `consent accept --help`.
 
 See also: `ff-rdp navigate --auto-consent` to run this automatically after navigating."
     )]
@@ -1900,7 +1630,7 @@ pub struct NavigateArgs {
     /// Timeout for the --wait-text/--wait-selector condition, and the whole budget for --wait-idle, in milliseconds. If the condition is not met within this time, the command fails with an error showing the elapsed time.
     #[arg(long = "timeout-ms", default_value_t = 5000)]
     pub wait_timeout: u64,
-    /// Skip waiting for the new document to commit; return immediately after the navigate request is acknowledged (pre-61g fire-and-forget behaviour).
+    /// Skip waiting for the new document to commit; return immediately after the navigate request is acknowledged.
     #[arg(long)]
     pub no_wait: bool,
     /// Readiness level to wait for before returning: `auto` (default), `loading`, `interactive` or `complete`. Use `complete` when the load event must have fired (every image, frame and stylesheet loaded); `auto` may return an `interactive` document that is still loading sub-resources. Ignored when `--with-network` is set: that mode uses the network-drain settle as its commit signal.
@@ -1946,11 +1676,9 @@ pub struct NavigateArgs {
     /// `results.consent = {"cmp": ..., "action": ...}` (both keys always
     /// present).
     ///
-    /// Combines with --with-network (iter-159): the consent click happens while
-    /// the network capture is still open, and a short follow-up drain collects
-    /// the requests the dismissal unblocks. Before iter-159 the two flags were
-    /// mutually exclusive, so a consent-walled site — the only kind where you
-    /// need both — forced a choice between them.
+    /// Combines with --with-network: the consent click happens while the
+    /// network capture is still open, and a short follow-up drain collects
+    /// the requests the dismissal unblocks.
     #[arg(long)]
     pub auto_consent: bool,
     /// Send this User-Agent for this navigation only: the document request's
@@ -1981,8 +1709,7 @@ pub struct EvalArgs {
     pub stringify: bool,
     /// Share one scope across calls: send a plain synchronous script to the
     /// tab's global lexical environment instead of wrapping it per call, so
-    /// `const`/`let`/`class` persist into the next `eval` (iter-165 — this
-    /// was a no-op from iter-93 to iter-164). Does not affect --stringify or
+    /// `const`/`let`/`class` persist into the next `eval`. Does not affect --stringify or
     /// `await` scripts, whose wrap is a syntactic necessity.
     #[arg(long)]
     pub no_isolate: bool,
@@ -1991,7 +1718,7 @@ pub struct EvalArgs {
     /// frames; an unmatched substring is an error listing the frame URLs.
     #[arg(long, value_name = "URL_SUBSTRING")]
     pub frame: Option<String>,
-    /// Scope the eval to a specific inner-window ID (iter-77 S3).
+    /// Scope the eval to a specific inner-window ID.
     ///
     /// Maps to `innerWindowID` in the `evaluateJSAsync` request.
     #[arg(long, value_name = "ID")]
@@ -2005,7 +1732,7 @@ pub struct EvalArgs {
 }
 
 // ---------------------------------------------------------------------------
-// --query / --query-regex (iter-211 Theme A)
+// --query / --query-regex
 // ---------------------------------------------------------------------------
 
 /// Compile a `--query-regex` value, so an invalid pattern is a clap usage
@@ -2036,8 +1763,7 @@ pub struct QueryArgs {
 }
 
 /// The `--with-page` family, shared by every command that can return the page
-/// it produced (iter-210 Theme A; `--page-chars` and `--query` added by
-/// iter-219 Theme C).
+/// it produced.
 ///
 /// One flattened struct rather than seven copies of the same three flags: a
 /// recipe written against `navigate --with-page --query X` works verbatim on
@@ -2046,48 +1772,32 @@ pub struct QueryArgs {
 #[derive(clap::Args, Clone, Debug, Default)]
 pub struct PageViewArgs {
     /// After the action completes, embed the resulting page under
-    /// `results.page`: `headings`, an article `excerpt`, and `interactive`
-    /// elements — each with a `ref` you can pass straight to `click --ref` /
-    /// `type --ref` until the page navigates.
+    /// `results.page`: `headings`, an article `excerpt`, `facts` and
+    /// `interactive` elements — each with a `ref` you can pass straight to
+    /// `click --ref` / `type --ref` until the page navigates.
     ///
-    /// Ordering: the page is collected LAST — after the command's own
-    /// readiness wait, after `--wait-for`/`--settle` where those apply, and
-    /// after waiting for `document.readyState == "complete"` (bounded by
-    /// --timeout). So it describes the document this command produced, not the
-    /// one it started from. `meta.page_ready` is false if that wait timed out.
+    /// The page is collected LAST — after the command's own readiness wait,
+    /// after `--wait-for`/`--settle` where those apply, and after waiting for
+    /// `document.readyState == "complete"` (bounded by --timeout) — so it
+    /// describes the document this command produced. `meta.page_ready` is
+    /// false if that wait timed out. When the action started a navigation (a
+    /// link click, `type --submit`), collection first waits up to 3s for the
+    /// destination to take over the tab; nothing is waited for when nothing
+    /// navigated. Collection is retried when the document is torn down under
+    /// it or the connection dies mid-collection (rebuilt inside --timeout);
+    /// `meta.page_attempts` and `meta.page_reconnects` are always present, `1`
+    /// and `0` on the clean path.
     ///
-    /// When the action started a navigation (a click on a link, `type
-    /// --submit`), collection first waits up to 3s for the destination to take
-    /// over the tab — Firefox keeps handing back the OUTGOING document for a
-    /// while after the click, and collecting from it either returned the page
-    /// you left or hung until --timeout (iter-220). Nothing is waited for when
-    /// nothing navigated.
-    ///
-    /// Collection is retried when the document is torn down under it, and
-    /// since iter-224 also when the connection itself dies mid-collection —
-    /// the CLI rebuilds it and collects again inside --timeout rather than
-    /// failing the whole command with a transport error and losing the click.
-    /// `meta.page_attempts` and `meta.page_reconnects` report what the
-    /// returned view cost; both are always present, `1` and `0` on the clean
-    /// path.
-    ///
-    /// Since iter-219 the view is a reader view: Mozilla's Readability.js runs
-    /// on the live page, every `interactive` entry is tagged
-    /// `zone: "content"|"chrome"`, content sorts first so the 50-entry cap
-    /// falls on the navigation bar rather than on the article, and
-    /// `chrome_omitted` says how much nav the cap dropped. `page.excerpt`
-    /// carries the article text (`--page-chars`), `page.readerable` says
-    /// whether the page looks like an article at all, and `page.source` is
+    /// Reader view: Mozilla's Readability.js runs on the live page; every
+    /// `interactive` entry is tagged `zone: "content"|"chrome"`, content sorts
+    /// first so the 50-entry cap falls on the navigation bar, and
+    /// `chrome_omitted` says how much nav the cap dropped. `page.readerable`
+    /// says whether the page looks like an article, and `page.source` is
     /// `readability` or `innertext` (the fallback for dashboards, forms and
-    /// SPAs without prose).
-    ///
-    /// iter-225 adds `page.facts`: up to 40 `{key, value}` rows read straight
-    /// off the page's infobox tables, definition lists and `[itemprop]`
-    /// microdata, in document order, with `facts_total` / `facts_truncated`
-    /// when the cap bites. Readability scores those tables as boilerplate —
-    /// right for reading, wrong for answering, because "Stable release",
-    /// "Formation" and "Born" live nowhere else. The facts pass does not
-    /// consult Readability and cannot change the excerpt.
+    /// SPAs). `page.facts` holds up to 40 `{key, value}` rows from infobox
+    /// tables, definition lists and `[itemprop]` microdata, in document order
+    /// (`facts_total` / `facts_truncated` when capped); it is read
+    /// independently of Readability and never changes the excerpt.
     #[arg(long)]
     pub with_page: bool,
     /// Characters of article text to return in `page.excerpt` (default 1500).
@@ -2107,11 +1817,9 @@ pub struct PageViewArgs {
     /// dropped.
     ///
     /// Three places are searched, cheapest first, and `page.query_source` says
-    /// which answered (iter-225): the article text (`readability` /
-    /// `innertext`), then `facts`, then — only if both missed — a window over
-    /// the page's rendered text, fetched for this query alone and labelled
-    /// `innertext`. That last step is the `page-text --query` round trip you
-    /// would otherwise have spent a turn on. A miss in all three leaves
+    /// which answered: the article text (`readability` / `innertext`), then
+    /// `facts`, then — only if both missed — a window over the page's rendered
+    /// text, fetched for this query alone and labelled `innertext`. A miss in all three leaves
     /// `matches: 0` with an empty excerpt and sets `page.hint` to the one
     /// command that searches more: `page-text --full --query`.
     #[command(flatten)]
@@ -2132,10 +1840,8 @@ pub struct PageTextArgs {
     pub context: usize,
     /// Maximum characters of page text to return (default 8000).
     ///
-    /// `page-text` was the only read command with no size cap, which is why
-    /// agents piped it through `head -100` and lost the answer further down
-    /// the page (iter-211 Theme B). `meta.total_chars` always reports the
-    /// full length and `meta.truncated` says whether anything was cut.
+    /// `meta.total_chars` always reports the full length and
+    /// `meta.truncated` says whether anything was cut.
     /// `0` is rejected — an unreachable cap is a bug, not a request.
     #[arg(long, value_name = "N", default_value_t = 8000)]
     pub max_chars: usize,
@@ -2179,7 +1885,6 @@ pub struct DomArgs {
     #[arg(long, group = "output_mode", conflicts_with = "query_filter")]
     pub count: bool,
     /// Return just the first match as a single value (or null) instead of an array.
-    /// Provided for callers who want the legacy pre-iter-61i single-element shape.
     /// Mutually exclusive with --count.
     #[arg(long, conflicts_with = "count")]
     pub first: bool,
@@ -2198,8 +1903,8 @@ pub struct DomArgs {
         requires = "include_style"
     )]
     pub include_style_limit: usize,
-    /// Keep only the matched elements whose accessible name / text matches
-    /// (iter-211 Theme A). A selector-only call is unchanged.
+    /// Keep only the matched elements whose accessible name / text matches.
+    /// A selector-only call is unchanged.
     #[command(flatten)]
     pub query: QueryArgs,
 }
@@ -2314,13 +2019,12 @@ pub struct ScreenshotArgs {
     pub bulk: bool,
     /// Batch-capture a screenshot at this exact `WxH` pixel size via a
     /// one-shot `firefox --headless --window-size --screenshot` subprocess
-    /// — the only path to a TRUE sub-500px mobile raster (bypasses the live
-    /// viewport floor `launch --window-size` hits below ~500px). Runs in a
+    /// — an exact-size real window with no floor (bypasses the live viewport
+    /// floor `launch --window-size` hits below ~500px). Runs in a
     /// fresh scratch profile separate from the live RDP session: the
     /// current tab's URL is re-navigated from scratch, so cookies/localStorage/
     /// session state from the live tab are NOT carried over. No density knob:
-    /// `layout.css.devPixelsPerPx` was tested against this exact capture path
-    /// and found to have zero effect on the output raster (Firefox 153.0.3).
+    /// `layout.css.devPixelsPerPx` has no effect on this capture.
     /// With `--full-page`, only the width is used and the PNG spans the whole
     /// document.
     #[arg(long, value_name = "WxH")]
@@ -2422,7 +2126,7 @@ pub struct ClickArgs {
     /// cannot see them.
     #[arg(long, requires = "wait_for_network")]
     pub headers: bool,
-    /// Skip auto-wait and click immediately (reverts to pre-iter-59 fire-and-forget)
+    /// Skip auto-wait and click immediately
     #[arg(long)]
     pub no_wait: bool,
     /// Event dispatch mode: pointer (default), legacy (mouse events only), click-only
@@ -2458,9 +2162,9 @@ pub struct ClickArgs {
 #[command(group(ArgGroup::new("type_target").required(false).multiple(false).args(["selector_flag", "ref_id"])))]
 pub struct TypeArgs {
     /// CSS selector of the input element (positional, or use --selector).
-    /// Not in the `type_target` group: with --ref, a lone positional is the
-    /// text the caller meant, and dispatch names `--text` instead of clap's
-    /// bare "cannot be used with" (dogfooding-session-64 #49).
+    // Not in the `type_target` group: with --ref, a lone positional is the
+    // text the caller meant, and dispatch names `--text` instead of clap's
+    // bare "cannot be used with".
     #[arg(conflicts_with = "selector_flag")]
     pub selector_pos: Option<String>,
     /// Text to type into the element (positional, or use --text)
@@ -2478,7 +2182,7 @@ pub struct TypeArgs {
     /// Clear the element's current value before typing
     #[arg(long)]
     pub clear: bool,
-    /// Skip auto-wait and type immediately (reverts to pre-iter-59 fire-and-forget)
+    /// Skip auto-wait and type immediately
     #[arg(long)]
     pub no_wait: bool,
     /// After typing, wait for this condition. Repeatable. Forms: selector:<css>, text:<substr>, url:<regex>, gone:<css>
@@ -2502,25 +2206,17 @@ pub struct TypeArgs {
     /// After typing, press Enter on the element and — if that did not navigate
     /// and the element is inside a `<form>` — call `form.requestSubmit()`.
     ///
-    /// The two-step shape is deliberate: the synthetic Enter is
-    /// `isTrusted: false`, and Firefox does not perform its own implicit form
-    /// submission for an untrusted key press, so on most forms Enter alone does
-    /// nothing. Pages that DO handle Enter in script would be submitted twice
-    /// by an unconditional `requestSubmit()`, so ff-rdp watches for a
-    /// navigation in between and only falls back when none happened.
+    /// Firefox performs no implicit form submission for the untrusted
+    /// (`isTrusted: false`) Enter, so on most forms Enter alone does nothing;
+    /// pages that handle Enter in script would be submitted twice by an
+    /// unconditional `requestSubmit()`, hence the fallback only when no
+    /// navigation followed the Enter (checked for 600 ms). After
+    /// `requestSubmit()` the navigation check waits up to 3 s (capped by
+    /// --timeout).
     ///
     /// Adds `submitted` (did anything submit) and `navigated` (did the URL
     /// change) to `results`, plus `method`: `enter`, `request_submit`,
     /// `no_form`, or `enter_prevented`.
-    ///
-    /// The two navigation checks get different budgets (iter-237). The one
-    /// after the synthetic Enter is a fast local check (600 ms) — it only
-    /// decides whether the `requestSubmit()` fallback is needed, and a slow
-    /// check there is pure latency on the usual no-op page. The one after
-    /// `requestSubmit()` waits on a real network round-trip plus a docshell
-    /// teardown, so it gets 3 s (capped by --timeout). Sharing the short budget
-    /// made `navigated: false` ship alongside a `results.page` from the
-    /// destination on any submit slower than 600 ms.
     #[arg(long)]
     pub submit: bool,
     #[command(flatten)]
@@ -2547,8 +2243,7 @@ pub struct WaitArgs {
     /// connection, just a delay. For when you need to pace commands rather
     /// than wait for a specific page state (use --selector/--text/--eval/--ref
     /// instead whenever a real condition exists — a fixed sleep is always a
-    /// guess). The legacy spelling `--time` is also accepted as a hidden
-    /// alias (iter-142: this was the flag dogfooders reached for first).
+    /// guess). `--time` is accepted as an alias.
     #[arg(
         long = "sleep-ms",
         alias = "time",
@@ -2634,7 +2329,7 @@ pub struct A11yArgs {
     /// JS-derived "generic"), then restores the service to its previous
     /// state if this command was the one that turned it on. This is a
     /// browser-global, process-wide change while it runs — never the
-    /// default (DEC-027) — and cannot be combined with `--selector`/`--ref`,
+    /// default — and cannot be combined with `--selector`/`--ref`,
     /// which always use the JS-derived path. Failure to enable surfaces as
     /// an explicit error, never a silent fallback.
     #[arg(long, conflicts_with_all = ["selector", "ref_id"])]
@@ -2657,8 +2352,7 @@ pub struct ReloadArgs {
     #[arg(long)]
     pub hard: bool,
     /// Dispatch the reload and return immediately without waiting for it to
-    /// commit (iter-138 Theme E) — the same escape hatch `navigate` already
-    /// has. Conflicts with --wait-idle (a different kind of wait).
+    /// commit. Conflicts with --wait-idle (a different kind of wait).
     #[arg(long, conflicts_with = "wait_idle")]
     pub no_wait: bool,
     #[command(flatten)]
@@ -2667,11 +2361,11 @@ pub struct ReloadArgs {
     pub page: PageViewArgs,
 }
 
-/// Shared args for `back`/`forward` (iter-138 Theme E).
+/// Shared args for `back`/`forward`.
 #[derive(clap::Args)]
 pub struct BackForwardArgs {
     /// Dispatch the navigation and return immediately without waiting for it
-    /// to commit — the same escape hatch `navigate` already has.
+    /// to commit.
     #[arg(long)]
     pub no_wait: bool,
     #[command(flatten)]
@@ -2703,7 +2397,7 @@ pub struct SnapshotArgs {
     /// Maximum tree depth to traverse (default: 6). Alias: --max-depth.
     ///
     /// Every node marked `interactive: true` carries a `ref` handle usable with
-    /// `click --ref` / `type --ref` (iter-210), and so does every entry under
+    /// `click --ref` / `type --ref`, and so does every entry under
     /// a folded node's `refs_below`. Refs are stamped on the elements
     /// (`data-ffrdp-ref`); after a navigation a ref fails with `stale_ref`.
     /// For a much smaller orientation view — headings, landmarks and
@@ -2720,7 +2414,7 @@ pub struct SnapshotArgs {
     #[arg(long, default_value_t = 50000)]
     pub max_chars: u32,
     /// Keep only the nodes whose text or attribute values match, plus their
-    /// ancestors; everything else is pruned (iter-211 Theme A). The root
+    /// ancestors; everything else is pruned. The root
     /// stays `html`, so the path to each hit is still visible. The search
     /// covers the whole document; --depth does not limit it.
     #[command(flatten)]
@@ -3057,7 +2751,7 @@ pub struct IndexArgs {
     #[arg(long, value_name = "TOKEN")]
     pub bearer: Option<String>,
 
-    /// Run this iter-61 script before crawling (for authentication)
+    /// Run this `ff-rdp run` script before crawling (for authentication)
     #[arg(long, value_name = "PATH")]
     pub login_script: Option<std::path::PathBuf>,
 
@@ -3085,9 +2779,7 @@ pub enum ConsentCommand {
     #[command(
         long_about = "Detect a known cookie-consent-management-platform (CMP) overlay on the current tab and accept it.
 
-Exit code (iter-160): 0 only when a banner was actually accepted. The command
-used to exit 0 for all three outcomes, so a page whose banner was still up and
-still swallowing clicks was indistinguishable from a dismissed one.
+Exit code: 0 only when a banner was actually accepted.
 
   status \"accepted\"               exit 0
   status \"clicked_not_dismissed\"  exit 1, error_type \"consent_not_dismissed\"
@@ -3099,15 +2791,12 @@ the body scroll lock on a later task. After clicking, the command waits —
 bounded by --timeout — until the banner is hidden, so a `screenshot` run right
 after it no longer shows the banner. `accepted` means the banner was observed
 hidden; `clicked_not_dismissed` (action \"clicked\") means it was still visible
-when --timeout ran out. --timeout bounds only that wait (iter-305): connecting,
-finding the banner and clicking it each get at least the default 10 s per
-reply, so a short --timeout on a busy machine still reaches the click.
+when --timeout ran out. --timeout bounds only that wait: connecting, finding
+the banner and clicking it each get at least the default 10 s per reply.
 
-One JSON document either way. On exit 0 that is the usual results envelope; on
-exit 1 it is the error envelope, which carries `cmp`, `action` and `status`
-alongside `error`/`error_type` so nothing is lost. The command deliberately does
-NOT print a results envelope and then fail — two JSON documents on stdout is the
-double-envelope bug iter-153 removed from `launch --replace`.
+Exactly one JSON document either way: the results envelope on exit 0, or on
+exit 1 the error envelope, which carries `cmp`, `action` and `status` alongside
+`error`/`error_type`.
 
 Output: {\"results\": {\"cmp\": \"sourcepoint\"|\"bbc\"|\"consentmanager\"|null, \"action\": \"accepted\"|\"clicked\"|null, \"status\": \"accepted\"|\"clicked_not_dismissed\"|\"detected_not_actioned\"|\"no_cmp_detected\"}, \"total\": 1, \"meta\": {...}}"
     )]
@@ -3175,11 +2864,9 @@ Output: {\"results\": [{\"id\": \"...\", \"name\": \"...\", \"temporarily_instal
 WebExtension descriptor's `reload`). For a temporary add-on Firefox re-reads it
 from the directory or .xpi it was installed from and replaces the running
 version in place: open tabs stay open (their pages are not reloaded) and the
-add-on keeps its id and UUID. Firefox injects the new version's content scripts
-into matching open pages as well as into pages loaded afterwards, and tears
-down the old version's — objects the old scripts handed to a page become dead
-(\"can't access dead object\"). That is the update case this command lets you
-test without a relaunch.
+add-on keeps its id and UUID. The new version's content scripts are injected
+into matching open and later pages, and the old version's are torn down —
+objects they handed to a page become dead (\"can't access dead object\").
 
 ID|PATH: an add-on id, or the directory/.xpi a temporary add-on was installed
 from. Anything containing a path separator, ending in .xpi, or existing on disk
@@ -3306,17 +2993,11 @@ the AA failures under --fail-only (pre-limit — a --limit truncates `results` b
 `sampled` field reports how many elements were examined, so total == sampled
 without --fail-only. `meta.summary` carries aa_pass/aa_fail/capped detail.
 
-`capped` and `source` sit at the TOP level next to `sampled` (iter-160), not
-only inside `meta`. `capped: true` means the in-page pass stopped at its
-1000-element ceiling, so `total: 0` means \"none of the sampled elements
-failed\" — not \"this page has no contrast failures\". A capped sample that
-returns no failures also emits a hint naming the element count, because the
-qualifier must travel with the clean bill of health rather than sitting two
-levels down in a block --format text does not print.
-
-Backward-compat note: before iter-127, `total` under --fail-only reported the
-sampled element count rather than the failure count; that count now lives in
-`sampled`.
+`capped` and `source` also sit at the top level next to `sampled`. `capped:
+true` means the in-page pass stopped at its 1000-element ceiling, so `total: 0`
+means \"none of the sampled elements failed\" — not \"this page has no contrast
+failures\"; a capped sample with no failures also emits a hint naming the
+element count.
 
 Output: {\"results\": [{\"selector\": \"...\", \"ratio\": N, \"aa_normal\": bool, ...}], \"total\": N, \"sampled\": M, \"capped\": bool, \"source\": \"js-fallback\", \"meta\": {\"summary\": {...}}}")]
     Contrast {
@@ -3333,14 +3014,10 @@ Output: {\"results\": [{\"selector\": \"...\", \"ratio\": N, \"aa_normal\": bool
         long_about = "Flat page summary: landmarks, headings, and interactive elements.
 
 The cheapest way to orient on a page — a few hundred tokens on an article,
-against tens of kilobytes for `snapshot`'s DOM tree.
-
-Since iter-210 every `interactive` entry carries a `ref` you can pass straight
-to `click --ref` / `type --ref`, so this command is a complete answer to \"what
-can I do on this page\" — no `dom <selector>` round-trip, and no guessing a
-selector in order to get a handle. Refs are stamped on the elements themselves
-(`data-ffrdp-ref`), so any later command can use them until the page
-navigates. `meta.source` names how the view was produced.
+against tens of kilobytes for `snapshot`'s DOM tree. Every `interactive` entry
+carries a `ref` for `click --ref` / `type --ref`, stamped on the element
+(`data-ffrdp-ref`) and valid until the page navigates. `meta.source` names how
+the view was produced.
 
 `--limit N` caps the interactive list (default 50); `--all` lifts the cap.
 `interactive_total` and `interactive_truncated` appear when the cap bit.
@@ -3351,17 +3028,15 @@ All three lists hold only what a user can see: an element that is
 and `aria-hidden` content stay in. `snapshot` and `dom` still see hidden
 elements.
 
-The same view is what `--with-page` embeds under `results.page` on
-navigate/click/type/reload/back/forward/scroll — identical keys, so a recipe
-written against one works on the other. Two keys are act-and-see only, because
-they are reader-view work this command deliberately does not pay for: the
-article `excerpt` (iter-219) and the infobox `facts` (iter-225).
+`--with-page` embeds the same view, with identical keys, under `results.page`
+on navigate/click/type/reload/back/forward/scroll, plus two reader-view keys
+this command does not compute: the article `excerpt` and the infobox `facts`.
 
 Output: {\"results\": {\"landmarks\": [...], \"headings\": [...], \"interactive\": [{\"role\": \"link\", \"name\": \"...\", \"href\": \"...\", \"ref\": \"e3\"}]}, \"total\": 1, \"meta\": {\"source\": \"js-fallback\", ...}}"
     )]
     Summary {
         /// Keep only the headings/landmarks/interactive entries whose text or
-        /// name matches (iter-211 Theme A). Survivors keep their `ref`.
+        /// name matches. Survivors keep their `ref`.
         #[command(flatten)]
         query: QueryArgs,
     },
@@ -3416,7 +3091,7 @@ Output: {\"results\": {\"scrolled\": true, \"selector\": \"...\", \"viewport\": 
         /// Use smooth scrolling behavior (default is instant)
         #[arg(long)]
         smooth: bool,
-        /// Skip auto-wait and scroll immediately (reverts to pre-iter-59 fire-and-forget)
+        /// Skip auto-wait and scroll immediately
         #[arg(long)]
         no_wait: bool,
         /// After scrolling, wait for this condition. Repeatable. Forms: selector:<css>, text:<substr>, url:<regex>, gone:<css>
@@ -3462,11 +3137,10 @@ Output: {\"results\": {\"scrolled\": true, \"viewport\": {...}, \"scrollHeight\"
     /// Scroll to the very top of the page (equivalent to scroll by --dy -99999999)
     #[command(long_about = "Scroll to the very top of the page.
   Jumps instantly, even on pages with CSS `scroll-behavior: smooth`.
-  `warning` (iter-129) is always present — null normally, or a string naming the
+  `warning` is always present — null normally, or a string naming the
   locking element (e.g. \"<html> (class=\\\"sp-message-open\\\") has overflow:hidden\")
-  when the scroll position didn't move AND <html>/<body> has overflow:hidden —
-  the CMP/modal-overlay case where a silent atEnd:true would otherwise mask
-  the real cause (dogfooding-session-62).
+  when the scroll position didn't move AND <html>/<body> has overflow:hidden
+  (a consent banner or modal overlay locking the page).
 Output: {\"results\": {\"scrolled\": true, \"viewport\": {...}, \"scrollHeight\": N, \"atEnd\": bool, \"warning\": null}, \"total\": 1, \"meta\": {...}}")]
     Top {
         #[command(flatten)]
@@ -3475,11 +3149,10 @@ Output: {\"results\": {\"scrolled\": true, \"viewport\": {...}, \"scrollHeight\"
     /// Scroll to the very bottom of the page (equivalent to scroll by --dy 99999999)
     #[command(long_about = "Scroll to the very bottom of the page.
   Jumps instantly, even on pages with CSS `scroll-behavior: smooth`.
-  `warning` (iter-129) is always present — null normally, or a string naming the
+  `warning` is always present — null normally, or a string naming the
   locking element (e.g. \"<html> (class=\\\"sp-message-open\\\") has overflow:hidden\")
-  when the scroll position didn't move AND <html>/<body> has overflow:hidden —
-  the CMP/modal-overlay case where a silent atEnd:true would otherwise mask
-  the real cause (dogfooding-session-62).
+  when the scroll position didn't move AND <html>/<body> has overflow:hidden
+  (a consent banner or modal overlay locking the page).
 Output: {\"results\": {\"scrolled\": true, \"viewport\": {...}, \"scrollHeight\": N, \"atEnd\": bool, \"warning\": null}, \"total\": 1, \"meta\": {...}}")]
     Bottom {
         #[command(flatten)]
@@ -3554,52 +3227,41 @@ Output: {\"results\": {\"path\": \"...\", \"count\": N, \"total_size_bytes\": N,
     #[command(
         long_about = "Remove managed `ff-rdp-profile-*` directories under the profile root.
 
-By default only removes stale entries (default --older-than 7d). An entry is stale when both
-the directory mtime AND its newest top-level file mtime are at least --older-than old — a
-profile a running Firefox is still writing into is not selected.
-Any age-gated prune (i.e. not --all) also honours a positive liveness guard: a profile whose
-owner Firefox process is still alive (recorded in an `.ff-rdp-owner-pid` marker at launch) is
-never removed, regardless of age.
-Pass --all to remove every managed entry regardless of age (mutually exclusive with
---older-than). --all bypasses the age gate but NOT quietly: a profile whose owner Firefox is
-still alive is still removed (--all is the explicit escape hatch), but each such removal is
-logged as a warning and its basename is listed under `removed_live` in the output
-(`would_remove_live` with --dry-run, which removes nothing). Do not run
---all while a Firefox launched by ff-rdp is still using one of these profiles: `ff-rdp stop
---all` stops those Firefoxes and removes their profiles. `hint` names `ff-rdp stop --all` whenever,
-after the prune, the root still holds a profile of a running Firefox that `stop --all` would
-stop; `null` otherwise.
-`failed` reports, per selected directory, any removal that did NOT happen, with the OS
-error — `{}` when everything selected was removed. This matters most under --all against a
-live owner: the browser is writing into the profile throughout, so `remove_dir_all` can meet
-a file created after it listed the directory and fail. Such an entry appears in neither
-`removed` nor `removed_live`, and before this field existed it left no trace in the output
-at all.
-`owner_liveness` reports, per selected directory, the grading that decision came from:
-`live` (owner running), `unverified` (owner alive, identity undisclosed by the OS),
-`unreadable` (an owner marker that exists but did not read back as a PID — graded by age like
-`unmarked`, but never eligible for the age-free dead-owner reclamation), `dead` (owner gone, or
-its PID recycled), or `unmarked` (no marker at all).
-Pass --dry-run to preview without touching disk: `would_remove` is populated and `removed` stays
-empty, and every listed directory still exists afterwards. On a real run it's the other way round:
-`removed` is populated and `would_remove` stays empty.
+By default removes entries at least --older-than old (default 7d): both the
+directory mtime and its newest top-level file mtime must be that old, and a
+profile whose owner Firefox is still alive (per the `.ff-rdp-owner-pid` marker
+written at launch) is never removed. --all removes every managed entry
+regardless of age, live ones included: each such removal is logged as a
+warning and listed under `removed_live` (`would_remove_live` with --dry-run).
+Do not use --all while an ff-rdp Firefox still runs: `ff-rdp stop --all` stops
+those and removes their profiles. --dry-run fills `would_remove` and touches
+nothing; a real run fills `removed`.
 
-This subcommand is a pure age query and stays one: it never reclaims anything early. The two
-'provably abandoned regardless of age' rules — a marker naming a dead owner (iter-142), and an
-unmarked directory holding nothing but `user.js`, i.e. a launch that died before Firefox ever
-opened it (iter-175) — belong to the automatic sweep `ff-rdp launch` runs, so `ff-rdp launch`
-is what reclaims those. Use --all here if you want everything gone now.
+`failed` maps each selected directory whose removal did not happen to its OS
+error (`{}` when all went) — e.g. a file a live browser created mid-removal; such
+an entry is in neither `removed` nor `removed_live`. `owner_liveness` grades each
+selected directory: `live`, `unverified` (owner alive, identity undisclosed by
+the OS), `unreadable` (a marker that does not read as a PID; graded by age like
+`unmarked`), `dead` (owner gone or PID recycled) or `unmarked` (no marker).
+`hint` names `ff-rdp stop --all` when the root still holds a profile of a
+running Firefox it would stop; `null` otherwise.
 
-Duration grammar for --older-than: <N>d, <N>h, <N>m, <N>s, or a bare number of seconds
-(e.g. 7d, 24h, 30m, 45s, 3600). Individual removal failures (permission error, a directory
-vanishing mid-scan) are logged and skipped, not fatal to the rest of the batch.
+Output: {\"results\": {\"path\": \"...\", \"would_remove\": [...], \"removed\": [...], \"removed_live\": [...], \"would_remove_live\": [...], \"owner_liveness\": {\"<basename>\": \"live|unverified|unreadable|dead|unmarked\"}, \"failed\": {\"<basename>\": \"<os error>\"}, \"dry_run\": bool, \"hint\": \"...\"|null}, \"total\": N, \"meta\": {...}}",
+        after_long_help = "Notes:
+  This is a pure age query: it never reclaims anything early. Profiles that are
+  provably abandoned regardless of age — a marker naming a dead owner, or an
+  unmarked directory holding only `user.js` (a launch that died before Firefox
+  opened it) — are reclaimed by the automatic sweep `ff-rdp launch` runs. An
+  `unreadable` marker is never eligible for that age-free reclamation.
+
+  --older-than accepts <N>d, <N>h, <N>m, <N>s, or a bare number of seconds
+  (e.g. 7d, 24h, 30m, 45s, 3600). Individual removal failures (permission
+  error, a directory vanishing mid-scan) are logged and skipped, not fatal.
 
 Examples:
   ff-rdp profiles prune --dry-run
   ff-rdp profiles prune --older-than 24h
-  ff-rdp profiles prune --all
-
-Output: {\"results\": {\"path\": \"...\", \"would_remove\": [...], \"removed\": [...], \"removed_live\": [...], \"would_remove_live\": [...], \"owner_liveness\": {\"<basename>\": \"live|unverified|unreadable|dead|unmarked\"}, \"failed\": {\"<basename>\": \"<os error>\"}, \"dry_run\": bool, \"hint\": \"...\"|null}, \"total\": N, \"meta\": {...}}"
+  ff-rdp profiles prune --all"
     )]
     Prune {
         /// Only remove entries whose mtime is at least this old. Accepts <N>d, <N>h, <N>m, <N>s,
@@ -3747,7 +3409,7 @@ impl InstallSkillArgs {
 
 #[cfg(test)]
 mod help_stack_tests {
-    //! iter-99: guard the `cookies --help` (and every other subcommand's `--help`)
+    //! Guard the `cookies --help` (and every other subcommand's `--help`)
     //! stack-overflow regression.
     //!
     //! Background: on Windows the process main thread has a 1 MiB stack (vs 8 MiB
@@ -3758,7 +3420,7 @@ mod help_stack_tests {
     //! (STATUS_STACK_OVERFLOW) on windows-latest CI while staying green on the
     //! 8 MiB Linux/macOS runners.
     //!
-    //! iter-99 moved each arg-heavy variant's fields into a dedicated
+    //! The fix moved each arg-heavy variant's fields into a dedicated
     //! `#[derive(clap::Args)]` struct (`Navigate(NavigateArgs)` …), so each
     //! subcommand's args build in their own frame.  These tests pin the fix by
     //! rendering help inside a deliberately small (1 MiB) thread stack, mirroring
@@ -3806,7 +3468,7 @@ mod help_stack_tests {
             })
     }
 
-    /// iter-99 AC / pre-fix repro: `cookies --help` must render inside a 1 MiB
+    /// Pre-fix repro: `cookies --help` must render inside a 1 MiB
     /// stack.  Pre-fix this overflowed on every platform (the Windows-only CI
     /// failure made reproducible everywhere); post-fix it completes.
     #[test]
@@ -3818,7 +3480,7 @@ mod help_stack_tests {
         );
     }
 
-    /// iter-99 AC: every subcommand's `--help` must render inside the same 1 MiB
+    /// Every subcommand's `--help` must render inside the same 1 MiB
     /// stack, so no other command hides the same latent oversized-frame bug.
     #[test]
     fn unit_all_subcommand_helps_render_in_small_stack() {
