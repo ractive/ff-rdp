@@ -1,0 +1,61 @@
+{
+  "prototype": {
+    "type": "object",
+    "actor": "server1.conn0.child0/obj25",
+    "class": "Array",
+    "ownPropertyLength": 40,
+    "extensible": true,
+    "frozen": false,
+    "sealed": false,
+    "isError": false,
+    "preview": {
+      "kind": "ArrayLike",
+      "length": 0,
+      "items": []
+    }
+  },
+  "ownProperties": {
+    "0": {
+      "configurable": true,
+      "enumerable": true,
+      "writable": true,
+      "value": 2
+    },
+    "1": {
+      "configurable": true,
+      "enumerable": true,
+      "writable": true,
+      "value": {
+        "type": "object",
+        "actor": "server1.conn0.child0/obj24",
+        "class": "Object",
+        "ownPropertyLength": 1,
+        "extensible": true,
+        "frozen": false,
+        "sealed": false,
+        "isError": false,
+        "preview": {
+          "kind": "Object",
+          "ownProperties": {
+            "b": {
+              "configurable": true,
+              "enumerable": true,
+              "writable": true,
+              "value": "x"
+            }
+          },
+          "ownPropertiesLength": 1
+        }
+      }
+    },
+    "length": {
+      "configurable": false,
+      "enumerable": false,
+      "writable": true,
+      "value": 2
+    }
+  },
+  "ownSymbols": [],
+  "safeGetterValues": {},
+  "from": "server1.conn0.child0/obj21"
+}

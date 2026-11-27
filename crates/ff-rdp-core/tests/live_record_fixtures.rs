@@ -700,6 +700,81 @@ fn live_eval_object() {
     );
 }
 
+/// `eval --format text` reads a plain Object/Array grip through its actors:
+/// record the eval result plus the `prototypeAndProperties` replies for the
+/// object, its nested array and the object inside that, in the order the CLI
+/// requests them.
+#[test]
+#[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
+fn live_eval_object_nested_properties() {
+    fn props(transport: &mut RdpTransport, actor: &str, fixture: &str) -> Value {
+        transport
+            .send(&json!({"to": actor, "type": "prototypeAndProperties"}))
+            .expect("send prototypeAndProperties");
+        let reply = recv_from_actor(transport, actor);
+        if should_record() {
+            save_cli_fixture(fixture, &reply);
+        }
+        reply
+    }
+
+    if !should_run_live() {
+        return;
+    }
+    let mut conn = connect();
+    let transport = conn.transport_mut();
+    navigate_to_example_com(transport);
+    let console = get_console_actor(transport);
+
+    let (_imm, result) = record_eval(
+        transport,
+        &console,
+        "({z: 1, a: [2, {b: 'x'}]})",
+        Some("eval_immediate_object_nested.json"),
+        Some("eval_result_object_nested.json"),
+    );
+    let root = result["result"]["actor"]
+        .as_str()
+        .expect("object result has an actor")
+        .to_owned();
+
+    let root_reply = props(
+        transport,
+        &root,
+        "prototype_and_properties_object_nested.json",
+    );
+    let keys: Vec<&str> = root_reply["ownProperties"]
+        .as_object()
+        .expect("ownProperties")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        keys,
+        ["z", "a"],
+        "Firefox sends own properties in insertion order"
+    );
+
+    let array = root_reply["ownProperties"]["a"]["value"]["actor"]
+        .as_str()
+        .expect("nested array actor")
+        .to_owned();
+    let array_reply = props(
+        transport,
+        &array,
+        "prototype_and_properties_array_nested.json",
+    );
+    let inner = array_reply["ownProperties"]["1"]["value"]["actor"]
+        .as_str()
+        .expect("nested object actor")
+        .to_owned();
+    props(
+        transport,
+        &inner,
+        "prototype_and_properties_inner_nested.json",
+    );
+}
+
 #[test]
 #[ignore = "requires a live Firefox instance — set FF_RDP_LIVE_TESTS=1"]
 fn live_eval_exception() {

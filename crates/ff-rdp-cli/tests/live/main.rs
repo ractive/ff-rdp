@@ -119,6 +119,7 @@ mod live_dom_stats_perf_audit_parity;
 mod live_emulation;
 mod live_eval_csp;
 mod live_eval_scope;
+mod live_eval_text_values;
 mod live_navigate_default_fast;
 mod live_navigate_readiness;
 mod live_navigate_real_site;
